@@ -1292,6 +1292,7 @@ async fn init_supporting_infra(
         cfg.agent_name.clone(),
         cfg.auto_mode.clone(),
         Arc::clone(&shared.system_one),
+        residuum_inference::UsageRecorder::new(layout),
     );
     SupportingInfra {
         net,

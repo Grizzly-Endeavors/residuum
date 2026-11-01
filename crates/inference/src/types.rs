@@ -539,19 +539,25 @@ pub struct ToolDefinition {
 ///
 /// The three input parts are disjoint and together make up the whole prompt.
 /// `None` always means the provider did not report the number, never zero.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
     /// Input tokens billed at the full input rate: neither read from nor written to the prompt cache.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uncached_input_tokens: Option<u32>,
     /// Input tokens read from the prompt cache.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_read_tokens: Option<u32>,
     /// Input tokens written to the prompt cache, all TTLs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_write_tokens: Option<u32>,
     /// The part of `cache_write_tokens` written with a long (1 hour) TTL, when the provider reports the split.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_write_long_tokens: Option<u32>,
     /// Output tokens generated, reasoning included.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_tokens: Option<u32>,
     /// The part of `output_tokens` spent on reasoning, when reported separately.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_tokens: Option<u32>,
 }
 
@@ -585,6 +591,31 @@ pub(crate) fn uncached_from_inclusive_prompt(
             .saturating_sub(cache_read_tokens.unwrap_or(0))
             .saturating_sub(cache_write_tokens.unwrap_or(0))
     })
+}
+
+/// One request a model call sent: who served it, how it ended, and what the
+/// provider reported it spent. A retried or failed-over call makes several.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttemptUsage {
+    /// Provider kind that served the attempt (e.g. "anthropic", "openai", "fireworks", "gemini", "ollama").
+    pub provider: String,
+    /// Model id the attempt was sent to.
+    pub model: String,
+    /// Whether the attempt produced the call's response.
+    pub outcome: AttemptOutcome,
+    /// What the provider reported for this attempt; None when it reported nothing.
+    pub usage: Option<Usage>,
+}
+
+/// How one attempt of a model call ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttemptOutcome {
+    /// The attempt produced the call's response.
+    Succeeded,
+    /// The attempt failed: an error status, a broken stream, or a response
+    /// that could not be used.
+    Failed,
 }
 
 /// Why a model response ended, normalized across providers. Each provider
@@ -629,6 +660,10 @@ pub struct InferenceResponse {
     /// changed (Anthropic's `thinking_dropped` input transformation). The
     /// model answered without that reasoning.
     pub thinking_dropped: usize,
+    /// Every request this call sent, in order; the last is the one that
+    /// produced this response, and `usage` is its usage. Empty for a provider
+    /// that sends no request of its own.
+    pub attempts: Vec<AttemptUsage>,
 }
 
 impl InferenceResponse {
@@ -643,7 +678,15 @@ impl InferenceResponse {
             stop_reason: None,
             images_omitted: None,
             thinking_dropped: 0,
+            attempts: Vec::new(),
         }
+    }
+
+    /// The provider and model that produced this response: the last
+    /// attempt's. `None` for a response no provider request produced.
+    #[must_use]
+    pub fn answered_by(&self) -> Option<&AttemptUsage> {
+        self.attempts.last()
     }
 
     /// This response with every thinking block recorded as produced at
@@ -805,7 +848,9 @@ pub trait InferenceProvider: Send + Sync {
         true
     }
 
-    /// Get the model identifier.
+    /// The model this provider is configured for. A chain that fails over
+    /// keeps naming its primary; the model that answered a call is the last
+    /// of its response's [`InferenceResponse::attempts`].
     fn model_name(&self) -> &str;
 }
 

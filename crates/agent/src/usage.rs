@@ -15,7 +15,10 @@ use async_trait::async_trait;
 use tokio::sync::Mutex;
 
 use residuum_bus::usage::SessionUsageTotals;
-use residuum_inference::Usage;
+use residuum_config::WorkspaceLayout;
+use residuum_inference::{
+    InferenceError, InferenceProvider, InferenceResponse, Usage, UsageComponent, UsageRecorder,
+};
 
 /// Token usage accumulated across the model calls made so far in a turn
 /// that's still running. Reset at the start of every turn; never persisted
@@ -53,14 +56,23 @@ impl TurnUsage {
     }
 }
 
-/// Where a turn's session-level usage totals are durably accumulated: the
-/// main agent's own workspace file ([`MainUsageSink`]), or a background
-/// session's registry entry (mirrored into its store record at
-/// completion; `SessionUsageSink` in the background registry does this).
-/// Mirrors `crate::turn::TranscriptSink`'s split between the main
-/// agent's own persistence and a session's.
+/// Where a turn's usage is durably kept: the running totals, in the main
+/// agent's own workspace file ([`MainUsageSink`]) or a background session's
+/// registry entry (mirrored into its store record at completion;
+/// `SessionUsageSink` in the background registry does this), and a usage
+/// record per model-call attempt attributed to whoever owns the sink.
+/// Mirrors `crate::turn::TranscriptSink`'s split between the main agent's own
+/// persistence and a session's.
 #[async_trait]
 pub trait UsageSink: Send + Sync {
+    /// Record every attempt of one finished model call made through
+    /// `provider`, attributed to this sink's owner.
+    async fn record_call(
+        &self,
+        provider: &dyn InferenceProvider,
+        result: &Result<InferenceResponse, InferenceError>,
+    );
+
     /// Fold one model call's usage into the durable running totals and
     /// return the updated totals, for publishing alongside this turn's own
     /// progress.
@@ -122,30 +134,44 @@ pub async fn save_session_usage_totals(path: &Path, totals: &SessionUsageTotals)
 /// The main agent's own [`UsageSink`]: an in-memory running total shared
 /// with the `Agent` that owns it (so every turn accumulates onto the same
 /// totals), written through to disk after every model call so a restart
-/// resumes with the right totals instead of resetting to zero.
+/// resumes with the right totals instead of resetting to zero, plus the
+/// workspace's usage records.
 pub struct MainUsageSink {
     totals: Arc<Mutex<SessionUsageTotals>>,
     /// `None` for an agent with no workspace layout (test constructors) —
     /// totals then live only in memory for the process's lifetime.
     persist_path: Option<std::path::PathBuf>,
+    /// `None` for an agent with no workspace layout: no records are kept.
+    recorder: Option<UsageRecorder>,
 }
 
 impl MainUsageSink {
-    /// Wrap the agent's own shared totals for one turn's use.
+    /// Wrap the agent's own shared totals for one turn's use, persisting
+    /// into the workspace at `layout` when there is one.
     #[must_use]
-    pub fn new(
-        totals: Arc<Mutex<SessionUsageTotals>>,
-        persist_path: Option<std::path::PathBuf>,
-    ) -> Self {
+    pub fn new(totals: Arc<Mutex<SessionUsageTotals>>, layout: Option<&WorkspaceLayout>) -> Self {
         Self {
             totals,
-            persist_path,
+            persist_path: layout.map(WorkspaceLayout::usage_totals_json),
+            recorder: layout.map(UsageRecorder::new),
         }
     }
 }
 
 #[async_trait]
 impl UsageSink for MainUsageSink {
+    async fn record_call(
+        &self,
+        provider: &dyn InferenceProvider,
+        result: &Result<InferenceResponse, InferenceError>,
+    ) {
+        if let Some(recorder) = &self.recorder {
+            recorder
+                .record_call(&UsageComponent::Main, None, provider, result)
+                .await;
+        }
+    }
+
     async fn accumulate(&self, usage: Option<Usage>) -> SessionUsageTotals {
         let snapshot = {
             let mut guard = self.totals.lock().await;
@@ -326,9 +352,13 @@ mod tests {
     #[tokio::test]
     async fn main_usage_sink_persists_after_every_call() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("usage_totals.json");
+        let layout = WorkspaceLayout::new(dir.path());
+        let path = layout.usage_totals_json();
+        tokio::fs::create_dir_all(layout.memory_dir())
+            .await
+            .unwrap();
         let shared = Arc::new(Mutex::new(SessionUsageTotals::default()));
-        let sink = MainUsageSink::new(Arc::clone(&shared), Some(path.clone()));
+        let sink = MainUsageSink::new(Arc::clone(&shared), Some(&layout));
 
         let first = sink.accumulate(Some(usage(100, 20))).await;
         assert_eq!(first.input_tokens, 100);
@@ -362,9 +392,13 @@ mod tests {
     #[tokio::test]
     async fn main_usage_sink_record_tool_calls_persists_after_every_call() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("usage_totals.json");
+        let layout = WorkspaceLayout::new(dir.path());
+        let path = layout.usage_totals_json();
+        tokio::fs::create_dir_all(layout.memory_dir())
+            .await
+            .unwrap();
         let shared = Arc::new(Mutex::new(SessionUsageTotals::default()));
-        let sink = MainUsageSink::new(Arc::clone(&shared), Some(path.clone()));
+        let sink = MainUsageSink::new(Arc::clone(&shared), Some(&layout));
 
         let first = sink.record_tool_calls(3).await;
         assert_eq!(first.tool_calls, 3);
@@ -381,5 +415,63 @@ mod tests {
         );
         let persisted_after_second = load_session_usage_totals(&path).await;
         assert_eq!(persisted_after_second, second);
+    }
+
+    struct NamedProvider;
+
+    #[async_trait]
+    impl InferenceProvider for NamedProvider {
+        async fn complete(
+            &self,
+            _messages: &[residuum_inference::Message],
+            _tools: &[residuum_inference::ToolDefinition],
+            _options: &residuum_inference::CompletionOptions,
+        ) -> Result<InferenceResponse, InferenceError> {
+            Ok(InferenceResponse::new(String::new(), vec![]))
+        }
+
+        fn model_name(&self) -> &'static str {
+            "main-model"
+        }
+    }
+
+    #[tokio::test]
+    async fn main_usage_sink_records_each_call_as_main() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        let sink = MainUsageSink::new(
+            Arc::new(Mutex::new(SessionUsageTotals::default())),
+            Some(&layout),
+        );
+        let mut response = InferenceResponse::new("ok".to_string(), vec![]);
+        response.usage = Some(usage(30, 4));
+        sink.record_call(&NamedProvider, &Ok(response)).await;
+        let failed = InferenceError::Attempted {
+            error: Box::new(InferenceError::Timeout(5)),
+            attempts: vec![residuum_inference::AttemptUsage {
+                provider: "anthropic".to_string(),
+                model: "main-model".to_string(),
+                outcome: residuum_inference::AttemptOutcome::Failed,
+                usage: None,
+            }],
+        };
+        sink.record_call(&NamedProvider, &Err(failed)).await;
+
+        let records = UsageRecorder::new(&layout)
+            .load(
+                chrono::DateTime::<chrono::Utc>::MIN_UTC,
+                chrono::DateTime::<chrono::Utc>::MAX_UTC,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(records.len(), 2, "one record per call");
+        let answered = records.first().unwrap();
+        assert_eq!(answered.component, UsageComponent::Main);
+        assert_eq!(answered.conversation, None);
+        assert_eq!(answered.model, "main-model");
+        assert_eq!(answered.usage, Some(usage(30, 4)));
+        let failed = records.get(1).unwrap();
+        assert_eq!(failed.outcome, residuum_inference::AttemptOutcome::Failed);
     }
 }

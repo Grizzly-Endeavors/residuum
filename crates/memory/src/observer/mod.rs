@@ -2,7 +2,7 @@
 //!
 //! Runs synchronously after the agent completes a turn when the accumulated
 //! recent message token count exceeds the configured threshold. Extraction
-//! has no side effects — see [`Observer::extract`]; persisting the result as
+//! writes no memory — see [`Observer::extract`]; persisting the result as
 //! an episode is [`crate::merge_writer::MemoryMergeWriter`]'s job.
 
 mod parse;
@@ -22,7 +22,9 @@ use residuum_config::{
     DEFAULT_OBSERVER_COOLDOWN_SECS, DEFAULT_OBSERVER_FORCE_THRESHOLD, DEFAULT_OBSERVER_THRESHOLD,
     WorkspaceLayout,
 };
-use residuum_inference::{CompletionOptions, InferenceProvider, ResponseFormat};
+use residuum_inference::{
+    CompletionOptions, InferenceProvider, ResponseFormat, UsageComponent, UsageRecorder,
+};
 
 /// A single observation extracted from a conversation segment, before it is
 /// assigned an episode id or written anywhere.
@@ -234,12 +236,13 @@ impl Observer {
 
     /// Extract observations and a narrative from recent messages.
     ///
-    /// Pure extraction: no episode id is allocated and nothing is written to
-    /// disk. Persisting the result — allocating an episode id, writing the
-    /// transcript and observation archives, indexing, embedding, and
-    /// checking the reflector — is the memory merge writer's job, so that
-    /// all persistence (main agent and session runs alike) is serialized
-    /// through one writer.
+    /// No memory is written: persisting the result — allocating an episode
+    /// id, writing the transcript and observation archives, indexing,
+    /// embedding, and checking the reflector — is the memory merge writer's
+    /// job, so that all persistence (main agent and session runs alike) is
+    /// serialized through one writer. The model call's usage is recorded in
+    /// the workspace at `layout`, under `conversation` (the session run the
+    /// messages came from, `None` for the main agent's own).
     ///
     /// # Errors
     /// Returns an error if the LLM call fails or its response cannot be parsed.
@@ -248,6 +251,7 @@ impl Observer {
         &self,
         recent_messages: &[RecentMessage],
         layout: &WorkspaceLayout,
+        conversation: Option<&str>,
     ) -> anyhow::Result<Extraction> {
         if recent_messages.is_empty() {
             anyhow::bail!("no recent messages to extract from");
@@ -294,10 +298,11 @@ impl Observer {
             },
             ..CompletionOptions::default()
         };
-        let response = provider
-            .complete(&extraction_messages, &[], &options)
-            .await
-            .context("observer LLM call failed")?;
+        let result = provider.complete(&extraction_messages, &[], &options).await;
+        UsageRecorder::new(layout)
+            .record_call(&UsageComponent::Observer, conversation, &*provider, &result)
+            .await;
+        let response = result.context("observer LLM call failed")?;
 
         // Parse the response into extraction results and optional narrative.
         let parsed = parse_observer_response(&response, tz)?;
@@ -614,7 +619,7 @@ mod tests {
         );
 
         let messages = make_recent_messages(5);
-        let result = observer.extract(&messages, &layout).await.unwrap();
+        let result = observer.extract(&messages, &layout, None).await.unwrap();
 
         assert_eq!(
             result.observations.len(),
@@ -632,6 +637,41 @@ mod tests {
                     .map_or(true, |mut d| d.next().is_none()),
             "extraction alone must not write any episode files — that's the merge writer's job"
         );
+    }
+
+    #[tokio::test]
+    async fn extract_records_its_model_call_as_observer_usage() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        let usage = residuum_inference::Usage {
+            uncached_input_tokens: Some(900),
+            output_tokens: Some(60),
+            ..residuum_inference::Usage::default()
+        };
+        let observer = Observer::new(
+            Box::new(MockMemoryProvider::new(SAMPLE_RESPONSE).with_usage(usage)),
+            ObserverConfig::default(),
+        );
+
+        observer
+            .extract(&make_recent_messages(3), &layout, Some("run-7"))
+            .await
+            .unwrap();
+
+        let records = UsageRecorder::new(&layout)
+            .load(
+                chrono::DateTime::<chrono::Utc>::MIN_UTC,
+                chrono::DateTime::<chrono::Utc>::MAX_UTC,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(records.len(), 1, "one record for the one call");
+        let record = records.first().unwrap();
+        assert_eq!(record.component, UsageComponent::Observer);
+        assert_eq!(record.conversation.as_deref(), Some("run-7"));
+        assert_eq!(record.model, "mock-memory");
+        assert_eq!(record.usage, Some(usage));
     }
 
     #[test]
@@ -794,7 +834,7 @@ mod tests {
         observer.swap_provider(Box::new(MockMemoryProvider::new(new_response)));
 
         let messages = make_recent_messages(5);
-        let result = observer.extract(&messages, &layout).await.unwrap();
+        let result = observer.extract(&messages, &layout, None).await.unwrap();
         assert_eq!(
             result.observations.len(),
             1,
@@ -817,7 +857,7 @@ mod tests {
             ObserverConfig::default(),
         );
 
-        let result = observer.extract(&[], &layout).await;
+        let result = observer.extract(&[], &layout, None).await;
         assert!(
             result.is_err(),
             "extract with empty messages should return Err"

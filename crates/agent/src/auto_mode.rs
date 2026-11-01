@@ -15,8 +15,10 @@ use serde_json::{Value, json};
 
 use residuum_bus::auto_mode::{AutoModeDecision, AutoModeVerdict};
 use residuum_config::AutoModeConfig;
-use residuum_inference::ToolCall;
-use residuum_inference::system_one::{Question, SystemOneResponse, SystemOneService};
+use residuum_inference::system_one::{
+    Question, SystemOneError, SystemOneResponse, SystemOneService,
+};
+use residuum_inference::{AttemptOutcome, AttemptUsage, ToolCall, UsageComponent, UsageRecorder};
 
 /// Longest tool-call argument text sent to the decision model. Its context
 /// is 32k tokens for the state plus the longest question; a call larger than
@@ -32,6 +34,8 @@ pub struct AutoModeGate {
     agent: String,
     config: RwLock<AutoModeConfig>,
     system_one: Arc<SystemOneService>,
+    /// The agent's usage records, which every decision-model call goes into.
+    usage: UsageRecorder,
 }
 
 /// A handle to an agent's [`AutoModeGate`].
@@ -43,11 +47,13 @@ impl AutoModeGate {
         agent: impl Into<String>,
         config: AutoModeConfig,
         system_one: Arc<SystemOneService>,
+        usage: UsageRecorder,
     ) -> SharedAutoMode {
         Arc::new(Self {
             agent: agent.into(),
             config: RwLock::new(config),
             system_one,
+            usage,
         })
     }
 
@@ -76,13 +82,56 @@ impl AutoModeGate {
         }
         let state = call_state(&self.agent, call, latest_user_request);
         let questions = rule_questions(&config);
-        let verdict = match self.system_one.evaluate(&state, &questions).await {
+        let result = self.system_one.evaluate(&state, &questions).await;
+        self.record_usage(&result).await;
+        let verdict = match result {
             Ok(response) => judge(&config, &response),
             Err(e) => AutoModeVerdict::unchecked(e.user_message()),
         };
         log_verdict(&call.name, &verdict);
         Some(verdict)
     }
+
+    /// Record one decision-model call. Nothing is recorded when no decision
+    /// model is set up, since no request was sent.
+    async fn record_usage(&self, result: &Result<SystemOneResponse, SystemOneError>) {
+        if matches!(result, Err(SystemOneError::NotConfigured)) {
+            return;
+        }
+        let status = self.system_one.status();
+        let configured_model = status.model.unwrap_or_default();
+        let (model, outcome, usage) = match result {
+            Ok(response) if !response.model.is_empty() => (
+                response.model.clone(),
+                AttemptOutcome::Succeeded,
+                reported_usage(response),
+            ),
+            Ok(response) => (
+                configured_model,
+                AttemptOutcome::Succeeded,
+                reported_usage(response),
+            ),
+            Err(_) => (configured_model, AttemptOutcome::Failed, None),
+        };
+        let attempt = AttemptUsage {
+            provider: status
+                .provider
+                .unwrap_or_else(|| UsageComponent::SystemOne.name().to_string()),
+            model,
+            outcome,
+            usage,
+        };
+        self.usage
+            .record_attempts(&UsageComponent::SystemOne, None, &[attempt])
+            .await;
+    }
+}
+
+/// The usage a decision-model response reported; `None` when it reported
+/// neither count.
+fn reported_usage(response: &SystemOneResponse) -> Option<residuum_inference::Usage> {
+    let usage = response.usage;
+    (usage.input_tokens.is_some() || usage.output_tokens.is_some()).then(|| usage.to_usage())
 }
 
 fn log_verdict(tool_name: &str, verdict: &AutoModeVerdict) {
@@ -351,24 +400,49 @@ mod tests {
 
     #[tokio::test]
     async fn inactive_gate_checks_nothing() {
+        let (_dir, usage) = scratch_usage();
         let gate = AutoModeGate::new_shared(
             "scout",
             AutoModeConfig::default(),
             SystemOneService::new(None),
+            usage,
         );
         assert_eq!(gate.check(&call(), None).await, None);
     }
 
     #[tokio::test]
     async fn an_unconfigured_decision_model_leaves_the_call_unchecked() {
+        let (dir, usage) = scratch_usage();
         let gate = AutoModeGate::new_shared(
             "scout",
             config(&["Pushing to main"], &[]),
             SystemOneService::new(None),
+            usage,
         );
         let verdict = gate.check(&call(), None).await.unwrap();
         assert_eq!(verdict.decision, AutoModeDecision::Unchecked);
         assert!(verdict.reason.unwrap().contains("No decision model"));
+        assert!(
+            all_records(&dir).await.is_empty(),
+            "no decision model means no request and no record"
+        );
+    }
+
+    fn scratch_usage() -> (tempfile::TempDir, UsageRecorder) {
+        let dir = tempfile::tempdir().unwrap();
+        let usage = UsageRecorder::new(&residuum_config::WorkspaceLayout::new(dir.path()));
+        (dir, usage)
+    }
+
+    async fn all_records(dir: &tempfile::TempDir) -> Vec<residuum_inference::UsageRecord> {
+        UsageRecorder::new(&residuum_config::WorkspaceLayout::new(dir.path()))
+            .load(
+                chrono::DateTime::<chrono::Utc>::MIN_UTC,
+                chrono::DateTime::<chrono::Utc>::MAX_UTC,
+                None,
+            )
+            .await
+            .unwrap()
     }
 
     #[tokio::test]
@@ -394,14 +468,30 @@ mod tests {
             api_key: None,
             keep_alive: None,
         }));
+        let (dir, usage) = scratch_usage();
         let gate = AutoModeGate::new_shared(
             "scout",
             config(&["Pushing to main"], &["Pushing to a feature branch"]),
             service,
+            usage,
         );
         let verdict = gate.check(&call(), Some("push it")).await.unwrap();
         assert_eq!(verdict.decision, AutoModeDecision::Blocked);
         assert_eq!(verdict.input_tokens, Some(55));
+        let records = all_records(&dir).await;
+        assert_eq!(records.len(), 1, "the one decision-model call is recorded");
+        let record = records.first().unwrap();
+        assert_eq!(record.component, UsageComponent::SystemOne);
+        assert_eq!(record.model, "nimble");
+        assert_eq!(record.outcome, AttemptOutcome::Succeeded);
+        assert_eq!(
+            record.usage,
+            Some(residuum_inference::Usage {
+                uncached_input_tokens: Some(55),
+                output_tokens: Some(2),
+                ..residuum_inference::Usage::default()
+            })
+        );
 
         gate.set_config(AutoModeConfig::default());
         assert_eq!(

@@ -1,7 +1,8 @@
 //! Model call API: `POST /api/agents/{name}/model/complete`, a one-shot request/response
 //! call to the background `small` model on behalf of an artifact (design
 //! §7). No agent, no tools, no memory, no identity files — the model sees
-//! only what the caller sends.
+//! only what the caller sends. Each call's usage is recorded in the agent's
+//! workspace under the calling artifact.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -19,7 +20,7 @@ use residuum_config::ThinkingConfig;
 use residuum_config::{BackgroundModelTier, BackgroundModelsConfig, ProviderSpec, RoleOverrides};
 use residuum_inference::{
     CompletionOptions, ImageData, InferenceError, InferenceProvider, Message, ResponseFormat, Role,
-    SharedHttpClient, Usage, build_provider_chain,
+    SharedHttpClient, Usage, UsageComponent, UsageRecorder, build_provider_chain,
 };
 
 /// Identity label logged and reported when a call carries no artifact
@@ -40,6 +41,8 @@ pub(crate) struct ModelCallResources {
     role_overrides: HashMap<String, RoleOverrides>,
     default_temperature: Option<f32>,
     default_thinking: Option<ThinkingConfig>,
+    /// Where each call's usage records go: the agent's own workspace.
+    usage: UsageRecorder,
 }
 
 impl ModelCallResources {
@@ -57,6 +60,7 @@ impl ModelCallResources {
             role_overrides: ctx.role_overrides.clone(),
             default_temperature: ctx.options.temperature,
             default_thinking: ctx.options.thinking.clone(),
+            usage: UsageRecorder::new(&ctx.layout),
         }
     }
 
@@ -257,8 +261,12 @@ fn build_request(
 /// result to the design's response/error contract (§7): `json` parsed from
 /// the model's content when a schema was requested (`502` if it doesn't
 /// parse), `504` on provider timeout, `502` with a plain message for any
-/// other provider failure (the raw error goes to logs only).
+/// other provider failure (the raw error goes to logs only). The reported
+/// `model` is the one that answered, which differs from `model_label` (the
+/// primary) when the call failed over. Every attempt is recorded in `usage`
+/// under the caller's identity.
 async fn run_completion(
+    usage: &UsageRecorder,
     provider: &dyn InferenceProvider,
     model_label: &str,
     identity_label: &str,
@@ -266,7 +274,16 @@ async fn run_completion(
     options: &CompletionOptions,
     schema_requested: bool,
 ) -> Response {
-    match provider.complete(messages, &[], options).await {
+    let result = provider.complete(messages, &[], options).await;
+    usage
+        .record_call(
+            &UsageComponent::WebModel,
+            Some(identity_label),
+            provider,
+            &result,
+        )
+        .await;
+    match result {
         Ok(resp) => {
             let json = if schema_requested {
                 let content = residuum_inference::strip_code_fences(resp.content.trim());
@@ -288,10 +305,15 @@ async fn run_completion(
             } else {
                 None
             };
+            let answered_by = resp.answered_by().map_or_else(
+                || model_label.to_string(),
+                |attempt| format!("{}/{}", attempt.provider, attempt.model),
+            );
             let usage = UsageResponse::from(resp.usage.unwrap_or_default());
             tracing::info!(
                 artifact = identity_label,
-                model = model_label,
+                model = %answered_by,
+                attempts = resp.attempts.len(),
                 input_tokens = usage.input_tokens,
                 output_tokens = usage.output_tokens,
                 "model call completed"
@@ -299,28 +321,30 @@ async fn run_completion(
             Json(ModelCompleteResponse {
                 content: resp.content,
                 json,
-                model: model_label.to_string(),
+                model: answered_by,
                 usage,
             })
             .into_response()
         }
-        Err(InferenceError::Timeout(secs)) => {
-            tracing::warn!(
-                artifact = identity_label,
-                model = model_label,
-                timeout_secs = secs,
-                "model call timed out"
-            );
-            error_response(
-                StatusCode::GATEWAY_TIMEOUT,
-                "The model didn't respond in time. Try again in a moment.",
-            )
-        }
         Err(e) => {
+            if let InferenceError::Timeout(secs) = e.cause() {
+                tracing::warn!(
+                    artifact = identity_label,
+                    model = model_label,
+                    timeout_secs = *secs,
+                    attempts = e.attempts().len(),
+                    "model call timed out"
+                );
+                return error_response(
+                    StatusCode::GATEWAY_TIMEOUT,
+                    "The model didn't respond in time. Try again in a moment.",
+                );
+            }
             tracing::warn!(
                 error = %e,
                 artifact = identity_label,
                 model = model_label,
+                attempts = e.attempts().len(),
                 "model call failed"
             );
             error_response(
@@ -395,6 +419,7 @@ pub(super) async fn api_model_complete(
     };
 
     run_completion(
+        &resources.usage,
         provider.as_ref(),
         &model_label,
         &identity_label,
@@ -597,6 +622,7 @@ mod tests {
             stop_reason: None,
             images_omitted: None,
             thinking_dropped: 0,
+            attempts: Vec::new(),
         }
     }
 
@@ -619,7 +645,9 @@ mod tests {
             },
         )));
         let messages = vec![Message::user("hi")];
+        let (_dir, usage) = scratch_recorder();
         let resp = run_completion(
+            &usage,
             &provider,
             "anthropic/claude-test",
             "chart",
@@ -644,7 +672,9 @@ mod tests {
     async fn run_completion_schema_parses_json_content() {
         let provider = StubProvider::once(Ok(ok_response(r#"{"answer": 42}"#, Usage::default())));
         let messages = vec![Message::user("classify")];
+        let (_dir, usage) = scratch_recorder();
         let resp = run_completion(
+            &usage,
             &provider,
             "anthropic/claude-test",
             "chart",
@@ -662,7 +692,9 @@ mod tests {
     async fn run_completion_unparsable_structured_output_is_502() {
         let provider = StubProvider::once(Ok(ok_response("not json at all", Usage::default())));
         let messages = vec![Message::user("classify")];
+        let (_dir, usage) = scratch_recorder();
         let resp = run_completion(
+            &usage,
             &provider,
             "anthropic/claude-test",
             "chart",
@@ -682,7 +714,9 @@ mod tests {
             "super secret upstream stack trace".to_string(),
         )));
         let messages = vec![Message::user("hi")];
+        let (_dir, usage) = scratch_recorder();
         let resp = run_completion(
+            &usage,
             &provider,
             "anthropic/claude-test",
             "chart",
@@ -701,11 +735,135 @@ mod tests {
     async fn run_completion_timeout_is_504() {
         let provider = StubProvider::once(Err(InferenceError::Timeout(30)));
         let messages = vec![Message::user("hi")];
+        let (_dir, usage) = scratch_recorder();
         let resp = run_completion(
+            &usage,
             &provider,
             "anthropic/claude-test",
             "chart",
             &messages,
+            &CompletionOptions::default(),
+            false,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::GATEWAY_TIMEOUT);
+    }
+
+    fn attempt(
+        model: &str,
+        outcome: residuum_inference::AttemptOutcome,
+    ) -> residuum_inference::AttemptUsage {
+        residuum_inference::AttemptUsage {
+            provider: "ollama".to_string(),
+            model: model.to_string(),
+            outcome,
+            usage: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn run_completion_reports_the_model_that_answered_after_a_failover() {
+        let mut response = ok_response("from the fallback", Usage::default());
+        response.attempts = vec![
+            attempt("primary-model", residuum_inference::AttemptOutcome::Failed),
+            attempt(
+                "fallback-model",
+                residuum_inference::AttemptOutcome::Succeeded,
+            ),
+        ];
+        let provider = StubProvider::once(Ok(response));
+        let (_dir, usage) = scratch_recorder();
+        let resp = run_completion(
+            &usage,
+            &provider,
+            "ollama/primary-model",
+            "chart",
+            &[Message::user("hi")],
+            &CompletionOptions::default(),
+            false,
+        )
+        .await;
+        let parsed: ModelCompleteResponse = serde_json::from_value(body_json(resp).await).unwrap();
+        assert_eq!(parsed.model, "ollama/fallback-model");
+    }
+
+    /// A recorder writing into a fresh workspace, kept alive by the directory.
+    fn scratch_recorder() -> (tempfile::TempDir, UsageRecorder) {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = UsageRecorder::new(&residuum_config::WorkspaceLayout::new(dir.path()));
+        (dir, recorder)
+    }
+
+    #[tokio::test]
+    async fn run_completion_records_each_attempt_under_the_caller() {
+        let mut response = ok_response(
+            "from the fallback",
+            Usage {
+                uncached_input_tokens: Some(8),
+                output_tokens: Some(2),
+                ..Default::default()
+            },
+        );
+        response.attempts = vec![
+            attempt("primary-model", residuum_inference::AttemptOutcome::Failed),
+            attempt(
+                "fallback-model",
+                residuum_inference::AttemptOutcome::Succeeded,
+            ),
+        ];
+        let provider = StubProvider::once(Ok(response));
+        let (_dir, usage) = scratch_recorder();
+        run_completion(
+            &usage,
+            &provider,
+            "ollama/primary-model",
+            "chart",
+            &[Message::user("hi")],
+            &CompletionOptions::default(),
+            false,
+        )
+        .await;
+
+        let records = usage
+            .load(
+                chrono::DateTime::<chrono::Utc>::MIN_UTC,
+                chrono::DateTime::<chrono::Utc>::MAX_UTC,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(records.len(), 2, "one record per attempt");
+        assert!(
+            records
+                .iter()
+                .all(|r| r.component == UsageComponent::WebModel
+                    && r.conversation.as_deref() == Some("chart")),
+            "every attempt is the artifact's web model call"
+        );
+        assert_eq!(records[0].model, "primary-model");
+        assert_eq!(
+            records[0].outcome,
+            residuum_inference::AttemptOutcome::Failed
+        );
+        assert_eq!(records[1].model, "fallback-model");
+    }
+
+    #[tokio::test]
+    async fn run_completion_timeout_after_retries_is_still_504() {
+        let provider = StubProvider::once(Err(InferenceError::Attempted {
+            error: Box::new(InferenceError::Timeout(30)),
+            attempts: vec![
+                attempt("primary-model", residuum_inference::AttemptOutcome::Failed),
+                attempt("primary-model", residuum_inference::AttemptOutcome::Failed),
+            ],
+        }));
+        let (_dir, usage) = scratch_recorder();
+        let resp = run_completion(
+            &usage,
+            &provider,
+            "ollama/primary-model",
+            "chart",
+            &[Message::user("hi")],
             &CompletionOptions::default(),
             false,
         )
@@ -743,6 +901,9 @@ mod tests {
             role_overrides: HashMap::new(),
             default_temperature: None,
             default_thinking: None,
+            usage: UsageRecorder::new(&residuum_config::WorkspaceLayout::new(
+                std::env::temp_dir().join("residuum-model-call-resources-unused"),
+            )),
         }
     }
 

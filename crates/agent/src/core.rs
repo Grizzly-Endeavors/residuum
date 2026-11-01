@@ -78,10 +78,6 @@ pub struct Agent {
     /// [`Self::restore_usage_totals`]); never read by the agent itself —
     /// see `docs/systems-usage/turn-control.md`.
     usage_totals: std::sync::Arc<tokio::sync::Mutex<SessionUsageTotals>>,
-    /// Where `usage_totals` is persisted after every model call. `None`
-    /// for an agent with no workspace layout (test constructors) — totals
-    /// then live only in memory for the process's lifetime.
-    usage_totals_path: Option<std::path::PathBuf>,
     /// The latest turn, while it is the latest and it failed. Set when a
     /// turn fails; cleared when another turn starts, when a rerun of it
     /// starts, and when history is cleared or rotated (the message the
@@ -156,10 +152,6 @@ impl Agent {
         config: AgentConfig,
         hop_counter: HopCounter,
     ) -> Self {
-        let usage_totals_path = config
-            .layout
-            .as_ref()
-            .map(residuum_config::WorkspaceLayout::usage_totals_json);
         Self {
             provider,
             tools,
@@ -180,7 +172,6 @@ impl Agent {
             usage_totals: std::sync::Arc::new(tokio::sync::Mutex::new(
                 SessionUsageTotals::default(),
             )),
-            usage_totals_path,
             failed_turn: None,
         }
     }
@@ -553,7 +544,7 @@ impl Agent {
             Self::memory_ctx(self.observations.as_deref(), self.recent_context.as_deref());
         let usage_sink = MainUsageSink::new(
             std::sync::Arc::clone(&self.usage_totals),
-            self.usage_totals_path.clone(),
+            self.layout.as_ref(),
         );
         let resources = TurnResources {
             provider: &*self.provider,
@@ -767,6 +758,7 @@ mod tests {
                 stop_reason: None,
                 images_omitted: None,
                 thinking_dropped: 0,
+                attempts: Vec::new(),
             },
             InferenceResponse {
                 content: "second".to_string(),
@@ -780,6 +772,7 @@ mod tests {
                 stop_reason: None,
                 images_omitted: None,
                 thinking_dropped: 0,
+                attempts: Vec::new(),
             },
         ]);
 

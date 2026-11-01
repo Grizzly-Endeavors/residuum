@@ -532,16 +532,49 @@ impl SessionRegistry {
 /// A session's own [`residuum_agent::usage::UsageSink`]: accumulates onto its
 /// registry entry, which mirrors into the run's store record at
 /// completion (see [`crate::store::RunRecord::starting`]) so
-/// a finished run's totals aren't lost.
+/// a finished run's totals aren't lost, and records each model call in the
+/// agent's workspace under the run's trigger and id.
 pub struct SessionUsageSink<'a> {
-    /// The registry the session's entry lives in.
-    pub registry: &'a SessionRegistry,
-    /// The session's address.
-    pub address: SessionAddress,
+    registry: &'a SessionRegistry,
+    address: SessionAddress,
+    run_id: String,
+    component: residuum_inference::UsageComponent,
+    recorder: residuum_inference::UsageRecorder,
+}
+
+impl<'a> SessionUsageSink<'a> {
+    /// The sink for the run `info` describes, whose entry lives in
+    /// `registry` and whose records go to the workspace at `layout`.
+    #[must_use]
+    pub fn new(
+        registry: &'a SessionRegistry,
+        info: &SessionInfo,
+        layout: &residuum_config::WorkspaceLayout,
+    ) -> Self {
+        Self {
+            registry,
+            address: info.address.clone(),
+            run_id: info.run_id.clone(),
+            component: residuum_inference::UsageComponent::Session {
+                kind: info.trigger.as_str().to_string(),
+            },
+            recorder: residuum_inference::UsageRecorder::new(layout),
+        }
+    }
 }
 
 #[async_trait::async_trait]
 impl residuum_agent::usage::UsageSink for SessionUsageSink<'_> {
+    async fn record_call(
+        &self,
+        provider: &dyn residuum_inference::InferenceProvider,
+        result: &Result<residuum_inference::InferenceResponse, residuum_inference::InferenceError>,
+    ) {
+        self.recorder
+            .record_call(&self.component, Some(&self.run_id), provider, result)
+            .await;
+    }
+
     async fn accumulate(
         &self,
         usage: Option<residuum_inference::Usage>,
@@ -923,10 +956,12 @@ mod tests {
             .register(info.clone(), CancellationToken::new())
             .unwrap();
 
-        let sink = SessionUsageSink {
-            registry: &registry,
-            address: info.address.clone(),
-        };
+        let dir = tempfile::tempdir().unwrap();
+        let sink = SessionUsageSink::new(
+            &registry,
+            &info,
+            &residuum_config::WorkspaceLayout::new(dir.path()),
+        );
         let totals =
             residuum_agent::usage::UsageSink::accumulate(&sink, Some(usage(200, 40))).await;
         assert_eq!(totals.input_tokens, 200);
@@ -941,10 +976,12 @@ mod tests {
             .register(info.clone(), CancellationToken::new())
             .unwrap();
 
-        let sink = SessionUsageSink {
-            registry: &registry,
-            address: info.address.clone(),
-        };
+        let dir = tempfile::tempdir().unwrap();
+        let sink = SessionUsageSink::new(
+            &registry,
+            &info,
+            &residuum_config::WorkspaceLayout::new(dir.path()),
+        );
         let totals = residuum_agent::usage::UsageSink::record_tool_calls(&sink, 4).await;
         assert_eq!(totals.tool_calls, 4);
         assert_eq!(registry.get(&info.address).unwrap().usage.tool_calls, 4);
@@ -953,16 +990,69 @@ mod tests {
     #[tokio::test]
     async fn session_usage_sink_for_a_completed_session_returns_default() {
         let registry = SessionRegistry::new();
-        let sink = SessionUsageSink {
-            registry: &registry,
-            address: SessionAddress::from("gone"),
-        };
+        let dir = tempfile::tempdir().unwrap();
+        let sink = SessionUsageSink::new(
+            &registry,
+            &sample_info("gone"),
+            &residuum_config::WorkspaceLayout::new(dir.path()),
+        );
         let totals = residuum_agent::usage::UsageSink::accumulate(&sink, Some(usage(10, 5))).await;
         assert_eq!(
             totals,
             residuum_bus::usage::SessionUsageTotals::default(),
             "a session no longer in the registry has nowhere to accumulate; the sink degrades to a no-op"
         );
+    }
+
+    struct SessionModel;
+
+    #[async_trait::async_trait]
+    impl residuum_inference::InferenceProvider for SessionModel {
+        async fn complete(
+            &self,
+            _messages: &[residuum_inference::Message],
+            _tools: &[residuum_inference::ToolDefinition],
+            _options: &residuum_inference::CompletionOptions,
+        ) -> Result<residuum_inference::InferenceResponse, residuum_inference::InferenceError>
+        {
+            Ok(residuum_inference::InferenceResponse::new(
+                String::new(),
+                vec![],
+            ))
+        }
+
+        fn model_name(&self) -> &'static str {
+            "session-model"
+        }
+    }
+
+    #[tokio::test]
+    async fn session_usage_sink_records_each_call_under_the_runs_trigger_and_id() {
+        let registry = SessionRegistry::new();
+        let mut info = sample_info("scheduled-pulse-0001");
+        info.trigger = EventTrigger::Pulse;
+        let dir = tempfile::tempdir().unwrap();
+        let layout = residuum_config::WorkspaceLayout::new(dir.path());
+        let sink = SessionUsageSink::new(&registry, &info, &layout);
+        let mut response = residuum_inference::InferenceResponse::new("ok".to_string(), vec![]);
+        response.usage = Some(usage(70, 9));
+        residuum_agent::usage::UsageSink::record_call(&sink, &SessionModel, &Ok(response)).await;
+
+        let records = residuum_inference::UsageRecorder::new(&layout)
+            .load(DateTime::<Utc>::MIN_UTC, DateTime::<Utc>::MAX_UTC, None)
+            .await
+            .unwrap();
+        assert_eq!(records.len(), 1, "one record for the one call");
+        let record = records.first().unwrap();
+        assert_eq!(
+            record.component,
+            residuum_inference::UsageComponent::Session {
+                kind: "pulse".to_string()
+            }
+        );
+        assert_eq!(record.conversation.as_deref(), Some("run-1"));
+        assert_eq!(record.model, "session-model");
+        assert_eq!(record.usage, Some(usage(70, 9)));
     }
 
     #[test]

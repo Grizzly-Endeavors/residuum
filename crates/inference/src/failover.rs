@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use async_trait::async_trait;
 use tracing::{debug, info, warn};
 
+use super::attempt::ListsAttempts;
 use super::stream::TrackedSink;
 use super::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message, StreamSink,
@@ -157,7 +158,8 @@ impl FailoverProvider {
 
     /// Try each provider in turn, streaming into `sink` when there is one.
     /// Whatever a failed provider already streamed is voided before the next
-    /// one is tried.
+    /// one is tried. The result lists the attempts of every hop tried, in
+    /// order.
     async fn run(
         &self,
         messages: &[Message],
@@ -177,6 +179,7 @@ impl FailoverProvider {
         // down its images. Only a switch past providers that all failed is a
         // failover worth telling the user about.
         let mut failed = vec![false; self.providers.len()];
+        let mut spent = Vec::new();
 
         for (position, &(idx, image_fallback)) in order.iter().enumerate() {
             let Some(provider) = self.providers.get(idx) else {
@@ -196,7 +199,7 @@ impl FailoverProvider {
                         answered_by = provider.model_name(),
                         "request with images answered by a provider that takes them"
                     );
-                    return Ok(response);
+                    return Ok(response.after_attempts(spent));
                 }
                 Ok(response) => {
                     if idx > 0 {
@@ -209,9 +212,11 @@ impl FailoverProvider {
                     }
                     self.notice_on_transition(idx, provider.model_name(), active_provider_cause)
                         .await;
-                    return Ok(response);
+                    return Ok(response.after_attempts(spent));
                 }
                 Err(err) => {
+                    let (err, tried) = err.into_parts();
+                    spent.extend(tried);
                     if image_fallback && err.rejects_image_input() {
                         debug!(
                             provider = provider.model_name(),
@@ -243,9 +248,11 @@ impl FailoverProvider {
         }
 
         // All providers failed — return the last error
-        Err(last_error.unwrap_or_else(|| {
-            InferenceError::Api("no providers configured in failover chain".to_string())
-        }))
+        Err(last_error
+            .unwrap_or_else(|| {
+                InferenceError::Api("no providers configured in failover chain".to_string())
+            })
+            .after_attempts(spent))
     }
 }
 
@@ -276,8 +283,9 @@ impl InferenceProvider for FailoverProvider {
         self.run(messages, tools, options, Some(&tracked)).await
     }
 
+    /// The primary's model, whichever provider answers a call: the model
+    /// that answered is the last of the response's `attempts`.
     fn model_name(&self) -> &str {
-        // Return the primary (first) provider's name
         self.providers
             .first()
             .map_or("failover(empty)", |p| p.model_name())
@@ -941,6 +949,24 @@ mod tests {
             ],
             "one restart, from whichever layer saw the failure first"
         );
+        let attempt = |outcome, output| crate::AttemptUsage {
+            provider: "anthropic".to_string(),
+            model: "claude-test".to_string(),
+            outcome,
+            usage: Some(crate::Usage {
+                uncached_input_tokens: Some(3),
+                output_tokens: Some(output),
+                ..crate::Usage::default()
+            }),
+        };
+        assert_eq!(
+            response.attempts,
+            vec![
+                attempt(crate::AttemptOutcome::Failed, 1),
+                attempt(crate::AttemptOutcome::Succeeded, 4),
+            ],
+            "the primary's stream died after message_start, and the usage it reported stays on its attempt"
+        );
     }
 
     /// A chain of real Anthropic and Gemini clients, each on its own scripted
@@ -950,7 +976,10 @@ mod tests {
         use crate::providers::anthropic::AnthropicClient;
         use crate::providers::gemini::GeminiClient;
         use crate::test_support::{ScriptedServer, json_response};
-        use crate::{HttpClientConfig, ProviderApi, SharedHttpClient, ThinkingOrigin};
+        use crate::{
+            AttemptOutcome, AttemptUsage, HttpClientConfig, ProviderApi, SharedHttpClient,
+            ThinkingOrigin,
+        };
         use residuum_config::RetryConfig;
         use residuum_config::{ThinkingConfig, ThinkingLevel};
 
@@ -1019,6 +1048,94 @@ mod tests {
                 .iter()
                 .map(|block| block.origin.clone())
                 .collect()
+        }
+
+        fn hop(
+            provider: &str,
+            model: &str,
+            outcome: AttemptOutcome,
+        ) -> (String, String, AttemptOutcome) {
+            (provider.to_string(), model.to_string(), outcome)
+        }
+
+        fn hops(attempts: &[AttemptUsage]) -> Vec<(String, String, AttemptOutcome)> {
+            attempts
+                .iter()
+                .map(|a| hop(&a.provider, &a.model, a.outcome))
+                .collect()
+        }
+
+        fn anthropic_down() -> Vec<crate::test_support::Step> {
+            json_response(
+                500,
+                r#"{"type":"error","error":{"type":"api_error","message":"down"}}"#,
+            )
+        }
+
+        #[tokio::test]
+        async fn a_failed_over_call_lists_each_hop_with_its_provider_and_model() {
+            let anthropic = ScriptedServer::start(vec![anthropic_down()]).await;
+            let gemini = ScriptedServer::start(vec![json_response(
+                200,
+                r#"{"candidates":[{"content":{"role":"model","parts":[{"text":"hi"}]},
+                    "finishReason":"STOP"}],
+                    "usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":2}}"#,
+            )])
+            .await;
+
+            let response = chain(&anthropic, &gemini)
+                .complete(&[Message::user("go")], &[], &CompletionOptions::default())
+                .await
+                .unwrap();
+
+            assert_eq!(
+                hops(&response.attempts),
+                [
+                    hop("anthropic", CLAUDE, AttemptOutcome::Failed),
+                    hop("gemini", GEMINI, AttemptOutcome::Succeeded),
+                ]
+            );
+            assert_eq!(
+                response.attempts.first().unwrap().usage,
+                None,
+                "an error status reports no usage"
+            );
+            let answered = response.attempts.last().unwrap();
+            assert_eq!(
+                answered.usage, response.usage,
+                "the answer's usage is the last hop's"
+            );
+            assert_eq!(
+                response.usage.and_then(|u| u.uncached_input_tokens),
+                Some(10)
+            );
+        }
+
+        #[tokio::test]
+        async fn a_call_every_hop_fails_carries_each_hops_attempt() {
+            let anthropic = ScriptedServer::start(vec![anthropic_down()]).await;
+            let gemini = ScriptedServer::start(vec![json_response(
+                503,
+                r#"{"error":{"code":503,"message":"overloaded","status":"UNAVAILABLE"}}"#,
+            )])
+            .await;
+
+            let err = chain(&anthropic, &gemini)
+                .complete(&[Message::user("go")], &[], &CompletionOptions::default())
+                .await
+                .unwrap_err();
+
+            assert_eq!(
+                hops(err.attempts()),
+                [
+                    hop("anthropic", CLAUDE, AttemptOutcome::Failed),
+                    hop("gemini", GEMINI, AttemptOutcome::Failed),
+                ]
+            );
+            assert!(
+                err.to_string().contains("overloaded"),
+                "the error is the last hop's: {err}"
+            );
         }
 
         #[tokio::test]
@@ -1145,15 +1262,19 @@ mod tests {
                 _options: &CompletionOptions,
             ) -> Result<InferenceResponse, InferenceError> {
                 self.requests.lock().unwrap().push(messages.to_vec());
-                if self.rejects_images && messages.iter().any(|m| !m.images.is_empty()) {
-                    return Err(InferenceError::Api(
+                let result = if self.rejects_images && messages.iter().any(|m| !m.images.is_empty())
+                {
+                    Err(InferenceError::Api(
                         "400 Bad Request: messages.content.type is invalid".to_string(),
-                    ));
-                }
-                Ok(InferenceResponse::new(
-                    format!("answer from {}", self.name),
-                    vec![],
-                ))
+                    )
+                    .into())
+                } else {
+                    Ok(InferenceResponse::new(
+                        format!("answer from {}", self.name),
+                        vec![],
+                    ))
+                };
+                crate::attempt::record_attempt(ProviderKind::OpenAi, self.name, result)
             }
 
             /// Streams a first piece, then answers as `complete` does.
@@ -1382,6 +1503,19 @@ mod tests {
                 sent_images(&primary_requests),
                 vec![1, 0],
                 "rejected with the image, then answered without it"
+            );
+            let outcomes: Vec<_> = response
+                .attempts
+                .iter()
+                .map(|a| (a.model.as_str(), a.outcome))
+                .collect();
+            assert_eq!(
+                outcomes,
+                [
+                    ("glm-5.3", crate::AttemptOutcome::Failed),
+                    ("glm-5.3", crate::AttemptOutcome::Succeeded),
+                ],
+                "the refused request with the image is an attempt of the call too"
             );
             let actual_3 = &sent_images(&fallback_requests);
             assert!(actual_3.is_empty(), "expected {actual_3:?} to be empty");

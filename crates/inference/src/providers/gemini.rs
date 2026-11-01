@@ -12,6 +12,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
+use crate::attempt::{FailedRequest, record_attempt};
 use crate::embedding::{EmbeddingProvider, EmbeddingResponse};
 use crate::http::{
     SharedHttpClient, map_request_error, map_stream_request_error, read_error_body,
@@ -25,7 +26,7 @@ use crate::{
     ReplayScope, ResponseFormat, Role, StopReason, StreamDelta, StreamSink, ThinkingBlock,
     ThinkingOrigin, ToolCall, ToolDefinition, Usage, blocks_produced_at,
 };
-use residuum_config::RetryConfig;
+use residuum_config::{ProviderKind, RetryConfig};
 use residuum_config::{ThinkingConfig, ThinkingLevel};
 
 /// The `part` of a [`ThinkingBlock`] whose signature belongs to the
@@ -93,15 +94,24 @@ impl GeminiClient {
     /// Reasoning summaries (parts marked `thought`) are kept apart from the
     /// answer, and each thought signature is recorded with the part it came
     /// on so it can be sent back there.
-    fn parse_response(
-        gemini_response: GeminiResponse,
-    ) -> Result<InferenceResponse, InferenceError> {
+    ///
+    /// A response with no candidate keeps the usage it reported on its error.
+    fn parse_response(gemini_response: GeminiResponse) -> Result<InferenceResponse, FailedRequest> {
+        let usage = gemini_response
+            .usage_metadata
+            .as_ref()
+            .map(GeminiUsageMetadata::usage);
         let candidate = gemini_response
             .candidates
             .into_iter()
             .next()
             .ok_or_else(|| {
-                InferenceError::Parse("Gemini API response contained no candidates".to_string())
+                FailedRequest::spent(
+                    InferenceError::Parse(
+                        "Gemini API response contained no candidates".to_string(),
+                    ),
+                    usage,
+                )
             })?;
 
         let mut content_text = String::new();
@@ -168,10 +178,6 @@ impl GeminiClient {
                 );
             }
         }
-
-        let usage = gemini_response
-            .usage_metadata
-            .map(GeminiUsageMetadata::usage);
 
         let mut model_response = InferenceResponse::new(content_text, tool_calls);
         model_response.usage = usage;
@@ -418,12 +424,28 @@ impl GeminiClient {
         message_count = request.contents.len(),
         tool_count = request.tools.as_ref().map_or(0, Vec::len),
         streaming = sink.is_some(),
+        gen_ai.request.model = %self.model,
+        gen_ai.usage.input_tokens = tracing::field::Empty,
+        gen_ai.usage.output_tokens = tracing::field::Empty,
+        gen_ai.usage.cache_read.input_tokens = tracing::field::Empty,
+        gen_ai.usage.cache_write.input_tokens = tracing::field::Empty,
+        gen_ai.usage.reasoning.output_tokens = tracing::field::Empty,
     ))]
     async fn send(
         &self,
         request: &GeminiRequest,
         sink: Option<&TrackedSink<'_>>,
     ) -> Result<InferenceResponse, InferenceError> {
+        let result = self.send_request(request, sink).await;
+        record_attempt(ProviderKind::Gemini, &self.model, result)
+    }
+
+    /// Send one request and parse its response.
+    async fn send_request(
+        &self,
+        request: &GeminiRequest,
+        sink: Option<&TrackedSink<'_>>,
+    ) -> Result<InferenceResponse, FailedRequest> {
         let timeout_secs = self.http.timeout_secs();
         let request_json = serde_json::to_string(request)
             .map_err(|e| InferenceError::Parse(format!("failed to serialize request: {e}")))?;
@@ -465,7 +487,7 @@ impl GeminiClient {
             );
             let error_body = serde_json::from_str::<GeminiErrorResponse>(&raw_body)
                 .map_or_else(|_| raw_body, |e| e.error.message);
-            return Err(InferenceError::Api(format!("{status}: {error_body}")));
+            return Err(InferenceError::Api(format!("{status}: {error_body}")).into());
         }
 
         let gemini_response = if let Some(sink) = sink.filter(|_| !answered_whole(&response)) {
@@ -589,12 +611,13 @@ impl InferenceProvider for GeminiClient {
 
 /// Read a streamed response to its end, pushing text and reasoning summary to
 /// `sink` as they arrive, and return it as the response `generateContent`
-/// would have returned.
+/// would have returned. A stream that fails after reporting usage (every
+/// event may carry it) keeps that usage on its error.
 async fn read_stream(
     response: reqwest::Response,
     idle_secs: u64,
     sink: &dyn StreamSink,
-) -> Result<GeminiResponse, InferenceError> {
+) -> Result<GeminiResponse, FailedRequest> {
     let mut assembler = StreamAssembler {
         sink,
         parts: Vec::new(),
@@ -602,8 +625,14 @@ async fn read_stream(
         usage: None,
         saw_candidate: false,
     };
-    read_sse(response, idle_secs, |event| assembler.handle(&event)).await?;
-    assembler.finish()
+    let read = read_sse(response, idle_secs, |event| assembler.handle(&event)).await;
+    let usage = assembler.usage.as_ref().map(GeminiUsageMetadata::usage);
+    match read {
+        Ok(()) => assembler
+            .finish()
+            .map_err(|error| FailedRequest::spent(error, usage)),
+        Err(error) => Err(FailedRequest::spent(error, usage)),
+    }
 }
 
 /// One streamed event: the next piece of the response.
@@ -910,7 +939,7 @@ impl GeminiUsageMetadata {
     /// left out of input: it counts context a hosted tool fetched, and the
     /// only hosted tool sent here is Google Search, whose retrieved context
     /// Google does not bill as input.
-    fn usage(self) -> Usage {
+    fn usage(&self) -> Usage {
         let output_tokens = [self.candidates_token_count, self.thoughts_token_count]
             .into_iter()
             .flatten()
@@ -1501,7 +1530,7 @@ mod tests {
         assert!(result.is_err(), "API error should return Err");
         let err = result.unwrap_err();
         assert!(
-            matches!(err, InferenceError::Api(_)),
+            matches!(err.cause(), InferenceError::Api(_)),
             "should be an Api error"
         );
         assert!(
@@ -1534,7 +1563,7 @@ mod tests {
         assert!(result.is_err(), "empty candidates should return error");
         let err = result.unwrap_err();
         assert!(
-            matches!(err, InferenceError::Parse(_)),
+            matches!(err.cause(), InferenceError::Parse(_)),
             "should be a Parse error"
         );
         assert!(
@@ -1564,7 +1593,7 @@ mod tests {
 
         assert!(result.is_err(), "timeout should return error");
         assert!(
-            matches!(result.unwrap_err(), InferenceError::Timeout(1)),
+            matches!(result.unwrap_err().cause(), InferenceError::Timeout(1)),
             "should be Timeout(1)"
         );
     }
@@ -2415,14 +2444,14 @@ mod tests {
             stream_from(sse_response(std::slice::from_ref(&partial)), make_client).await;
         let err = clean_end.unwrap_err();
         assert!(
-            matches!(err, InferenceError::StreamInterrupted(_)) && err.is_retryable(),
+            matches!(err.cause(), InferenceError::StreamInterrupted(_)) && err.is_retryable(),
             "ending before a finish reason is an interrupted stream: {err:?}"
         );
 
         let (dropped, sink, _) = stream_from(sse_chunks(&[partial]), make_client).await;
         let dropped_err = dropped.unwrap_err();
         assert!(
-            matches!(dropped_err, InferenceError::StreamInterrupted(_)),
+            matches!(dropped_err.cause(), InferenceError::StreamInterrupted(_)),
             "a dropped connection is an interrupted stream: {dropped_err:?}"
         );
         assert_eq!(sink.text(), "", "the partial text is voided");
@@ -2437,7 +2466,7 @@ mod tests {
         let (result, _, _) = stream_from(sse_response(&[blocked]), make_client).await;
         let err = result.unwrap_err();
         assert!(
-            matches!(&err, InferenceError::Parse(m) if m.contains("no candidates")),
+            matches!(err.cause(), InferenceError::Parse(m) if m.contains("no candidates")),
             "same error as a response that arrives whole: {err:?}"
         );
     }
@@ -2482,7 +2511,7 @@ mod tests {
         .await;
         let err = result.unwrap_err();
         assert!(
-            matches!(err, InferenceError::Stalled(1)),
+            matches!(err.cause(), InferenceError::Stalled(1)),
             "a silent stream is a stall: {err:?}"
         );
     }
@@ -2785,7 +2814,7 @@ mod tests {
         assert!(result.is_err(), "API error should return Err");
         let err = result.unwrap_err();
         assert!(
-            matches!(err, InferenceError::Api(_)),
+            matches!(err.cause(), InferenceError::Api(_)),
             "should be an Api error"
         );
         assert!(

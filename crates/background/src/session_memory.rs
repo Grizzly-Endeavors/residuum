@@ -58,8 +58,13 @@ impl SessionMemory {
     /// into the staging area immediately — the same rotation the main agent
     /// performs when its own recent-message threshold is crossed. Staged
     /// observations are not visible to any other agent until the run
-    /// completes.
-    pub(crate) async fn maybe_stage(&mut self, transcript: &[Message], env: &SessionMemoryEnv<'_>) {
+    /// completes. The extraction's usage is recorded under `run_id`.
+    pub(crate) async fn maybe_stage(
+        &mut self,
+        transcript: &[Message],
+        run_id: &str,
+        env: &SessionMemoryEnv<'_>,
+    ) {
         let tail = transcript
             .get(self.covered_through.min(transcript.len())..)
             .unwrap_or_default();
@@ -70,7 +75,11 @@ impl SessionMemory {
         if env.observer.check_thresholds(&wrapped) != ObserveAction::ForceNow {
             return;
         }
-        match env.observer.extract(&wrapped, env.layout).await {
+        match env
+            .observer
+            .extract(&wrapped, env.layout, Some(run_id))
+            .await
+        {
             Ok(extraction) => {
                 tracing::info!(
                     observations = extraction.observations.len(),
@@ -155,7 +164,11 @@ pub(crate) async fn complete_session_memory(
         .get(covered_through.min(transcript.len())..)
         .unwrap_or_default();
     if !tail.is_empty() {
-        match env.observer.extract(&wrap(tail, env.tz), env.layout).await {
+        match env
+            .observer
+            .extract(&wrap(tail, env.tz), env.layout, tag.run_id.as_deref())
+            .await
+        {
             Ok(extraction) => {
                 observations.extend(extraction.observations);
                 if extraction.narrative.is_some() {
@@ -476,7 +489,7 @@ mod tests {
         )];
 
         let mut memory = SessionMemory::new();
-        memory.maybe_stage(&transcript, &env).await;
+        memory.maybe_stage(&transcript, "run-test-1", &env).await;
 
         assert!(
             memory.has_staged(),
@@ -501,7 +514,7 @@ mod tests {
         let transcript = vec![Message::user("hi")];
 
         let mut memory = SessionMemory::new();
-        memory.maybe_stage(&transcript, &env).await;
+        memory.maybe_stage(&transcript, "run-test-1", &env).await;
 
         assert!(
             !memory.has_staged(),
