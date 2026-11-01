@@ -92,12 +92,14 @@ fn log_verdict(tool_name: &str, verdict: &AutoModeVerdict) {
             rule = verdict.rule.as_deref().unwrap_or_default(),
             probability = verdict.probability,
             input_tokens = verdict.input_tokens,
+            output_tokens = verdict.output_tokens,
             "auto mode blocked a tool call"
         ),
         AutoModeDecision::Allowed => tracing::debug!(
             tool_name,
             override_rule = verdict.rule.as_deref(),
             input_tokens = verdict.input_tokens,
+            output_tokens = verdict.output_tokens,
             "auto mode allowed a tool call"
         ),
         // The service's own status carries the outage; one log per call
@@ -195,7 +197,8 @@ fn strongest_match<'a>(
 }
 
 fn judge(config: &AutoModeConfig, response: &SystemOneResponse) -> AutoModeVerdict {
-    let input_tokens = Some(response.usage.input_tokens);
+    let input_tokens = response.usage.input_tokens;
+    let output_tokens = response.usage.output_tokens;
     let deny = strongest_match(&config.deny, "deny", response, config.threshold);
     let allow = strongest_match(&config.allow, "allow", response, config.threshold);
     let (deny, allow) = match (deny, allow) {
@@ -203,6 +206,7 @@ fn judge(config: &AutoModeConfig, response: &SystemOneResponse) -> AutoModeVerdi
         (Err(reason), _) | (_, Err(reason)) => {
             return AutoModeVerdict {
                 input_tokens,
+                output_tokens,
                 ..AutoModeVerdict::unchecked(reason)
             };
         }
@@ -214,6 +218,7 @@ fn judge(config: &AutoModeConfig, response: &SystemOneResponse) -> AutoModeVerdi
             probability: None,
             reason: None,
             input_tokens,
+            output_tokens,
         },
         (Some(_), Some((rule, p))) => AutoModeVerdict {
             decision: AutoModeDecision::Allowed,
@@ -221,6 +226,7 @@ fn judge(config: &AutoModeConfig, response: &SystemOneResponse) -> AutoModeVerdi
             probability: Some(p),
             reason: None,
             input_tokens,
+            output_tokens,
         },
         (Some((rule, p)), None) => AutoModeVerdict {
             decision: AutoModeDecision::Blocked,
@@ -228,6 +234,7 @@ fn judge(config: &AutoModeConfig, response: &SystemOneResponse) -> AutoModeVerdi
             probability: Some(p),
             reason: None,
             input_tokens,
+            output_tokens,
         },
     }
 }
@@ -280,6 +287,11 @@ mod tests {
         assert_eq!(verdict.decision, AutoModeDecision::Blocked);
         assert_eq!(verdict.rule.as_deref(), Some("Pushing to main"));
         assert_eq!(verdict.input_tokens, Some(40));
+        assert_eq!(
+            verdict.output_tokens,
+            Some(2),
+            "the check's output tokens are kept too"
+        );
         assert!(verdict.blocked_message().contains("Pushing to main"));
         assert!(verdict.blocked_message().contains("93%"));
     }

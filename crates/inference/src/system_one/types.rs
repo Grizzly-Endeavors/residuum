@@ -102,13 +102,14 @@ impl Answer {
     }
 }
 
-/// Token usage reported for one evaluation.
+/// Token usage reported for one evaluation. `None` means the service did
+/// not report the count, never zero.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 pub struct SystemOneUsage {
     #[serde(default)]
-    pub input_tokens: u64,
+    pub input_tokens: Option<u64>,
     #[serde(default)]
-    pub output_tokens: u64,
+    pub output_tokens: Option<u64>,
 }
 
 /// The response body of `POST /v1/systemone`.
@@ -229,7 +230,14 @@ mod tests {
             matches!(parsed.answers.get("anger"), Some(Answer::Score { score, .. }) if (score - 1.05).abs() < 1e-9),
             "score answer should parse"
         );
-        assert_eq!(parsed.usage.input_tokens, 10, "usage should parse");
+        assert_eq!(
+            parsed.usage,
+            SystemOneUsage {
+                input_tokens: Some(10),
+                output_tokens: Some(2),
+            },
+            "usage should parse"
+        );
     }
 
     #[test]

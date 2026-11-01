@@ -8,6 +8,7 @@ const verdict = (over: Partial<AutoModeVerdict>): AutoModeVerdict => ({
   probability: null,
   reason: null,
   input_tokens: 40,
+  output_tokens: 2,
   ...over,
 });
 

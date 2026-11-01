@@ -32,6 +32,9 @@ pub struct AutoModeVerdict {
     /// Input tokens the check cost.
     #[ts(type = "number | null")]
     pub input_tokens: Option<u64>,
+    /// Output tokens the check cost.
+    #[ts(type = "number | null")]
+    pub output_tokens: Option<u64>,
 }
 
 impl AutoModeVerdict {
@@ -44,6 +47,7 @@ impl AutoModeVerdict {
             probability: None,
             reason: Some(reason),
             input_tokens: None,
+            output_tokens: None,
         }
     }
 
