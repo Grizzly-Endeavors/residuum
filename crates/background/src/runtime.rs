@@ -1573,10 +1573,6 @@ async fn execute_turn_outcome(
         run_id: &ctx.info.run_id,
         started_at: ctx.info.started_at,
     };
-    let usage_sink = super::registry::SessionUsageSink {
-        registry: ctx.registry,
-        address: ctx.info.address.clone(),
-    };
     let conversation_output =
         ctx.info
             .conversation_target
@@ -1589,6 +1585,8 @@ async fn execute_turn_outcome(
         let res = ctx
             .resources
             .ok_or_else(|| anyhow::anyhow!("session run requires SubAgentResources"))?;
+        let usage_sink =
+            super::registry::SessionUsageSink::new(ctx.registry, ctx.info, &res.layout);
         let identity = SessionTurnIdentity {
             publisher: ctx.publisher,
             address: &ctx.info.address,

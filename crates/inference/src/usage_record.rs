@@ -193,7 +193,13 @@ impl UsageRecorder {
         if from >= to {
             return Ok(records);
         }
-        for (year, month) in months_between(from, to) {
+        let first = (from.year(), from.month());
+        let last = (to.year(), to.month());
+        let months = self.months_on_disk().await?;
+        for (year, month) in months
+            .into_iter()
+            .filter(|month| (first..=last).contains(month))
+        {
             let path = self.dir.join(month_file_name(year, month));
             let contents = match tokio::fs::read_to_string(&path).await {
                 Ok(contents) => contents,
@@ -215,6 +221,32 @@ impl UsageRecorder {
 
     fn month_file(&self, at: DateTime<Utc>) -> PathBuf {
         self.dir.join(month_file_name(at.year(), at.month()))
+    }
+
+    /// The `(year, month)` of every month file in the records directory,
+    /// oldest first; none when the directory doesn't exist yet.
+    async fn months_on_disk(&self) -> anyhow::Result<Vec<(i32, u32)>> {
+        let mut entries = match tokio::fs::read_dir(&self.dir).await {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => {
+                return Err(e).with_context(|| {
+                    format!("failed to list usage records in {}", self.dir.display())
+                });
+            }
+        };
+        let mut months = Vec::new();
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .with_context(|| format!("failed to list usage records in {}", self.dir.display()))?
+        {
+            if let Some(month) = entry.file_name().to_str().and_then(parse_month_file_name) {
+                months.push(month);
+            }
+        }
+        months.sort_unstable();
+        Ok(months)
     }
 }
 
@@ -254,21 +286,12 @@ fn month_file_name(year: i32, month: u32) -> String {
     format!("{year:04}-{month:02}.jsonl")
 }
 
-/// Every `(year, month)` from `from`'s month through `to`'s, in order.
-fn months_between(from: DateTime<Utc>, to: DateTime<Utc>) -> Vec<(i32, u32)> {
-    let mut months = Vec::new();
-    let (mut year, mut month) = (from.year(), from.month());
-    let end = (to.year(), to.month());
-    while (year, month) <= end {
-        months.push((year, month));
-        if month == 12 {
-            year += 1;
-            month = 1;
-        } else {
-            month += 1;
-        }
-    }
-    months
+/// The `(year, month)` a [`month_file_name`] names; `None` for any other file.
+fn parse_month_file_name(name: &str) -> Option<(i32, u32)> {
+    let (year, month) = name.strip_suffix(".jsonl")?.split_once('-')?;
+    let year = year.parse().ok()?;
+    let month = month.parse().ok().filter(|m| (1..=12).contains(m))?;
+    (month_file_name(year, month) == name).then_some((year, month))
 }
 
 fn parse_lines<'a>(path: &'a Path, contents: &'a str) -> impl Iterator<Item = UsageRecord> + 'a {
@@ -375,7 +398,7 @@ mod tests {
     }
 
     fn all_time() -> (DateTime<Utc>, DateTime<Utc>) {
-        (at(2000, 1, 1, 0), at(2100, 1, 1, 0))
+        (DateTime::<Utc>::MIN_UTC, DateTime::<Utc>::MAX_UTC)
     }
 
     async fn load_all(recorder: &UsageRecorder) -> Vec<UsageRecord> {
@@ -582,6 +605,32 @@ mod tests {
             2,
             "a record appended after a torn line starts on its own line"
         );
+    }
+
+    #[test]
+    fn only_month_files_are_read() {
+        assert_eq!(parse_month_file_name("2026-11.jsonl"), Some((2026, 11)));
+        assert_eq!(parse_month_file_name("2026-13.jsonl"), None);
+        assert_eq!(parse_month_file_name("2026-1.jsonl"), None);
+        assert_eq!(parse_month_file_name("2026-11.jsonl.tmp"), None);
+        assert_eq!(parse_month_file_name("notes.jsonl"), None);
+    }
+
+    #[tokio::test]
+    async fn the_widest_range_reads_every_month_on_disk() {
+        let (_dir, recorder) = recorder();
+        let one = [attempt("m", AttemptOutcome::Succeeded, None)];
+        recorder
+            .record_attempts_at(at(2020, 3, 1, 0), &UsageComponent::Main, None, &one)
+            .await;
+        recorder
+            .record_attempts_at(at(2026, 11, 1, 0), &UsageComponent::Main, None, &one)
+            .await;
+        let records = recorder
+            .load(DateTime::<Utc>::MIN_UTC, DateTime::<Utc>::MAX_UTC, None)
+            .await
+            .unwrap();
+        assert_eq!(records.len(), 2);
     }
 
     #[tokio::test]
