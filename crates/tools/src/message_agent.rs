@@ -26,14 +26,12 @@ const ARTIFACT_TO_MAIN_REFUSAL: &str = "artifact sessions can't reach the main c
      user's attention, file an inbox item with user_inbox_add instead.";
 
 /// The tool description the model sees.
-const MESSAGE_AGENT_DESCRIPTION: &str = "Send a text message to another agent. Address forms: \
-    \"main\" or a session address (yours; see list_agents); \"agent:<name>\" (a teammate's \
-    main); \"agent:<name>/<session-address>\" (a teammate's session; copy the exact address from \
-    its message); \"a2a:<name>\" (a remote agent). Fire-and-forget: a running recipient sees the \
-    message at its next tool-call boundary, an idle one starts a turn, a completed session \
-    resumes at the same address. Replies arrive later as separate messages addressed to you; a \
-    remote agent replies from \"a2a:<name>\". A stopped or failed teammate returns an error and \
-    nothing is queued. Use list_agents for addresses.";
+const MESSAGE_AGENT_DESCRIPTION: &str = "Send a text message to another agent at the address \
+    in `to`. Fire-and-forget: a running recipient sees the message at its next tool-call \
+    boundary, an idle one starts a turn, a completed session resumes at the same address. \
+    Replies arrive later as separate messages addressed to you; a remote agent replies from \
+    \"a2a:<name>\". A stopped or failed teammate returns an error and nothing is queued. Use \
+    list_agents for addresses.";
 
 /// Tool for sending a message to another agent by address — main, any
 /// session (live or completed), a teammate (`agent:<name>`), or a remote A2A
@@ -264,7 +262,7 @@ impl Tool for MessageAgentTool {
                 "properties": {
                     "to": {
                         "type": "string",
-                        "description": "Address to message: \"main\", a session address from list_agents, \"agent:<name>\" or \"agent:<name>/<session-address>\" for a teammate, or \"a2a:<name>\" for a remote agent."
+                        "description": "Address to message: \"main\", a session address (yours; see list_agents), \"agent:<name>\" for a teammate's main, \"agent:<name>/<session-address>\" for one of its sessions (copy the exact address from its message), or \"a2a:<name>\" for a remote agent."
                     },
                     "message": {
                         "type": "string",
