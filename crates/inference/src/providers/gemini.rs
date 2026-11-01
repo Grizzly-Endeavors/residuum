@@ -418,6 +418,12 @@ impl GeminiClient {
         message_count = request.contents.len(),
         tool_count = request.tools.as_ref().map_or(0, Vec::len),
         streaming = sink.is_some(),
+        gen_ai.request.model = %self.model,
+        gen_ai.usage.input_tokens = tracing::field::Empty,
+        gen_ai.usage.output_tokens = tracing::field::Empty,
+        gen_ai.usage.cache_read.input_tokens = tracing::field::Empty,
+        gen_ai.usage.cache_write.input_tokens = tracing::field::Empty,
+        gen_ai.usage.reasoning.output_tokens = tracing::field::Empty,
     ))]
     async fn send(
         &self,
@@ -486,6 +492,7 @@ impl GeminiClient {
             tool_calls = result.tool_calls.len(),
             "gemini completion received"
         );
+        crate::gen_ai_span::record_usage(result.usage.as_ref());
         Ok(result)
     }
 }

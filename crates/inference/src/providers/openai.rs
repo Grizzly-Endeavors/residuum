@@ -329,6 +329,12 @@ impl OpenAiClient {
         message_count = request.messages.len(),
         tool_count = request.tools.map_or(0, <[OpenAiToolEntry]>::len),
         streaming = sink.is_some(),
+        gen_ai.request.model = %request.model,
+        gen_ai.usage.input_tokens = tracing::field::Empty,
+        gen_ai.usage.output_tokens = tracing::field::Empty,
+        gen_ai.usage.cache_read.input_tokens = tracing::field::Empty,
+        gen_ai.usage.cache_write.input_tokens = tracing::field::Empty,
+        gen_ai.usage.reasoning.output_tokens = tracing::field::Empty,
     ))]
     async fn send(
         &self,
@@ -405,6 +411,7 @@ impl OpenAiClient {
             tool_calls = resp.tool_calls.len(),
             "openai completion received"
         );
+        crate::gen_ai_span::record_usage(resp.usage.as_ref());
         Ok(resp)
     }
 }

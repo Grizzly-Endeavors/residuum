@@ -82,6 +82,10 @@ impl SystemOneClient {
         system_one.provider = %self.endpoint.provider,
         system_one.model = %self.endpoint.model,
         questions = questions.len(),
+        gen_ai.request.model = %self.endpoint.model,
+        gen_ai.response.model = tracing::field::Empty,
+        gen_ai.usage.input_tokens = tracing::field::Empty,
+        gen_ai.usage.output_tokens = tracing::field::Empty,
     ))]
     pub async fn evaluate(
         &self,
@@ -113,6 +117,8 @@ impl SystemOneClient {
             output_tokens = response.usage.output_tokens,
             "system one evaluation complete"
         );
+        crate::gen_ai_span::record_response_model(&response.model);
+        crate::gen_ai_span::record_usage(Some(&response.usage.to_usage()));
         Ok(response)
     }
 

@@ -444,6 +444,12 @@ impl AnthropicClient {
         message_count = request.messages.len(),
         tool_count = request.tools.map_or(0, <[AnthropicToolEntry]>::len),
         streaming = sink.is_some(),
+        gen_ai.request.model = %request.model,
+        gen_ai.usage.input_tokens = tracing::field::Empty,
+        gen_ai.usage.output_tokens = tracing::field::Empty,
+        gen_ai.usage.cache_read.input_tokens = tracing::field::Empty,
+        gen_ai.usage.cache_write.input_tokens = tracing::field::Empty,
+        gen_ai.usage.reasoning.output_tokens = tracing::field::Empty,
     ))]
     async fn send(
         &self,
@@ -553,6 +559,7 @@ impl AnthropicClient {
             tool_calls = result.tool_calls.len(),
             "anthropic completion received"
         );
+        crate::gen_ai_span::record_usage(result.usage.as_ref());
 
         Ok(result)
     }
@@ -2166,6 +2173,62 @@ mod tests {
             }),
             "a missing input count is unknown, not a parse error or zero"
         );
+    }
+
+    /// The fields of the completed span named `name`, captured while `run`
+    /// ran on this thread.
+    async fn span_fields<F: std::future::Future>(name: &str, run: F) -> Vec<(String, String)> {
+        use residuum_core::util::telemetry::{SpanBufferConfig, SpanBufferLayer};
+        use tracing_subscriber::layer::SubscriberExt;
+        let (layer, spans) = SpanBufferLayer::new(&SpanBufferConfig::default());
+        let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
+        run.await;
+        spans
+            .snapshot()
+            .into_iter()
+            .find(|span| span.name == name)
+            .map(|span| span.fields)
+            .unwrap_or_default()
+    }
+
+    fn field<'a>(fields: &'a [(String, String)], name: &str) -> Option<&'a str> {
+        fields
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.as_str())
+    }
+
+    #[tokio::test]
+    async fn request_span_carries_gen_ai_usage_attributes() {
+        let fields = span_fields("send", whole_usage(documented_usage())).await;
+        assert_eq!(field(&fields, "gen_ai.request.model"), Some(TEST_MODEL));
+        assert_eq!(
+            field(&fields, "gen_ai.usage.input_tokens"),
+            Some("3863"),
+            "input counts the whole prompt, cache included"
+        );
+        assert_eq!(field(&fields, "gen_ai.usage.output_tokens"), Some("503"));
+        assert_eq!(
+            field(&fields, "gen_ai.usage.cache_read.input_tokens"),
+            Some("1800")
+        );
+        assert_eq!(
+            field(&fields, "gen_ai.usage.cache_write.input_tokens"),
+            Some("2051")
+        );
+        assert_eq!(
+            field(&fields, "gen_ai.usage.reasoning.output_tokens"),
+            None,
+            "a count the provider didn't report stays unset"
+        );
+    }
+
+    #[tokio::test]
+    async fn request_span_leaves_gen_ai_usage_unset_when_none_is_reported() {
+        let fields = span_fields("send", whole_usage(json!({"output_tokens": 4}))).await;
+        assert_eq!(field(&fields, "gen_ai.usage.output_tokens"), Some("4"));
+        assert_eq!(field(&fields, "gen_ai.usage.input_tokens"), None);
+        assert_eq!(field(&fields, "gen_ai.usage.cache_read.input_tokens"), None);
     }
 
     #[tokio::test]
