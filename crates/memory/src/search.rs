@@ -2503,7 +2503,7 @@ mod tests {
             searcher
                 .team_wiki
                 .as_ref()
-                .is_some_and(|team| team.has_vector())
+                .is_some_and(|wiki| wiki.has_vector())
         );
         assert!(
             search_source(&searcher, Some(DocSource::Wiki), 5, Some(0.0))
@@ -2525,7 +2525,7 @@ mod tests {
             text_only
                 .team_wiki
                 .as_ref()
-                .is_some_and(|team| !team.has_vector())
+                .is_some_and(|wiki| !wiki.has_vector())
         );
         assert!(!search_source(&text_only, None, 5, Some(0.0)).await.semantic);
     }
