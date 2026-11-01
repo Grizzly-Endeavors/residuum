@@ -1,8 +1,8 @@
 //! Google Gemini API provider implementation.
 //!
 //! Uses the Gemini `generateContent` REST API, and `streamGenerateContent`
-//! for streaming. Authentication is via an API key passed as a query
-//! parameter. System messages are extracted and sent as the top-level
+//! for streaming. Authentication is via the `x-goog-api-key` header, so the
+//! key never appears in a URL. System messages are extracted and sent as the top-level
 //! `systemInstruction` field. Tool results are sent as `functionResponse`
 //! parts in user-role messages.
 
@@ -27,6 +27,10 @@ use crate::{
 };
 use residuum_config::RetryConfig;
 use residuum_config::{ThinkingConfig, ThinkingLevel};
+
+/// The header Gemini reads the API key from. The key goes here rather than in
+/// the URL because a transport error prints the URL it failed on.
+const API_KEY_HEADER: &str = "x-goog-api-key";
 
 /// The `part` of a [`ThinkingBlock`] whose signature belongs to the
 /// response's text rather than to a tool call.
@@ -188,19 +192,16 @@ impl GeminiClient {
         Ok(model_response)
     }
 
-    /// Build the full endpoint URL with the API key query parameter.
+    /// Build the full endpoint URL. The API key is sent as a header, not here.
     fn endpoint(&self) -> String {
-        format!(
-            "{}/models/{}:generateContent?key={}",
-            self.base_url, self.model, self.api_key
-        )
+        format!("{}/models/{}:generateContent", self.base_url, self.model)
     }
 
     /// Build the streaming endpoint URL, which answers with server-sent events.
     fn stream_endpoint(&self) -> String {
         format!(
-            "{}/models/{}:streamGenerateContent?alt=sse&key={}",
-            self.base_url, self.model, self.api_key
+            "{}/models/{}:streamGenerateContent?alt=sse",
+            self.base_url, self.model
         )
     }
 
@@ -450,6 +451,7 @@ impl GeminiClient {
         };
         let response = client
             .post(url)
+            .header(API_KEY_HEADER, &self.api_key)
             .body(request_json.clone())
             .header("content-type", "application/json")
             .send()
@@ -1001,7 +1003,7 @@ impl GeminiEmbeddingClient {
         let http = self.http.clone();
         let timeout_secs = self.http.timeout_secs();
         with_retry(&self.retry, || {
-            let url = format!("{base_url}/models/{model}:embedContent?key={api_key}");
+            let url = format!("{base_url}/models/{model}:embedContent");
             let request_body = GeminiEmbedContentRequest {
                 model: format!("models/{model}"),
                 content: GeminiEmbedContent {
@@ -1010,6 +1012,7 @@ impl GeminiEmbeddingClient {
             };
             let http = http.clone();
             let model = model.clone();
+            let api_key = api_key.clone();
 
             async move {
                 debug!(model = %model, "sending gemini embed request");
@@ -1017,6 +1020,7 @@ impl GeminiEmbeddingClient {
                 let response = http
                     .client()
                     .post(&url)
+                    .header(API_KEY_HEADER, &api_key)
                     .json(&request_body)
                     .send()
                     .await
@@ -1055,7 +1059,7 @@ impl GeminiEmbeddingClient {
         let http = self.http.clone();
         let timeout_secs = self.http.timeout_secs();
         with_retry(&self.retry, || {
-            let url = format!("{base_url}/models/{model}:batchEmbedContents?key={api_key}");
+            let url = format!("{base_url}/models/{model}:batchEmbedContents");
             let requests: Vec<GeminiEmbedContentRequest> = owned_texts
                 .iter()
                 .map(|t| GeminiEmbedContentRequest {
@@ -1068,6 +1072,7 @@ impl GeminiEmbeddingClient {
             let request_body = GeminiBatchEmbedRequest { requests };
             let http = http.clone();
             let model = model.clone();
+            let api_key = api_key.clone();
             let batch_count = owned_texts.len();
 
             async move {
@@ -1076,6 +1081,7 @@ impl GeminiEmbeddingClient {
                 let response = http
                     .client()
                     .post(&url)
+                    .header(API_KEY_HEADER, &api_key)
                     .json(&request_body)
                     .send()
                     .await
@@ -1159,7 +1165,7 @@ mod tests {
     use residuum_config::RetryConfig;
     use residuum_core::testing::gate::Gate;
     use serde_json::{Value, json};
-    use wiremock::matchers::{method, path_regex, query_param};
+    use wiremock::matchers::{header, method, path_regex};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     const TEST_MODEL: &str = "gemini-2.0-flash";
@@ -1182,7 +1188,7 @@ mod tests {
     }
 
     #[test]
-    fn endpoint_includes_model_and_key() {
+    fn endpoint_includes_model_but_no_key() {
         let http = SharedHttpClient::new(&crate::http::HttpClientConfig::with_timeout(60)).unwrap();
         let client = GeminiClient::new(
             http,
@@ -1194,10 +1200,50 @@ mod tests {
         );
         let ep = client.endpoint();
         assert!(
-            ep.contains("/models/gemini-2.0-flash:generateContent"),
-            "endpoint should include model path"
+            ep.ends_with("/models/gemini-2.0-flash:generateContent"),
+            "endpoint should include model path: {ep}"
         );
-        assert!(ep.contains("key=my-key"), "endpoint should include API key");
+        assert!(
+            !ep.contains("my-key") && !ep.contains("key="),
+            "endpoint must not carry the API key: {ep}"
+        );
+        let stream_ep = client.stream_endpoint();
+        assert!(
+            !stream_ep.contains("my-key") && !stream_ep.contains("key="),
+            "streaming endpoint must not carry the API key: {stream_ep}"
+        );
+    }
+
+    #[tokio::test]
+    async fn api_key_travels_in_a_header_not_the_url() {
+        let body = r#"{"candidates":[{"content":{"role":"model","parts":[{"text":"hi"}]},"finishReason":"STOP"}]}"#;
+        let server = ScriptedServer::start(vec![json_response(200, body)]).await;
+        let client = GeminiClient::new(
+            SharedHttpClient::new(&crate::http::HttpClientConfig::with_timeout(60)).unwrap(),
+            server.uri(),
+            "test-api-key",
+            TEST_MODEL,
+            8192,
+            RetryConfig::no_retry(),
+        );
+
+        client
+            .complete(&[Message::user("hi")], &[], &CompletionOptions::default())
+            .await
+            .unwrap();
+
+        let requests = server.requests();
+        let request = requests.first().unwrap();
+        assert_eq!(
+            request.header("x-goog-api-key"),
+            Some("test-api-key"),
+            "the key is sent in the x-goog-api-key header"
+        );
+        assert!(
+            !request.target.contains("key"),
+            "the request target carries no key: {}",
+            request.target
+        );
     }
 
     #[test]
@@ -1285,7 +1331,7 @@ mod tests {
 
         Mock::given(method("POST"))
             .and(path_regex(r"/models/gemini-2\.0-flash:generateContent"))
-            .and(query_param("key", "test-api-key"))
+            .and(header("x-goog-api-key", "test-api-key"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "candidates": [{
                     "content": {
@@ -1548,7 +1594,7 @@ mod tests {
 
         Mock::given(method("POST"))
             .and(path_regex(r"/models/gemini-2\.0-flash:generateContent"))
-            .and(query_param("key", "test-api-key"))
+            .and(header("x-goog-api-key", "test-api-key"))
             .and(wiremock::matchers::body_partial_json(serde_json::json!({
                 "generationConfig": {
                     "responseMimeType": "application/json",
@@ -1695,7 +1741,7 @@ mod tests {
 
         Mock::given(method("POST"))
             .and(path_regex("/models/.+:generateContent"))
-            .and(query_param("key", "test-api-key"))
+            .and(header("x-goog-api-key", "test-api-key"))
             .and(wiremock::matchers::body_partial_json(serde_json::json!({
                 "generationConfig": {
                     "thinkingConfig": {
@@ -2353,10 +2399,18 @@ mod tests {
         let requests = server.requests();
         let request = requests.first().unwrap();
         assert!(
-            request.target.contains(":streamGenerateContent")
-                && request.target.contains("alt=sse")
-                && request.target.contains("key=test-api-key"),
+            request.target.contains(":streamGenerateContent") && request.target.contains("alt=sse"),
             "the streaming endpoint is used with SSE framing: {}",
+            request.target
+        );
+        assert_eq!(
+            request.header("x-goog-api-key"),
+            Some("test-api-key"),
+            "the streamed request carries the key in its header"
+        );
+        assert!(
+            !request.target.contains("key"),
+            "the streamed request target carries no key: {}",
             request.target
         );
     }
@@ -2616,7 +2670,7 @@ mod tests {
 
         Mock::given(method("POST"))
             .and(path_regex("/models/text-embedding-004:embedContent"))
-            .and(query_param("key", "test-api-key"))
+            .and(header("x-goog-api-key", "test-api-key"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "embedding": {
                     "values": [0.1, 0.2, 0.3]
@@ -2643,7 +2697,7 @@ mod tests {
 
         Mock::given(method("POST"))
             .and(path_regex("/models/text-embedding-004:batchEmbedContents"))
-            .and(query_param("key", "test-api-key"))
+            .and(header("x-goog-api-key", "test-api-key"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "embeddings": [
                     { "values": [0.1, 0.2, 0.3] },
@@ -2676,7 +2730,7 @@ mod tests {
 
         Mock::given(method("POST"))
             .and(path_regex("/models/text-embedding-004:embedContent"))
-            .and(query_param("key", "test-api-key"))
+            .and(header("x-goog-api-key", "test-api-key"))
             .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
                 "error": {
                     "code": 400,
