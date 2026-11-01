@@ -648,7 +648,7 @@ fn is_official_openai_host(host: &str) -> bool {
     is_openai_platform_host(host) || host.ends_with(".openai.azure.com")
 }
 
-/// Whether `host` is `OpenAI`'s own platform rather than an Azure OpenAI
+/// Whether `host` is `OpenAI`'s own platform rather than an Azure `OpenAI`
 /// deployment. Azure documents `prompt_cache_key` only for GPT-5.6 and later
 /// model families, so only the platform gets it.
 fn is_openai_platform_host(host: &str) -> bool {
@@ -2520,10 +2520,10 @@ mod tests {
             body.get("prompt_cache_key").is_none(),
             "a compatible host gets no prompt_cache_key: {body}"
         );
-        let body = built_body(&compatible_host_client(), &CompletionOptions::default());
+        let unset_body = built_body(&compatible_host_client(), &CompletionOptions::default());
         assert!(
-            body.get("max_tokens").is_none(),
-            "nor when the request sets no limit: {body}"
+            unset_body.get("max_tokens").is_none(),
+            "nor when the request sets no limit: {unset_body}"
         );
     }
 
@@ -2554,9 +2554,9 @@ mod tests {
             thinking: Some(ThinkingConfig::Toggle(false)),
             ..capped_at(1024)
         };
-        let body = built_body(&official_host_client(), &options);
+        let disabled_body = built_body(&official_host_client(), &options);
         assert_eq!(
-            at(&body, "/reasoning_effort"),
+            at(&disabled_body, "/reasoning_effort"),
             &json!(CAPPED_REASONING_EFFORT),
             "thinking switched off asks for no reasoning either"
         );
@@ -2574,9 +2574,9 @@ mod tests {
             thinking: Some(ThinkingConfig::Level(ThinkingLevel::High)),
             ..capped_at(1024)
         };
-        let body = built_body(&official_host_client(), &options);
+        let high_body = built_body(&official_host_client(), &options);
         assert_eq!(
-            at(&body, "/reasoning_effort"),
+            at(&high_body, "/reasoning_effort"),
             &json!("high"),
             "configured thinking keeps its effort"
         );
@@ -2586,10 +2586,10 @@ mod tests {
             description: "Run a command".to_string(),
             parameters: json!({"type": "object"}),
         }];
-        let body = built_body_with_tools(&official_host_client(), &tools, &capped_at(1024));
+        let tools_body = built_body_with_tools(&official_host_client(), &tools, &capped_at(1024));
         assert!(
-            body.get("reasoning_effort").is_none(),
-            "GPT-5.4 and later refuse tools with any reasoning_effort, so a call with tools gets none: {body}"
+            tools_body.get("reasoning_effort").is_none(),
+            "GPT-5.4 and later refuse tools with any reasoning_effort, so a call with tools gets none: {tools_body}"
         );
     }
 
@@ -3090,7 +3090,7 @@ mod tests {
             .collect()
     }
 
-    fn client_at(url: &str) -> OpenAiClient {
+    fn reasoning_client_at(url: &str) -> OpenAiClient {
         make_client(url, "m")
     }
 
@@ -3101,7 +3101,7 @@ mod tests {
             "https://api.deepseek.com/v1",
             "https://openrouter.ai/api/v1",
         ] {
-            let replayed = replayed(&client_at(url));
+            let replayed = replayed(&reasoning_client_at(url));
             assert_eq!(
                 replayed,
                 vec![
@@ -3127,7 +3127,9 @@ mod tests {
             "https://my-resource.openai.azure.com/openai/v1",
         ] {
             assert!(
-                replayed(&client_at(url)).iter().all(Option::is_none),
+                replayed(&reasoning_client_at(url))
+                    .iter()
+                    .all(Option::is_none),
                 "{url} must not receive reasoning_content"
             );
         }
@@ -3136,7 +3138,7 @@ mod tests {
     #[test]
     fn an_unparseable_base_url_is_treated_like_openai() {
         assert!(
-            replayed(&client_at("not a url"))
+            replayed(&reasoning_client_at("not a url"))
                 .iter()
                 .all(Option::is_none),
             "when the host is unknown, send nothing OpenAI would reject"
@@ -3240,7 +3242,7 @@ mod tests {
 
     #[test]
     fn tool_calls_without_this_hosts_reasoning_are_found() {
-        let deepseek = client_at("https://api.deepseek.com/v1");
+        let deepseek = reasoning_client_at("https://api.deepseek.com/v1");
         let (converted, missing) = deepseek.convert_messages(&failover_exchange(Some("mine")));
         assert_eq!(
             missing,
@@ -3263,8 +3265,8 @@ mod tests {
         );
         let (_, both_missing) = deepseek.convert_messages(&failover_exchange(None));
         assert_eq!(both_missing, vec![5, 7]);
-        let (_, openai_missing) =
-            client_at("https://api.openai.com/v1").convert_messages(&failover_exchange(None));
+        let (_, openai_missing) = reasoning_client_at("https://api.openai.com/v1")
+            .convert_messages(&failover_exchange(None));
         assert!(openai_missing.is_empty(), "OpenAI never gets the field");
     }
 
