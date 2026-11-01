@@ -160,10 +160,10 @@ impl Tool for ReadTool {
             description: "Read the contents of a file. Each output line is prefixed with its \
                           line number and a tab (e.g. `   1\\thello`); the prefix is not part of \
                           the file, so leave it out of edit_file's old_string. \
-                          By default returns the first 2000 lines; use offset/limit to page through \
-                          the rest — there is no file size limit, the output header reports the \
-                          file's total size and line count either way. \
-                          Lines longer than 2000 characters are truncated. \
+                          Returns at most 2000 lines per call unless a limit is given; use \
+                          offset/limit to page through the rest. There is no file size limit, \
+                          and the output header reports the file's total size and line count. \
+                          Lines longer than 2000 characters are cut. \
                           Image files (JPEG, PNG, GIF, WebP) are returned as inline images \
                           for visual inspection instead of raw bytes, capped by the model API's \
                           inline image size limit."
@@ -246,11 +246,11 @@ impl Tool for ReadTool {
         // `usize::MAX` on overflow, so no truncating cast is needed here.
         let start = usize::try_from(offset).unwrap_or(usize::MAX);
 
-        // Apply the default limit only when no explicit limit/offset given.
-        let effective_limit: Option<usize> = explicit_limit.map_or_else(
-            || (offset == 0).then_some(DEFAULT_MAX_LINES),
-            |l| Some(usize::try_from(l).unwrap_or(usize::MAX)),
-        );
+        // Every call is capped, including one that pages with an offset, so a
+        // read never returns the rest of a large file in one result.
+        let limit = explicit_limit.map_or(DEFAULT_MAX_LINES, |l| {
+            usize::try_from(l).unwrap_or(usize::MAX)
+        });
 
         let file = match tokio::fs::File::open(&resolved).await {
             Ok(f) => f,
@@ -277,7 +277,7 @@ impl Tool for ReadTool {
                 continue;
             }
             // Keep streaming (without collecting) past the limit so total_lines stays accurate.
-            if effective_limit.is_some_and(|limit| selected.len() >= limit) {
+            if selected.len() >= limit {
                 continue;
             }
 
@@ -298,10 +298,14 @@ impl Tool for ReadTool {
         )];
         match first_shown_line {
             Some(first) if first > 1 || last_shown_line < total_lines => {
-                warnings.push(format!(
-                    "showing lines {first}-{last_shown_line} of {total_lines}; \
-                     use offset/limit to see more, or exec with grep to find specific content"
-                ));
+                let mut notice =
+                    format!("showing lines {first}-{last_shown_line} of {total_lines}");
+                if last_shown_line < total_lines {
+                    notice.push_str(
+                        "; use offset/limit to see more, or exec with grep to find specific content",
+                    );
+                }
+                warnings.push(notice);
             }
             None if total_lines > 0 => {
                 warnings.push(format!(
@@ -548,6 +552,95 @@ mod tests {
             content_lines.len(),
             2500,
             "should return all 2500 lines with explicit limit"
+        );
+    }
+
+    #[tokio::test]
+    async fn offset_without_limit_is_capped_at_default() {
+        use std::fmt::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("paged.txt");
+        let mut content = String::new();
+        for i in 1..=3000 {
+            _ = writeln!(content, "line {i}");
+        }
+        tokio::fs::write(&file_path, &content).await.unwrap();
+
+        let tool = make_tool();
+        let result = tool
+            .execute(serde_json::json!({
+                "path": file_path.to_str().unwrap(),
+                "offset": 500
+            }))
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "read should succeed");
+        assert!(
+            result.output.contains("showing lines 501-2500 of 3000"),
+            "an offset with no limit should return one default page: {}",
+            result.output
+        );
+        let content_lines: Vec<&str> = result.output.lines().filter(|l| l.contains('\t')).collect();
+        assert_eq!(
+            content_lines.len(),
+            2000,
+            "an offset with no limit should return at most the default line count"
+        );
+    }
+
+    #[tokio::test]
+    async fn paging_hint_only_when_lines_remain() {
+        use std::fmt::Write;
+        let dir = tempfile::tempdir().unwrap();
+
+        let short_path = dir.path().join("short.txt");
+        tokio::fs::write(&short_path, "one\ntwo\nthree\n")
+            .await
+            .unwrap();
+        let tool = make_tool();
+        let whole = tool
+            .execute(serde_json::json!({ "path": short_path.to_str().unwrap() }))
+            .await
+            .unwrap();
+        assert!(
+            !whole.output.contains("exec with grep"),
+            "a read that covers the whole file should not suggest paging: {}",
+            whole.output
+        );
+
+        let tail = tool
+            .execute(serde_json::json!({
+                "path": short_path.to_str().unwrap(),
+                "offset": 1
+            }))
+            .await
+            .unwrap();
+        assert!(
+            tail.output.contains("showing lines 2-3 of 3"),
+            "a tail read should still report its range: {}",
+            tail.output
+        );
+        assert!(
+            !tail.output.contains("exec with grep"),
+            "a tail read that reaches the end of the file should not suggest paging: {}",
+            tail.output
+        );
+
+        let long_path = dir.path().join("long.txt");
+        let mut long_content = String::new();
+        for i in 1..=2500 {
+            _ = writeln!(long_content, "line {i}");
+        }
+        tokio::fs::write(&long_path, &long_content).await.unwrap();
+        let capped = tool
+            .execute(serde_json::json!({ "path": long_path.to_str().unwrap() }))
+            .await
+            .unwrap();
+        assert!(
+            capped.output.contains("exec with grep"),
+            "a read cut short by the cap should suggest paging: {}",
+            capped.output
         );
     }
 
