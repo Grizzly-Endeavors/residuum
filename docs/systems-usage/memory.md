@@ -53,7 +53,7 @@ Episode IDs are zero-padded to 3 digits (`ep-001`, `ep-012`). Next ID determined
 
 ### Reflector — Observation Compression
 
-Fires when `memory/observations.json` exceeds a token threshold. Calls the LLM to merge and deduplicate observations, then writes the compressed result back to `observations.json`. The results are identical in structure, just compressed.
+Fires when the observation log exceeds a token threshold (`reflector_threshold_tokens`, default 22,000). The threshold is estimated on the log as the main prompt displays it: the `Format:` line plus one `[timestamp] | [episode] | [visibility]` entry per observation. Calls the LLM to merge and deduplicate observations, then writes the compressed result back to `observations.json`. The results are identical in structure, just compressed.
 
 **Critical**: The reflector reads from and writes to `observations.json` only. It does **not** touch the wiki or `team/USER.md`. These are completely separate systems.
 

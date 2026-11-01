@@ -93,7 +93,7 @@
       field="reflector_threshold_tokens"
       label="Condense memories at"
       unit="tokens"
-      fallback={40000}
+      fallback={22000}
       min={0}
       hint="Once its notes add up to this much, {agent} merges and trims them."
     />

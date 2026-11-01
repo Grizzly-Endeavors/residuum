@@ -36,7 +36,7 @@ max_tokens = 16384
 # ── Memory subsystem ──────────────────────────────────────────────────────────
 [memory]
 observer_threshold_tokens = 30000       # soft threshold: starts cooldown timer
-reflector_threshold_tokens = 40000
+reflector_threshold_tokens = 22000      # measured on the observation log as the main prompt displays it
 observer_cooldown_secs = 120            # seconds to wait after soft threshold before observing
 observer_force_threshold_tokens = 60000 # hard threshold: observe immediately, bypass cooldown
 
