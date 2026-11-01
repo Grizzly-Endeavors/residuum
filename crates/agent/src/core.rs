@@ -2142,11 +2142,18 @@ mod tests {
     /// A step of a [`ScriptedProvider`]'s script.
     type Step = Result<InferenceResponse, InferenceError>;
 
+    /// What one model call of a [`ScriptedProvider`] was sent.
+    #[derive(Clone)]
+    struct RecordedRequest {
+        messages: Vec<Message>,
+        tools: Vec<ToolDefinition>,
+    }
+
     /// A provider that answers each call with the next step of its script,
-    /// and records the messages every call carried.
+    /// and records the messages and tool definitions every call carried.
     struct ScriptedProvider {
         script: std::sync::Mutex<std::collections::VecDeque<Step>>,
-        requests: Arc<std::sync::Mutex<Vec<Vec<Message>>>>,
+        requests: Arc<std::sync::Mutex<Vec<RecordedRequest>>>,
     }
 
     #[async_trait]
@@ -2154,10 +2161,13 @@ mod tests {
         async fn complete(
             &self,
             messages: &[Message],
-            _tools: &[ToolDefinition],
+            tools: &[ToolDefinition],
             _options: &CompletionOptions,
         ) -> Result<InferenceResponse, InferenceError> {
-            self.requests.lock().unwrap().push(messages.to_vec());
+            self.requests.lock().unwrap().push(RecordedRequest {
+                messages: messages.to_vec(),
+                tools: tools.to_vec(),
+            });
             self.script
                 .lock()
                 .unwrap()
@@ -2191,8 +2201,8 @@ mod tests {
     }
 
     /// An agent with the echo tool whose model follows `script`, and the
-    /// messages each of its model calls carried.
-    fn scripted_agent(script: Vec<Step>) -> (Agent, Arc<std::sync::Mutex<Vec<Vec<Message>>>>) {
+    /// request each of its model calls carried.
+    fn scripted_agent(script: Vec<Step>) -> (Agent, Arc<std::sync::Mutex<Vec<RecordedRequest>>>) {
         let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
         let provider = ScriptedProvider {
             script: std::sync::Mutex::new(script.into()),
@@ -2289,6 +2299,16 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn each_model_call_is_sent_the_registry_tools() {
+        let (mut agent, requests) = scripted_agent(vec![Ok(reply("hi"))]);
+        send(&mut agent, "hello", "t1", &[]).await.unwrap();
+
+        let recorded = requests.lock().unwrap();
+        let names: Vec<&str> = recorded[0].tools.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["echo"]);
+    }
+
+    #[tokio::test]
     async fn a_failed_turn_runs_again_on_its_message_and_keeps_its_partial_work() {
         use residuum_inference::Role;
 
@@ -2306,7 +2326,7 @@ mod tests {
         let replies = retry(&mut agent, "t1").await.unwrap();
 
         assert_eq!(replies, vec!["done"]);
-        let rerun_request = requests.lock().unwrap().last().cloned().unwrap();
+        let rerun_request = requests.lock().unwrap().last().cloned().unwrap().messages;
         assert_eq!(
             conversation_roles(&rerun_request),
             [Role::User, Role::Assistant, Role::Tool],
@@ -2435,7 +2455,7 @@ mod tests {
 
         retry(&mut agent, "t1").await.unwrap();
 
-        let rerun_request = requests.lock().unwrap().last().cloned().unwrap();
+        let rerun_request = requests.lock().unwrap().last().cloned().unwrap().messages;
         let users: Vec<&Message> = rerun_request
             .iter()
             .filter(|m| m.role == residuum_inference::Role::User)
