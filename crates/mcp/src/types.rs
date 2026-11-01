@@ -1,6 +1,6 @@
 //! MCP server configuration types.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -38,8 +38,8 @@ pub struct McpServerEntry {
     /// Environment variables to pass to the server process (only used for stdio transport).
     /// Values support `${agent-key:<name>}` references, resolved from the agent
     /// key store at connect time.
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub env: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
     /// Transport type (defaults to stdio).
     #[serde(default, skip_serializing_if = "McpTransport::is_default")]
     pub transport: McpTransport,
@@ -47,8 +47,8 @@ pub struct McpServerEntry {
     /// Header values support `${VAR}` and `${VAR:-default}` env var interpolation
     /// and `${agent-key:<name>}` agent key references, all expanded at connect
     /// time.
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub headers: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, String>,
     /// Optional per-server timeout (seconds) for tool calls to this server.
     /// `None` (the default) means a call runs until it finishes or the user
     /// or agent stops the turn — there is no automatic cutoff.

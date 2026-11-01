@@ -4,7 +4,7 @@
 //! tool listing and invocation backed by the rmcp SDK.
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsStr;
 use std::future::Future;
 use std::path::Path;
@@ -285,7 +285,7 @@ fn coerce_tool_args(args: Value) -> Result<Option<serde_json::Map<String, Value>
 /// # Errors
 /// Returns an error if any header name or expanded value is invalid.
 fn expand_header_env_vars(
-    headers: &HashMap<String, String>,
+    headers: &BTreeMap<String, String>,
 ) -> Result<HashMap<HeaderName, HeaderValue>, anyhow::Error> {
     let mut result = HashMap::with_capacity(headers.len());
     for (name, value) in headers {
@@ -325,7 +325,6 @@ impl std::fmt::Debug for McpClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
     #[tokio::test(start_paused = true)]
     async fn with_a_configured_timeout_a_slow_call_is_cut_off() {
@@ -389,9 +388,9 @@ mod tests {
             name: "fake-mcp".to_string(),
             command: "residuum_fake_mcp".to_string(),
             args: vec!["-c".to_string(), "exit 0".to_string()],
-            env: HashMap::new(),
+            env: BTreeMap::new(),
             transport: McpTransport::Stdio,
-            headers: HashMap::new(),
+            headers: BTreeMap::new(),
             timeout_secs: None,
         };
 
@@ -445,9 +444,9 @@ mod tests {
                 "sh".to_string(),
                 pwd_file.to_str().unwrap().to_string(),
             ],
-            env: HashMap::new(),
+            env: BTreeMap::new(),
             transport: McpTransport::Stdio,
-            headers: HashMap::new(),
+            headers: BTreeMap::new(),
             timeout_secs: None,
         };
 
@@ -483,9 +482,9 @@ mod tests {
             name: "bad-http".to_string(),
             command: "http://127.0.0.1:1/nonexistent".to_string(),
             args: vec![],
-            env: HashMap::new(),
+            env: BTreeMap::new(),
             transport: McpTransport::Http,
-            headers: HashMap::new(),
+            headers: BTreeMap::new(),
             timeout_secs: None,
         };
 
@@ -504,9 +503,9 @@ mod tests {
             name: "bad-stdio".to_string(),
             command: "/nonexistent/binary".to_string(),
             args: vec![],
-            env: HashMap::new(),
+            env: BTreeMap::new(),
             transport: McpTransport::Stdio,
-            headers: HashMap::new(),
+            headers: BTreeMap::new(),
             timeout_secs: None,
         };
 

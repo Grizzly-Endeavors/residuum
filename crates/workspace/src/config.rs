@@ -1,6 +1,6 @@
 //! Workspace config loaders: MCP servers and notification channels.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use serde::Deserialize;
@@ -17,7 +17,7 @@ use residuum_mcp::types::{McpServerEntry, McpTransport};
 struct McpConfigFile {
     /// Map of server name → server definition.
     #[serde(default, rename = "mcpServers")]
-    mcp_servers: HashMap<String, McpServerRaw>,
+    mcp_servers: BTreeMap<String, McpServerRaw>,
 }
 
 /// Raw JSON server entry before conversion to `McpServerEntry`.
@@ -32,7 +32,7 @@ struct McpServerRaw {
     #[serde(default)]
     args: Vec<String>,
     #[serde(default)]
-    env: HashMap<String, String>,
+    env: BTreeMap<String, String>,
     /// Claude Code/Desktop standard: `"stdio"`, `"streamable-http"`, `"http"`, or `"sse"`.
     #[serde(rename = "type")]
     type_: Option<String>,
@@ -42,7 +42,7 @@ struct McpServerRaw {
     url: Option<String>,
     /// HTTP headers to send with requests (only used for http transport).
     #[serde(default)]
-    headers: HashMap<String, String>,
+    headers: BTreeMap<String, String>,
     /// Optional per-server tool-call timeout, in seconds. Unset means no
     /// automatic cutoff — a call runs until it finishes or is stopped.
     #[serde(default)]
@@ -111,14 +111,16 @@ fn resolve_mcp_server(name: &str, raw: McpServerRaw) -> Result<McpServerEntry, S
 
 /// Load MCP server definitions from a JSON file as a name → entry map.
 ///
+/// The map is ordered by server name, so one file always yields the same
+/// server order, and so the same tool order, however the JSON lists them.
 /// Returns an empty map if the file does not exist.
 ///
 /// # Errors
 /// Returns an error if the file exists but cannot be read or parsed.
 #[tracing::instrument(skip_all, fields(path = %path.display()))]
-pub fn load_mcp_servers_map(path: &Path) -> anyhow::Result<HashMap<String, McpServerEntry>> {
+pub fn load_mcp_servers_map(path: &Path) -> anyhow::Result<BTreeMap<String, McpServerEntry>> {
     if !path.exists() {
-        return Ok(HashMap::new());
+        return Ok(BTreeMap::new());
     }
 
     let contents = std::fs::read_to_string(path)
@@ -127,7 +129,7 @@ pub fn load_mcp_servers_map(path: &Path) -> anyhow::Result<HashMap<String, McpSe
     let file: McpConfigFile = serde_json::from_str(&contents)
         .with_context(|| format!("failed to parse mcp.json at {}", path.display()))?;
 
-    let servers: HashMap<String, McpServerEntry> = file
+    let servers: BTreeMap<String, McpServerEntry> = file
         .mcp_servers
         .into_iter()
         .filter_map(|(name, raw)| match resolve_mcp_server(&name, raw) {
@@ -181,7 +183,7 @@ pub fn diagnose_mcp_json(content: &str) -> Vec<residuum_core::diagnostics::Diagn
         .collect()
 }
 
-/// Load MCP server definitions from a JSON file.
+/// Load MCP server definitions from a JSON file, in server-name order.
 ///
 /// Returns an empty vec if the file does not exist.
 ///
@@ -460,6 +462,27 @@ mod tests {
         let names: Vec<&str> = servers.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"fs"), "should have fs server");
         assert!(names.contains(&"git"), "should have git server");
+    }
+
+    #[test]
+    fn load_mcp_servers_is_ordered_by_name_whatever_the_file_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "mcpServers": {
+                    "zeta": { "command": "mcp-zeta" },
+                    "alpha": { "command": "mcp-alpha" },
+                    "mid": { "command": "mcp-mid" }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let servers = load_mcp_servers(&path).unwrap();
+        let names: Vec<&str> = servers.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["alpha", "mid", "zeta"]);
     }
 
     #[test]

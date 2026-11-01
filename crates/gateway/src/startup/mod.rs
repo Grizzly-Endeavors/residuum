@@ -593,24 +593,24 @@ fn web_search_mcp_entry(
                 "-y".to_string(),
                 "@anthropic-ai/mcp-server-brave-search".to_string(),
             ],
-            env: std::collections::HashMap::from([(
+            env: std::collections::BTreeMap::from([(
                 "BRAVE_API_KEY".to_string(),
                 backend.api_key.clone(),
             )]),
             transport: residuum_mcp::types::McpTransport::Stdio,
-            headers: std::collections::HashMap::new(),
+            headers: std::collections::BTreeMap::new(),
             timeout_secs: None,
         }),
         "tavily" => Some(residuum_mcp::types::McpServerEntry {
             name: "tavily_web_search".to_string(),
             command: "npx".to_string(),
             args: vec!["-y".to_string(), "tavily-mcp".to_string()],
-            env: std::collections::HashMap::from([(
+            env: std::collections::BTreeMap::from([(
                 "TAVILY_API_KEY".to_string(),
                 backend.api_key.clone(),
             )]),
             transport: residuum_mcp::types::McpTransport::Stdio,
-            headers: std::collections::HashMap::new(),
+            headers: std::collections::BTreeMap::new(),
             timeout_secs: None,
         }),
         _ => None,
