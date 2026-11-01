@@ -10,7 +10,7 @@ There are two more, separate checkpoint repositories (the team repository never 
 
 | Tool | Key Parameters | Description |
 |------|---------------|-------------|
-| `workspace_history` | `repo` (`workspace`\|`team`), `action` (`list`\|`show`), `path`, `limit`, `checkpoint_id` | List checkpoints (optionally filtered to ones that changed a path), or show what one checkpoint changed. |
+| `workspace_history` | `repo` (`workspace`\|`team`), `action` (`list`\|`show`), `path`, `limit`, `checkpoint_id` | List checkpoints (optionally filtered to ones that changed a path), or show what one checkpoint changed. Each call lists 50 items by default (`limit`, at most 200); `show` names how many changed paths it left out. |
 | `workspace_restore` | `repo` (`workspace`\|`team`), `action` (`restore_path`\|`undo_turn`), `checkpoint_id`, `path` | Restore a file/directory to a checkpoint, or undo a checkpoint's changes. |
 
 Both tools see the workspace repository by default; pass `repo: "team"` for the team directory (paths are then relative to `team/`). They never see a config repository.

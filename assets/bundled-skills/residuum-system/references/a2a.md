@@ -22,7 +22,7 @@ If Residuum restarts while an A2A task is unfinished, the task's session receive
 
 You can also delegate to other agents over A2A with your ordinary tools — `list_agents`, `message_agent`, `stop_agent` — using the address `a2a:<name>`. `config/a2a.json` lists them (you can edit it directly), each with a `url` and optional `headers` (which can reference an agent key with `${agent-key:<name>}`).
 
-- `list_agents` shows every configured remote agent's live status (online with its description and skills, still resolving, or unreachable) and any open tasks you have with it.
+- `list_agents` shows every configured remote agent's live status (online with its description and skills, still resolving, or unreachable) and any open tasks you have with it. The description is cut to its first 200 characters and at most 10 skills are named; `list_agents` says how much it left out.
 - `message_agent` to `a2a:<name>` sends a follow-up on your open task with that agent if one is waiting on you (`INPUT_REQUIRED`/`AUTH_REQUIRED`), otherwise starts a new one. It returns immediately — the reply is not synchronous. An optional `skill` parameter names one of the remote agent's advertised skills.
 - The reply arrives later as an ordinary agent message from `a2a:<name>`, naming the task and its new state, once the task needs your attention (it asks a question, needs auth, or finishes). Don't wait for it inline; go on with other work and react when it lands.
 - `stop_agent` on `a2a:<name>` cancels your open task with that agent.
