@@ -19,6 +19,7 @@ chrono-tz = { workspace = true }
 dirs = { workspace = true }
 iana-time-zone = { workspace = true }
 rand = { workspace = true }
+ring = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 shellexpand = { workspace = true }

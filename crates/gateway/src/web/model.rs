@@ -19,8 +19,9 @@ use residuum_config::RetryConfig;
 use residuum_config::ThinkingConfig;
 use residuum_config::{BackgroundModelTier, BackgroundModelsConfig, ProviderSpec, RoleOverrides};
 use residuum_inference::{
-    CompletionOptions, ImageData, InferenceError, InferenceProvider, Message, ResponseFormat, Role,
-    SharedHttpClient, Usage, UsageComponent, UsageRecorder, build_provider_chain,
+    CacheHints, CompletionOptions, ImageData, InferenceError, InferenceProvider, Message,
+    ResponseFormat, Role, SharedHttpClient, Usage, UsageComponent, UsageRecorder,
+    build_provider_chain,
 };
 
 /// Identity label logged and reported when a call carries no artifact
@@ -252,6 +253,7 @@ fn build_request(
         thinking: defaults.thinking.clone(),
         response_format,
         web_search: None,
+        cache: CacheHints::default(),
     };
 
     Ok((messages, options, schema_requested))

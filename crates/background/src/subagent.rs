@@ -17,7 +17,10 @@ use residuum_bus::MessageEvent;
 #[cfg(test)]
 use residuum_bus::interrupt::Interrupt;
 use residuum_bus::{AgentMessageEvent, Publisher, SessionAddress};
-use residuum_inference::{CompletionOptions, ImageData, InferenceProvider, Message, MessageSender};
+use residuum_inference::{
+    CacheHints, CacheRetention, CompletionOptions, ImageData, InferenceProvider, Message,
+    MessageSender,
+};
 use residuum_mcp::SharedMcpRegistry;
 use residuum_memory::merge_writer::MemoryMergeWriter;
 use residuum_memory::observer::Observer;
@@ -217,6 +220,20 @@ pub struct SubAgentResources {
     /// `message_agent`/`subagent_spawn` tools (see
     /// [`super::types::SubAgentBuildConfig::hop_counter`]).
     pub hop_counter: HopCounter,
+}
+
+impl SubAgentResources {
+    /// These resources with every model call keyed to the run `run_id`. A
+    /// session's calls follow each other closely within a turn, so they keep
+    /// the provider's default retention.
+    #[must_use]
+    pub(crate) fn keyed_to_run(mut self, run_id: &str) -> Self {
+        self.options.cache = CacheHints {
+            conversation_key: Some(run_id.to_string()),
+            retention: CacheRetention::Short,
+        };
+        self
+    }
 }
 
 /// Build an isolated `SkillState` for a new sub-agent, cloned from

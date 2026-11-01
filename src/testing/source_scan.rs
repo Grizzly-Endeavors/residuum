@@ -609,6 +609,60 @@ fn exec_grants(sources: &[SourceFile]) -> BTreeMap<String, Vec<(usize, String)>>
     found
 }
 
+/// The code that assembles a model request, or sets the tools it offers. An
+/// entry ending in `/` covers every file under that directory; any other entry
+/// is one file. A `HashMap` or `HashSet` iterates in an order that changes from
+/// process to process, so a request built from one changes its bytes between
+/// runs and misses the provider's prompt cache.
+const REQUEST_ORDER_PATHS: &[&str] = &[
+    "crates/agent/src/",
+    "crates/tools/src/registration.rs",
+    "crates/tools/src/main_tools.rs",
+    "crates/tools/src/registry.rs",
+    "crates/mcp/src/registry.rs",
+    "crates/inference/src/providers/",
+];
+
+/// Whether the `REQUEST_ORDER_PATHS` entry `entry` covers the file `path`.
+fn request_order_covers(entry: &str, path: &str) -> bool {
+    if entry.ends_with('/') {
+        path.starts_with(entry)
+    } else {
+        path == entry
+    }
+}
+
+/// An unordered collection, by name.
+fn unordered_collection() -> Regex {
+    Regex::new(r"\b(?:HashMap|HashSet)\b").unwrap()
+}
+
+/// Each request-order file's production lines that name an unordered
+/// collection, as `(line, code)`.
+fn unordered_collections_in_request_code(
+    sources: &[SourceFile],
+) -> BTreeMap<String, Vec<(usize, String)>> {
+    let pattern = unordered_collection();
+    let mut found: BTreeMap<String, Vec<(usize, String)>> = BTreeMap::new();
+    for file in sources {
+        if !REQUEST_ORDER_PATHS
+            .iter()
+            .any(|entry| request_order_covers(entry, &file.path))
+        {
+            continue;
+        }
+        for (number, code) in file.code_lines(false) {
+            if pattern.is_match(code) {
+                found
+                    .entry(file.path.clone())
+                    .or_default()
+                    .push((number, code.trim().to_string()));
+            }
+        }
+    }
+    found
+}
+
 /// Where the integration tests live: each top-level module of `IT_DIR` (a file,
 /// or a directory with a `mod.rs`) carries one `//! covers:` line naming the
 /// packages it tests, except the `IT_EXEMPT` modules. `IT_CONTAINER` declares them.
@@ -1292,6 +1346,77 @@ mod tests {
                 exec_grants_on(&pattern, other),
                 0,
                 "{other:?} grants nothing"
+            );
+        }
+    }
+
+    /// Model-request code iterates in a fixed order: an unordered collection in
+    /// its production code would reorder the request between processes.
+    #[test]
+    fn request_assembly_code_names_no_unordered_collection() {
+        let sources = crate_sources();
+        for entry in REQUEST_ORDER_PATHS {
+            assert!(
+                sources
+                    .iter()
+                    .any(|file| request_order_covers(entry, &file.path)),
+                "{entry} names no scanned source file (a rename left it behind?)"
+            );
+        }
+        let mut problems = String::new();
+        for (path, lines) in unordered_collections_in_request_code(&sources) {
+            for (number, code) in lines {
+                writeln!(problems, "{path}:{number}: {code}").unwrap();
+            }
+        }
+        assert!(
+            problems.is_empty(),
+            "code that builds a model request or sets its tools names an unordered collection (file:line below). A HashMap or HashSet iterates in an order that changes between processes, so the request's bytes change and miss the provider's prompt cache. Use BTreeMap or BTreeSet, whose iteration order is fixed. If an entry in REQUEST_ORDER_PATHS (src/testing/source_scan.rs) holds code that never feeds a model request, narrow that entry and say why in its comment.\n{problems}"
+        );
+    }
+
+    #[test]
+    fn the_unordered_collection_rule_matches_names_and_nothing_else() {
+        let pattern = unordered_collection();
+        for named in [
+            "use std::collections::HashMap;",
+            "let seen: HashSet<&str> = HashSet::new();",
+            "let env = std::collections::HashMap::new();",
+        ] {
+            assert!(
+                pattern.is_match(named),
+                "{named:?} names an unordered collection"
+            );
+        }
+        for other in [
+            "let env: BTreeMap<String, String> = BTreeMap::new();",
+            "struct HashMapish;",
+            "let my_hashset_count = 0;",
+        ] {
+            assert!(
+                !pattern.is_match(other),
+                "{other:?} names no unordered collection"
+            );
+        }
+        assert!(request_order_covers(
+            "crates/agent/src/context/",
+            "crates/agent/src/context/mod.rs"
+        ));
+        assert!(!request_order_covers(
+            "crates/agent/src/turn.rs",
+            "crates/agent/src/turn_conversation_tests.rs"
+        ));
+        for covered in [
+            "crates/agent/src/turn.rs",
+            "crates/tools/src/registration.rs",
+            "crates/tools/src/main_tools.rs",
+            "crates/tools/src/registry.rs",
+        ] {
+            assert!(
+                REQUEST_ORDER_PATHS
+                    .iter()
+                    .any(|entry| request_order_covers(entry, covered)),
+                "{covered} assembles or sets the tools of a model request, so it is scanned"
             );
         }
     }

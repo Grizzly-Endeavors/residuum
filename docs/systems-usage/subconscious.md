@@ -51,7 +51,7 @@ The learning loop does not require the subconscious. If `[subconscious]` is disa
 
 `SUBCONSCIOUS.md` in the workspace is the user-editable policy that controls **what** the classifier watches for. It is read fresh from disk on every evaluation, so edits take effect immediately without a restart. The agent can modify it at the user's request with standard file tools.
 
-The file controls the *checks* only. The output format (the JSON findings schema) and the "stay quiet unless there's a clear problem" guidance are always injected by code and cannot be broken by editing the file. The default policy biases heavily toward silence: returning no findings is the normal, correct outcome for most turns, and the classifier is instructed never to fabricate a finding to seem useful.
+The file controls the *checks* only. The output format (the JSON findings schema) and the "stay quiet unless there's a clear problem" guidance are always injected by code and cannot be broken by editing the file. The output format biases the classifier toward silence: returning no findings is the normal, correct outcome for most turns, and the classifier is instructed never to fabricate a finding to seem useful.
 
 The bundled default `SUBCONSCIOUS.md` watches for:
 

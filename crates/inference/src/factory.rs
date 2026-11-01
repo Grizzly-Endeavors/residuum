@@ -79,6 +79,7 @@ fn build_provider_client(
                     &spec.provider_url,
                     &spec.model.model,
                     key,
+                    max_tokens,
                     retry,
                 )
                 .with_dialect(fireworks::dialect(spec.session_affinity.clone())),
@@ -109,6 +110,7 @@ fn build_provider_client(
                     &spec.model.model,
                     key,
                     spec.keep_alive.clone(),
+                    max_tokens,
                     retry,
                 )))
             } else {
@@ -117,6 +119,7 @@ fn build_provider_client(
                     &spec.provider_url,
                     &spec.model.model,
                     spec.keep_alive.clone(),
+                    max_tokens,
                     retry,
                 )))
             }
@@ -128,6 +131,7 @@ fn build_provider_client(
                     &spec.provider_url,
                     &spec.model.model,
                     key,
+                    max_tokens,
                     retry,
                 )))
             } else {
@@ -135,6 +139,7 @@ fn build_provider_client(
                     http,
                     &spec.provider_url,
                     &spec.model.model,
+                    max_tokens,
                     retry,
                 )))
             }

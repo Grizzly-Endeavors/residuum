@@ -17,7 +17,7 @@
     reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
 )]
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use residuum::mcp::{McpRegistry, McpServerEntry, McpStatus, McpTransport};
 
@@ -29,9 +29,9 @@ fn echo_server_entry() -> McpServerEntry {
             "-y".to_string(),
             "@modelcontextprotocol/server-everything".to_string(),
         ],
-        env: HashMap::new(),
+        env: BTreeMap::new(),
         transport: McpTransport::default(),
-        headers: HashMap::new(),
+        headers: BTreeMap::new(),
         timeout_secs: None,
     }
 }
@@ -117,9 +117,9 @@ async fn connect_nonexistent_server_fails_gracefully() {
         name: "nonexistent".to_string(),
         command: "/definitely/not/a/real/binary".to_string(),
         args: vec![],
-        env: HashMap::new(),
+        env: BTreeMap::new(),
         transport: McpTransport::default(),
-        headers: HashMap::new(),
+        headers: BTreeMap::new(),
         timeout_secs: None,
     };
 
@@ -163,18 +163,18 @@ async fn reconcile_and_connect_mixed_success_and_failure() {
         name: "bad-server".to_string(),
         command: "/no/such/binary".to_string(),
         args: vec![],
-        env: HashMap::new(),
+        env: BTreeMap::new(),
         transport: McpTransport::default(),
-        headers: HashMap::new(),
+        headers: BTreeMap::new(),
         timeout_secs: None,
     };
     let also_missing = McpServerEntry {
         name: "also-bad".to_string(),
         command: "/also/missing".to_string(),
         args: vec![],
-        env: HashMap::new(),
+        env: BTreeMap::new(),
         transport: McpTransport::default(),
-        headers: HashMap::new(),
+        headers: BTreeMap::new(),
         timeout_secs: None,
     };
 

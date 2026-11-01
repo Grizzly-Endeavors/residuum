@@ -225,11 +225,8 @@ On error: `"no agent key named '{name}'"`, or a store read/write failure.
 
 **Source:** `memory_search.rs` · `MemorySearchTool`
 
-**Description sent to LLM (vector enabled):**
-> Search past conversation observations, interaction chunks, and knowledge wiki pages using hybrid BM25 + vector similarity search. Returns matching results with relevance scores and snippets; a wiki result's ID is the page path to open with read_file. Supports filtering by source type, date range, and episode IDs.
-
-**Description sent to LLM (BM25 only):**
-> Search past conversation observations, interaction chunks, and knowledge wiki pages using BM25 full-text search. Returns matching results with relevance scores and snippets; a wiki result's ID is the page path to open with read_file. Supports filtering by source type, date range, and episode IDs.
+**Description sent to LLM** (fixed; the same whether or not vector search is available):
+> Search past conversation observations, interaction chunks, and knowledge wiki pages by keyword (BM25 full-text search), adding vector similarity when vector search is available. Returns matching results with relevance scores and snippets; a wiki result's ID is the page path to open with read_file. Supports filtering by source type, date range, and episode IDs.
 
 ### Input
 

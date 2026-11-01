@@ -29,6 +29,8 @@ pub(crate) struct OllamaClient {
     model: String,
     api_key: Option<String>,
     keep_alive: Option<String>,
+    /// Output limit for requests whose options don't set one.
+    max_tokens: u32,
     retry: RetryConfig,
 }
 
@@ -42,6 +44,7 @@ impl OllamaClient {
         base_url: impl Into<String>,
         model: impl Into<String>,
         keep_alive: Option<String>,
+        max_tokens: u32,
         retry: RetryConfig,
     ) -> Self {
         let base_url = base_url.into();
@@ -53,6 +56,7 @@ impl OllamaClient {
             model: model.into(),
             api_key: None,
             keep_alive,
+            max_tokens,
             retry,
         }
     }
@@ -67,6 +71,7 @@ impl OllamaClient {
         model: impl Into<String>,
         api_key: impl Into<String>,
         keep_alive: Option<String>,
+        max_tokens: u32,
         retry: RetryConfig,
     ) -> Self {
         let base_url = base_url.into();
@@ -78,6 +83,7 @@ impl OllamaClient {
             model: model.into(),
             api_key: Some(api_key.into()),
             keep_alive,
+            max_tokens,
             retry,
         }
     }
@@ -91,6 +97,7 @@ impl OllamaClient {
     /// Build everything about a request that stays the same across retries.
     /// Reasoning goes back only when `origin`'s provider produced it.
     fn prepare(
+        &self,
         messages: &[Message],
         tools: &[ToolDefinition],
         options: &CompletionOptions,
@@ -120,9 +127,10 @@ impl OllamaClient {
                 ResponseFormat::Text => None,
                 ResponseFormat::JsonSchema { schema, .. } => Some(schema.clone()),
             },
-            options: options.temperature.map(|t| OllamaModelOptions {
-                temperature: Some(t),
-            }),
+            options: OllamaModelOptions {
+                temperature: options.temperature,
+                num_predict: options.max_tokens.unwrap_or(self.max_tokens),
+            },
             think,
         }
     }
@@ -137,7 +145,7 @@ impl OllamaClient {
         sink: Option<&dyn StreamSink>,
     ) -> Result<InferenceResponse, InferenceError> {
         let origin = self.origin();
-        let prepared = Self::prepare(messages, tools, options, &origin);
+        let prepared = self.prepare(messages, tools, options, &origin);
         let tracked = sink.map(TrackedSink::new);
 
         let response = with_retry(&self.retry, || async {
@@ -147,7 +155,7 @@ impl OllamaClient {
                 tools: prepared.tools.as_deref(),
                 stream: tracked.is_some(),
                 format: prepared.format.as_ref(),
-                options: prepared.options.as_ref(),
+                options: &prepared.options,
                 keep_alive: self.keep_alive.as_deref(),
                 think: prepared.think,
             };
@@ -408,11 +416,13 @@ impl InferenceProvider for OllamaClient {
 
 // Ollama API request/response types
 
-/// Nested model options for Ollama (e.g. temperature).
+/// Nested model options for Ollama: sampling temperature and the output limit.
 #[derive(Debug, Serialize, Clone)]
 struct OllamaModelOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
+    /// Ollama's name for the maximum number of tokens to generate.
+    num_predict: u32,
 }
 
 /// What stays the same across a request's attempts.
@@ -420,7 +430,7 @@ struct PreparedRequest {
     messages: Vec<OllamaMessage>,
     tools: Option<Vec<OllamaTool>>,
     format: Option<serde_json::Value>,
-    options: Option<OllamaModelOptions>,
+    options: OllamaModelOptions,
     think: Option<bool>,
 }
 
@@ -433,8 +443,7 @@ struct OllamaChatRequest<'a> {
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     format: Option<&'a serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    options: Option<&'a OllamaModelOptions>,
+    options: &'a OllamaModelOptions,
     #[serde(skip_serializing_if = "Option::is_none")]
     keep_alive: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -478,8 +487,8 @@ fn to_ollama_messages(
     // Filled in conversation order rather than up front: ids synthesized when
     // the server sends none (`call_0`, `call_1`, ...) repeat across turns, so
     // a result must resolve against the calls that preceded it.
-    let mut tool_names_by_id: std::collections::HashMap<&str, &str> =
-        std::collections::HashMap::new();
+    let mut tool_names_by_id: std::collections::BTreeMap<&str, &str> =
+        std::collections::BTreeMap::new();
 
     messages
         .iter()
@@ -801,14 +810,31 @@ mod tests {
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    /// The output limit the test clients fall back to when a request sets none.
+    const TEST_MAX_TOKENS: u32 = 4096;
+
     fn make_client(url: impl Into<String>, model: &str) -> OllamaClient {
         let http = SharedHttpClient::new(&HttpClientConfig::default()).unwrap();
-        OllamaClient::with_http_client(http, url, model, None, RetryConfig::no_retry())
+        OllamaClient::with_http_client(
+            http,
+            url,
+            model,
+            None,
+            TEST_MAX_TOKENS,
+            RetryConfig::no_retry(),
+        )
     }
 
     fn make_client_with_timeout(url: impl Into<String>, model: &str, timeout: u64) -> OllamaClient {
         let http = SharedHttpClient::new(&HttpClientConfig::with_timeout(timeout)).unwrap();
-        OllamaClient::with_http_client(http, url, model, None, RetryConfig::no_retry())
+        OllamaClient::with_http_client(
+            http,
+            url,
+            model,
+            None,
+            TEST_MAX_TOKENS,
+            RetryConfig::no_retry(),
+        )
     }
 
     #[test]
@@ -1380,7 +1406,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn temperature_options_absent_when_none() {
+    async fn temperature_absent_from_options_when_none() {
         let mock_server = MockServer::start().await;
 
         Mock::given(method("POST"))
@@ -1406,8 +1432,58 @@ mod tests {
         let body: serde_json::Value =
             serde_json::from_slice(&requests.first().unwrap().body).unwrap();
         assert!(
-            body.get("options").is_none(),
-            "options should be absent when temperature is None"
+            body.pointer("/options/temperature").is_none(),
+            "temperature should be absent from options when it is None: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn num_predict_defaults_to_the_configured_limit_and_follows_the_request() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "message": { "role": "assistant", "content": "ok" }
+            })))
+            .expect(2)
+            .mount(&mock_server)
+            .await;
+
+        let client = make_client(mock_server.uri(), "test-model");
+        client
+            .complete(
+                &[Message::user("Hello")],
+                &[],
+                &CompletionOptions::default(),
+            )
+            .await
+            .unwrap();
+        let options = CompletionOptions {
+            max_tokens: Some(256),
+            ..CompletionOptions::default()
+        };
+        client
+            .complete(&[Message::user("Hello")], &[], &options)
+            .await
+            .unwrap();
+
+        let requests = mock_server.received_requests().await.unwrap();
+        let bodies: Vec<serde_json::Value> = requests
+            .iter()
+            .map(|request| serde_json::from_slice(&request.body).unwrap())
+            .collect();
+        let limits: Vec<Option<u64>> = bodies
+            .iter()
+            .map(|body| {
+                body.pointer("/options/num_predict")
+                    .and_then(serde_json::Value::as_u64)
+            })
+            .collect();
+        assert_eq!(
+            limits,
+            vec![Some(u64::from(TEST_MAX_TOKENS)), Some(256)],
+            "num_predict is the configured default, or the request's own limit when it sets one"
         );
     }
 
@@ -1423,6 +1499,7 @@ mod tests {
             model,
             api_key,
             None,
+            TEST_MAX_TOKENS,
             RetryConfig::no_retry(),
         )
     }
@@ -1597,6 +1674,7 @@ mod tests {
             mock_server.uri(),
             "test-model",
             Some("10m".to_string()),
+            TEST_MAX_TOKENS,
             RetryConfig::no_retry(),
         );
         let result = client
@@ -2179,6 +2257,7 @@ mod tests {
             server.uri(),
             "m",
             None,
+            TEST_MAX_TOKENS,
             RetryConfig {
                 max_retries: 1,
                 initial_delay: std::time::Duration::from_millis(5),

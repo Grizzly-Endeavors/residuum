@@ -31,6 +31,10 @@ use residuum_inference::{
     CompletionOptions, InferenceProvider, Message, ResponseFormat, UsageComponent, UsageRecorder,
 };
 
+/// The output limit of a subconscious evaluation, whose answer is a short
+/// list of findings.
+const OUTPUT_LIMIT: u32 = 1024;
+
 /// Which evaluation pass is running.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EvalPhase {
@@ -345,7 +349,7 @@ impl Subconscious {
         let options = CompletionOptions {
             temperature: ov.and_then(|o| o.temperature),
             thinking: ov.and_then(|o| o.thinking.clone()),
-            max_tokens: Some(1024),
+            max_tokens: Some(OUTPUT_LIMIT),
             response_format: ResponseFormat::JsonSchema {
                 name: "subconscious_findings".to_string(),
                 schema: subconscious_response_schema(include_learnings),
@@ -363,6 +367,13 @@ impl Subconscious {
             )
             .await;
         let response = result.context("subconscious LLM call failed")?;
+        if response.was_truncated() && response.content.trim().is_empty() {
+            // A reasoning model can spend the whole limit reasoning and
+            // answer nothing; that is a failed evaluation, not a clean one.
+            anyhow::bail!(
+                "the subconscious model reached its {OUTPUT_LIMIT}-token output limit before answering, so this evaluation has no result; a model that reasons by default can spend the whole limit reasoning"
+            );
+        }
 
         let outcome = parse_subconscious_response(&response, include_learnings)?;
         if outcome.findings.is_empty() && outcome.learnings.is_empty() {
@@ -590,6 +601,65 @@ mod tests {
         assert!(
             outcome.findings.is_empty(),
             "empty findings should parse to empty"
+        );
+    }
+
+    /// A model that spends the whole output limit before answering.
+    struct ReasonedOutOfTokens;
+
+    #[async_trait::async_trait]
+    impl InferenceProvider for ReasonedOutOfTokens {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[residuum_inference::ToolDefinition],
+            _options: &CompletionOptions,
+        ) -> Result<residuum_inference::InferenceResponse, residuum_inference::InferenceError>
+        {
+            let mut response = residuum_inference::InferenceResponse::new(String::new(), vec![]);
+            response.stop_reason = Some(residuum_inference::StopReason::MaxTokens);
+            Ok(response)
+        }
+
+        fn model_name(&self) -> &'static str {
+            "reasoned-out-of-tokens"
+        }
+    }
+
+    #[tokio::test]
+    async fn an_empty_answer_cut_off_by_the_output_limit_is_a_failed_evaluation() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        let sub = Subconscious::new(
+            Box::new(ReasonedOutOfTokens),
+            SubconsciousConfig {
+                enabled: true,
+                ..SubconsciousConfig::default()
+            },
+            layout.clone(),
+        );
+
+        let error = sub
+            .evaluate(&make_transcript(), EvalPhase::MidTurn, None)
+            .await
+            .expect_err("an evaluation with no answer must not read as no findings");
+
+        assert!(
+            error.to_string().contains("output limit before answering"),
+            "the error names the cause: {error}"
+        );
+        let records = UsageRecorder::new(&layout)
+            .load(
+                chrono::DateTime::<chrono::Utc>::MIN_UTC,
+                chrono::DateTime::<chrono::Utc>::MAX_UTC,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            records.len(),
+            1,
+            "the call that spent its limit reasoning is still recorded"
         );
     }
 

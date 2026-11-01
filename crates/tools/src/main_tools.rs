@@ -256,7 +256,6 @@ pub fn init_tool_registry(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::testing::RegistryHarness;
 
     /// Tools that must stay main-only, never registered for a session. This
@@ -274,46 +273,6 @@ mod tests {
 
     /// `TOOLS.md`, the contract every tool's description is quoted from.
     const TOOLS_MD: &str = include_str!("TOOLS.md");
-
-    /// Main's registry over `h`, with every optional tool gate on (the
-    /// harness config carries an Ollama web search backend).
-    fn build_main_registry(h: &RegistryHarness, dir: &std::path::Path) -> ToolRegistry {
-        let auto_mode = residuum_agent::auto_mode::AutoModeGate::new_shared(
-            "test",
-            residuum_config::AutoModeConfig::default(),
-            residuum_inference::system_one::SystemOneService::new(None),
-            residuum_inference::UsageRecorder::new(&residuum_config::WorkspaceLayout::new(dir)),
-        );
-        let model_catalog = residuum_config::ModelCatalog::default().into_shared();
-        let deps = ToolRegistryDeps {
-            action_store: &h.action_store,
-            action_notify: &h.action_notify,
-            skill_state: &h.skill_state,
-            tools_path: &h.tools_path,
-            path_policy: &h.path_policy,
-            auto_mode: &auto_mode,
-            agent_keys: &h.agent_keys,
-            session_registry: &h.session_registry,
-            endpoint_registry: &h.endpoint_registry,
-            publisher: &h.publisher,
-            build: residuum_core::testing::HARNESS_BUILD,
-            tracing_service: &h.tracing_service,
-            tracing_client_context: &h.tracing_client_context,
-            agent_messenger: &h.agent_messenger,
-            hop_counter: &h.hop_counter,
-            a2a_hub: &h.a2a_hub,
-            a2a_tracker: &h.a2a_tracker,
-            checkpoints: &h.checkpoints,
-            config_reload_tracker: &h.config_reload_tracker,
-            hub_dir: &h.hub_dir,
-            lifecycle: &h.lifecycle,
-            model_catalog: &model_catalog,
-            mailboxes: None,
-        };
-        let (tools, _, _) =
-            init_tool_registry(&h.cfg, &h.layout, &h.hybrid_searcher, chrono_tz::UTC, &deps);
-        tools
-    }
 
     /// How TOOLS.md quotes a description: each line as a blockquote line, and
     /// each paragraph break as a bare `>`.
@@ -342,7 +301,7 @@ mod tests {
         // A Windows checkout with autocrlf turns TOOLS.md's line endings into
         // CRLF, while the descriptions are LF, so compare on LF.
         let tools_md = TOOLS_MD.replace("\r\n", "\n");
-        let definitions = build_main_registry(&h, dir.path()).definitions();
+        let definitions = h.main_registry().definitions();
         assert!(!definitions.is_empty(), "main registers no tools");
         for definition in definitions {
             let expected = format!("\n{}\n", quote_as_tools_md(&definition.description));
@@ -376,7 +335,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let h = RegistryHarness::build(dir.path()).await;
 
-        let main_tools = build_main_registry(&h, dir.path());
+        let main_tools = h.main_registry();
         let mut main_names = main_tools.tool_names();
         main_names.sort();
 

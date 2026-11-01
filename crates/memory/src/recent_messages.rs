@@ -301,6 +301,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn status_line_round_trips_and_is_optional_on_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("recent_messages.json");
+        let line = "[Received: Sunday Nov 1st 2026 | 10:49][Message Source: web]";
+        let mut stamped = Message::user("hi");
+        stamped.status_line = Some(line.to_string());
+
+        append_recent_messages(&path, &[stamped], Visibility::User, chrono_tz::UTC, None)
+            .await
+            .unwrap();
+        let restored = load_messages_for_agent(&path).await.unwrap();
+        let message = restored.messages.first().unwrap();
+        assert_eq!(message.status_line.as_deref(), Some(line));
+        assert_eq!(message.content, "hi", "the line is not part of the text");
+
+        // History written without the field still loads, with no line.
+        let legacy = r#"[{"role":"user","content":"hi","timestamp":"2026-09-20T12:00","visibility":"user"}]"#;
+        tokio::fs::write(&path, legacy).await.unwrap();
+        let legacy_loaded = load_messages_for_agent(&path).await.unwrap();
+        assert_eq!(
+            legacy_loaded
+                .messages
+                .first()
+                .map(|m| m.status_line.clone()),
+            Some(None)
+        );
+    }
+
+    #[tokio::test]
     async fn round_trip() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("recent_messages.json");

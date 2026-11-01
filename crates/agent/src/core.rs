@@ -4,11 +4,11 @@ use tokio_util::sync::CancellationToken;
 
 use residuum_bus::Publisher;
 use residuum_bus::origin::MessageOrigin;
-use residuum_inference::{CompletionOptions, InferenceProvider, Message};
+use residuum_inference::{CacheRetention, CompletionOptions, InferenceProvider, Message};
 use residuum_mcp::SharedMcpRegistry;
 use residuum_workspace::identity::IdentityFiles;
 
-use super::context::{MemoryContext, PromptContext, StatusLine};
+use super::context::{MemoryContext, PromptContext, StatusClock};
 use super::hop::HopCounter;
 use super::recent_messages::RecentMessages;
 use super::tool::ToolRegistry;
@@ -53,7 +53,9 @@ pub struct Agent {
     observations: Option<String>,
     /// Narrative summary from the most recent observation cycle.
     recent_context: Option<String>,
-    tz: chrono_tz::Tz,
+    /// Stamps each user message entering the conversation with its status
+    /// line, in the user's timezone.
+    status_clock: StatusClock,
     /// Workspace layout for per-turn identity reloads. `None` pins identity to
     /// the construction-time snapshot (test constructors).
     layout: Option<residuum_config::WorkspaceLayout>,
@@ -64,7 +66,6 @@ pub struct Agent {
     /// so the hub counts it read or unread at that moment. `None` counts
     /// nothing.
     reply_audience: Option<std::sync::Arc<dyn super::ReplyAudience>>,
-    last_user_message_at: Option<chrono::NaiveDateTime>,
     /// Main's current-turn hop count: the highest hop count among the
     /// inputs (kickoff message, agent-message interrupts drained mid-turn)
     /// driving whichever turn is currently running. Shared with the
@@ -115,8 +116,6 @@ pub struct FailedTurn {
     origin: MessageOrigin,
     /// The hop count that message carried.
     kickoff_hop: u32,
-    /// When the message before it arrived, for the rerun's status line.
-    previous_message_at: Option<chrono::NaiveDateTime>,
 }
 
 impl FailedTurn {
@@ -163,11 +162,10 @@ impl Agent {
             repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
             observations: None,
             recent_context: None,
-            tz: config.tz,
+            status_clock: StatusClock::new(config.tz),
             layout: config.layout,
             team: None,
             reply_audience: None,
-            last_user_message_at: None,
             hop_counter,
             usage_totals: std::sync::Arc::new(tokio::sync::Mutex::new(
                 SessionUsageTotals::default(),
@@ -253,7 +251,7 @@ impl Agent {
 
     /// Apply a new user timezone to future turns' timestamps.
     pub fn set_timezone(&mut self, tz: chrono_tz::Tz) {
-        self.tz = tz;
+        self.status_clock.set_timezone(tz);
     }
 
     /// The agent's tool registry, for re-registering tools in place (e.g.
@@ -311,10 +309,10 @@ impl Agent {
 
     /// Seed the last user message timestamp from persisted data.
     ///
-    /// Called at startup so the first time context tag after a restart
-    /// shows the correct "last message" duration.
+    /// Called at startup so the first status line after a restart shows the
+    /// correct "last message" duration.
     pub fn set_last_user_message_at(&mut self, at: Option<chrono::NaiveDateTime>) {
-        self.last_user_message_at = at;
+        self.status_clock.set_last_message_at(at);
     }
 
     /// Clear all in-memory messages (used after idle transition + observer).
@@ -374,10 +372,12 @@ impl Agent {
     /// Used for user messages that arrived as interrupts during a turn's final
     /// LLM call and were drained after the turn completed. Ensures the message
     /// (with its sender, images, and background context) is visible in the next
-    /// turn without being lost.
+    /// turn without being lost. The message is stamped with its status line
+    /// as it enters history, like every other user message.
     pub fn inject_inbound_message(&mut self, message: residuum_bus::MessageEvent) {
         self.forget_failed_turn("a message entered the conversation");
-        self.recent_messages.extend(message.into_history_messages());
+        let entries = self.status_clock.admit(message);
+        self.recent_messages.extend(entries);
     }
 
     /// Build a [`MemoryContext`] from borrowed observation/narrative fields.
@@ -432,14 +432,6 @@ impl Agent {
     ) -> anyhow::Result<Vec<String>> {
         tracing::debug!("processing user message");
         self.forget_failed_turn("another turn started");
-        let now = residuum_core::time::now_local(self.tz);
-        let previous_message_at = self.last_user_message_at;
-        let status_line = StatusLine {
-            now,
-            last_message_at: previous_message_at,
-            message_source: origin.map(|o| o.endpoint.clone()),
-        };
-        self.last_user_message_at = Some(now);
 
         let sender = origin.and_then(|o| o.sender.clone());
         // A teammate's or session's message can start a turn (it may arrive
@@ -447,14 +439,17 @@ impl Agent {
         // the kickoff carries the structured sender the way a message
         // injected mid-turn does.
         let agent_sender = origin.and_then(|o| o.agent_sender.as_deref().cloned());
-        let kickoff = if images.is_empty() {
+        let mut kickoff = if images.is_empty() {
             Message::user(user_input)
         } else {
             Message::user_with_images(user_input, images.to_vec())
-        };
+        }
+        .with_sender(sender)
+        .with_agent_sender(agent_sender);
+        self.status_clock
+            .stamp(&mut kickoff, origin.map(|o| o.endpoint.as_str()));
         let kickoff_index = self.recent_messages.len();
-        self.recent_messages
-            .push(kickoff.with_sender(sender).with_agent_sender(agent_sender));
+        self.recent_messages.push(kickoff);
 
         let kickoff_hop = self.hop_counter.get();
         let wiring = TurnWiring {
@@ -466,7 +461,12 @@ impl Agent {
             stop_token,
         };
         let result = self
-            .run_turn_from(kickoff_index, correlation_id, &status_line, wiring)
+            .run_turn_from(
+                kickoff_index,
+                correlation_id,
+                turn_cache_retention(origin),
+                wiring,
+            )
             .await;
         if result.is_err()
             && let Some(origin) = origin
@@ -476,7 +476,6 @@ impl Agent {
                 kickoff_index,
                 origin: origin.clone(),
                 kickoff_hop,
-                previous_message_at,
             });
         }
         result
@@ -501,18 +500,14 @@ impl Agent {
             "running the failed latest turn again"
         );
         // The rerun's inputs are the original turn's: the hop count its
-        // opening message carried, and the status line it was sent under.
+        // opening message carried. That message keeps the status line it
+        // was stamped with when it arrived.
         self.hop_counter.bump(failed.kickoff_hop);
-        let status_line = StatusLine {
-            now: residuum_core::time::now_local(self.tz),
-            last_message_at: failed.previous_message_at,
-            message_source: Some(failed.origin.endpoint.clone()),
-        };
         let result = self
             .run_turn_from(
                 failed.kickoff_index,
                 &failed.correlation_id,
-                &status_line,
+                turn_cache_retention(Some(&failed.origin)),
                 wiring,
             )
             .await;
@@ -523,12 +518,13 @@ impl Agent {
     }
 
     /// Run a turn whose opening message sits at `kickoff_index` in history,
-    /// under `correlation_id`.
+    /// under `correlation_id`, asking providers to keep its cache for
+    /// `retention`.
     async fn run_turn_from(
         &mut self,
         kickoff_index: usize,
         correlation_id: &str,
-        status_line: &StatusLine,
+        retention: CacheRetention,
         wiring: TurnWiring<'_>,
     ) -> anyhow::Result<Vec<String>> {
         self.identity = self.load_identity_snapshot().await;
@@ -546,12 +542,14 @@ impl Agent {
             std::sync::Arc::clone(&self.usage_totals),
             self.layout.as_ref(),
         );
+        let mut options = self.options.clone();
+        options.cache.retention = retention;
         let resources = TurnResources {
             provider: &*self.provider,
             tools: &self.tools,
             mcp_registry: &self.mcp_registry,
             identity: &self.identity,
-            options: &self.options,
+            options: &options,
             max_tool_iterations: self.max_tool_iterations,
             repeat_call_guard: self.repeat_call_guard,
             stop_token,
@@ -577,7 +575,7 @@ impl Agent {
             prompt_ctx,
             &mut self.recent_messages,
             &events,
-            Some(status_line),
+            Some(&mut self.status_clock),
             interrupt_rx,
             subconscious,
         )
@@ -631,6 +629,18 @@ impl Agent {
     }
 }
 
+/// How long providers should keep a main turn's cache. A person often
+/// replies more than five minutes after the agent's last answer, so a turn a
+/// person started keeps it for the long period; a turn a session's result,
+/// another agent or the system started keeps the provider's default.
+fn turn_cache_retention(origin: Option<&MessageOrigin>) -> CacheRetention {
+    if origin.is_some_and(MessageOrigin::is_from_person) {
+        CacheRetention::Long
+    } else {
+        CacheRetention::Short
+    }
+}
+
 #[cfg(test)]
 #[expect(
     clippy::indexing_slicing,
@@ -638,6 +648,7 @@ impl Agent {
 )]
 mod tests {
     use super::*;
+    use crate::context::SkillsContext;
     use crate::testing::{CountingTool, EchoTool};
     use async_trait::async_trait;
     use residuum_inference::{InferenceError, InferenceResponse, ToolCall, ToolDefinition};
@@ -741,6 +752,111 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result, vec!["hello there"], "should return model text");
+    }
+
+    /// Answers every call, recording the cache hints it was sent.
+    struct CacheHintsRecorder {
+        seen: Arc<std::sync::Mutex<Vec<residuum_inference::CacheHints>>>,
+    }
+
+    #[async_trait]
+    impl InferenceProvider for CacheHintsRecorder {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            options: &CompletionOptions,
+        ) -> Result<InferenceResponse, InferenceError> {
+            self.seen.lock().unwrap().push(options.cache.clone());
+            Ok(InferenceResponse::new("ok".to_string(), vec![]))
+        }
+
+        fn model_name(&self) -> &'static str {
+            "cache-hints-recorder"
+        }
+    }
+
+    #[tokio::test]
+    async fn a_person_s_turn_keeps_its_cache_longer_than_a_background_turn() {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut options = CompletionOptions::default();
+        options.cache.conversation_key = Some("main-conversation".to_string());
+        let mut agent = Agent::new(
+            Box::new(CacheHintsRecorder {
+                seen: Arc::clone(&seen),
+            }),
+            ToolRegistry::new(),
+            empty_mcp(),
+            IdentityFiles::default(),
+            AgentConfig {
+                options,
+                tz: chrono_tz::UTC,
+                layout: None,
+            },
+            crate::HopCounter::new(0),
+        );
+        let background = MessageOrigin {
+            endpoint: residuum_bus::origin::BACKGROUND_ENDPOINT.to_string(),
+            ..web_origin()
+        };
+
+        for origin in [web_origin(), background] {
+            let (publisher, ep) = test_bus();
+            let mut irx = residuum_bus::testing::dead_interrupt_rx();
+            agent
+                .process_message(
+                    "hi",
+                    &publisher,
+                    Some(&ep),
+                    "",
+                    Some(&origin),
+                    &PromptContext::default(),
+                    &mut irx,
+                    &[],
+                    None,
+                    &CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+        }
+
+        let seen = seen.lock().unwrap().clone();
+        let key = Some("main-conversation".to_string());
+        assert_eq!(
+            seen,
+            vec![
+                residuum_inference::CacheHints {
+                    conversation_key: key.clone(),
+                    retention: CacheRetention::Long,
+                },
+                residuum_inference::CacheHints {
+                    conversation_key: key,
+                    retention: CacheRetention::Short,
+                },
+            ],
+            "the person's turn first, then the background one, both keyed to the conversation"
+        );
+    }
+
+    #[test]
+    fn only_a_person_s_message_asks_for_long_retention() {
+        let from_agent = MessageOrigin {
+            agent_sender: Some(Box::new(residuum_inference::AgentSender {
+                address: "agent:other".to_string(),
+                category: "teammate".to_string(),
+                run_id: None,
+            })),
+            ..web_origin()
+        };
+        assert_eq!(
+            turn_cache_retention(Some(&web_origin())),
+            CacheRetention::Long
+        );
+        assert_eq!(
+            turn_cache_retention(Some(&from_agent)),
+            CacheRetention::Short
+        );
+        assert_eq!(turn_cache_retention(None), CacheRetention::Short);
     }
 
     #[tokio::test]
@@ -2132,11 +2248,18 @@ mod tests {
     /// A step of a [`ScriptedProvider`]'s script.
     type Step = Result<InferenceResponse, InferenceError>;
 
+    /// What one model call of a [`ScriptedProvider`] was sent.
+    #[derive(Clone)]
+    struct RecordedRequest {
+        messages: Vec<Message>,
+        tools: Vec<ToolDefinition>,
+    }
+
     /// A provider that answers each call with the next step of its script,
-    /// and records the messages every call carried.
+    /// and records the messages and tool definitions every call carried.
     struct ScriptedProvider {
         script: std::sync::Mutex<std::collections::VecDeque<Step>>,
-        requests: Arc<std::sync::Mutex<Vec<Vec<Message>>>>,
+        requests: Arc<std::sync::Mutex<Vec<RecordedRequest>>>,
     }
 
     #[async_trait]
@@ -2144,10 +2267,13 @@ mod tests {
         async fn complete(
             &self,
             messages: &[Message],
-            _tools: &[ToolDefinition],
+            tools: &[ToolDefinition],
             _options: &CompletionOptions,
         ) -> Result<InferenceResponse, InferenceError> {
-            self.requests.lock().unwrap().push(messages.to_vec());
+            self.requests.lock().unwrap().push(RecordedRequest {
+                messages: messages.to_vec(),
+                tools: tools.to_vec(),
+            });
             self.script
                 .lock()
                 .unwrap()
@@ -2181,8 +2307,8 @@ mod tests {
     }
 
     /// An agent with the echo tool whose model follows `script`, and the
-    /// messages each of its model calls carried.
-    fn scripted_agent(script: Vec<Step>) -> (Agent, Arc<std::sync::Mutex<Vec<Vec<Message>>>>) {
+    /// request each of its model calls carried.
+    fn scripted_agent(script: Vec<Step>) -> (Agent, Arc<std::sync::Mutex<Vec<RecordedRequest>>>) {
         let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
         let provider = ScriptedProvider {
             script: std::sync::Mutex::new(script.into()),
@@ -2279,6 +2405,16 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn each_model_call_is_sent_the_registry_tools() {
+        let (mut agent, requests) = scripted_agent(vec![Ok(reply("hi"))]);
+        send(&mut agent, "hello", "t1", &[]).await.unwrap();
+
+        let recorded = requests.lock().unwrap();
+        let names: Vec<&str> = recorded[0].tools.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["echo"]);
+    }
+
+    #[tokio::test]
     async fn a_failed_turn_runs_again_on_its_message_and_keeps_its_partial_work() {
         use residuum_inference::Role;
 
@@ -2296,7 +2432,7 @@ mod tests {
         let replies = retry(&mut agent, "t1").await.unwrap();
 
         assert_eq!(replies, vec!["done"]);
-        let rerun_request = requests.lock().unwrap().last().cloned().unwrap();
+        let rerun_request = requests.lock().unwrap().last().cloned().unwrap().messages;
         assert_eq!(
             conversation_roles(&rerun_request),
             [Role::User, Role::Assistant, Role::Tool],
@@ -2425,7 +2561,7 @@ mod tests {
 
         retry(&mut agent, "t1").await.unwrap();
 
-        let rerun_request = requests.lock().unwrap().last().cloned().unwrap();
+        let rerun_request = requests.lock().unwrap().last().cloned().unwrap().messages;
         let users: Vec<&Message> = rerun_request
             .iter()
             .filter(|m| m.role == residuum_inference::Role::User)
@@ -2443,6 +2579,284 @@ mod tests {
             images,
             [(image.media_type.as_str(), image.data.as_str())],
             "and its image"
+        );
+    }
+
+    /// Each message of a request as JSON, for comparing requests exactly.
+    fn request_json(request: &[Message]) -> Vec<serde_json::Value> {
+        request
+            .iter()
+            .map(|m| serde_json::to_value(m).unwrap())
+            .collect()
+    }
+
+    /// Assert `later` starts with exactly the messages of `earlier` and
+    /// appends to them.
+    fn assert_extends(earlier: &[Message], later: &[Message], what: &str) {
+        let earlier = request_json(earlier);
+        let later = request_json(later);
+        assert!(
+            later.len() > earlier.len(),
+            "{what}: the later request appends ({} then {} messages)",
+            earlier.len(),
+            later.len()
+        );
+        assert_eq!(&later[..earlier.len()], earlier.as_slice(), "{what}");
+    }
+
+    /// Whether `message` is a status line the request carries.
+    fn is_status_line(message: &Message) -> bool {
+        message.role == residuum_inference::Role::System
+            && message.content.starts_with("[Received:")
+    }
+
+    #[tokio::test]
+    async fn consecutive_turns_replay_the_earlier_request_unchanged() {
+        use residuum_inference::Role;
+
+        let (mut agent, requests) =
+            scripted_agent(vec![Ok(echo_call()), Ok(reply("one")), Ok(reply("two"))]);
+        send(&mut agent, "first", "t1", &[]).await.unwrap();
+        send(&mut agent, "second", "t2", &[]).await.unwrap();
+
+        let requests = requests.lock().unwrap().clone();
+        assert_eq!(requests.len(), 3, "two calls in turn one, one in turn two");
+        assert_extends(
+            &requests[0].messages,
+            &requests[1].messages,
+            "the tool loop's second call extends its first",
+        );
+        assert_extends(
+            &requests[1].messages,
+            &requests[2].messages,
+            "the next turn extends the previous turn's last request",
+        );
+
+        let tail: Vec<(Role, &str)> = requests[2].messages[requests[1].messages.len()..]
+            .iter()
+            .map(|m| (m.role, m.content.as_str()))
+            .collect();
+        let [reply_one, line, second] = tail.as_slice() else {
+            panic!("expected the reply, the new line and the new message: {tail:?}");
+        };
+        assert_eq!(*reply_one, (Role::Assistant, "one"));
+        assert_eq!(line.0, Role::System);
+        assert!(
+            line.1.starts_with("[Received:")
+                && line.1.contains("[Last Message:")
+                && line.1.ends_with("[Message Source: web]"),
+            "the new message's line, computed at its arrival: {}",
+            line.1
+        );
+        assert_eq!(*second, (Role::User, "second"));
+        assert_eq!(
+            requests[2]
+                .messages
+                .iter()
+                .filter(|m| is_status_line(m))
+                .count(),
+            2,
+            "one line per user message"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_mid_turn_message_gets_its_own_status_line_and_earlier_lines_stay() {
+        use residuum_inference::Role;
+
+        let (interrupt_tx, mut interrupt_rx) = tokio::sync::mpsc::unbounded_channel();
+        let provider = CapturingProvider::new(
+            vec![
+                echo_call(),
+                InferenceResponse::new("done".to_string(), vec![]),
+            ],
+            interrupt_tx,
+        );
+        provider.schedule_interrupt(
+            0,
+            vec![interrupt::Interrupt::UserMessage(make_inbound(
+                "int-1",
+                "actually, do X instead",
+            ))],
+        );
+        let captured = Arc::clone(&provider.captured);
+        let mut agent = Agent::new(
+            Box::new(provider),
+            echo_registry(),
+            empty_mcp(),
+            IdentityFiles::default(),
+            AgentConfig {
+                options: CompletionOptions::default(),
+                tz: chrono_tz::UTC,
+                layout: None,
+            },
+            crate::HopCounter::new(0),
+        );
+
+        let (publisher, ep) = test_bus();
+        agent
+            .process_message(
+                "hello",
+                &publisher,
+                Some(&ep),
+                "",
+                Some(&web_origin()),
+                &PromptContext::default(),
+                &mut interrupt_rx,
+                &[],
+                None,
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        let calls = captured.lock().await;
+        assert_eq!(calls.len(), 2, "provider should be called twice");
+        assert_extends(
+            &calls[0],
+            &calls[1],
+            "the injected message is appended; the kickoff's line stays put",
+        );
+        let injected = calls[1]
+            .iter()
+            .position(|m| m.content == "actually, do X instead")
+            .unwrap();
+        let line = &calls[1][injected - 1];
+        assert!(is_status_line(line), "a line precedes the injected message");
+        assert!(
+            line.content.contains("[Last Message:")
+                && line.content.ends_with("[Message Source: test]"),
+            "its own line, computed at its arrival: {}",
+            line.content
+        );
+        assert_eq!(
+            calls[1].iter().filter(|m| is_status_line(m)).count(),
+            2,
+            "the kickoff and the injected message each carry one"
+        );
+        assert_eq!(calls[1][injected].role, Role::User);
+    }
+
+    #[tokio::test]
+    async fn a_rerun_replays_the_status_line_its_message_arrived_with() {
+        let (mut agent, requests) = scripted_agent(vec![model_down(), Ok(reply("ok"))]);
+        assert!(send(&mut agent, "hello", "t1", &[]).await.is_err());
+
+        retry(&mut agent, "t1").await.unwrap();
+
+        let requests = requests.lock().unwrap().clone();
+        assert_eq!(
+            request_json(&requests[0].messages),
+            request_json(&requests[1].messages),
+            "the rerun sends the failed attempt's request unchanged"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_restored_history_replays_its_status_lines_unchanged() {
+        use residuum_memory::recent_messages::{append_recent_messages, load_messages_for_agent};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("recent_messages.json");
+        let (mut before, before_requests) = scripted_agent(vec![Ok(reply("one"))]);
+        send(&mut before, "first", "t1", &[]).await.unwrap();
+        append_recent_messages(
+            &path,
+            before.messages_since(0),
+            residuum_memory::types::Visibility::User,
+            chrono_tz::UTC,
+            Some("t1"),
+        )
+        .await
+        .unwrap();
+
+        let restore = load_messages_for_agent(&path).await.unwrap();
+        let (mut after, after_requests) = scripted_agent(vec![Ok(reply("two"))]);
+        after.restore_messages(restore.messages);
+        after.set_last_user_message_at(restore.last_user_message_at);
+        send(&mut after, "second", "t2", &[]).await.unwrap();
+
+        let first_request = before_requests.lock().unwrap()[0].messages.clone();
+        let restored_request = after_requests.lock().unwrap()[0].messages.clone();
+        assert_extends(
+            &first_request,
+            &restored_request,
+            "the restored history replays the first turn's request",
+        );
+    }
+
+    /// Run one turn of `agent` with `skills_index` as its skills listing,
+    /// which is part of the system prompt.
+    async fn turn_with_skills(agent: &mut Agent, skills_index: Option<&str>) {
+        let (publisher, ep) = test_bus();
+        let mut irx = residuum_bus::testing::dead_interrupt_rx();
+        let prompt_ctx = PromptContext {
+            skills: SkillsContext {
+                index: skills_index,
+                active_instructions: None,
+            },
+            ..PromptContext::default()
+        };
+        agent
+            .process_message(
+                "hi",
+                &publisher,
+                Some(&ep),
+                "",
+                Some(&web_origin()),
+                &prompt_ctx,
+                &mut irx,
+                &[],
+                None,
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_system_prompt_change_between_turns_logs_a_cache_break_once_at_info() {
+        let log = residuum_core::testing::log::EventLog::default();
+        let _capture = log.capture();
+        let (mut agent, _requests) = scripted_agent(vec![
+            Ok(reply("one")),
+            Ok(reply("two")),
+            Ok(reply("three")),
+            Ok(reply("four")),
+        ]);
+
+        turn_with_skills(&mut agent, None).await;
+        turn_with_skills(&mut agent, None).await;
+        assert!(
+            log.matching("prompt cache prefix changed").is_empty(),
+            "a turn whose earlier parts repeat logs no cache break"
+        );
+
+        turn_with_skills(&mut agent, Some("<skill name=\"a\"/>")).await;
+        turn_with_skills(&mut agent, Some("<skill name=\"b\"/>")).await;
+
+        let breaks = log.matching("prompt cache prefix changed");
+        let [first, second] = breaks.as_slice() else {
+            panic!("expected one break per skills change, got {breaks:?}");
+        };
+        assert_eq!(
+            first.level,
+            tracing::Level::INFO,
+            "the first system change between turns logs at info: {first:?}"
+        );
+        assert!(
+            first.text.contains("cause=\"system_changed\"")
+                && first.text.contains("part=\"system\""),
+            "the break names the system prompt as the changed part: {first:?}"
+        );
+        assert_eq!(
+            second.level,
+            tracing::Level::DEBUG,
+            "a repeat of the same cause logs at debug: {second:?}"
+        );
+        assert!(
+            second.text.contains("cause=\"system_changed\""),
+            "the repeat has the same cause: {second:?}"
         );
     }
 }

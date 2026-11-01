@@ -181,17 +181,22 @@ impl ToolRegistry {
         }
     }
 
-    /// Register a tool in the registry.
+    /// Register a tool, or replace the registered tool with the same name.
+    ///
+    /// A replacement keeps the position of the tool it replaces, so reloading
+    /// a tool never reorders the definitions sent to the model.
     pub fn register(&mut self, tool: Box<dyn Tool>) {
-        self.tools.push(tool);
+        match self.tools.iter_mut().find(|t| t.name() == tool.name()) {
+            Some(existing) => *existing = tool,
+            None => self.tools.push(tool),
+        }
     }
 
     /// Remove a registered tool by name, if present.
     ///
-    /// Used to reload a single conditionally-registered tool in place on a
-    /// live registry (e.g. `ollama_web_search` after a config reload changes
-    /// the standalone web search backend) without rebuilding the whole
-    /// registry. Returns `true` if a tool was removed.
+    /// Used when a conditionally-registered tool is no longer configured
+    /// (e.g. `ollama_web_search` after a config reload clears the standalone
+    /// web search backend). Returns `true` if a tool was removed.
     pub fn remove(&mut self, name: &str) -> bool {
         let before = self.tools.len();
         self.tools.retain(|t| t.name() != name);
@@ -334,6 +339,74 @@ mod tests {
         assert!(
             registry.definitions().is_empty(),
             "empty registry should have no definitions"
+        );
+    }
+
+    /// A tool that only reports a fixed name and description.
+    struct NamedTool {
+        name: &'static str,
+        description: &'static str,
+    }
+
+    #[async_trait]
+    impl Tool for NamedTool {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: self.name().to_string(),
+                description: self.description.to_string(),
+                parameters: serde_json::json!({}),
+            }
+        }
+
+        async fn execute(&self, _arguments: Value) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::success(self.description))
+        }
+    }
+
+    #[test]
+    fn registry_reregistering_a_tool_keeps_its_position() {
+        let mut registry = ToolRegistry::new();
+        for (name, description) in [("a", "first"), ("b", "second"), ("c", "third")] {
+            registry.register(Box::new(NamedTool { name, description }));
+        }
+
+        registry.register(Box::new(NamedTool {
+            name: "b",
+            description: "replaced",
+        }));
+
+        let defs = registry.definitions();
+        let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, ["a", "b", "c"], "a replaced tool keeps its slot");
+        let replaced = defs.iter().find(|d| d.name == "b").unwrap();
+        assert_eq!(replaced.description, "replaced", "the new definition wins");
+    }
+
+    #[test]
+    fn registry_remove_then_register_appends_at_the_end() {
+        let mut registry = ToolRegistry::new();
+        for name in ["a", "b", "c"] {
+            registry.register(Box::new(NamedTool {
+                name,
+                description: "",
+            }));
+        }
+
+        assert!(registry.remove("a"), "a was registered");
+        registry.register(Box::new(NamedTool {
+            name: "a",
+            description: "",
+        }));
+
+        let names = registry.tool_names();
+        assert_eq!(
+            names,
+            ["b", "c", "a"],
+            "removing and adding again is a new tool, so it goes last"
         );
     }
 

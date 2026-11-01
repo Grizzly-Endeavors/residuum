@@ -21,7 +21,7 @@ use residuum_inference::{ToolError, ToolResult};
 use residuum_mcp::SharedMcpRegistry;
 use residuum_workspace::identity::IdentityFiles;
 
-use super::context::{MemoryContext, PromptContext, StatusLine, assemble_system_prompt};
+use super::context::{MemoryContext, PromptContext, StatusClock, assemble_system_prompt};
 use super::hop::HopCounter;
 use super::recent_messages::RecentMessages;
 use super::stream::{ChannelSink, DeltaCoalescer, DiscardSink, StreamPiece};
@@ -696,6 +696,63 @@ async fn publish_stream_pieces(
     }
 }
 
+/// The request one model call sends: the messages, the tool definitions
+/// (built-in tools first, then MCP tools), and the call's options.
+#[derive(Debug)]
+pub struct ModelRequest {
+    /// The system prompt, carrying its cache boundary, then the
+    /// conversation with each stored status line ahead of its message.
+    pub messages: Vec<Message>,
+    pub tools: Vec<ToolDefinition>,
+    /// The turn's options, whose cache hints name the conversation and how
+    /// long this turn's cached prefix should be kept.
+    pub options: CompletionOptions,
+}
+
+/// Build the request a model call sends from the turn's current state.
+///
+/// The turn loop calls this every iteration, and the test seam
+/// (`residuum_agent::testing::render_model_request`) calls it too, so a test
+/// sees the bytes production sends. The system prompt is reassembled each
+/// time to pick up MCP changes. Identity is a snapshot taken at turn entry
+/// (reloaded from disk each turn), so mid-turn identity-file edits apply on
+/// the next turn.
+///
+/// Everything a provider caches on comes from here: the system prompt's
+/// cache boundary (set by its builder), the stored status lines, the tool
+/// order, and `options`' cache hints. The conversation key in those hints is
+/// set where the conversation's options are made (the main agent's at
+/// startup, a session's when its run starts), and the main agent sets each
+/// turn's retention from who started the turn.
+pub(crate) async fn build_model_request(
+    identity: &IdentityFiles,
+    recent_messages: &RecentMessages,
+    memory_ctx: &MemoryContext<'_>,
+    prompt_ctx: &PromptContext<'_>,
+    tools: &ToolRegistry,
+    mcp_registry: &SharedMcpRegistry,
+    options: &CompletionOptions,
+) -> ModelRequest {
+    let mut tool_definitions = tools.definitions();
+
+    // Merge MCP tool definitions from all connected servers. The registry
+    // has already dropped any MCP tool whose name collides with a built-in
+    // or with a tool of a server whose name sorts first, so this union
+    // never carries a duplicate name (collision policy:
+    // crates/mcp/src/CLAUDE.md).
+    let mcp_guard = mcp_registry.read().await;
+    tool_definitions.extend(mcp_guard.tool_definitions());
+    drop(mcp_guard);
+
+    let messages = assemble_system_prompt(identity, recent_messages, memory_ctx, prompt_ctx);
+
+    ModelRequest {
+        messages,
+        tools: tool_definitions,
+        options: options.clone(),
+    }
+}
+
 /// Make one model request, raced against the stop token.
 ///
 /// A main-agent turn hands the provider a sink that forwards its streamed
@@ -709,8 +766,7 @@ async fn publish_stream_pieces(
 async fn call_model(
     resources: &TurnResources<'_>,
     events: &EventContext<'_>,
-    messages: &[Message],
-    tool_definitions: &[ToolDefinition],
+    request: &ModelRequest,
     call: u32,
 ) -> anyhow::Result<ModelCall> {
     let (channel_sink, mut deltas) = ChannelSink::channel();
@@ -719,11 +775,13 @@ async fn call_model(
     } else {
         &DiscardSink
     };
-    let request =
-        resources
-            .provider
-            .complete_streaming(messages, tool_definitions, resources.options, sink);
-    tokio::pin!(request);
+    let completion = resources.provider.complete_streaming(
+        &request.messages,
+        &request.tools,
+        &request.options,
+        sink,
+    );
+    tokio::pin!(completion);
 
     let mut coalescer = DeltaCoalescer::default();
     let mut streamed = false;
@@ -739,7 +797,7 @@ async fn call_model(
             () = sleep_until_deadline(flush_at) => {
                 publish_stream_pieces(events, call, coalescer.take_pending(), &mut streamed).await;
             }
-            result = &mut request => break Some(result),
+            result = &mut completion => break Some(result),
         }
     };
 
@@ -841,6 +899,41 @@ async fn finish_turn_with_notice(
     Ok(vec![notice])
 }
 
+/// Build the request for one loop iteration and make the model call.
+///
+/// Returns the response and whether it streamed to the main conversation,
+/// or `None` when the user stopped the turn during the call; the stop note
+/// is recorded before returning `None`.
+async fn request_model_response(
+    resources: &TurnResources<'_>,
+    memory_ctx: &MemoryContext<'_>,
+    prompt_ctx: &PromptContext<'_>,
+    recent_messages: &mut RecentMessages,
+    events: &EventContext<'_>,
+    call: u32,
+) -> anyhow::Result<Option<(InferenceResponse, bool)>> {
+    let request = build_model_request(
+        resources.identity,
+        recent_messages,
+        memory_ctx,
+        prompt_ctx,
+        resources.tools,
+        resources.mcp_registry,
+        resources.options,
+    )
+    .await;
+    recent_messages.watch_request(&request, call > 0);
+
+    match call_model(resources, events, &request, call).await? {
+        ModelCall::Completed { response, streamed } => Ok(Some((*response, streamed))),
+        ModelCall::Stopped => {
+            tracing::info!(iterations = call, "turn stopped by user during model call");
+            record_stop(recent_messages, resources).await;
+            Ok(None)
+        }
+    }
+}
+
 /// Execute the tool loop against the given message buffer.
 ///
 /// Calls the provider repeatedly until it returns a text response (no tool calls),
@@ -870,6 +963,9 @@ async fn finish_turn_with_notice(
 /// usually the triggering messages were pushed just before this call and are
 /// the last ones, while a rerun of a failed turn starts from the message that
 /// started it, with the failed attempt's work still in history after it.
+///
+/// `status_clock` is `Some` for the main conversation, which stamps each
+/// message folded in mid-turn with its status line.
 #[tracing::instrument(skip_all, fields(operation = "execute_turn"))]
 #[expect(
     clippy::too_many_arguments,
@@ -882,7 +978,7 @@ pub async fn execute_turn(
     prompt_ctx: &PromptContext<'_>,
     recent_messages: &mut RecentMessages,
     events: &EventContext<'_>,
-    status_line: Option<&StatusLine>,
+    mut status_clock: Option<&mut StatusClock>,
     interrupt_rx: &mut dyn InterruptSource,
     subconscious: Option<&crate::subconscious::SubconsciousWatch>,
 ) -> anyhow::Result<Vec<String>> {
@@ -903,8 +999,15 @@ pub async fn execute_turn(
             return Ok(texts);
         }
 
-        if check_interrupts_and_stop(interrupt_rx, recent_messages, resources, events, iteration)
-            .await
+        if check_interrupts_and_stop(
+            interrupt_rx,
+            recent_messages,
+            status_clock.as_deref_mut(),
+            resources,
+            events,
+            iteration,
+        )
+        .await
         {
             return Ok(texts);
         }
@@ -913,39 +1016,18 @@ pub async fn execute_turn(
         // repeats it, so it always equals the iteration.
         let call = u32::try_from(iteration).unwrap_or(u32::MAX);
 
-        let mut tool_definitions = resources.tools.definitions();
-
-        // Merge MCP tool definitions from all connected servers. The registry
-        // has already dropped any MCP tool whose name collides with a built-in
-        // or with an earlier server, so this union never carries a duplicate
-        // name (collision policy: crates/mcp/src/CLAUDE.md).
-        let mcp_guard = resources.mcp_registry.read().await;
-        tool_definitions.extend(mcp_guard.tool_definitions());
-        drop(mcp_guard);
-
-        // System prompt is reassembled each iteration to pick up MCP changes.
-        // Identity is a snapshot taken at turn entry (reloaded from disk each
-        // turn), so mid-turn identity-file edits apply on the next turn.
-        let messages = assemble_system_prompt(
-            resources.identity,
-            recent_messages,
+        let Some((mut response, streamed)) = request_model_response(
+            resources,
             memory_ctx,
             prompt_ctx,
-            status_line,
-        );
-
-        let (mut response, streamed) =
-            match call_model(resources, events, &messages, &tool_definitions, call).await? {
-                ModelCall::Completed { response, streamed } => (*response, streamed),
-                ModelCall::Stopped => {
-                    tracing::info!(
-                        iterations = iteration,
-                        "turn stopped by user during model call"
-                    );
-                    record_stop(recent_messages, resources).await;
-                    return Ok(texts);
-                }
-            };
+            recent_messages,
+            events,
+            call,
+        )
+        .await?
+        else {
+            return Ok(texts);
+        };
         settle_response(&mut response, events, call).await;
         notice_images_omitted(
             &response,
@@ -1161,6 +1243,7 @@ async fn handle_tool_call_response(
 async fn check_interrupts_and_stop(
     interrupt_rx: &mut dyn InterruptSource,
     recent_messages: &mut RecentMessages,
+    status_clock: Option<&mut StatusClock>,
     resources: &TurnResources<'_>,
     events: &EventContext<'_>,
     iteration: usize,
@@ -1168,6 +1251,7 @@ async fn check_interrupts_and_stop(
     let mut stopped = drain_interrupts(
         interrupt_rx,
         recent_messages,
+        status_clock,
         resources.transcript_sink,
         resources.hop_counter,
         events,
@@ -1208,9 +1292,13 @@ async fn check_interrupts_and_stop(
 /// at the moment it is folded in, so a client sees it at the position the
 /// model does. A message to a session is announced on the session's stream
 /// the same way (see [`EventContext::publish_message_read`]).
+///
+/// With a `status_clock` (the main conversation), each person's or agent's
+/// message is stamped with its own status line as it is folded in.
 async fn drain_interrupts(
     interrupt_rx: &mut dyn InterruptSource,
     recent_messages: &mut RecentMessages,
+    mut status_clock: Option<&mut StatusClock>,
     sink: Option<&dyn TranscriptSink>,
     hop_counter: &HopCounter,
     events: &EventContext<'_>,
@@ -1221,7 +1309,11 @@ async fn drain_interrupts(
             Interrupt::UserMessage(msg) => {
                 tracing::info!(msg_id = %msg.id, "injecting mid-turn user message");
                 events.publish_user_message(&msg).await;
-                push_and_record_many(recent_messages, sink, msg.into_history_messages()).await;
+                let entries = match status_clock.as_deref_mut() {
+                    Some(clock) => clock.admit(msg),
+                    None => msg.into_history_messages(),
+                };
+                push_and_record_many(recent_messages, sink, entries).await;
             }
             Interrupt::AgentMessage(msg) => {
                 tracing::info!(
@@ -1231,7 +1323,11 @@ async fn drain_interrupts(
                     "injecting agent message mid-turn"
                 );
                 hop_counter.bump(msg.hop_count);
-                push_and_record(recent_messages, sink, msg.to_history_message()).await;
+                let mut entry = msg.to_history_message();
+                if let Some(clock) = status_clock.as_deref_mut() {
+                    clock.stamp(&mut entry, None);
+                }
+                push_and_record(recent_messages, sink, entry).await;
                 // After the transcript records it, so a client reading the
                 // transcript on this event finds the message there.
                 events.publish_message_read(&msg).await;
@@ -1762,6 +1858,150 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex as StdMutex};
 
+    #[tokio::test]
+    async fn the_built_request_carries_everything_a_provider_caches_on() {
+        let mut recent_messages = RecentMessages::new();
+        let mut stamped = Message::user("hi");
+        stamped.status_line = Some("[Received: Mon 9:00]".to_string());
+        recent_messages.push(stamped);
+        let options = CompletionOptions {
+            cache: residuum_inference::CacheHints {
+                conversation_key: Some("main-conversation".to_string()),
+                retention: residuum_inference::CacheRetention::Long,
+            },
+            ..CompletionOptions::default()
+        };
+        let inputs = crate::testing::RequestInputs {
+            recent_messages,
+            options,
+            ..crate::testing::RequestInputs::default()
+        };
+
+        let request = crate::testing::render_model_request(&inputs, &ToolRegistry::new()).await;
+
+        assert_eq!(
+            request.options.cache, inputs.options.cache,
+            "the call is sent the turn's cache hints"
+        );
+        let system = request.messages.first().unwrap();
+        assert_eq!(system.role, Role::System);
+        assert!(
+            system.cache_boundary.is_some(),
+            "the system prompt carries its cache boundary"
+        );
+        let rest: Vec<(Role, &str)> = request
+            .messages
+            .iter()
+            .skip(1)
+            .map(|m| (m.role, m.content.as_str()))
+            .collect();
+        assert_eq!(
+            rest,
+            [(Role::System, "[Received: Mon 9:00]"), (Role::User, "hi")],
+            "the stored status line goes just ahead of its message"
+        );
+    }
+
+    /// The request a turn sends with the echo tool built in and `registry`'s
+    /// MCP servers.
+    async fn request_with_mcp_servers(registry: &SharedMcpRegistry) -> ModelRequest {
+        let mut tools = ToolRegistry::new();
+        tools.register(Box::new(crate::testing::EchoTool));
+        let inputs = crate::testing::RequestInputs {
+            mcp: Some(Arc::clone(registry)),
+            ..crate::testing::RequestInputs::default()
+        };
+        crate::testing::render_model_request(&inputs, &tools).await
+    }
+
+    /// The bytes a provider caches on in `request`: its tool list and its
+    /// system prompt.
+    fn cached_bytes(request: &ModelRequest) -> (String, String) {
+        (
+            serde_json::to_string(&request.tools).unwrap(),
+            serde_json::to_string(request.messages.first().unwrap()).unwrap(),
+        )
+    }
+
+    fn mcp_tools(server: &str, names: &[&str]) -> Vec<ToolDefinition> {
+        names
+            .iter()
+            .map(|name| ToolDefinition {
+                name: (*name).to_string(),
+                description: format!("{name}, from {server}"),
+                parameters: serde_json::json!({"type": "object", "properties": {"q": {"type": "string"}}}),
+            })
+            .collect()
+    }
+
+    async fn connect_in_order(servers: &[(&str, &[&str])]) -> SharedMcpRegistry {
+        let registry = residuum_mcp::McpRegistry::new_shared();
+        for (server, names) in servers {
+            registry
+                .write()
+                .await
+                .insert_running_server(server, mcp_tools(server, names));
+        }
+        registry
+    }
+
+    #[tokio::test]
+    async fn mcp_tools_reach_the_request_grouped_by_server_in_name_order() {
+        // Five servers, so an order that depends on hashing rather than on
+        // names fails almost surely: two random orders of five agree once in
+        // 120 times. The tools are named so that a sort over all of them
+        // would interleave the servers, which the explicit order rules out.
+        let zeta_first = connect_in_order(&[
+            ("zeta", &["page", "annotate"]),
+            ("bravo", &["ping", "count"]),
+            ("mike", &["list"]),
+            ("alpha", &["search", "fetch"]),
+            ("delta", &["lookup"]),
+        ])
+        .await;
+        let mike_first = connect_in_order(&[
+            ("mike", &["list"]),
+            ("delta", &["lookup"]),
+            ("zeta", &["page", "annotate"]),
+            ("alpha", &["search", "fetch"]),
+            ("bravo", &["ping", "count"]),
+        ])
+        .await;
+
+        let request = request_with_mcp_servers(&zeta_first).await;
+        let names: Vec<&str> = request.tools.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "echo", "fetch", "search", "count", "ping", "lookup", "list", "annotate", "page",
+            ],
+            "the built-in tool first, then each server's tools in name order, servers in name order"
+        );
+        assert_eq!(
+            cached_bytes(&request),
+            cached_bytes(&request_with_mcp_servers(&mike_first).await),
+            "the tools and system prompt don't depend on the order servers connected in"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_mcp_server_reconnecting_unchanged_leaves_the_request_prefix_alone() {
+        let registry = connect_in_order(&[("alpha", &["a_search"]), ("zeta", &["z_lookup"])]).await;
+        let before = cached_bytes(&request_with_mcp_servers(&registry).await);
+
+        // A reload that restarts a server whose config didn't change.
+        registry
+            .write()
+            .await
+            .insert_running_server("alpha", mcp_tools("alpha", &["a_search"]));
+
+        assert_eq!(
+            cached_bytes(&request_with_mcp_servers(&registry).await),
+            before,
+            "an unchanged server keeps its tools' bytes and position"
+        );
+    }
+
     /// Counts the replies it is told went out.
     #[derive(Default)]
     struct CountingAudience(AtomicUsize);
@@ -1858,6 +2098,7 @@ mod tests {
         let stopped = drain_interrupts(
             &mut rx,
             &mut recent,
+            None,
             Some(&sink),
             &HopCounter::new(0),
             &silent_events(&Publisher::noop()),
@@ -1890,6 +2131,7 @@ mod tests {
         let stopped = drain_interrupts(
             &mut rx,
             &mut recent,
+            None,
             Some(&sink),
             &HopCounter::new(0),
             &silent_events(&Publisher::noop()),
@@ -1922,6 +2164,7 @@ mod tests {
         let stopped = drain_interrupts(
             &mut rx,
             &mut recent,
+            None,
             None,
             &HopCounter::new(0),
             &silent_events(&Publisher::noop()),
@@ -1959,6 +2202,7 @@ mod tests {
         let stopped = drain_interrupts(
             &mut rx,
             &mut recent,
+            None,
             Some(&sink),
             &HopCounter::new(0),
             &silent_events(&Publisher::noop()),
@@ -2006,6 +2250,7 @@ mod tests {
         let stopped = drain_interrupts(
             &mut rx,
             &mut recent,
+            None,
             Some(&sink),
             &HopCounter::new(0),
             &events,
@@ -2059,6 +2304,7 @@ mod tests {
         drain_interrupts(
             &mut rx,
             &mut recent,
+            None,
             None,
             &HopCounter::new(0),
             &silent_events(&publisher),
@@ -2557,9 +2803,9 @@ done
             name: "big".to_string(),
             command: "sh".to_string(),
             args: vec!["-c".to_string(), BIG_OUTPUT_MCP_SERVER.to_string()],
-            env: std::collections::HashMap::new(),
+            env: std::collections::BTreeMap::new(),
             transport: residuum_mcp::McpTransport::Stdio,
-            headers: std::collections::HashMap::new(),
+            headers: std::collections::BTreeMap::new(),
             timeout_secs: None,
         };
         let mcp_registry = residuum_mcp::McpRegistry::new_shared();

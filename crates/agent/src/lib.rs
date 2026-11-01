@@ -8,6 +8,7 @@ pub mod auto_mode;
 pub mod context;
 mod core;
 pub mod hop;
+mod prefix_watch;
 pub mod recent_messages;
 mod stream;
 pub mod subconscious;
@@ -21,6 +22,8 @@ pub mod turn;
 #[cfg(test)]
 mod turn_conversation_tests;
 pub mod usage;
+#[cfg(test)]
+mod wire_prefix_tests;
 
 pub use core::{Agent, AgentConfig, FailedTurn, TurnWiring};
 pub use hop::HopCounter;

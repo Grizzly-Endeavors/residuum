@@ -12,6 +12,8 @@ mod agent_keys;
 pub mod agent_lifecycle;
 pub mod background;
 pub mod config_reload_tracker;
+#[cfg(test)]
+mod default_request_tests;
 mod edit;
 mod exec;
 pub(crate) mod file_bug_report;

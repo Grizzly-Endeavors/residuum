@@ -60,7 +60,8 @@ pub fn attach_result_store(tools: &mut ToolRegistry, hub_dir: &Path, layout: &Wo
 /// Re-register every tool that captured the user's timezone at
 /// construction (`schedule_action`, `list_actions`, and the inbox tools
 /// `inbox_list`, `inbox_read`, `user_inbox_add` and `user_inbox_list`) with a
-/// new one, so a timezone edit reaches them without a restart.
+/// new one, so a timezone edit reaches them without a restart. Each replaces
+/// the registered tool in place, so the definitions keep their order.
 pub fn reload_timezone_tools(
     tools: &mut ToolRegistry,
     injections: &RegistryInjections,
@@ -70,16 +71,6 @@ pub fn reload_timezone_tools(
     layout: &WorkspaceLayout,
     tz: chrono_tz::Tz,
 ) {
-    for name in [
-        "schedule_action",
-        "list_actions",
-        "inbox_list",
-        "inbox_read",
-        "user_inbox_add",
-        "user_inbox_list",
-    ] {
-        tools.remove(name);
-    }
     tools.register(Box::new(actions::ScheduleActionTool::new(
         Arc::clone(&store),
         notify,
@@ -90,31 +81,31 @@ pub fn reload_timezone_tools(
     register_mail_inbox_tools(tools, injections, layout, tz);
 }
 
-/// Reload the `ollama_web_search` tool in place from the current
-/// standalone web search backend config (e.g. after a config reload).
+/// Bring `ollama_web_search` in line with the standalone web search backend
+/// after a config reload: registered when `backend` names `"ollama"` (with
+/// the current API key and base URL), removed otherwise.
 ///
-/// Mirrors `main_tools::init_tool_registry`'s startup-time
-/// gating: removes any existing `ollama_web_search` tool, then re-adds
-/// it with the current API key/base URL if `backend` names the
-/// `"ollama"` backend. A no-op call (backend unchanged) still removes
-/// and re-adds the tool — harmless, since the tool itself is stateless
-/// beyond the credentials it's constructed with.
+/// Mirrors `main_tools::init_tool_registry`'s startup-time gating. A reload
+/// that leaves the tool configured replaces it in place, so the definitions
+/// stay byte-identical.
 pub fn reload_ollama_web_search_tool(
     tools: &mut ToolRegistry,
     backend: Option<&residuum_config::StandaloneBackendConfig>,
 ) {
-    let was_registered = tools.remove("ollama_web_search");
-    if let Some(backend) = backend
-        && backend.name == "ollama"
-    {
-        let base_url = backend
-            .base_url
-            .clone()
-            .unwrap_or_else(|| "https://api.ollama.com".to_string());
-        register_ollama_web_search_tool(tools, backend.api_key.clone(), base_url);
-        tracing::info!("reloaded ollama_web_search tool from config");
-    } else if was_registered {
-        tracing::info!("removed ollama_web_search tool: no longer configured");
+    match backend.filter(|backend| backend.name == "ollama") {
+        Some(backend) => {
+            let base_url = backend
+                .base_url
+                .clone()
+                .unwrap_or_else(|| "https://api.ollama.com".to_string());
+            register_ollama_web_search_tool(tools, backend.api_key.clone(), base_url);
+            tracing::info!("reloaded ollama_web_search tool from config");
+        }
+        None => {
+            if tools.remove("ollama_web_search") {
+                tracing::info!("removed ollama_web_search tool: no longer configured");
+            }
+        }
     }
 }
 
@@ -644,6 +635,28 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn default_request_has_system_prompt_first_and_tools_in_registry_order() {
+        use residuum_agent::testing::{RequestInputs, render_model_request};
+        use residuum_inference::Role;
+
+        let mut registry = ToolRegistry::new();
+        register_defaults_in(&mut registry, PathBuf::from("/tmp/residuum-test-workspace"));
+
+        let request = render_model_request(&RequestInputs::default(), &registry).await;
+
+        let [system, ..] = request.messages.as_slice() else {
+            panic!("the request carries at least the system prompt: {request:?}");
+        };
+        assert_eq!(system.role, Role::System);
+        let sent: Vec<String> = request.tools.iter().map(|t| t.name.clone()).collect();
+        assert_eq!(sent, registry.tool_names());
+        assert!(
+            sent.iter().any(|name| name == "exec"),
+            "exec is sent: {sent:?}"
+        );
+    }
+
     fn ollama_backend() -> residuum_config::StandaloneBackendConfig {
         residuum_config::StandaloneBackendConfig {
             name: "ollama".to_string(),
@@ -707,6 +720,111 @@ mod tests {
             names.contains(&"exec".to_string()),
             "unrelated tools should survive reload"
         );
+    }
+
+    /// The definitions as the model receives them: the bytes a prompt-cache
+    /// hit depends on.
+    fn definitions_json(registry: &ToolRegistry) -> String {
+        serde_json::to_string(&registry.definitions()).unwrap()
+    }
+
+    #[test]
+    fn reload_timezone_tools_without_a_change_keeps_definitions_byte_identical() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        let store = Arc::new(Mutex::new(ActionStore::new_empty(
+            dir.path().join("scheduled_actions.json"),
+        )));
+        let notify = Arc::new(Notify::new());
+        let models = residuum_config::ModelCatalog::default().into_shared();
+        let injections = RegistryInjections::default();
+        let tz = chrono_tz::America::New_York;
+        let mut registry = ToolRegistry::new();
+        register_defaults_in(&mut registry, dir.path().to_path_buf());
+        register_action_tools(
+            &mut registry,
+            Arc::clone(&store),
+            Arc::clone(&notify),
+            Arc::clone(&models),
+            tz,
+        );
+        register_inbox_tools(&mut registry, &injections, &layout, tz);
+        register_web_fetch_tool(&mut registry);
+        let before = definitions_json(&registry);
+
+        reload_timezone_tools(
+            &mut registry,
+            &injections,
+            Arc::clone(&store),
+            Arc::clone(&notify),
+            Arc::clone(&models),
+            &layout,
+            tz,
+        );
+
+        assert_eq!(
+            definitions_json(&registry),
+            before,
+            "a reload that changes nothing must not move or alter any tool"
+        );
+    }
+
+    #[test]
+    fn reload_timezone_tools_to_a_new_timezone_keeps_the_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        let store = Arc::new(Mutex::new(ActionStore::new_empty(
+            dir.path().join("scheduled_actions.json"),
+        )));
+        let notify = Arc::new(Notify::new());
+        let models = residuum_config::ModelCatalog::default().into_shared();
+        let injections = RegistryInjections::default();
+        let mut registry = ToolRegistry::new();
+        register_defaults_in(&mut registry, dir.path().to_path_buf());
+        register_action_tools(
+            &mut registry,
+            Arc::clone(&store),
+            Arc::clone(&notify),
+            Arc::clone(&models),
+            chrono_tz::UTC,
+        );
+        register_inbox_tools(&mut registry, &injections, &layout, chrono_tz::UTC);
+        register_web_fetch_tool(&mut registry);
+        let names_before = registry.tool_names();
+
+        reload_timezone_tools(
+            &mut registry,
+            &injections,
+            Arc::clone(&store),
+            Arc::clone(&notify),
+            Arc::clone(&models),
+            &layout,
+            chrono_tz::Asia::Tokyo,
+        );
+
+        assert_eq!(
+            registry.tool_names(),
+            names_before,
+            "timezone tools are replaced where they stand"
+        );
+    }
+
+    #[test]
+    fn reload_ollama_web_search_tool_without_a_change_keeps_definitions_byte_identical() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut registry = ToolRegistry::new();
+        register_defaults_in(&mut registry, dir.path().to_path_buf());
+        reload_ollama_web_search_tool(&mut registry, Some(&ollama_backend()));
+        // A tool registered after ollama_web_search: a reload that re-appended
+        // it would move it behind this one.
+        register_web_fetch_tool(&mut registry);
+        let before = definitions_json(&registry);
+        let names_before = registry.tool_names();
+
+        reload_ollama_web_search_tool(&mut registry, Some(&ollama_backend()));
+
+        assert_eq!(definitions_json(&registry), before);
+        assert_eq!(registry.tool_names(), names_before);
     }
 
     #[cfg(unix)]

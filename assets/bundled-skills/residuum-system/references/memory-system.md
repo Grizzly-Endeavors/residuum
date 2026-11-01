@@ -15,7 +15,7 @@ Fires after agent turns when accumulated unobserved message tokens exceed a thre
 - **Soft threshold** (`threshold_tokens`): starts a cooldown timer; fires when cooldown expires.
 - **Force threshold** (`force_threshold_tokens`): fires immediately, bypassing cooldown.
 
-The thresholds compare an estimate of the unobserved messages' size, at about four characters per token. The estimate counts each message's text as the agent reads it, including its `[From: …]` sender line, its reasoning text and its tool call metadata, and it counts each image as a fixed 1,600 tokens (stored images don't record their dimensions, so the provider's width-by-height estimate isn't available).
+The thresholds compare an estimate of the unobserved messages' size, at about four characters per token. The estimate counts each message's text as the agent reads it, including its `[From: …]` sender line, its status line, its reasoning text and its tool call metadata, and it counts each image as a fixed 1,600 tokens (stored images don't record their dimensions, so the provider's width-by-height estimate isn't available).
 
 The main agent's own cycle runs off the event loop in a background worker, so it never delays the next message, a stop, or a shutdown — at most one cycle runs at a time, and a trigger arriving mid-cycle coalesces into one follow-up rather than stacking. The `/observe` and `/reflect` chat commands run through the same worker and answer with a notice when they finish. Memory can be "one step stale" as a result: a turn that starts before a still-running cycle finishes sees the pre-cycle context. The observer calls an LLM to extract a structured `Episode` from recent messages. Each episode produces three files under `memory/episodes/YYYY-MM/DD/`:
 
@@ -74,6 +74,10 @@ A workbench artifact runs the same search via `GET /api/agents/<agent>/memory/se
 ## Thinking
 
 An assistant message may carry the model's reasoning as `thinking` blocks (readable `text`, plus an opaque `signature` or encrypted block some providers need replayed). `recent_messages.json` and session transcripts keep the blocks whole; episode transcripts keep the readable text only. The observer, reflector, search index and `memory_get` never include it. The token estimates behind the observer thresholds count its readable text. If you read `recent_messages.json` directly, ignore the `signature`, `redacted`, `part` and `origin` fields (`origin` names the provider and model that produced a block, so a provider replays only its own).
+
+## Status Lines
+
+Each user message in your main conversation is preceded by a system message like `[Received: Sunday Nov 1st 2026 | 10:49][Last Message: 3 mins ago][Message Source: discord]`, written once when that message arrived and stored with it (the `status_line` field in `recent_messages.json`, not part of the message text). `Received` is when it arrived, in the user's timezone; `Last Message` is how long before it the previous user message arrived; `Message Source` is the interface it came from (`web` for the web UI, `background` for internal sources). Earlier messages keep the lines they arrived with. A session stamps none of its own messages; a fork of the main conversation replays the lines its carried messages arrived with.
 
 ## Gotchas
 

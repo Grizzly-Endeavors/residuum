@@ -3,12 +3,22 @@
 use chrono::{DateTime, Utc};
 use residuum_inference::Message;
 
+use crate::prefix_watch::PrefixWatch;
+use crate::turn::ModelRequest;
+
 /// In-memory buffer holding recent conversation messages before observation,
 /// with the time each message entered the buffer.
+///
+/// It is the conversation's state, so it also watches the model requests
+/// built from it: each request is compared with the previous one, and a
+/// change to a part already sent (which ends the provider's cached prefix
+/// there) is logged. Clearing or prepending counts as a rewrite, which makes
+/// the next request's history change expected.
 pub struct RecentMessages {
     messages: Vec<Message>,
     /// When each entry of `messages` (same index) entered the buffer.
     recorded_at: Vec<DateTime<Utc>>,
+    prefix_watch: PrefixWatch,
 }
 
 impl Default for RecentMessages {
@@ -24,6 +34,7 @@ impl RecentMessages {
         Self {
             messages: Vec::new(),
             recorded_at: Vec::new(),
+            prefix_watch: PrefixWatch::default(),
         }
     }
 
@@ -70,6 +81,14 @@ impl RecentMessages {
     pub fn clear(&mut self) {
         self.messages.clear();
         self.recorded_at.clear();
+        self.prefix_watch.history_rewritten();
+    }
+
+    /// Compare `request`, built from this history, with the previous request
+    /// and log each earlier part that changed. `within_turn` is whether it is
+    /// a later call of the same turn.
+    pub(crate) fn watch_request(&mut self, request: &ModelRequest, within_turn: bool) {
+        self.prefix_watch.observe(request, within_turn);
     }
 
     /// Check if the buffer is empty.
@@ -147,6 +166,7 @@ impl RecentMessages {
         let mut new_messages = messages;
         new_messages.append(&mut self.messages);
         self.messages = new_messages;
+        self.prefix_watch.history_rewritten();
     }
 }
 
@@ -423,6 +443,75 @@ mod tests {
             recent.messages()[0].content,
             "existing",
             "existing message should be unchanged"
+        );
+    }
+
+    /// The request a turn would build from `recent`, with a fixed system
+    /// prompt and no tools.
+    fn request_from(recent: &RecentMessages) -> ModelRequest {
+        let mut messages = vec![Message::system("prompt")];
+        messages.extend(recent.messages().iter().cloned());
+        ModelRequest {
+            messages,
+            tools: Vec::new(),
+            options: residuum_inference::CompletionOptions::default(),
+        }
+    }
+
+    fn watched_causes(recent: &mut RecentMessages) -> Vec<crate::prefix_watch::Cause> {
+        let request = request_from(recent);
+        recent
+            .prefix_watch
+            .compare(&request, false)
+            .into_iter()
+            .map(|divergence| divergence.cause)
+            .collect()
+    }
+
+    #[test]
+    fn rotating_the_history_makes_the_next_request_s_change_expected() {
+        use crate::prefix_watch::Cause;
+
+        let mut recent = RecentMessages::new();
+        push_user_msg(&mut recent, "q1");
+        push_assistant_msg(&mut recent, "a1");
+        push_user_msg(&mut recent, "q2");
+        push_assistant_msg(&mut recent, "a2");
+        assert!(watched_causes(&mut recent).is_empty(), "the first request");
+
+        let retained = recent.last_exchanges(1);
+        recent.clear();
+        recent.prepend(retained);
+        assert_eq!(
+            watched_causes(&mut recent),
+            vec![Cause::HistoryRewritten],
+            "rotation rewrites the history on purpose"
+        );
+
+        push_user_msg(&mut recent, "q3");
+        assert!(
+            watched_causes(&mut recent).is_empty(),
+            "appending after the rotation keeps the prefix"
+        );
+    }
+
+    #[test]
+    fn a_history_changed_in_place_is_not_a_rewrite() {
+        use crate::prefix_watch::Cause;
+
+        let mut recent = RecentMessages::new();
+        push_user_msg(&mut recent, "q1");
+        push_assistant_msg(&mut recent, "a1");
+        assert!(watched_causes(&mut recent).is_empty(), "the first request");
+
+        let mut edited = RecentMessages::new();
+        edited.prefix_watch = std::mem::take(&mut recent.prefix_watch);
+        push_user_msg(&mut edited, "q1, edited");
+        push_assistant_msg(&mut edited, "a1");
+        assert_eq!(
+            watched_causes(&mut edited),
+            vec![Cause::HistoryChanged],
+            "a changed message nothing rewrote is a cache break"
         );
     }
 }

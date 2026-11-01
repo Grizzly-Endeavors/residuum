@@ -1,0 +1,860 @@
+## read_file
+
+Read the contents of a file. Each output line is prefixed with its line number and a tab (e.g. `   1\thello`); the prefix is not part of the file, so leave it out of edit_file's old_string. Unless a limit is given, returns at most 2000 lines or 30000 characters per call, whichever comes first, and the header names the offset to continue from. There is no file size limit, and the output header reports the file's total size and line count. Lines longer than 2000 characters are cut. Image files (JPEG, PNG, GIF, WebP) are returned as inline images for visual inspection instead of raw bytes, capped by the model API's inline image size limit.
+
+{
+  "properties": {
+    "limit": {
+      "description": "Maximum number of lines to read (default: 2000, and a page without a limit also stops at a character budget)",
+      "type": "integer"
+    },
+    "offset": {
+      "description": "Line number to start reading from (0-based, default: 0)",
+      "type": "integer"
+    },
+    "path": {
+      "description": "Absolute or relative path to the file to read. A path starting with \"team/\" is in the shared team folder",
+      "type": "string"
+    }
+  },
+  "required": [
+    "path"
+  ],
+  "type": "object"
+}
+
+## write_file
+
+Write content to a file. Creates parent directories if they don't exist. Overwrites the file if it already exists. Existing files must be read with read_file before overwriting.
+
+{
+  "properties": {
+    "content": {
+      "description": "The content to write to the file",
+      "type": "string"
+    },
+    "path": {
+      "description": "Absolute or relative path to the file to write. A path starting with \"team/\" is in the shared team folder",
+      "type": "string"
+    }
+  },
+  "required": [
+    "path",
+    "content"
+  ],
+  "type": "object"
+}
+
+## edit_file
+
+Edit an existing file by replacing exact text. Each entry in 'edits' replaces old_string with new_string; old_string must match the file exactly once (include surrounding lines to make it unique) unless replace_all is true. Edits apply in order, each seeing the result of the ones before it, and the file is only written if every edit succeeds. Copy old_string from read_file output without the line-number prefix. To delete text, use an empty new_string. The file must have been read with read_file first. Use this over write_file when changing part of an existing file.
+
+{
+  "properties": {
+    "edits": {
+      "description": "Replacements to apply, in order. Use one entry for a single change.",
+      "items": {
+        "properties": {
+          "new_string": {
+            "description": "Text to put in its place (empty to delete)",
+            "type": "string"
+          },
+          "old_string": {
+            "description": "Exact text to replace, copied from the file",
+            "type": "string"
+          },
+          "replace_all": {
+            "description": "Replace every occurrence of old_string instead of requiring exactly one (default: false)",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "old_string",
+          "new_string"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "path": {
+      "description": "Path to the file to edit. A path starting with \"team/\" is in the shared team folder",
+      "type": "string"
+    }
+  },
+  "required": [
+    "path",
+    "edits"
+  ],
+  "type": "object"
+}
+
+## exec
+
+Execute a shell command and return its output. Commands run via `sh -c` with a configurable timeout (default 120 seconds). Output over 30000 bytes keeps the start of stdout and the end of stderr (and the end of stdout when the command fails) and says how many bytes were left out. Terminal colour codes are removed. Use `keys` to expose agent keys as environment variables (see agent_keys_list); use `store_output_as` to store stdout as a new agent key instead of returning it.
+
+{
+  "properties": {
+    "command": {
+      "description": "The shell command to execute",
+      "type": "string"
+    },
+    "keys": {
+      "description": "Agent key names to expose to this command, each as its uppercased name (github_token -> $GITHUB_TOKEN). Values are redacted from all output.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "store_output_as": {
+      "description": "Store the command's stdout as an agent key instead of returning it. Stored only when the command exits 0 with non-empty stdout; stderr is still returned.",
+      "properties": {
+        "description": {
+          "description": "What the key is and what it grants",
+          "type": "string"
+        },
+        "name": {
+          "description": "Key name: lowercase letters, digits, and underscores, starting with a letter",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "timeout_secs": {
+      "description": "Timeout in seconds (default: 120)",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "command"
+  ],
+  "type": "object"
+}
+
+## agent_keys_list
+
+List the agent keys (API keys, tokens) available to exec. Shows each key's name, the environment variable it is exposed as, who created it, and its description. Values are never shown; use a key by naming it in exec's `keys` parameter.
+
+{
+  "properties": {},
+  "type": "object"
+}
+
+## agent_key_delete
+
+Delete an agent key, including one the user created. Deleting a key the user created is checkpointed and reported to the user, who can restore it from checkpoint history.
+
+{
+  "properties": {
+    "name": {
+      "description": "Name of the agent key to delete",
+      "type": "string"
+    }
+  },
+  "required": [
+    "name"
+  ],
+  "type": "object"
+}
+
+## memory_search
+
+Search past conversation observations, interaction chunks, and knowledge wiki pages by keyword (BM25 full-text search), adding vector similarity when vector search is available. Returns matching results with relevance scores and snippets; a wiki result's ID is the page path to open with read_file. Supports filtering by source type, date range, and episode IDs.
+
+{
+  "properties": {
+    "date_from": {
+      "description": "Filter results on or after this date (YYYY-MM-DD, inclusive)",
+      "type": "string"
+    },
+    "date_to": {
+      "description": "Filter results on or before this date (YYYY-MM-DD, inclusive)",
+      "type": "string"
+    },
+    "episode_ids": {
+      "description": "Filter to results from these episode IDs (excludes wiki pages)",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "limit": {
+      "description": "Maximum number of results to return (default: 5, at most 50)",
+      "maximum": 50,
+      "type": "integer"
+    },
+    "min_score": {
+      "description": "Override the configured relevance threshold for this search only (0.0-1.0). Lower it to see weaker matches after a search reports strong matches were filtered out.",
+      "type": "number"
+    },
+    "query": {
+      "description": "Search query (supports AND, OR, phrase queries with quotes)",
+      "type": "string"
+    },
+    "source": {
+      "description": "Filter by source type. Omit to search all three.",
+      "enum": [
+        "observations",
+        "episodes",
+        "wiki"
+      ],
+      "type": "string"
+    }
+  },
+  "required": [
+    "query"
+  ],
+  "type": "object"
+}
+
+## memory_get
+
+Retrieve a raw transcript by episode ID or session run ID — provide exactly one of the two. Use episode_id after memory_search to drill into a merged episode's full conversation. Use run_id to read a session run's transcript directly from the session store — e.g. to follow a resume pointer to a run that produced no episode, or to check on a run that's still in progress. Returns formatted message lines with role labels and line numbers. A tool result line over 500 chars is shown truncated with its original length; pass expand_line with that line number to retrieve it in full.
+
+{
+  "properties": {
+    "episode_id": {
+      "description": "The episode ID to retrieve (e.g., \"ep-001\")",
+      "type": "string"
+    },
+    "expand_line": {
+      "description": "Return this one line number in full, uncut by the 500-char tool result truncation. Overrides from_line/lines.",
+      "type": "integer"
+    },
+    "from_line": {
+      "description": "Start reading from this line offset (1-indexed, default: start)",
+      "type": "integer"
+    },
+    "lines": {
+      "description": "Number of message lines to return (default: 50, max: 200)",
+      "type": "integer"
+    },
+    "run_id": {
+      "description": "The session run ID to retrieve (e.g., \"run-1234567890-abcd1234\")",
+      "type": "string"
+    }
+  },
+  "type": "object"
+}
+
+## schedule_action
+
+Schedule a one-off action to fire at a specific time. The action runs once and is removed after firing.
+
+{
+  "properties": {
+    "agent_name": {
+      "description": "A skill name (e.g. 'memory-analyst') to fork the session with that skill as its role. Omit to fork a plain session with no skill.",
+      "type": "string"
+    },
+    "model_tier": {
+      "description": "A tier (\"small\", \"medium\", or \"large\") or an explicit model id in provider/model form (the format providers.toml uses). An explicit model runs that one model with no failover. Defaults to \"medium\".",
+      "type": "string"
+    },
+    "name": {
+      "description": "Human-readable name for this action",
+      "type": "string"
+    },
+    "prompt": {
+      "description": "The prompt to execute when the action fires",
+      "type": "string"
+    },
+    "run_at": {
+      "description": "Always use local time without an offset (e.g. '2026-03-01T09:00:00'). Interpreted in the user's configured timezone.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "name",
+    "prompt",
+    "run_at"
+  ],
+  "type": "object"
+}
+
+## list_actions
+
+List all pending scheduled actions with their IDs, names, fire times, and models, and say which are held because their model can't run.
+
+{
+  "properties": {},
+  "type": "object"
+}
+
+## cancel_action
+
+Cancel a pending scheduled action by ID.
+
+{
+  "properties": {
+    "id": {
+      "description": "Action ID to cancel",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "type": "object"
+}
+
+## skill_activate
+
+Load a skill's full instructions into the system prompt. Use when a task matches an available skill's description.
+
+{
+  "properties": {
+    "name": {
+      "description": "Name of the skill to activate (case-insensitive)",
+      "type": "string"
+    }
+  },
+  "required": [
+    "name"
+  ],
+  "type": "object"
+}
+
+## skill_deactivate
+
+Remove a skill's instructions from the system prompt when no longer needed.
+
+{
+  "properties": {
+    "name": {
+      "description": "Name of the skill to deactivate",
+      "type": "string"
+    }
+  },
+  "required": [
+    "name"
+  ],
+  "type": "object"
+}
+
+## inbox_archive
+
+Archive one or more inbox items by filename stem. Moves them to the archive directory.
+
+{
+  "properties": {
+    "ids": {
+      "description": "Filename stems of inbox items to archive",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "ids"
+  ],
+  "type": "object"
+}
+
+## inbox_restore
+
+Restore one or more archived inbox items by filename stem. Moves them back to the active inbox. Use inbox_list with archived=true to find the filename stem to restore.
+
+{
+  "properties": {
+    "ids": {
+      "description": "Filename stems of archived inbox items to restore",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "ids"
+  ],
+  "type": "object"
+}
+
+## inbox_list
+
+List inbox items, newest first. Shows unread/read status, title, source, and timestamp for each item. Find an item by its words with query. Lists 50 items at a time (limit, at most 200); when more match, the result ends with the before cursor that lists the next page.
+
+{
+  "properties": {
+    "archived": {
+      "description": "List archived items instead of active ones (default false). Use with inbox_restore to bring an item back.",
+      "type": "boolean"
+    },
+    "before": {
+      "description": "The cursor a previous call ended with (its \"call again with before=...\" line). Lists the items after it, which are older. Leave out to start from the newest.",
+      "type": "string"
+    },
+    "limit": {
+      "description": "How many items one call lists (default 50, at most 200; a larger value counts as 200).",
+      "type": "integer"
+    },
+    "query": {
+      "description": "Only items whose title, body or attachment filenames contain this text, ignoring case. Ignored when blank.",
+      "type": "string"
+    },
+    "unread_only": {
+      "description": "Only show unread items (default false). Ignored when archived is true — archived items are always read.",
+      "type": "boolean"
+    }
+  },
+  "type": "object"
+}
+
+## inbox_read
+
+Read a single inbox item: an item of your own agent inbox by filename stem, or any agent's agent-inbox or user-inbox item by its ref. Shows the item's ref and full content and, when it is part of a mail thread with the user, the thread's earlier messages oldest first, each cut to its first 500 characters; read one in full by its ref. Marks an item of your own agent inbox as read; never changes another agent's item or a user-inbox item.
+
+{
+  "properties": {
+    "id": {
+      "description": "Filename stem of an item in your own agent inbox (without .json extension), or a full ref <agent>/<user|agent>/<id> as user_inbox_list and inbox_read show it",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "type": "object"
+}
+
+## user_inbox_list
+
+List the items every agent has added to the user's inbox, newest first: each item's ref, title, agent, time, read and archived state, and the message it answers. Read-only. Check it before adding an item so you don't repeat what an agent already sent; find an older item by its words with query, and read one with inbox_read and its ref. Lists 50 items at a time (limit, at most 200); when more match, the result ends with the before cursor that lists the next page.
+
+{
+  "properties": {
+    "agent": {
+      "description": "Only this agent's items (its folder name, the first part of a ref).",
+      "type": "string"
+    },
+    "before": {
+      "description": "The cursor a previous call ended with (its \"call again with before=...\" line). Lists the items after it, which are older. Leave out to start from the newest.",
+      "type": "string"
+    },
+    "include_archived": {
+      "description": "Include items the user archived (default false).",
+      "type": "boolean"
+    },
+    "limit": {
+      "description": "How many items one call lists (default 50, at most 200; a larger value counts as 200).",
+      "type": "integer"
+    },
+    "query": {
+      "description": "Only items whose title, body or attachment filenames contain this text, ignoring case. Ignored when blank.",
+      "type": "string"
+    }
+  },
+  "type": "object"
+}
+
+## user_inbox_add
+
+Add a new item to the user's inbox. Use this to explicitly send notes, reminders, or items for the human user to review later. Set in_reply_to to answer a message in its mail thread instead of starting a new one.
+
+{
+  "properties": {
+    "attachments": {
+      "description": "Optional. Paths to files you have already written to disk that should be attached to this item — e.g. a report, screenshot, or export a background task produced. Each file is copied into the item's own storage, so it's safe even if the source file is later moved or deleted. Omit or leave empty if there's nothing to attach.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "body": {
+      "description": "The detailed content of the item",
+      "type": "string"
+    },
+    "in_reply_to": {
+      "description": "Optional. The ref (<agent>/<user|agent>/<id>, as inbox_read and user_inbox_list show it) of the message this item answers, which puts it in that message's thread. A bare id names an item in your own user inbox.",
+      "type": "string"
+    },
+    "title": {
+      "description": "A short summary of the item. Required unless in_reply_to is set; a reply without one is titled \"Re: <thread subject>\".",
+      "type": "string"
+    }
+  },
+  "required": [
+    "body"
+  ],
+  "type": "object"
+}
+
+## stop_agent
+
+Stop a live session by address, or cancel your open task with a remote agent (address "a2a:<name>"). Stopping a session cancels any in-flight turn and moves it to completing; its transcript is kept, not discarded. The main agent cannot be stopped this way. Use list_agents to find live addresses and remote agents.
+
+{
+  "properties": {
+    "address": {
+      "description": "The address of the session to stop, or \"a2a:<name>\" to cancel your open task with that remote agent",
+      "type": "string"
+    }
+  },
+  "required": [
+    "address"
+  ],
+  "type": "object"
+}
+
+## list_agents
+
+List the main agent, live (running or idle) sessions, teammates ("agent:<name>", with state and role; you are marked), and remote agents ("a2a:<name>", with online status, description, skills, and your open tasks with them). Sessions show address, category, source, state, depth, spawner, elapsed time, tool calls, and purpose. Completed sessions are not listed but their addresses stay valid.
+
+{
+  "properties": {},
+  "type": "object"
+}
+
+## subagent_spawn
+
+Fork a session to handle a task in the background. Optionally name a skill to give the session a role — its instructions become the session's brief. Runs asynchronously; each turn's result is relayed back to you tagged with the session's address. Returns the session's address immediately — use it with list_agents or stop_agent. A session's result is its own self-report, not verified fact — for verifiable work, ask it to return concrete handles (file paths, IDs, URLs) and verify them yourself before relying on the result.
+
+{
+  "properties": {
+    "model": {
+      "description": "A tier (\"small\", \"medium\", or \"large\") or an explicit model id in provider/model form (the format providers.toml uses). An explicit model runs that one model with no failover. Defaults to \"medium\".",
+      "type": "string"
+    },
+    "skill": {
+      "description": "Name of a skill to activate for the session, giving it a role. Omit to run on the task prompt alone.",
+      "type": "string"
+    },
+    "task": {
+      "description": "The prompt/instructions for the session",
+      "type": "string"
+    }
+  },
+  "required": [
+    "task"
+  ],
+  "type": "object"
+}
+
+## agent_create
+
+Create a new teammate: a long-lived agent with its own workspace, memory, and conversation. Use it when the work needs a durable specialist (a researcher, an inbox triager) that keeps its own notes and improves over time. For a one-off task whose result you need now, use subagent_spawn instead.
+
+It inherits your model settings and A2A visibility. Write a `description`: it is delivered as the teammate's first message and becomes its SOUL.md notes and team role page. State its purpose, how it should work, and what to hand it. Message the teammate afterwards at agent:<name>.
+
+Names are up to 32 characters: letters from any language, numbers, spaces, hyphens, and apostrophes. They can't start or end with a hyphen or an apostrophe, and two names that differ only by case are the same agent.
+
+{
+  "properties": {
+    "description": {
+      "description": "What the agent is for and how it should work. Becomes its own SOUL.md notes and role page.",
+      "type": "string"
+    },
+    "name": {
+      "description": "The new agent's name, for example 'Research Desk'",
+      "type": "string"
+    }
+  },
+  "required": [
+    "name"
+  ],
+  "type": "object"
+}
+
+## agent_delete
+
+Stop a teammate and remove its directory, role page, and roster entry. Its files are checkpointed first; the result gives the checkpoint id. The user can restore the teammate from Recently deleted on the web UI's Home or with `residuum agent restore <name>`; you have no tool to restore one.
+
+You can delete yourself. That stops your turn the moment this call returns, so send your messages and save your files first, and call it last.
+
+{
+  "properties": {
+    "name": {
+      "description": "The name of the agent to delete",
+      "type": "string"
+    }
+  },
+  "required": [
+    "name"
+  ],
+  "type": "object"
+}
+
+## send_message
+
+Send a message and/or file attachment to an endpoint. When sharing a file with the user, always use the file_path parameter — the file will be delivered natively (inline image, audio player, or download link) rather than as a text path. Use list_endpoints to see available targets. On a chat endpoint (discord, telegram, teams) the message goes to the owner's direct message unless you pass a conversation from list_conversations, e.g. to post into a specific channel or group chat.
+
+{
+  "properties": {
+    "conversation": {
+      "description": "Optional conversation ID on a chat endpoint, from list_conversations. Omit to message the owner directly.",
+      "type": "string"
+    },
+    "endpoint": {
+      "description": "Target endpoint name (any interactive or notification endpoint)",
+      "type": "string"
+    },
+    "file_path": {
+      "description": "Absolute path to a file to send. Images render inline, audio gets a player, other files appear as downloads.",
+      "type": "string"
+    },
+    "message": {
+      "description": "Message body or caption text (optional if file_path is provided)",
+      "type": "string"
+    },
+    "title": {
+      "description": "Optional title for notifications (defaults to first 60 chars of message)",
+      "type": "string"
+    }
+  },
+  "required": [
+    "endpoint"
+  ],
+  "type": "object"
+}
+
+## list_conversations
+
+List the direct messages, group chats, and channels you can post into on each chat interface (discord, telegram, teams). Pass an ID from here as send_message's 'conversation' to post there. Chats appear once the bot has been added to them or has heard from them; Discord server channels are listed directly.
+
+{
+  "properties": {
+    "endpoint": {
+      "description": "Only list conversations on this chat endpoint (e.g. \"teams\")",
+      "type": "string"
+    }
+  },
+  "type": "object"
+}
+
+## list_endpoints
+
+List available communication endpoints. Shows interactive endpoints (for switch_endpoint and send_message) and notification endpoints (for send_message only).
+
+{
+  "properties": {},
+  "type": "object"
+}
+
+## message_agent
+
+Send a text message to another agent at the address in `to`. Fire-and-forget: a running recipient sees the message at its next tool-call boundary, an idle one starts a turn, a completed session resumes at the same address. Replies arrive later as separate messages addressed to you; a remote agent replies from "a2a:<name>". A stopped or failed teammate returns an error and nothing is queued. Use list_agents for addresses.
+
+{
+  "properties": {
+    "message": {
+      "description": "The message body.",
+      "type": "string"
+    },
+    "skill": {
+      "description": "Only meaningful when \"to\" is a remote agent: the id of one of its advertised skills to invoke, sent as message metadata.",
+      "type": "string"
+    },
+    "to": {
+      "description": "Address to message: \"main\", a session address (yours; see list_agents), \"agent:<name>\" for a teammate's main, \"agent:<name>/<session-address>\" for one of its sessions (copy the exact address from its message), or \"a2a:<name>\" for a remote agent.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "to",
+    "message"
+  ],
+  "type": "object"
+}
+
+## switch_endpoint
+
+Send your background output (sub-agent results, scheduled work, and other turns the user didn't start) to a different interactive endpoint. The current reply is unaffected, and the user's next message switches output back to wherever they wrote from. Use list_endpoints to see available interactive endpoints.
+
+{
+  "properties": {
+    "endpoint": {
+      "description": "Endpoint identifier (e.g. 'discord', 'telegram', 'ws')",
+      "type": "string"
+    }
+  },
+  "required": [
+    "endpoint"
+  ],
+  "type": "object"
+}
+
+## web_fetch
+
+Fetch a web page or other textual URL and extract its readable content. HTML is cleaned to its main article text; JSON, XML, plain text, and other textual bodies are returned as-is with their content type noted. Binary content (images, PDFs, archives, etc.) is refused. Output is paged: the header reports the total size, and a page beyond the first is fetched by passing the next `offset` it reports. Downloads stop at a size limit, which the header reports when a page is cut short.
+
+{
+  "properties": {
+    "offset": {
+      "description": "Byte offset into the fetched content to start the page from (default: 0). To continue reading, pass the offset from a previous response's \"call again with offset=N to continue\" line.",
+      "type": "integer"
+    },
+    "url": {
+      "description": "The URL to fetch",
+      "type": "string"
+    }
+  },
+  "required": [
+    "url"
+  ],
+  "type": "object"
+}
+
+## file_bug_report
+
+File a structured bug report when you observe broken behavior in residuum itself (a crash, a tool returning the wrong result, a model reply that violates a hard constraint, etc.). Use this for things that are clearly wrong, not for confusion or usability friction — use submit_feedback for those. Returns a public reference ID.
+
+{
+  "properties": {
+    "severity": {
+      "description": "broken = non-functional; wrong = wrong result; annoying = functional but bad UX",
+      "enum": [
+        "broken",
+        "wrong",
+        "annoying"
+      ],
+      "type": "string"
+    },
+    "what_doing": {
+      "description": "What you (or the user) were doing when it happened",
+      "type": "string"
+    },
+    "what_expected": {
+      "description": "What should have happened instead",
+      "type": "string"
+    },
+    "what_happened": {
+      "description": "What actually happened (the broken behavior)",
+      "type": "string"
+    }
+  },
+  "required": [
+    "what_happened",
+    "what_expected",
+    "what_doing",
+    "severity"
+  ],
+  "type": "object"
+}
+
+## submit_feedback
+
+Submit short, free-form feedback to the developer. Use this when you notice confusion, usability friction, surprising behavior, or patterns in your own actions that seem worth surfacing — anything that isn't unambiguously broken (use file_bug_report for that). You are encouraged to use this proactively. Returns a public reference ID.
+
+{
+  "properties": {
+    "category": {
+      "description": "Optional free-form category tag (e.g. 'ui', 'docs', 'tools')",
+      "type": "string"
+    },
+    "message": {
+      "description": "The feedback message",
+      "type": "string"
+    }
+  },
+  "required": [
+    "message"
+  ],
+  "type": "object"
+}
+
+## workspace_history
+
+List checkpoints (recovery snapshots of workspace or team files, taken automatically at turn boundaries and before destructive actions), optionally filtered to those that changed a given path, or show what a specific checkpoint changed.
+
+{
+  "properties": {
+    "action": {
+      "description": "'list' to list checkpoints, 'show' to see what one checkpoint changed",
+      "enum": [
+        "list",
+        "show"
+      ],
+      "type": "string"
+    },
+    "checkpoint_id": {
+      "description": "show only: the checkpoint id to describe, from a previous 'list' call",
+      "type": "string"
+    },
+    "limit": {
+      "description": "maximum checkpoints to return (list, default 50, at most 200) or changed paths to list (show, default 50, at most 200)",
+      "maximum": 200,
+      "type": "integer"
+    },
+    "path": {
+      "description": "list only: restrict to checkpoints that changed this workspace-relative file or directory",
+      "type": "string"
+    },
+    "repo": {
+      "description": "which checkpoint history: 'workspace' (your own files, the default) or 'team' (the shared team/ directory: team rules, user profile, wiki, skills, workbench). Paths are relative to that root.",
+      "enum": [
+        "workspace",
+        "team"
+      ],
+      "type": "string"
+    }
+  },
+  "required": [
+    "action"
+  ],
+  "type": "object"
+}
+
+## workspace_restore
+
+Restore a workspace or team file or directory to its content at a checkpoint (from workspace_history), or undo a checkpoint's own changes -- reverting each path it changed back to its content just before it, skipping any path that was changed again since so a later edit is never clobbered. Both actions checkpoint the result first, so a restore or undo can itself be undone.
+
+{
+  "properties": {
+    "action": {
+      "description": "'restore_path' to restore one file/directory, 'undo_turn' to revert everything a checkpoint changed",
+      "enum": [
+        "restore_path",
+        "undo_turn"
+      ],
+      "type": "string"
+    },
+    "checkpoint_id": {
+      "description": "the checkpoint id, from workspace_history",
+      "type": "string"
+    },
+    "path": {
+      "description": "restore_path only: the workspace-relative file or directory to restore",
+      "type": "string"
+    },
+    "repo": {
+      "description": "which checkpoint history: 'workspace' (your own files, the default) or 'team' (the shared team/ directory: team rules, user profile, wiki, skills, workbench). Paths are relative to that root.",
+      "enum": [
+        "workspace",
+        "team"
+      ],
+      "type": "string"
+    }
+  },
+  "required": [
+    "action",
+    "checkpoint_id"
+  ],
+  "type": "object"
+}
+
+## ollama_web_search
+
+Search the web using Ollama Cloud. Returns search results with titles, URLs, and snippets.
+
+{
+  "properties": {
+    "max_results": {
+      "description": "Maximum number of results to return (default: 5, at most 10)",
+      "maximum": 10,
+      "type": "integer"
+    },
+    "query": {
+      "description": "The search query",
+      "type": "string"
+    }
+  },
+  "required": [
+    "query"
+  ],
+  "type": "object"
+}
+

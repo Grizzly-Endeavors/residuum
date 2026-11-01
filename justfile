@@ -112,6 +112,11 @@ test *args: _web-dist
 test-crate crate *args:
     scripts/target-pool run -- cargo test --quiet --no-fail-fast -p "residuum-$1" "${@:2}"
 
+# Rewrite the golden files of the default agent's system prompt and tool list (crates/tools/golden/) from the current code; review the diff before committing it
+[group('rust')]
+golden-update:
+    RESIDUUM_UPDATE_GOLDEN=1 scripts/target-pool run -- cargo test --quiet -p residuum-tools default_request_tests::golden::
+
 # Run the tests under load: two copies at once plus CPU burners (STRESS_COPIES, STRESS_ROUNDS, STRESS_BURN). Args are a libtest filter, e.g. `just stress logging::`; a member crate's tests take its package first, `just stress -p residuum-memory search::`, which skips the web build. The copies run the same test binaries, built once in one build dir from the pool, which the run holds until it ends. A note on stderr says when a filter names a member crate; a warning says when no test matched
 [group('rust')]
 [positional-arguments]

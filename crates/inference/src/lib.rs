@@ -43,13 +43,14 @@ pub use providers::anthropic;
 pub use providers::null::NullProvider;
 pub use reply::strip_code_fences;
 pub(crate) use retry::with_retry;
-pub use role_options::completion_options_for_role;
+pub use role_options::{completion_options_for_role, main_conversation_options};
 pub use tool::{ToolError, ToolResult};
 pub use types::{
-    AgentSender, AttemptOutcome, AttemptUsage, CompletionOptions, ImageData, InferenceProvider,
-    InferenceResponse, Message, MessageAttachment, MessageSender, ProviderApi, ResponseFormat,
-    Role, StopReason, StreamDelta, StreamSink, ThinkingBlock, ThinkingOrigin, ToolCall,
-    ToolDefinition, Usage, WebSearchNativeConfig, joined_thinking_text, readable_thinking,
+    AgentSender, AttemptOutcome, AttemptUsage, CacheHints, CacheRetention, CompletionOptions,
+    ImageData, InferenceProvider, InferenceResponse, Message, MessageAttachment, MessageSender,
+    ProviderApi, ResponseFormat, Role, StopReason, StreamDelta, StreamSink, ThinkingBlock,
+    ThinkingOrigin, ToolCall, ToolDefinition, Usage, WebSearchNativeConfig, joined_thinking_text,
+    readable_thinking,
 };
 pub(crate) use types::{ReplayScope, blocks_produced_at};
 pub use usage_record::{UsageComponent, UsageRecord, UsageRecorder};

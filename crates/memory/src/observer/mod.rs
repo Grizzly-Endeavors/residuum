@@ -896,6 +896,7 @@ mod tests {
                     redacted: Some("encrypted-blob".to_string()),
                     part: None,
                     origin: None,
+                    binding: None,
                 }]),
             timestamp: chrono::Utc::now().naive_utc(),
             visibility: Visibility::User,
