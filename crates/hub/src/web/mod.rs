@@ -20,6 +20,7 @@ mod system_one;
 pub mod teams_setup;
 pub mod tracing_api;
 pub mod update;
+mod usage;
 mod workbench;
 pub mod workspace;
 pub(crate) mod workspace_bulk;
@@ -38,6 +39,7 @@ use axum::routing::{delete, get, patch, post, put};
 use tokio::sync::watch;
 
 pub use agent_files::{AgentFilesState, CheckpointAccess, agent_files_api_router};
+pub(crate) use usage::{UsageState, agent_usage_api_router};
 
 /// Shared state for the config API.
 #[derive(Clone)]
@@ -593,10 +595,9 @@ mod tests {
         tokio::fs::create_dir_all(&memory_dir).await.unwrap();
         let mut totals = residuum_bus::usage::SessionUsageTotals::default();
         totals.accumulate(Some(residuum_inference::Usage {
-            input_tokens: 300,
-            output_tokens: 60,
-            cache_creation_tokens: None,
-            cache_read_tokens: None,
+            uncached_input_tokens: Some(300),
+            output_tokens: Some(60),
+            ..Default::default()
         }));
         residuum_agent::usage::save_session_usage_totals(
             &memory_dir.join("usage_totals.json"),

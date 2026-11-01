@@ -13,11 +13,13 @@ use super::types::{
     ModelListResponse, Question, SystemOneModel, SystemOneRequest, SystemOneResponse,
 };
 use crate::http::{SharedHttpClient, read_error_body, warn_if_insecure_remote};
-use residuum_config::RetryConfig;
+use residuum_config::{RetryConfig, SystemOneProvider};
 
 /// Where a System 1 model is served and how to call it.
 #[derive(Clone, PartialEq, Eq)]
 pub struct SystemOneEndpoint {
+    /// The provider kind, recorded as the provider id of each usage record.
+    pub kind: SystemOneProvider,
     /// Display name used in messages: `TypeSafe`, Ollama, or a host.
     pub provider: String,
     /// Base URL without the `/v1/...` path.
@@ -31,6 +33,7 @@ pub struct SystemOneEndpoint {
 impl std::fmt::Debug for SystemOneEndpoint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SystemOneEndpoint")
+            .field("kind", &self.kind)
             .field("provider", &self.provider)
             .field("base_url", &self.base_url)
             .field("model", &self.model)
@@ -82,6 +85,12 @@ impl SystemOneClient {
         system_one.provider = %self.endpoint.provider,
         system_one.model = %self.endpoint.model,
         questions = questions.len(),
+        gen_ai.operation.name = crate::gen_ai_span::CHAT_OPERATION,
+        gen_ai.provider.name = self.endpoint.kind.as_str(),
+        gen_ai.request.model = %self.endpoint.model,
+        gen_ai.response.model = tracing::field::Empty,
+        gen_ai.usage.input_tokens = tracing::field::Empty,
+        gen_ai.usage.output_tokens = tracing::field::Empty,
     ))]
     pub async fn evaluate(
         &self,
@@ -113,6 +122,8 @@ impl SystemOneClient {
             output_tokens = response.usage.output_tokens,
             "system one evaluation complete"
         );
+        crate::gen_ai_span::record_response_model(&response.model);
+        crate::gen_ai_span::record_usage(Some(&response.usage.to_usage()));
         Ok(response)
     }
 
@@ -280,6 +291,7 @@ mod tests {
         SystemOneClient::new(
             http,
             SystemOneEndpoint {
+                kind: SystemOneProvider::TypeSafe,
                 provider: "TypeSafe".to_string(),
                 base_url: server.uri(),
                 model: "jev-latest".to_string(),
@@ -372,6 +384,7 @@ mod tests {
         let c = SystemOneClient::new(
             http,
             SystemOneEndpoint {
+                kind: SystemOneProvider::Ollama,
                 provider: "Ollama".to_string(),
                 base_url: format!("{}/v1/", server.uri()),
                 model: "nimble".to_string(),
@@ -459,6 +472,7 @@ mod tests {
         let c = SystemOneClient::new(
             http,
             SystemOneEndpoint {
+                kind: SystemOneProvider::Ollama,
                 provider: "Ollama".to_string(),
                 base_url: "http://unreachable.invalid".to_string(),
                 model: "nimble".to_string(),

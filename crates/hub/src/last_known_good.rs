@@ -200,6 +200,7 @@ mod tests {
             background: residuum_config::HubBackgroundConfig::default(),
             push: residuum_config::HubPushConfig::default(),
             system_one: None,
+            pricing: std::collections::BTreeMap::new(),
             config_dir: base.join("hub"),
             load_notices: Vec::new(),
         }

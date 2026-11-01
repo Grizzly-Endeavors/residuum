@@ -40,7 +40,7 @@ Changing `display_name` in `config.toml` changes the name people see. The folder
 
 | File | Holds |
 |------|-------|
-| `hub/config.toml` | `timezone` (shared), `[gateway]` bind and port, `[cloud]`, `[a2a]` `enabled`/`port`/`public_url`, `[tracing]`, `[push]` `contact` (a `mailto:` address or `https:` URL sent to push services; the project's address when unset), `[background]` `max_concurrent` (the session budget) and `hop_soft_limit`/`hop_hard_limit`, `[system_one]` (the shared [decision model](system-one.md)) |
+| `hub/config.toml` | `timezone` (shared), `[gateway]` bind and port, `[cloud]`, `[a2a]` `enabled`/`port`/`public_url`, `[tracing]`, `[push]` `contact` (a `mailto:` address or `https:` URL sent to push services; the project's address when unset), `[background]` `max_concurrent` (the session budget) and `hop_soft_limit`/`hop_hard_limit`, `[system_one]` (the shared [decision model](system-one.md)), `[pricing."provider/model"]` (per-model price overrides; see [Cost estimates](#cost-estimates)) |
 | `<agent>/config/config.toml` | Everything else: `display_name` (the name people see; absent means the folder name), `autostart` (default `true`), `timeout_secs`, `max_tokens`, `temperature`, `thinking`, `[memory]`, `[pulse]`, `[subconscious]`, `[learning]`, `[retry]`, `[agent]`, `[idle]`, `[discord]`, `[telegram]`, `[teams]`, `[webhooks]`, `[skills]`, `[tools]`, `[web_search]`, `[auto_mode]` (see [Auto Mode](auto-mode.md)), `[a2a]` `visibility`, and `[background]` idle timeouts, `episode_skip_token_floor`, and `subagent_depth_cap` |
 | `<agent>/config/providers.toml` | `[providers.*]` (with per-model settings under `[providers.<name>.models."<model>"]`), `[models]`, `[background.models]` |
 
@@ -103,6 +103,31 @@ With no `input` set, images are sent. When the provider turns a request down for
 **In a failover chain** each hop applies its own model's setting, and a request that carries images goes first to the hops that take them (any hop not declared or found text-only), in the configured order. So with `main = ["zai/glm-5.3", "openai/gpt-4o"]` and glm-5.3 text-only, a turn with an image is answered by gpt-4o with the image, and a turn without one stays on glm-5.3; being passed over this way raises no notice. A hop with no `input` set that refuses images while a later hop takes them is passed over the same way: the request moves on to that later hop with no notice and no retry without images, the chain stays on the hop it was on, and the refusing model is remembered as text-only for the run (one `warn` names it), so later requests with images skip it instead of being refused again. Only the last hop that takes images retries a refusal without them, and only a retry that is answered marks its model text-only. A hop that fails for any other reason fails over as usual, with the usual notice, except while a request with images is being answered past a hop it passed over: switching from a text-only primary to one vision fallback because another is down raises no "unavailable" or "back online" notice for the primary, which never failed. The text-only hops come after, in order, and answer with the placeholder only when no hop takes images or every hop that does has failed.
 
 A turn that brings in images the answering model can't take (the user's message, a message that arrives mid-turn, or a tool result such as `read_file`) shows one notice, counting those images: "This model can't see images, so N image(s) were left out of the request." When a refusal taught it that the model is text-only, the notice adds that the model can be marked text only in Settings → Model, which skips the refused first try. Images from earlier turns are left out of every later request too, but quietly: no notice, and a `debug` log line. A turn that shows the notice also logs one `warn` with the model, the count, and whether it was learned.
+
+## Cost estimates
+
+Residuum estimates what each model call cost from the usage its provider reported, one attempt at a time (the records described in [Turn Control](turn-control.md#turn-progress-and-usage-totals)). The estimate is for orientation, not billing: the provider's own meter is what was charged, and the estimate leaves out batch and priority discounts, Gemini context-cache storage fees, and fees for server-side tools such as web search.
+
+Each price is in USD per million tokens and has five rates. `input` is for uncached input tokens. `output` is for output tokens, and reasoning tokens are already counted inside them, so they are priced there and never twice. `cache_read` is for input tokens read from the prompt cache. `cache_write` is for input tokens written to the cache at the default TTL (5 minutes on Anthropic), and `cache_write_long` is for writes with a 1-hour TTL, which Anthropic bills higher. Cache reads and writes are billed at their own rates, not at the input rate. A provider with no separate cache-write price bills writes at the input rate, so its entry repeats the input rate there.
+
+A model with no price has no estimate at all: local models such as Ollama's, and any model not in the built-in table. An unreported count is treated as zero.
+
+The built-in prices cover a set of current models from the Anthropic, OpenAI, Gemini and Fireworks providers, and a model outside that set has no estimate until a `[pricing]` entry prices it. Each price is the base rate of the provider's published price list. A provider that bills longer prompts higher (Anthropic's Haiku 5.5 above 100,000 input tokens, Gemini 2.5 Pro above 200,000) is estimated at the base rate, so its estimates for those prompts run low until an override states the rate that applies.
+
+To set or correct a price, add a `[pricing]` table to `hub/config.toml`, keyed by the provider kind and model id that usage records carry (`anthropic`, `openai`, `gemini`, `fireworks`, `ollama`, not the name of a `[providers.<name>]` entry):
+
+```toml
+[pricing."anthropic/claude-sonnet-4-6"]
+input = 3.0
+output = 15.0
+cache_read = 0.30
+cache_write = 3.75
+cache_write_long = 6.0
+```
+
+An entry replaces the built-in price for that model, and each of the five rates is required. An entry whose key doesn't name a known provider and a model, or whose rate is negative or not a finite number, is ignored: the model keeps its built-in price (or has none), and a notice names the key and rate. The other entries still load. Prices are read from `hub/config.toml`, which reloads when it changes. The Settings modal's Model prices section (Settings → All agents → Model prices) edits this table, one row per `provider/model` with its five rates.
+
+A model id that carries a trailing `-YYYYMMDD` date is matched by its base id when it has no price of its own, so a dated snapshot such as `claude-haiku-4-5-20251001` is priced as `claude-haiku-4-5`. An exact key always wins over that match.
 
 ## Environment overrides
 

@@ -203,7 +203,7 @@ fn convert_one(span: &CompletedSpan, trace_id: TraceId, scope: &InstrumentationS
     attributes.push(KeyValue::new("target", span.target.clone()));
     attributes.push(KeyValue::new("level", span.level.to_string()));
     for (key, value) in &span.fields {
-        attributes.push(KeyValue::new(key.clone(), value.clone()));
+        attributes.push(span_attribute(key, value));
     }
 
     let events: Vec<opentelemetry::trace::Event> = span
@@ -251,6 +251,18 @@ fn convert_one(span: &CompletedSpan, trace_id: TraceId, scope: &InstrumentationS
         status: Status::Ok,
         instrumentation_scope: scope.clone(),
     }
+}
+
+/// One span field as an OTEL attribute. The span buffer keeps every value as
+/// text; the `GenAI` token counts go out as integers, the type the OpenTelemetry
+/// `GenAI` conventions give them, so trace tools can sum them.
+fn span_attribute(key: &str, value: &str) -> KeyValue {
+    if key.starts_with("gen_ai.usage.")
+        && let Ok(count) = value.parse::<i64>()
+    {
+        return KeyValue::new(key.to_string(), count);
+    }
+    KeyValue::new(key.to_string(), value.to_string())
 }
 
 /// Generate a random 16-byte trace ID.
@@ -341,6 +353,35 @@ mod tests {
         assert!(attr_keys.contains(&"key2"));
         assert!(attr_keys.contains(&"target"));
         assert!(attr_keys.contains(&"level"));
+    }
+
+    #[test]
+    fn gen_ai_usage_counts_export_as_integers() {
+        let mut span = make_test_span();
+        span.fields
+            .push(("gen_ai.usage.input_tokens".to_string(), "3863".to_string()));
+        span.fields
+            .push(("gen_ai.request.model".to_string(), "claude".to_string()));
+        let result = convert_spans(&[span]);
+        let attribute = |name: &str| {
+            result[0]
+                .attributes
+                .iter()
+                .find(|kv| kv.key.as_str() == name)
+                .map(|kv| kv.value.clone())
+        };
+        assert_eq!(
+            attribute("gen_ai.usage.input_tokens"),
+            Some(opentelemetry::Value::I64(3863))
+        );
+        assert_eq!(
+            attribute("gen_ai.request.model"),
+            Some(opentelemetry::Value::from("claude".to_string()))
+        );
+        assert_eq!(
+            attribute("key1"),
+            Some(opentelemetry::Value::from("value1".to_string()))
+        );
     }
 
     #[test]

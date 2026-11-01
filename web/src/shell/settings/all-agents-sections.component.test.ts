@@ -23,6 +23,7 @@ import CloudSection from "./CloudSection.svelte";
 import DiagnosticsSection from "./DiagnosticsSection.svelte";
 import GeneralSection from "./GeneralSection.svelte";
 import LimitsSection from "./LimitsSection.svelte";
+import PricingSection from "./PricingSection.svelte";
 import UpdatesSection from "./UpdatesSection.svelte";
 import { waitFor } from "../../test/wait";
 
@@ -180,6 +181,61 @@ describe("Session limits", () => {
     await type(screen.getByLabelText("Ask for fewer replies after"), "40");
     expect(screen.getByText(/the first one's note never appears/)).toBeInTheDocument();
     expect(scope.dirty).toBe(true);
+  });
+});
+
+describe("Model prices", () => {
+  beforeEach(() => {
+    serve('timezone = "UTC"\n');
+  });
+
+  it("says the built-in prices are used while there are no overrides", async () => {
+    await open();
+    render(PricingSection, { scope, section: "pricing" });
+    expect(screen.getByText(/Models use their built-in prices/)).toBeInTheDocument();
+  });
+
+  it("adds a row and stages the rates typed into it", async () => {
+    await open();
+    render(PricingSection, { scope, section: "pricing" });
+    await fireEvent.click(screen.getByRole("button", { name: "Add price" }));
+    await type(screen.getByLabelText("Provider and model"), "anthropic/claude-sonnet-5-5");
+    await type(screen.getByLabelText("Input"), "3");
+
+    expect(scope.configFile.patch).toMatchObject({
+      pricing: { "anthropic/claude-sonnet-5-5": { input: 3 } },
+    });
+  });
+
+  it("flags a negative rate beside its box, and names a row that has none", async () => {
+    await open();
+    render(PricingSection, { scope, section: "pricing" });
+    await fireEvent.click(screen.getByRole("button", { name: "Add price" }));
+    expect(
+      screen.getByText("Enter a provider and model, such as anthropic/claude-sonnet-5-5."),
+    ).toBeInTheDocument();
+
+    await type(screen.getByLabelText("Provider and model"), "acme/glm");
+    await type(screen.getByLabelText("Output"), "-1");
+    expect(screen.getByText("Use a price of 0 or more.")).toBeInTheDocument();
+  });
+
+  it("removes a row as a staged change, and the toast's Undo puts it back", async () => {
+    serve(
+      'timezone = "UTC"\n\n[pricing."acme/glm"]\ninput = 1\noutput = 2\ncache_read = 0\ncache_write = 1\ncache_write_long = 1\n',
+    );
+    await open();
+    render(PricingSection, { scope, section: "pricing" });
+    await fireEvent.click(screen.getByRole("button", { name: "Remove acme/glm" }));
+    expect(screen.queryByLabelText("Provider and model")).toBeNull();
+    expect(scope.configFile.patch).toEqual({ pricing: { "acme/glm": null } });
+
+    const toasted = [...toast.toasts.values()].at(-1);
+    expect(toasted?.message).toBe("Removed acme/glm.");
+    toasted?.action?.onClick();
+    await settle();
+    expect(screen.getByLabelText("Provider and model")).toHaveValue("acme/glm");
+    expect(scope.configFile.patch).toEqual({});
   });
 });
 

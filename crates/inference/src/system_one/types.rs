@@ -102,13 +102,29 @@ impl Answer {
     }
 }
 
-/// Token usage reported for one evaluation.
+/// Token usage reported for one evaluation. `None` means the service did
+/// not report the count, never zero.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 pub struct SystemOneUsage {
     #[serde(default)]
-    pub input_tokens: u64,
+    pub input_tokens: Option<u64>,
     #[serde(default)]
-    pub output_tokens: u64,
+    pub output_tokens: Option<u64>,
+}
+
+impl SystemOneUsage {
+    /// These counts as chat-model [`Usage`](crate::Usage): the decision
+    /// model has no prompt cache, so all of its input is uncached. A count
+    /// past `u32::MAX` saturates.
+    #[must_use]
+    pub fn to_usage(&self) -> crate::Usage {
+        let narrow = |count: u64| u32::try_from(count).unwrap_or(u32::MAX);
+        crate::Usage {
+            uncached_input_tokens: self.input_tokens.map(narrow),
+            output_tokens: self.output_tokens.map(narrow),
+            ..crate::Usage::default()
+        }
+    }
 }
 
 /// The response body of `POST /v1/systemone`.
@@ -229,7 +245,14 @@ mod tests {
             matches!(parsed.answers.get("anger"), Some(Answer::Score { score, .. }) if (score - 1.05).abs() < 1e-9),
             "score answer should parse"
         );
-        assert_eq!(parsed.usage.input_tokens, 10, "usage should parse");
+        assert_eq!(
+            parsed.usage,
+            SystemOneUsage {
+                input_tokens: Some(10),
+                output_tokens: Some(2),
+            },
+            "usage should parse"
+        );
     }
 
     #[test]
@@ -254,5 +277,26 @@ mod tests {
             Some("nimble"),
             "openai shape should parse"
         );
+    }
+
+    #[test]
+    fn usage_converts_to_uncached_input_and_output() {
+        let usage = SystemOneUsage {
+            input_tokens: Some(120),
+            output_tokens: None,
+        };
+        assert_eq!(
+            usage.to_usage(),
+            crate::Usage {
+                uncached_input_tokens: Some(120),
+                ..crate::Usage::default()
+            }
+        );
+        let huge = SystemOneUsage {
+            input_tokens: Some(u64::MAX),
+            output_tokens: Some(3),
+        };
+        assert_eq!(huge.to_usage().uncached_input_tokens, Some(u32::MAX));
+        assert_eq!(huge.to_usage().output_tokens, Some(3));
     }
 }

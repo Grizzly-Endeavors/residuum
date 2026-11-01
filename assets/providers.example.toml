@@ -60,8 +60,8 @@
 [models]
 main = "anthropic/claude-sonnet-4-6"
 # default = "anthropic/claude-haiku-4-5"
-# observer = "google-api/gemini-3.0-flash"
-# reflector = "google-api/gemini-3.0-flash"
+# observer = "google-api/gemini-3.8-flash"
+# reflector = "google-api/gemini-3.8-flash"
 # pulse = "anthropic/claude-haiku-4-5"
 # subconscious = "anthropic/claude-haiku-4-5"
 # embedding = "openai/text-embedding-3-small"

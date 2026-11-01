@@ -182,7 +182,7 @@ async fn full_memory_flow() {
     );
 
     let mw = make_merge_writer(&layout).unwrap();
-    let extraction = observer.extract(&recent, &layout).await.unwrap();
+    let extraction = observer.extract(&recent, &layout, None).await.unwrap();
     let outcome = mw
         .merge(extraction, SourceTag::main(), chrono_tz::UTC)
         .await
@@ -277,7 +277,7 @@ async fn full_memory_flow() {
     .unwrap();
 
     let recent2 = load_recent_messages(&recent_path).await.unwrap();
-    let extraction2 = observer.extract(&recent2, &layout).await.unwrap();
+    let extraction2 = observer.extract(&recent2, &layout, None).await.unwrap();
     let second_ep = mw
         .merge(extraction2, SourceTag::main(), chrono_tz::UTC)
         .await
@@ -582,7 +582,7 @@ async fn narrative_summary_in_observe_result() {
     .unwrap();
 
     let recent = load_recent_messages(&recent_path).await.unwrap();
-    let result = observer.extract(&recent, &layout).await.unwrap();
+    let result = observer.extract(&recent, &layout, None).await.unwrap();
 
     assert!(
         result.narrative.is_some(),
@@ -628,7 +628,7 @@ async fn backward_compat_legacy_array_format() {
     .unwrap();
 
     let recent = load_recent_messages(&recent_path).await.unwrap();
-    let result = observer.extract(&recent, &layout).await.unwrap();
+    let result = observer.extract(&recent, &layout, None).await.unwrap();
 
     assert_eq!(
         result.observations.len(),

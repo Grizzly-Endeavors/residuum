@@ -32,6 +32,7 @@ use residuum_bus::session::SessionInfo;
 use residuum_config::paths::TeamPaths;
 use residuum_config::{Config, HubConfig, WorkspaceLayout};
 use residuum_core::util::FatalError;
+use residuum_inference::{PriceTable, UsageRecorder};
 
 use super::activity::ActivityTracker;
 use super::agent_watch::{AgentChange, AgentChangeFeed, AgentChangeKind, AgentWatcher};
@@ -1824,6 +1825,10 @@ impl AgentHost {
     /// [`Self::repair_router_for`] it opens no checkpoint repository: the one
     /// write that takes a checkpoint opens them when it runs, so these routes
     /// answer even when the repositories can't be opened.
+    ///
+    /// It also carries the usage record routes, priced at the hub config as it
+    /// is when the router is built, which is why the directory asks for a file
+    /// router for them on every request.
     fn file_router_for(&self, slot: &AgentSlot) -> Router {
         let reload_tx = slot
             .lock()
@@ -1831,7 +1836,7 @@ impl AgentHost {
             .as_ref()
             .map(|running| running.control.reload_tx.clone());
         let layout = WorkspaceLayout::new(&slot.dir);
-        crate::web::agent_files_api_router(crate::web::AgentFilesState {
+        let files = crate::web::agent_files_api_router(crate::web::AgentFilesState {
             agent_name: slot.name.clone(),
             workspace_dir: slot.dir.clone(),
             memory_dir: Some(layout.memory_dir()),
@@ -1840,7 +1845,12 @@ impl AgentHost {
             checkpoints: crate::web::CheckpointAccess::lazy(
                 self.checkpoint_opener(&slot.name, &slot.dir),
             ),
-        })
+        });
+        let usage = crate::web::UsageState {
+            recorder: UsageRecorder::new(&layout),
+            prices: Arc::new(PriceTable::new(&self.hub_config().pricing)),
+        };
+        files.merge(crate::web::agent_usage_api_router(usage))
     }
 }
 

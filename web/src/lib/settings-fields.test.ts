@@ -51,7 +51,8 @@ describe("every field of every form is in the key-path map", () => {
   const configFields = Object.keys(defaults) as (keyof typeof defaults)[];
 
   it("covers every field of ConfigFields, at the key its diff writes", () => {
-    for (const field of configFields.filter((f) => f !== "webhooks")) {
+    // Collections are keyed by name, so their entries are covered below.
+    for (const field of configFields.filter((f) => f !== "webhooks" && f !== "pricing")) {
       const path = keyPathOf({ kind: "config", field });
       expect(path.length, `${field} has a key path`).toBeGreaterThan(0);
 
@@ -62,6 +63,39 @@ describe("every field of every form is in the key-path map", () => {
       expect(leafPath(diff), `${field} saves where the map says`).toEqual([...path]);
     }
     expect(keyPathOf({ kind: "config", field: "webhooks" })).toEqual(["webhooks"]);
+    expect(keyPathOf({ kind: "config", field: "pricing" })).toEqual(["pricing"]);
+  });
+
+  it("covers every rate of a price, at the key of its entry", () => {
+    const rates = ["input", "output", "cache_read", "cache_write", "cache_write_long"] as const;
+    const name = "anthropic/claude-sonnet-5-5";
+    const base = defaultConfigFields();
+    const entry = {
+      name,
+      input: "1",
+      output: "2",
+      cache_read: "3",
+      cache_write: "4",
+      cache_write_long: "5",
+    };
+    for (const rate of rates) {
+      const diff = diffConfigFields(
+        { ...base, pricing: [entry] },
+        { ...base, pricing: [{ ...entry, [rate]: "9" }] },
+      );
+      const ref: FieldRef = { kind: "price", name, field: rate };
+      expect(keyPathOf(ref)).toEqual(["pricing", name, rate]);
+      expect(diff.pricing).toEqual({
+        [name]: {
+          input: 1,
+          output: 2,
+          cache_read: 3,
+          cache_write: 4,
+          cache_write_long: 5,
+          [rate]: 9,
+        },
+      });
+    }
   });
 
   it("covers every field of a webhook", () => {
@@ -216,6 +250,20 @@ describe("placing a key path on a field", () => {
       name: "acme",
       field: "models",
     });
+    expect(locateField("all", "config", "pricing")).toEqual({ kind: "config", field: "pricing" });
+    expect(locateField("all", "config", "pricing.anthropic/claude-sonnet-5-5.cache_write")).toEqual(
+      {
+        kind: "price",
+        name: "anthropic/claude-sonnet-5-5",
+        field: "cache_write",
+      },
+    );
+    expect(locateField("all", "config", "pricing.acme/glm.bogus")).toEqual({
+      kind: "price",
+      name: "acme/glm",
+      field: undefined,
+    });
+    expect(locateField("agent", "config", "pricing.acme/glm.input")).toBeNull();
     expect(locateField("agent", "config", "webhooks.alerts.content_fields")).toEqual({
       kind: "webhook",
       name: "alerts",
@@ -301,7 +349,7 @@ describe("placing a diagnostic", () => {
   it("splits ownership the way saving does", () => {
     const defaults = defaultConfigFields();
     for (const field of Object.keys(defaults) as (keyof typeof defaults)[]) {
-      if (field === "webhooks") continue;
+      if (field === "webhooks" || field === "pricing") continue;
       const path = keyPathOf({ kind: "config", field });
       const diff = diffConfigFields(defaults, {
         ...defaults,

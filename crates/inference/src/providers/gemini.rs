@@ -12,20 +12,21 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
+use crate::attempt::{FailedRequest, record_attempt};
 use crate::embedding::{EmbeddingProvider, EmbeddingResponse};
 use crate::http::{
     SharedHttpClient, map_request_error, map_stream_request_error, read_error_body,
     warn_if_insecure_remote,
 };
 use crate::stream::{Flow, SseEvent, TrackedSink, answered_whole, read_sse};
-use crate::types::current_exchange_start;
+use crate::types::{current_exchange_start, uncached_from_inclusive_prompt};
 use crate::with_retry;
 use crate::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message, ProviderApi,
     ReplayScope, ResponseFormat, Role, StopReason, StreamDelta, StreamSink, ThinkingBlock,
     ThinkingOrigin, ToolCall, ToolDefinition, Usage, blocks_produced_at,
 };
-use residuum_config::RetryConfig;
+use residuum_config::{ProviderKind, RetryConfig};
 use residuum_config::{ThinkingConfig, ThinkingLevel};
 
 /// The header Gemini reads the API key from. The key goes here rather than in
@@ -97,15 +98,24 @@ impl GeminiClient {
     /// Reasoning summaries (parts marked `thought`) are kept apart from the
     /// answer, and each thought signature is recorded with the part it came
     /// on so it can be sent back there.
-    fn parse_response(
-        gemini_response: GeminiResponse,
-    ) -> Result<InferenceResponse, InferenceError> {
+    ///
+    /// A response with no candidate keeps the usage it reported on its error.
+    fn parse_response(gemini_response: GeminiResponse) -> Result<InferenceResponse, FailedRequest> {
+        let usage = gemini_response
+            .usage_metadata
+            .as_ref()
+            .map(GeminiUsageMetadata::usage);
         let candidate = gemini_response
             .candidates
             .into_iter()
             .next()
             .ok_or_else(|| {
-                InferenceError::Parse("Gemini API response contained no candidates".to_string())
+                FailedRequest::spent(
+                    InferenceError::Parse(
+                        "Gemini API response contained no candidates".to_string(),
+                    ),
+                    usage,
+                )
             })?;
 
         let mut content_text = String::new();
@@ -172,18 +182,6 @@ impl GeminiClient {
                 );
             }
         }
-
-        // Thought tokens are billed as output but reported apart from the
-        // candidates' own, so they are added in, as Anthropic's and
-        // OpenAI's output counts already include theirs.
-        let usage = gemini_response.usage_metadata.map(|u| Usage {
-            input_tokens: u.prompt_token_count,
-            output_tokens: u
-                .candidates_token_count
-                .saturating_add(u.thoughts_token_count),
-            cache_creation_tokens: None,
-            cache_read_tokens: u.cached_content_token_count,
-        });
 
         let mut model_response = InferenceResponse::new(content_text, tool_calls);
         model_response.usage = usage;
@@ -427,12 +425,30 @@ impl GeminiClient {
         message_count = request.contents.len(),
         tool_count = request.tools.as_ref().map_or(0, Vec::len),
         streaming = sink.is_some(),
+        gen_ai.operation.name = crate::gen_ai_span::CHAT_OPERATION,
+        gen_ai.provider.name = crate::gen_ai_span::provider_name(ProviderKind::Gemini),
+        gen_ai.request.model = %self.model,
+        gen_ai.usage.input_tokens = tracing::field::Empty,
+        gen_ai.usage.output_tokens = tracing::field::Empty,
+        gen_ai.usage.cache_read.input_tokens = tracing::field::Empty,
+        gen_ai.usage.cache_write.input_tokens = tracing::field::Empty,
+        gen_ai.usage.reasoning.output_tokens = tracing::field::Empty,
     ))]
     async fn send(
         &self,
         request: &GeminiRequest,
         sink: Option<&TrackedSink<'_>>,
     ) -> Result<InferenceResponse, InferenceError> {
+        let result = self.send_request(request, sink).await;
+        record_attempt(ProviderKind::Gemini, &self.model, result)
+    }
+
+    /// Send one request and parse its response.
+    async fn send_request(
+        &self,
+        request: &GeminiRequest,
+        sink: Option<&TrackedSink<'_>>,
+    ) -> Result<InferenceResponse, FailedRequest> {
         let timeout_secs = self.http.timeout_secs();
         let request_json = serde_json::to_string(request)
             .map_err(|e| InferenceError::Parse(format!("failed to serialize request: {e}")))?;
@@ -475,7 +491,7 @@ impl GeminiClient {
             );
             let error_body = serde_json::from_str::<GeminiErrorResponse>(&raw_body)
                 .map_or_else(|_| raw_body, |e| e.error.message);
-            return Err(InferenceError::Api(format!("{status}: {error_body}")));
+            return Err(InferenceError::Api(format!("{status}: {error_body}")).into());
         }
 
         let gemini_response = if let Some(sink) = sink.filter(|_| !answered_whole(&response)) {
@@ -599,12 +615,13 @@ impl InferenceProvider for GeminiClient {
 
 /// Read a streamed response to its end, pushing text and reasoning summary to
 /// `sink` as they arrive, and return it as the response `generateContent`
-/// would have returned.
+/// would have returned. A stream that fails after reporting usage (every
+/// event may carry it) keeps that usage on its error.
 async fn read_stream(
     response: reqwest::Response,
     idle_secs: u64,
     sink: &dyn StreamSink,
-) -> Result<GeminiResponse, InferenceError> {
+) -> Result<GeminiResponse, FailedRequest> {
     let mut assembler = StreamAssembler {
         sink,
         parts: Vec::new(),
@@ -612,8 +629,14 @@ async fn read_stream(
         usage: None,
         saw_candidate: false,
     };
-    read_sse(response, idle_secs, |event| assembler.handle(&event)).await?;
-    assembler.finish()
+    let read = read_sse(response, idle_secs, |event| assembler.handle(&event)).await;
+    let usage = assembler.usage.as_ref().map(GeminiUsageMetadata::usage);
+    match read {
+        Ok(()) => assembler
+            .finish()
+            .map_err(|error| FailedRequest::spent(error, usage)),
+        Err(error) => Err(FailedRequest::spent(error, usage)),
+    }
 }
 
 /// One streamed event: the next piece of the response.
@@ -900,13 +923,44 @@ struct GeminiResponseContent {
 #[expect(clippy::struct_field_names, reason = "field names match Gemini API")]
 struct GeminiUsageMetadata {
     #[serde(default, rename = "promptTokenCount")]
-    prompt_token_count: u32,
+    prompt_token_count: Option<u32>,
     #[serde(default, rename = "candidatesTokenCount")]
-    candidates_token_count: u32,
+    candidates_token_count: Option<u32>,
     #[serde(default, rename = "thoughtsTokenCount")]
-    thoughts_token_count: u32,
+    thoughts_token_count: Option<u32>,
     #[serde(default, rename = "cachedContentTokenCount")]
     cached_content_token_count: Option<u32>,
+}
+
+impl GeminiUsageMetadata {
+    /// Normalize Gemini's counts.
+    ///
+    /// `promptTokenCount` is the whole prompt with the cached part included,
+    /// so the uncached part is what remains after subtracting it. Thought
+    /// tokens are billed as output but reported apart from the candidates'
+    /// own, so they are added into output, as `Anthropic`'s and `OpenAI`'s
+    /// output counts already include theirs. `toolUsePromptTokenCount` is
+    /// left out of input: it counts context a hosted tool fetched, and the
+    /// only hosted tool sent here is Google Search, whose retrieved context
+    /// Google does not bill as input.
+    fn usage(&self) -> Usage {
+        let output_tokens = [self.candidates_token_count, self.thoughts_token_count]
+            .into_iter()
+            .flatten()
+            .reduce(u32::saturating_add);
+        Usage {
+            uncached_input_tokens: uncached_from_inclusive_prompt(
+                self.prompt_token_count,
+                self.cached_content_token_count,
+                None,
+            ),
+            cache_read_tokens: self.cached_content_token_count,
+            cache_write_tokens: None,
+            cache_write_long_tokens: None,
+            output_tokens,
+            reasoning_tokens: self.thoughts_token_count,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -1363,8 +1417,12 @@ mod tests {
         assert!(response.tool_calls.is_empty(), "should have no tool calls");
         assert!(response.usage.is_some(), "should report usage");
         let usage = response.usage.unwrap();
-        assert_eq!(usage.input_tokens, 10, "input tokens should match");
-        assert_eq!(usage.output_tokens, 5, "output tokens should match");
+        assert_eq!(
+            usage.uncached_input_tokens,
+            Some(10),
+            "input tokens should match"
+        );
+        assert_eq!(usage.output_tokens, Some(5), "output tokens should match");
         assert!(response.is_complete(), "text-only response is complete");
         assert_eq!(
             response.stop_reason,
@@ -1520,7 +1578,7 @@ mod tests {
         assert!(result.is_err(), "API error should return Err");
         let err = result.unwrap_err();
         assert!(
-            matches!(err, InferenceError::Api(_)),
+            matches!(err.underlying(), InferenceError::Api(_)),
             "should be an Api error"
         );
         assert!(
@@ -1553,7 +1611,7 @@ mod tests {
         assert!(result.is_err(), "empty candidates should return error");
         let err = result.unwrap_err();
         assert!(
-            matches!(err, InferenceError::Parse(_)),
+            matches!(err.underlying(), InferenceError::Parse(_)),
             "should be a Parse error"
         );
         assert!(
@@ -1583,7 +1641,7 @@ mod tests {
 
         assert!(result.is_err(), "timeout should return error");
         assert!(
-            matches!(result.unwrap_err(), InferenceError::Timeout(1)),
+            matches!(result.unwrap_err().underlying(), InferenceError::Timeout(1)),
             "should be Timeout(1)"
         );
     }
@@ -1722,17 +1780,17 @@ mod tests {
         assert!(result.is_ok(), "cache token response should succeed");
 
         let usage = result.unwrap().usage.unwrap();
-        assert_eq!(usage.input_tokens, 10, "input tokens should match");
-        assert_eq!(usage.output_tokens, 5, "output tokens should match");
         assert_eq!(
-            usage.cache_creation_tokens, None,
-            "Gemini does not report cache creation tokens"
+            usage,
+            Usage {
+                uncached_input_tokens: Some(2),
+                cache_read_tokens: Some(8),
+                output_tokens: Some(5),
+                ..Usage::default()
+            },
+            "promptTokenCount includes the cached part, so 2 of 10 are uncached"
         );
-        assert_eq!(
-            usage.cache_read_tokens,
-            Some(8),
-            "cache read tokens should match cachedContentTokenCount"
-        );
+        assert_eq!(usage.total_input_tokens(), Some(10));
     }
 
     #[tokio::test]
@@ -2374,14 +2432,15 @@ mod tests {
             vec!["call_0", "call_1"],
             "calls numbered across events"
         );
-        let usage = streamed.usage.unwrap();
         assert_eq!(
-            (
-                usage.input_tokens,
-                usage.output_tokens,
-                usage.cache_read_tokens
-            ),
-            (21, 14, Some(4)),
+            streamed.usage,
+            Some(Usage {
+                uncached_input_tokens: Some(17),
+                cache_read_tokens: Some(4),
+                output_tokens: Some(14),
+                reasoning_tokens: Some(5),
+                ..Usage::default()
+            }),
             "usage from the last event, with the 5 thought tokens counted as output"
         );
         assert_eq!(
@@ -2441,14 +2500,17 @@ mod tests {
             stream_from(sse_response(std::slice::from_ref(&partial)), make_client).await;
         let err = clean_end.unwrap_err();
         assert!(
-            matches!(err, InferenceError::StreamInterrupted(_)) && err.is_retryable(),
+            matches!(err.underlying(), InferenceError::StreamInterrupted(_)) && err.is_retryable(),
             "ending before a finish reason is an interrupted stream: {err:?}"
         );
 
         let (dropped, sink, _) = stream_from(sse_chunks(&[partial]), make_client).await;
         let dropped_err = dropped.unwrap_err();
         assert!(
-            matches!(dropped_err, InferenceError::StreamInterrupted(_)),
+            matches!(
+                dropped_err.underlying(),
+                InferenceError::StreamInterrupted(_)
+            ),
             "a dropped connection is an interrupted stream: {dropped_err:?}"
         );
         assert_eq!(sink.text(), "", "the partial text is voided");
@@ -2463,7 +2525,7 @@ mod tests {
         let (result, _, _) = stream_from(sse_response(&[blocked]), make_client).await;
         let err = result.unwrap_err();
         assert!(
-            matches!(&err, InferenceError::Parse(m) if m.contains("no candidates")),
+            matches!(err.underlying(), InferenceError::Parse(m) if m.contains("no candidates")),
             "same error as a response that arrives whole: {err:?}"
         );
     }
@@ -2508,7 +2570,7 @@ mod tests {
         .await;
         let err = result.unwrap_err();
         assert!(
-            matches!(err, InferenceError::Stalled(1)),
+            matches!(err.underlying(), InferenceError::Stalled(1)),
             "a silent stream is a stall: {err:?}"
         );
     }
@@ -2620,10 +2682,74 @@ mod tests {
             .unwrap()
             .usage
             .unwrap();
-        assert_eq!(usage.input_tokens, 10, "input tokens unchanged");
         assert_eq!(
-            usage.output_tokens, 43,
+            usage.uncached_input_tokens,
+            Some(10),
+            "input tokens unchanged"
+        );
+        assert_eq!(
+            usage.output_tokens,
+            Some(43),
             "the 40 thought tokens are output tokens beside the 3 of the answer"
+        );
+        assert_eq!(
+            usage.reasoning_tokens,
+            Some(40),
+            "the thought tokens are also kept apart"
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_usage_counts_stay_unknown() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"/models/gemini-2\.0-flash:generateContent"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "candidates": [{"content": {"role": "model", "parts": [{"text": "ok"}]},
+                    "finishReason": "STOP"}],
+                "usageMetadata": {"candidatesTokenCount": 3, "totalTokenCount": 3}
+            })))
+            .mount(&mock_server)
+            .await;
+        let usage = make_client(&mock_server.uri())
+            .complete(&[Message::user("hi")], &[], &CompletionOptions::default())
+            .await
+            .unwrap()
+            .usage
+            .unwrap();
+        assert_eq!(
+            usage,
+            Usage {
+                output_tokens: Some(3),
+                ..Usage::default()
+            },
+            "a missing prompt count is unknown, not zero"
+        );
+    }
+
+    #[tokio::test]
+    async fn tool_use_prompt_tokens_stay_out_of_input() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"/models/gemini-2\.0-flash:generateContent"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "candidates": [{"content": {"role": "model", "parts": [{"text": "found it"}]},
+                    "finishReason": "STOP"}],
+                "usageMetadata": {"promptTokenCount": 120, "candidatesTokenCount": 30,
+                    "toolUsePromptTokenCount": 900, "totalTokenCount": 1050}
+            })))
+            .mount(&mock_server)
+            .await;
+        let usage = make_client(&mock_server.uri())
+            .complete(&[Message::user("hi")], &[], &CompletionOptions::default())
+            .await
+            .unwrap()
+            .usage
+            .unwrap();
+        assert_eq!(
+            usage.total_input_tokens(),
+            Some(120),
+            "search-grounding context is not billed as input"
         );
     }
 
@@ -2747,7 +2873,7 @@ mod tests {
         assert!(result.is_err(), "API error should return Err");
         let err = result.unwrap_err();
         assert!(
-            matches!(err, InferenceError::Api(_)),
+            matches!(err.underlying(), InferenceError::Api(_)),
             "should be an Api error"
         );
         assert!(

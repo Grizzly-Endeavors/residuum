@@ -32,6 +32,7 @@ export type AllSectionId =
   | "system_one"
   | "updates"
   | "limits"
+  | "pricing"
   | "listener"
   | "diagnostics"
   | "raw"
@@ -83,6 +84,7 @@ export const ALL_SECTIONS: readonly SectionEntry<AllSectionId>[] = [
   listed("system_one", "Decision model", "The fast model behind Auto Mode"),
   listed("updates", "Updates", "Get the latest version"),
   listed("limits", "Session limits", "How much background work can run at once"),
+  listed("pricing", "Model prices", "What estimated costs assume for each model"),
   listed("listener", "Agent-to-agent", "Let agents elsewhere hand work to yours", "advanced"),
   listed("diagnostics", "Diagnostics", "Logs and bug reports", "advanced"),
   listed("raw", "Raw config", "Edit the install-wide settings file directly", "advanced"),
@@ -227,6 +229,7 @@ const HUB_CONFIG_KEYS: Readonly<Record<string, AllSectionId>> = {
   push: "notifications",
   cloud: "cloud",
   background: "limits",
+  pricing: "pricing",
   a2a: "listener",
   tracing: "diagnostics",
   system_one: "system_one",

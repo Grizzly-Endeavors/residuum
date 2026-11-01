@@ -296,6 +296,9 @@ mod tests {
             "test",
             residuum_config::AutoModeConfig::default(),
             residuum_inference::system_one::SystemOneService::new(None),
+            residuum_inference::UsageRecorder::new(&residuum_config::WorkspaceLayout::new(
+                dir.path(),
+            )),
         );
         let model_catalog = residuum_config::ModelCatalog::default().into_shared();
         let deps = ToolRegistryDeps {
