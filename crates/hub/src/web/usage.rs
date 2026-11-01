@@ -10,14 +10,13 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Query, State};
-use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 
 use residuum_inference::{AttemptOutcome, PriceTable, UsageComponent, UsageRecord, UsageRecorder};
+
+use super::agent_files::FileRouteError;
 
 /// The window read when a request names no `from`: the last seven days.
 const DEFAULT_WINDOW_DAYS: i64 = 7;
@@ -319,56 +318,19 @@ fn parse_component(text: Option<&str>) -> Result<Option<&str>, String> {
     }
 }
 
-/// A usage or context route's refusal: the status, and the message the
-/// answer carries under `error`.
-#[derive(Debug)]
-pub(super) struct UsageError {
-    status: StatusCode,
-    message: String,
-}
-
-impl UsageError {
-    fn bad_request(message: String) -> Self {
-        Self {
-            status: StatusCode::BAD_REQUEST,
-            message,
-        }
-    }
-
-    pub(super) fn not_found(message: &str) -> Self {
-        Self {
-            status: StatusCode::NOT_FOUND,
-            message: message.to_string(),
-        }
-    }
-
-    pub(super) fn internal(message: &str) -> Self {
-        Self {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-            message: message.to_string(),
-        }
-    }
-}
-
-impl IntoResponse for UsageError {
-    fn into_response(self) -> Response {
-        (self.status, Json(json!({ "error": self.message }))).into_response()
-    }
-}
-
 /// The records in `range`, or a `500` naming the failure. A read error is
 /// never an empty answer.
 async fn load_records(
     recorder: &UsageRecorder,
     range: Range,
     component: Option<&str>,
-) -> Result<Vec<UsageRecord>, UsageError> {
+) -> Result<Vec<UsageRecord>, FileRouteError> {
     recorder
         .load(range.from, range.to, component)
         .await
         .map_err(|e| {
             tracing::error!(error = ?e, "failed to read the usage records");
-            UsageError::internal(
+            FileRouteError::internal(
                 "couldn't read the usage records; the details are in Residuum's logs",
             )
         })
@@ -390,11 +352,12 @@ fn rfc3339(instant: DateTime<Utc>) -> String {
 pub(super) async fn api_usage_records(
     State(state): State<UsageState>,
     Query(query): Query<RecordsQuery>,
-) -> Result<Json<RecordsResponse>, UsageError> {
+) -> Result<Json<RecordsResponse>, FileRouteError> {
     let range = resolve_range(query.from.as_deref(), query.to.as_deref(), Utc::now())
-        .map_err(UsageError::bad_request)?;
-    let limit = parse_limit(query.limit.as_deref()).map_err(UsageError::bad_request)?;
-    let component = parse_component(query.component.as_deref()).map_err(UsageError::bad_request)?;
+        .map_err(FileRouteError::bad_request)?;
+    let limit = parse_limit(query.limit.as_deref()).map_err(FileRouteError::bad_request)?;
+    let component =
+        parse_component(query.component.as_deref()).map_err(FileRouteError::bad_request)?;
 
     let mut records = load_records(&state.recorder, range, component).await?;
     newest_first(&mut records);
@@ -414,10 +377,11 @@ pub(super) async fn api_usage_records(
 pub(super) async fn api_usage_summary(
     State(state): State<UsageState>,
     Query(query): Query<SummaryQuery>,
-) -> Result<Json<SummaryResponse>, UsageError> {
+) -> Result<Json<SummaryResponse>, FileRouteError> {
     let range = resolve_range(query.from.as_deref(), query.to.as_deref(), Utc::now())
-        .map_err(UsageError::bad_request)?;
-    let group_by = GroupBy::parse(query.group_by.as_deref()).map_err(UsageError::bad_request)?;
+        .map_err(FileRouteError::bad_request)?;
+    let group_by =
+        GroupBy::parse(query.group_by.as_deref()).map_err(FileRouteError::bad_request)?;
 
     let records = load_records(&state.recorder, range, None).await?;
     let summary = summarize(&records, group_by, |record| {

@@ -11,7 +11,11 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use axum::Json;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, put};
+use serde_json::json;
 
 use crate::file_server::{self, FileRegistry};
 use residuum_bus::control::ReloadSender;
@@ -154,4 +158,41 @@ pub fn agent_files_api_router(state: AgentFilesState) -> axum::Router {
         )
         .with_state(state)
         .merge(file_links)
+}
+
+/// A file route's refusal: the status, and the message the answer carries
+/// under `error`.
+#[derive(Debug)]
+pub(super) struct FileRouteError {
+    status: StatusCode,
+    message: String,
+}
+
+impl FileRouteError {
+    pub(super) fn bad_request(message: String) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message,
+        }
+    }
+
+    pub(super) fn not_found(message: &str) -> Self {
+        Self {
+            status: StatusCode::NOT_FOUND,
+            message: message.to_string(),
+        }
+    }
+
+    pub(super) fn internal(message: &str) -> Self {
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: message.to_string(),
+        }
+    }
+}
+
+impl IntoResponse for FileRouteError {
+    fn into_response(self) -> Response {
+        (self.status, Json(json!({ "error": self.message }))).into_response()
+    }
 }
