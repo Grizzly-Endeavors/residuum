@@ -670,7 +670,7 @@ fn is_missing_reasoning_refusal(error: &InferenceError) -> bool {
 /// Whether the API refused the `reasoning_effort` a request carried, as a
 /// field the model doesn't take or a value it doesn't support.
 fn is_reasoning_effort_refusal(error: &InferenceError) -> bool {
-    let InferenceError::Api(message) = error else {
+    let InferenceError::Api(message) = error.underlying() else {
         return false;
     };
     let lower = message.to_lowercase();
@@ -2815,6 +2815,25 @@ mod tests {
             !refused("429 Too Many Requests: rate limited"),
             "a transient failure"
         );
+    }
+
+    /// `send` returns every failure wrapped with the attempt it records, so
+    /// the capped-effort fallback has to see the refusal through that wrapper.
+    #[test]
+    fn a_reasoning_effort_refusal_is_recognized_inside_its_recorded_attempt() {
+        let refusal = InferenceError::Attempted {
+            error: Box::new(InferenceError::Api(
+                "400 Bad Request: Unsupported parameter: 'reasoning_effort' is not supported with this model."
+                    .to_string(),
+            )),
+            attempts: vec![crate::AttemptUsage {
+                provider: "openai".to_string(),
+                model: "gpt-4o".to_string(),
+                outcome: crate::AttemptOutcome::Failed,
+                usage: None,
+            }],
+        };
+        assert!(is_reasoning_effort_refusal(&refusal));
     }
 
     #[tokio::test]
