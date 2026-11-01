@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use http::{HeaderName, HeaderValue};
 use rmcp::RoleClient;
-use rmcp::model::{CallToolRequestParams, CallToolResult, Content};
+use rmcp::model::{CallToolRequestParams, CallToolResult, Content, Tool};
 use rmcp::service::{RunningService, ServiceExt};
 use rmcp::transport::TokioChildProcess;
 use rmcp::transport::streamable_http_client::{
@@ -131,7 +131,7 @@ impl McpClient {
         })
     }
 
-    /// List all tools advertised by this MCP server.
+    /// List all tools advertised by this MCP server, in name order.
     ///
     /// Handles pagination automatically via `list_all_tools()`.
     ///
@@ -146,16 +146,7 @@ impl McpClient {
             )
         })?;
 
-        let definitions = tools
-            .into_iter()
-            .map(|t| ToolDefinition {
-                name: t.name.into_owned(),
-                description: t.description.map(Cow::into_owned).unwrap_or_default(),
-                parameters: Value::Object(t.input_schema.as_ref().clone()),
-            })
-            .collect();
-
-        Ok(definitions)
+        Ok(definitions_in_name_order(tools))
     }
 
     /// A cheap-to-clone handle to this connection's peer, so a caller (the
@@ -183,6 +174,22 @@ impl McpClient {
             tracing::debug!(server = %self.server_name, "mcp server shutdown complete");
         }
     }
+}
+
+/// Convert one server's advertised tools into definitions sorted by name. A
+/// server may list its tools in any order, and that order can change between
+/// its processes, which would change the tool block of every request.
+fn definitions_in_name_order(tools: Vec<Tool>) -> Vec<ToolDefinition> {
+    let mut definitions: Vec<ToolDefinition> = tools
+        .into_iter()
+        .map(|t| ToolDefinition {
+            name: t.name.into_owned(),
+            description: t.description.map(Cow::into_owned).unwrap_or_default(),
+            parameters: Value::Object(t.input_schema.as_ref().clone()),
+        })
+        .collect();
+    definitions.sort_by(|a, b| a.name.cmp(&b.name));
+    definitions
 }
 
 /// A cheap-to-clone handle for calling tools on one MCP server, independent
@@ -587,6 +594,19 @@ mod tests {
             extract_text_content(&content),
             "hello\nworld",
             "mixed blocks should return only text joined by newlines"
+        );
+    }
+
+    #[test]
+    fn a_servers_tools_come_back_sorted_by_name() {
+        let tool = |name: &'static str| Tool::new(name, "", serde_json::Map::new());
+        let definitions =
+            definitions_in_name_order(vec![tool("write_file"), tool("exec"), tool("read_file")]);
+        let names: Vec<&str> = definitions.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["exec", "read_file", "write_file"],
+            "a server's listing order must not reach the model request"
         );
     }
 }
