@@ -25,7 +25,7 @@ Read the contents of a file. Each output line is prefixed with its line number a
 
 ## write_file
 
-Write content to a file. Creates parent directories if they don't exist. Overwrites the file if it already exists. Existing files must be read with read_file before overwriting. Files under team/ are shared with teammates: if one changed after you read it, nothing is written and the error names who changed it, so read it again and redo your change.
+Write content to a file. Creates parent directories if they don't exist. Overwrites the file if it already exists. Existing files must be read with read_file before overwriting.
 
 {
   "properties": {
@@ -47,7 +47,7 @@ Write content to a file. Creates parent directories if they don't exist. Overwri
 
 ## edit_file
 
-Edit an existing file by replacing exact text. Each entry in 'edits' replaces old_string with new_string; old_string must match the file exactly once (include surrounding lines to make it unique) unless replace_all is true. Edits apply in order, each seeing the result of the ones before it, and the file is only written if every edit succeeds. Copy old_string from read_file output without the line-number prefix. To delete text, use an empty new_string. The file must have been read with read_file first. Files under team/ are shared with teammates: if one changed after you read it, nothing is written and the error names who changed it, so read it again and redo your change. Use this over write_file when changing part of an existing file.
+Edit an existing file by replacing exact text. Each entry in 'edits' replaces old_string with new_string; old_string must match the file exactly once (include surrounding lines to make it unique) unless replace_all is true. Edits apply in order, each seeing the result of the ones before it, and the file is only written if every edit succeeds. Copy old_string from read_file output without the line-number prefix. To delete text, use an empty new_string. The file must have been read with read_file first. Use this over write_file when changing part of an existing file.
 
 {
   "properties": {
@@ -194,7 +194,7 @@ Search past conversation observations, interaction chunks, and knowledge wiki pa
       "type": "string"
     },
     "source": {
-      "description": "Filter by source type: 'observations', 'episodes', or 'wiki'. Omit to search all three.",
+      "description": "Filter by source type. Omit to search all three.",
       "enum": [
         "observations",
         "episodes",
@@ -250,7 +250,7 @@ Schedule a one-off action to fire at a specific time. The action runs once and i
       "type": "string"
     },
     "model_tier": {
-      "description": "The model the action's session runs on: a tier (\"small\", \"medium\", or \"large\") or an explicit model id in provider/model form, such as \"anthropic/claude-haiku-4-5\" (the format providers.toml uses). An explicit model runs that one model with no failover. Defaults to \"medium\".",
+      "description": "A tier (\"small\", \"medium\", or \"large\") or an explicit model id in provider/model form (the format providers.toml uses). An explicit model runs that one model with no failover. Defaults to \"medium\".",
       "type": "string"
     },
     "name": {
@@ -516,7 +516,7 @@ Fork a session to handle a task in the background. Optionally name a skill to gi
 {
   "properties": {
     "model": {
-      "description": "The model the session runs on: a tier (\"small\", \"medium\", or \"large\") or an explicit model id in provider/model form, such as \"anthropic/claude-haiku-4-5\" (the format providers.toml uses). An explicit model runs that one model with no failover. Default: \"medium\".",
+      "description": "A tier (\"small\", \"medium\", or \"large\") or an explicit model id in provider/model form (the format providers.toml uses). An explicit model runs that one model with no failover. Defaults to \"medium\".",
       "type": "string"
     },
     "skill": {
@@ -593,7 +593,7 @@ Send a message and/or file attachment to an endpoint. When sharing a file with t
       "type": "string"
     },
     "file_path": {
-      "description": "Absolute path to a file to send. Images render inline, audio gets a player, other files appear as downloads. Always use this instead of pasting file paths as text.",
+      "description": "Absolute path to a file to send. Images render inline, audio gets a player, other files appear as downloads.",
       "type": "string"
     },
     "message": {
@@ -636,7 +636,7 @@ List available communication endpoints. Shows interactive endpoints (for switch_
 
 ## message_agent
 
-Send a text message to another agent. Address forms: "main" or a session address (yours; see list_agents); "agent:<name>" (a teammate's main); "agent:<name>/<session-address>" (a teammate's session; copy the exact address from its message); "a2a:<name>" (a remote agent). Fire-and-forget: a running recipient sees the message at its next tool-call boundary, an idle one starts a turn, a completed session resumes at the same address. Replies arrive later as separate messages addressed to you; a remote agent replies from "a2a:<name>". A stopped or failed teammate returns an error and nothing is queued. Use list_agents for addresses.
+Send a text message to another agent at the address in `to`. Fire-and-forget: a running recipient sees the message at its next tool-call boundary, an idle one starts a turn, a completed session resumes at the same address. Replies arrive later as separate messages addressed to you; a remote agent replies from "a2a:<name>". A stopped or failed teammate returns an error and nothing is queued. Use list_agents for addresses.
 
 {
   "properties": {
@@ -649,7 +649,7 @@ Send a text message to another agent. Address forms: "main" or a session address
       "type": "string"
     },
     "to": {
-      "description": "Address to message: \"main\", a session address from list_agents, \"agent:<name>\" or \"agent:<name>/<session-address>\" for a teammate, or \"a2a:<name>\" for a remote agent.",
+      "description": "Address to message: \"main\", a session address (yours; see list_agents), \"agent:<name>\" for a teammate's main, \"agent:<name>/<session-address>\" for one of its sessions (copy the exact address from its message), or \"a2a:<name>\" for a remote agent.",
       "type": "string"
     }
   },
