@@ -51,7 +51,9 @@ pub trait AgentDirectory: TeamDirectory {
     /// links), over its files on disk and with no checkpoint repository
     /// opened until a write needs one. The hub serves them from
     /// [`Self::agent_router`] while the agent is running, and from this
-    /// router otherwise. Same rooting as [`Self::agent_router`].
+    /// router otherwise. The usage record routes are the exception: the hub
+    /// always asks this router for them, since it prices them at the hub config
+    /// as it is now. Same rooting as [`Self::agent_router`].
     ///
     /// # Errors
     /// [`LifecycleError::NotFound`] for an unknown agent.

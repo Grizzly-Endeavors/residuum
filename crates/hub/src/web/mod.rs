@@ -20,6 +20,7 @@ mod system_one;
 pub mod teams_setup;
 pub mod tracing_api;
 pub mod update;
+mod usage;
 mod workbench;
 pub mod workspace;
 pub(crate) mod workspace_bulk;
@@ -38,6 +39,7 @@ use axum::routing::{delete, get, patch, post, put};
 use tokio::sync::watch;
 
 pub use agent_files::{AgentFilesState, CheckpointAccess, agent_files_api_router};
+pub(crate) use usage::{UsageState, agent_usage_api_router};
 
 /// Shared state for the config API.
 #[derive(Clone)]

@@ -61,6 +61,11 @@ enum AgentRouterKind {
     /// no checkpoint repository, so they answer even when the repositories
     /// can't be opened.
     Files,
+    /// The usage record routes. They price the agent's records at the hub
+    /// config's prices as it is now, which a running agent's router was not
+    /// built with, so the hub serves them from the file router whatever the
+    /// agent's state.
+    UsageRecords,
     /// Everything else, which needs a running agent.
     Running,
 }
@@ -81,6 +86,7 @@ impl AgentRouterKind {
                 "config" | "providers" | "mcp" | "workspace" | "checkpoints" | "teams-setup",
                 ..,
             ] => Self::Repair,
+            ["api", "usage", "records" | "summary"] => Self::UsageRecords,
             ["api", route @ ..] if is_file_data_route(route) => Self::Files,
             _ => Self::Running,
         }
@@ -124,6 +130,7 @@ async fn agent_request(directory: &dyn AgentDirectory, req: Request) -> Response
             Err(LifecycleError::NotRunning { .. }) => directory.agent_file_router(name),
             running_or_unknown => running_or_unknown,
         },
+        AgentRouterKind::UsageRecords => directory.agent_file_router(name),
         AgentRouterKind::Running => directory.agent_router(name),
     };
     forward(name, router, req, &inner).await
@@ -351,6 +358,21 @@ mod tests {
                 "{files}"
             );
         }
+    }
+
+    #[test]
+    fn usage_records_and_summaries_are_served_from_the_file_router() {
+        for usage in ["/api/usage/records", "/api/usage/summary"] {
+            assert_eq!(
+                AgentRouterKind::for_inner_path(usage),
+                AgentRouterKind::UsageRecords,
+                "{usage}"
+            );
+        }
+        assert_eq!(
+            AgentRouterKind::for_inner_path("/api/usage"),
+            AgentRouterKind::Files
+        );
     }
 
     #[test]
