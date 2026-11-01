@@ -10,7 +10,7 @@ mod types;
 // Re-export all public types at the `context` module level to preserve existing import paths.
 pub use breakdown::{ContextBreakdown, ContextSnapshot, load_context_snapshot};
 pub use status::StatusClock;
-pub use types::{MemoryContext, PromptContext, SkillsContext};
+pub use types::{IntermediateDelivery, MemoryContext, PromptContext, SkillsContext};
 
 // Re-export assembly functions for use within the agent crate.
 pub(super) use assembly::assemble_system_prompt;

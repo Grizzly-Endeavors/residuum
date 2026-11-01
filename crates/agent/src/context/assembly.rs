@@ -28,7 +28,7 @@ pub(crate) fn assemble_system_prompt(
         .count();
     let mut messages = Vec::with_capacity(1 + conversation.len() + status_lines);
 
-    let system = build_system_prompt(identity, memory_ctx, &prompt_ctx.skills);
+    let system = build_system_prompt(identity, memory_ctx, prompt_ctx);
     messages.push(system.message);
     let mut layout = RequestLayout {
         system_sections: system.sections,

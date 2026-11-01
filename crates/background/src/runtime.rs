@@ -30,7 +30,9 @@ use residuum_config::BackgroundConfig;
 use residuum_tracing_service::{ClientContext, TracingService};
 
 use super::messaging::{AgentMessenger, DeliveryOutcome, PendingInput};
-use super::session_memory::{SessionMemory, SessionMemoryEnv, complete_session_memory};
+use super::session_memory::{
+    SessionMemory, SessionMemoryEnv, TimedMessage, complete_session_memory,
+};
 use super::store::{RunTranscriptSink, SessionStore};
 use super::subagent::{SessionTurnIdentity, SubAgentResources, TurnKickoff, execute_subagent};
 use super::types::{SubAgentConfig, truncate_prompt_preview};
@@ -586,15 +588,15 @@ async fn recover_from_panic(
     )
     .await;
 
-    let mut transcript = env
+    let lines = env
         .store
-        .read_incremental_transcript(&info.run_id, info.started_at)
+        .read_transcript_lines(&info.run_id, info.started_at)
         .await;
 
     let episode_id = if let Some(extras) = mem_extras.as_ref() {
-        let summary = transcript
+        let summary = lines
             .last()
-            .map(|m| m.content.clone())
+            .map(|line| line.message.content.clone())
             .unwrap_or_default();
         let mem_env = SessionMemoryEnv {
             observer: extras.observer.as_ref(),
@@ -608,10 +610,16 @@ async fn recover_from_panic(
             info.run_id.clone(),
             info.category.as_str(),
         );
-        complete_session_memory(tag, &summary, &transcript, SessionMemory::new(), &mem_env).await
+        let timed: Vec<_> = lines
+            .iter()
+            .map(super::store::TranscriptLine::timed)
+            .collect();
+        complete_session_memory(tag, &summary, &timed, SessionMemory::new(), &mem_env).await
     } else {
         None
     };
+    let mut transcript: Vec<residuum_inference::Message> =
+        lines.into_iter().map(|line| line.message).collect();
 
     let status = AgentResultStatus::Failed {
         error: format!("session task panicked: {panic_msg}"),
@@ -799,7 +807,7 @@ async fn after_turn(
     if let Some(res) = resources {
         let mem_env = session_memory_env(res, env.tz);
         memory
-            .maybe_stage(history.own(), &info.run_id, &mem_env)
+            .maybe_stage(&history.own_timed(), &info.run_id, &mem_env)
             .await;
     }
     let recent_messages = &mut history.messages;
@@ -843,6 +851,18 @@ impl RunHistory {
     /// The messages this run produced itself, after anything it carried in.
     fn own(&self) -> &[residuum_inference::Message] {
         self.messages.messages_since(self.carried)
+    }
+
+    /// [`Self::own`], each message with the time it entered the history.
+    fn own_timed(&self) -> Vec<TimedMessage<'_>> {
+        self.own()
+            .iter()
+            .zip(self.messages.recorded_at_since(self.carried))
+            .map(|(message, at)| TimedMessage {
+                message,
+                recorded_at: Some(*at),
+            })
+            .collect()
     }
 }
 
@@ -1077,7 +1097,7 @@ async fn finish_run(
             info.run_id.clone(),
             info.category.as_str(),
         );
-        complete_session_memory(tag, &summary, history.own(), memory, &mem_env).await
+        complete_session_memory(tag, &summary, &history.own_timed(), memory, &mem_env).await
     } else {
         None
     };
@@ -1858,6 +1878,7 @@ mod tests {
         SubAgentResources {
             max_tool_iterations: None,
             repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
+            intermediate_delivery: residuum_agent::context::IntermediateDelivery::default(),
             provider: Box::new(MockProvider {
                 response: response.to_string(),
             }),
@@ -1884,6 +1905,7 @@ mod tests {
         SubAgentResources {
             max_tool_iterations: None,
             repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
+            intermediate_delivery: residuum_agent::context::IntermediateDelivery::default(),
             provider: Box::new(GatedProvider::new(gate, response)),
             tools: residuum_agent::ToolRegistry::new(),
             mcp_registry: McpRegistry::new_shared(),
@@ -2953,6 +2975,7 @@ mod tests {
             Some(SubAgentResources {
                 max_tool_iterations: None,
                 repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
+                intermediate_delivery: residuum_agent::context::IntermediateDelivery::default(),
                 provider: Box::new(BlockingProvider),
                 tools: residuum_agent::ToolRegistry::new(),
                 mcp_registry: McpRegistry::new_shared(),
@@ -2997,6 +3020,7 @@ mod tests {
             Some(SubAgentResources {
                 max_tool_iterations: None,
                 repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
+                intermediate_delivery: residuum_agent::context::IntermediateDelivery::default(),
                 provider: Box::new(BlockingProvider),
                 tools: residuum_agent::ToolRegistry::new(),
                 mcp_registry: McpRegistry::new_shared(),
@@ -3094,6 +3118,7 @@ mod tests {
             Some(SubAgentResources {
                 max_tool_iterations: None,
                 repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
+                intermediate_delivery: residuum_agent::context::IntermediateDelivery::default(),
                 provider: Box::new(BlockingProvider),
                 tools: residuum_agent::ToolRegistry::new(),
                 mcp_registry: McpRegistry::new_shared(),
@@ -3182,6 +3207,7 @@ mod tests {
             Some(SubAgentResources {
                 max_tool_iterations: None,
                 repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
+                intermediate_delivery: residuum_agent::context::IntermediateDelivery::default(),
                 provider: Box::new(PanickingProvider),
                 tools: residuum_agent::ToolRegistry::new(),
                 mcp_registry: McpRegistry::new_shared(),
@@ -3239,6 +3265,7 @@ mod tests {
             Some(SubAgentResources {
                 max_tool_iterations: None,
                 repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
+                intermediate_delivery: residuum_agent::context::IntermediateDelivery::default(),
                 provider: Box::new(PanickingProvider),
                 tools: residuum_agent::ToolRegistry::new(),
                 mcp_registry: McpRegistry::new_shared(),
@@ -3422,6 +3449,7 @@ mod tests {
             Some(SubAgentResources {
                 max_tool_iterations: None,
                 repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
+                intermediate_delivery: residuum_agent::context::IntermediateDelivery::default(),
                 provider: Box::new(BlockingProvider),
                 tools: residuum_agent::ToolRegistry::new(),
                 mcp_registry: McpRegistry::new_shared(),
@@ -4198,11 +4226,12 @@ mod tests {
 
     /// `SubAgentResources` built with a real (non-disabled) observer whose
     /// thresholds are set to fire on essentially any content, paired with a
-    /// mock provider that always finds one observation — so a turn's
-    /// messages always cross the force threshold and get staged.
+    /// recording provider that always finds one observation — so a turn's
+    /// messages always cross the force threshold and get staged. The
+    /// returned calls hold the texts of every observer call, in order.
     fn make_sequenced_resources_with_eager_observer(
         responses: Vec<&str>,
-    ) -> (SubAgentResources, residuum_config::WorkspaceLayout) {
+    ) -> (SubAgentResources, Arc<std::sync::Mutex<Vec<Vec<String>>>>) {
         let dir = tempfile::tempdir().unwrap();
         let layout = residuum_config::WorkspaceLayout::new(dir.path()).with_tempdir_guard(dir);
         let search_index = Arc::new(
@@ -4217,10 +4246,12 @@ mod tests {
             None,
             None,
         ));
+        let observer_calls = Arc::new(std::sync::Mutex::new(Vec::new()));
         let observer = Arc::new(residuum_memory::observer::Observer::new(
-            Box::new(residuum_memory::testing::MockMemoryProvider::new(
-                r#"{"observations": [{"content": "staged a finding", "timestamp": "2026-02-21T14:30", "visibility": "background"}]}"#,
-            )),
+            Box::new(RecordingProvider {
+                response: r#"{"observations": [{"content": "staged a finding", "timestamp": "2026-02-21T14:30", "visibility": "background"}]}"#.to_string(),
+                calls: Arc::clone(&observer_calls),
+            }),
             residuum_memory::observer::ObserverConfig {
                 threshold_tokens: 1,
                 force_threshold_tokens: 1,
@@ -4230,6 +4261,7 @@ mod tests {
         let resources = SubAgentResources {
             max_tool_iterations: None,
             repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
+            intermediate_delivery: residuum_agent::context::IntermediateDelivery::default(),
             provider: Box::new(SequencedProvider::new(responses)),
             tools: residuum_agent::ToolRegistry::new(),
             mcp_registry: McpRegistry::new_shared(),
@@ -4245,7 +4277,16 @@ mod tests {
             episode_skip_token_floor: 2000,
             hop_counter: residuum_agent::HopCounter::new(0),
         };
-        (resources, layout)
+        (resources, observer_calls)
+    }
+
+    /// Takes the texts of the observer calls recorded so far, one string per
+    /// call, leaving the recorder empty for the next turn's calls.
+    fn take_observer_calls(calls: &std::sync::Mutex<Vec<Vec<String>>>) -> Vec<String> {
+        std::mem::take(&mut *calls.lock().unwrap())
+            .into_iter()
+            .map(|texts| texts.join("\n"))
+            .collect()
     }
 
     #[tokio::test]
@@ -4255,7 +4296,7 @@ mod tests {
         let (runtime, mut sub, bus_handle) = test_runtime_held_idle().await;
         let mut session_events = bus_handle.subscribe(topics::Sessions).await.unwrap();
         let address = SessionAddress::from("spawned-researcher-0009");
-        let (resources, layout) = make_sequenced_resources_with_eager_observer(vec![
+        let (resources, observer_calls) = make_sequenced_resources_with_eager_observer(vec![
             "first turn done",
             "second turn done",
         ]);
@@ -4267,6 +4308,24 @@ mod tests {
             "the session to go idle after its first turn",
         )
         .await;
+
+        // A turn's staging runs before the session reports idle, so by now
+        // the observer has seen the first turn's messages. Staging at the end
+        // of the run instead would leave nothing recorded here.
+        let first_turn = take_observer_calls(&observer_calls);
+        assert!(
+            first_turn.iter().any(|call| call.contains("do the thing"))
+                && first_turn
+                    .iter()
+                    .any(|call| call.contains("first turn done")),
+            "the first turn's messages should be staged once it goes idle, got {first_turn:?}"
+        );
+        assert!(
+            first_turn
+                .iter()
+                .all(|call| call.contains("do the thing") || call.contains("first turn done")),
+            "staging after the first turn should send only the first turn's messages, got {first_turn:?}"
+        );
 
         assert_eq!(
             runtime.registry.deliver(
@@ -4287,6 +4346,24 @@ mod tests {
             "the session to go idle after the woken second turn",
         )
         .await;
+
+        // The second turn is staged on its own, after the first turn's
+        // messages were already covered: its calls carry only its messages.
+        let second_turn = take_observer_calls(&observer_calls);
+        assert!(
+            second_turn.iter().any(|call| call.contains("keep going"))
+                && second_turn
+                    .iter()
+                    .any(|call| call.contains("second turn done")),
+            "the second turn's messages should be staged once it goes idle, got {second_turn:?}"
+        );
+        assert!(
+            second_turn
+                .iter()
+                .all(|call| !call.contains("do the thing") && !call.contains("first turn done")),
+            "staging the second turn should not resend the first turn's messages, got {second_turn:?}"
+        );
+
         assert!(
             runtime.registry.stop(&address),
             "the session should still be live after its second turn"
@@ -4294,22 +4371,6 @@ mod tests {
 
         let event = next_event("the run to complete", &mut sub).await;
         assert_eq!(event.summary, "second turn done");
-
-        // Each turn crossed the (tiny) force threshold on its own and staged
-        // its own observation — if staging only ran once, at the end, there
-        // would be one merged observation here, not two.
-        let log = residuum_memory::log_store::load_observation_log(&layout.observations_json())
-            .await
-            .unwrap();
-        let matching = log
-            .observations
-            .iter()
-            .filter(|o| o.source.session_address.as_deref() == Some(address.as_ref()))
-            .count();
-        assert_eq!(
-            matching, 2,
-            "each of the run's two turns should have staged its own observation"
-        );
     }
 
     /// Calls a tool (one that doesn't exist, so it errors) on its first
@@ -4424,6 +4485,7 @@ mod tests {
             Some(SubAgentResources {
                 max_tool_iterations: None,
                 repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
+                intermediate_delivery: residuum_agent::context::IntermediateDelivery::default(),
                 provider: Box::new(ToolThenAnswerProvider {
                     calls: std::sync::atomic::AtomicUsize::new(0),
                 }),
@@ -4504,6 +4566,7 @@ mod tests {
         SubAgentResources {
             max_tool_iterations: None,
             repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
+            intermediate_delivery: residuum_agent::context::IntermediateDelivery::default(),
             provider,
             tools: residuum_agent::ToolRegistry::new(),
             mcp_registry: McpRegistry::new_shared(),
@@ -4930,6 +4993,7 @@ mod tests {
             Some(SubAgentResources {
                 max_tool_iterations: None,
                 repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
+                intermediate_delivery: residuum_agent::context::IntermediateDelivery::default(),
                 provider: Box::new(ToolThenAnswerProvider {
                     calls: std::sync::atomic::AtomicUsize::new(0),
                 }),

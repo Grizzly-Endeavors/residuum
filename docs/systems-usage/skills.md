@@ -31,17 +31,17 @@ Put a skill in the agent's `skills/` when only that agent should have it, and in
 
 If multiple skills share the same name, the highest-priority layer wins and the others are hidden (logged at debug with both paths). Lookup is case-insensitive by name.
 
-Each indexed skill records the layer it came from. The `<available_skills>` block shows it in a `<layer>` element (`agent`, `team`, or `configured`).
+Each indexed skill records the layer it came from (`agent`, `team`, or `configured`), and the skills index shows it on the skill's line.
 
 The index is rebuilt at startup, after a reload of the config, and on `skill_activate`, so changes to `team/skills/` are picked up on the same triggers as changes to the agent's own `skills/`.
 
 Skills used as session roles (`subagent_spawn`'s `skill`, a pulse's `agent`, artifact sessions, an inbound A2A `metadata.skill`) resolve through the same layered index, so a team skill works as a role for any agent.
 
-A directory that can't be read (a permissions problem, not a missing directory) is skipped with a notice naming it, rather than discarding every skill already found in the other configured directories.
+A directory that can't be read (a permissions problem, not a missing directory) is skipped with a notice naming it, rather than discarding every skill already found in the other configured directories. A skill skipped for invalid frontmatter, or loaded with an oversized description, also produces a notice. Startup and each config reload publish every notice the scan produces to the system notification channel, so a broken skill is reported on every reload until it is fixed. A `skill_activate` call publishes only what is new: a skill it drops, and a notice the rescan did not produce on an earlier scan (for example, a skill that broke since startup). A notice that persists is not repeated on activation. Each session starts from the index its parent built, so the notices that index carries are not new to the session. An active skill that a rescan drops (its files were removed, or it can't be loaded) is reported once, on the notification channel, by the rescan that dropped it. A `skill_activate` call also names each dropped skill in its result, so the agent knows the skill's instructions are gone. A `skill_activate` call that fails also names the new notices in its result, so an agent that has just written a skill can see why it did not load.
 
 ## How Skills Appear in Context
 
-- **Available skills**: listed in an `<available_skills>` block with name and description. The agent always sees this index and can decide to activate skills based on the current task.
+- **Available skills**: listed in the `SKILLS_INDEX` section, one line per skill: `- name (layer, path to SKILL.md): description`, with the description collapsed onto that line. The agent always sees this index and can decide to activate skills based on the current task.
 - **Active skills**: full body injected in `<active_skill name="...">` blocks.
 
 **Only SKILL.md is injected.** A skill directory may contain additional files (subdirectories, reference docs, workflow guides, etc.), but these are not automatically loaded. The SKILL.md body should instruct the agent to read those files using `read_file` when needed. For example, `residuum-getting-started` has a `workflows/` subdirectory — the SKILL.md body tells the agent which workflow file to read based on the user's goal.
@@ -50,7 +50,7 @@ A directory that can't be read (a permissions problem, not a missing directory) 
 
 | Tool | Parameters | Notes |
 |------|-----------|-------|
-| `skill_activate` | `name` | Loads skill body into active context. Also triggers a rescan (removes active skills whose source files no longer exist). |
+| `skill_activate` | `name` | Rescans the skill directories, then loads the skill body into active context. Active skills whose source files no longer exist are removed, and the result names each one. |
 | `skill_deactivate` | `name` | Removes skill body from context. |
 
 ## Bundled Skills

@@ -24,7 +24,7 @@ Do this first. Every first conversation starts here. Three questions, each one f
 
 ### Question 1: Proactivity Level
 
-Three pulses already run in the background before you ask anything: `reflection` (a weekly review that looks for patterns and sends you suggestions), `memory_tending` (a nightly pass that files new knowledge into the wiki and keeps USER.md honest against what actually happened), and `wiki_lint` (a nightly pass that keeps the wiki itself tidy — fixing index drift, stale pages, and duplicates). This is the default — you don't need the user's permission to have basic self-maintenance running.
+Three pulses already run in the background before you ask anything: `reflection` (a weekly review that looks for patterns and sends you suggestions), `memory_tending` (a nightly pass that files new knowledge into the wiki and keeps USER.md honest against what actually happened), and `wiki_lint` (a weekly pass that keeps the wiki itself tidy — fixing index drift, stale pages, and duplicates). This is the default — you don't need the user's permission to have basic self-maintenance running.
 
 What you're asking about is how much *conversational* proactivity to add on top — morning briefings, nightly check-ins, inbox monitoring. Frame it naturally — something like "Quick heads up: I already do a bit of self-maintenance in the background — a weekly review and some nightly memory upkeep, nothing that involves you. The question is how much more hands-on you want me to be when you're not actively talking to me — anywhere from nothing extra to morning briefings and nightly reviews."
 

@@ -71,7 +71,7 @@ impl Tool for MemorySearchTool {
                     },
                     "source": {
                         "type": "string",
-                        "description": "Filter by source type: 'observations', 'episodes', or 'wiki'. Omit to search all three.",
+                        "description": "Filter by source type. Omit to search all three.",
                         "enum": ["observations", "episodes", "wiki"]
                     },
                     "date_from": {

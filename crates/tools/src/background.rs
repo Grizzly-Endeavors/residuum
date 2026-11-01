@@ -374,7 +374,7 @@ impl Tool for SubagentSpawnTool {
                     },
                     "model": {
                         "type": "string",
-                        "description": "The model the session runs on: a tier (\"small\", \"medium\", or \"large\") or an explicit model id in provider/model form, such as \"anthropic/claude-haiku-4-5\" (the format providers.toml uses). An explicit model runs that one model with no failover. Default: \"medium\"."
+                        "description": super::MODEL_PARAMETER_DESCRIPTION
                     }
                 },
                 "required": ["task"]

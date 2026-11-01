@@ -703,6 +703,7 @@ fn build_spawn_context(
         },
         max_tool_iterations: new_cfg.agent.max_tool_iterations,
         repeat_call_guard: new_cfg.agent.repeat_call_guard,
+        intermediate_delivery: residuum_agent::context::IntermediateDelivery::from_config(new_cfg),
         layout: rt.layout.clone(),
         role_overrides: new_cfg.role_overrides.clone(),
         session_tools,
@@ -856,36 +857,23 @@ async fn reload_memory_thresholds(rt: &mut AgentRuntime, new_cfg: &Config) {
     tracing::debug!("memory thresholds updated");
 }
 
-/// Rescan skill directories.
-///
-/// A directory the rescan couldn't read is already skipped rather than
-/// failing the whole rescan (see `SkillIndex::scan`); this surfaces each
-/// skip as a notice. Separately, publishes any notice the rescan produced
-/// (a skill with an oversized description that loaded anyway, or a skill
-/// skipped for invalid frontmatter) so it reaches the user, not just the
-/// logs.
+/// Rescan skill directories and publish what the rescan reports (active
+/// skills it dropped, an unreadable directory, a skill skipped for invalid
+/// frontmatter) so they reach the user, not just the logs.
 async fn reload_skills(rt: &mut AgentRuntime) {
-    let mut skill_guard = rt.skill_state.lock().await;
-    if let Err(err) = skill_guard.rescan().await {
-        tracing::warn!(error = %err, "skill rescan failed during reload");
-        return;
-    }
+    let report = {
+        let mut skill_guard = rt.skill_state.lock().await;
+        match skill_guard.rescan().await {
+            Ok(report) => report,
+            Err(err) => {
+                tracing::warn!(error = %err, "skill rescan failed during reload");
+                return;
+            }
+        }
+    };
     tracing::debug!("skills rescanned");
-    let skipped: Vec<(std::path::PathBuf, String)> = skill_guard.index().skipped_dirs().to_vec();
-    let notices: Vec<String> = skill_guard.index().notices().to_vec();
-    drop(skill_guard);
-    for (dir, err) in skipped {
-        publish_notice(
-            &rt.publisher,
-            format!(
-                "Skipped your skills directory \"{}\" — it couldn't be read ({err}). Skills in your other directories were still rescanned.",
-                dir.display()
-            ),
-        )
-        .await;
-    }
-    for notice in notices {
-        publish_notice(&rt.publisher, notice).await;
+    for message in report.messages() {
+        publish_notice(&rt.publisher, message.to_owned()).await;
     }
 }
 

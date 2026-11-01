@@ -334,6 +334,14 @@ fn estimate_recent_tokens(recent_messages: &[RecentMessage]) -> usize {
         .sum()
 }
 
+/// Estimated tokens one message adds to an extraction request: its rendered
+/// transcript entry, the same text [`Observer::extract`] sends. Reasoning
+/// text and images are not sent, so they are not counted.
+#[must_use]
+pub fn extraction_tokens(rm: &RecentMessage) -> usize {
+    crate::tokens::estimate_tokens(&prompt::format_recent_message(rm))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -5,24 +5,25 @@ use std::ops::Range;
 use residuum_inference::Message;
 use residuum_workspace::identity::IdentityFiles;
 
-use super::types::{MemoryContext, SectionKind, SkillsContext};
+use super::types::{IntermediateDelivery, MemoryContext, PromptContext, SectionKind};
 
 fn section(tag: &str, content: &str) -> String {
     format!("<{tag}>\n{content}\n</{tag}>")
 }
 
-/// Code-owned harness orientation, always present in the main prompt.
+/// Code-owned harness orientation, always present in the main prompt, up to
+/// the sentences [`harness`] renders from the agent's chat settings.
 ///
 /// Unlike the other sections, this is not user-editable content from a
-/// workspace file — it is static text describing what the harness provides,
-/// injected unconditionally so the agent always knows its own capabilities
-/// regardless of what the user has (or hasn't) written into AGENTS.md.
-const HARNESS: &str = "You run on Residuum, a personal-agent harness. These systems are always available; use them without being asked:
+/// workspace file — it describes what the harness provides, injected
+/// unconditionally so the agent always knows its own capabilities regardless
+/// of what the user has (or hasn't) written into AGENTS.md.
+const HARNESS_HEAD: &str = "You run on Residuum, a personal-agent harness. These systems are always available; use them without being asked:
 
-- **Memory**: memory_search (keyword + semantic) finds past conversations, observations, and wiki pages, and memory_get retrieves an episode's transcript — search before saying you don't know or don't remember. Session runs (pulses, scheduled actions, sub-agents) merge their own findings into this same searchable memory once they complete. An automatic observer archives conversations into episodes.
+- **Memory**: memory_search finds past conversations, observations, and wiki pages, and memory_get retrieves an episode's transcript — search before saying you don't know or don't remember. Session runs (pulses, scheduled actions, sub-agents) merge their own findings into this same searchable memory once they complete. An automatic observer archives conversations into episodes.
 - **Wiki**: the team's long-term knowledge lives in team/wiki/, shared by every agent, one concept per Markdown page with YAML frontmatter (Open Knowledge Format). WIKI_INDEX is its root team/wiki/index.md; folders have their own index.md. Read the index, then read the pages you need with read_file. Record what you learn there as you learn it — facts about the user, their world, this machine, their work. Write pages as declarative facts ('User prefers X'), never as instructions to yourself ('Always do X') — imperative phrasing re-reads as a directive later. Skip anything that will be stale within days (ticket numbers, in-progress states). Activate the wiki skill before writing: it holds the page format and index rules.
 - **Identity files**: SOUL.md is yours alone; team/AGENTS.md (rules for every agent) and team/USER.md (facts about the user, shared by every agent) are edited with file tools too. Edits take effect next turn. team/USER.md holds only the user's core facts (a short, capped list); everything longer-form about the user belongs in the wiki.
-- **Pulses**: HEARTBEAT.yml defines scheduled background checks (hot-reloaded, no restart needed). Three built-ins ship by default: reflection (weekly episode review, suggestions to the user inbox), memory_tending (nightly: files new knowledge from recent episodes into team/wiki/ and team/USER.md), and wiki_lint (weekly wiki health check). If they are missing from HEARTBEAT.yml, offer to restore them. When the user mentions a recurring need, propose a pulse for it.
+- **Pulses**: HEARTBEAT.yml defines scheduled background checks (hot-reloaded, no restart needed). Built-ins ship by default: reflection (weekly episode review, suggestions to the user inbox) and memory_tending (nightly: files new knowledge from recent episodes into team/wiki/ and team/USER.md); one agent per team also runs wiki_lint (weekly wiki health check) for the shared wiki. If reflection or memory_tending is missing from HEARTBEAT.yml, offer to restore it. When the user mentions a recurring need, propose a pulse for it.
 - **Inboxes**: two. Your agent inbox (inbox_list, inbox_read, inbox_archive) collects items for you to process, including the user's mail to you. The user inbox (user_inbox_add) delivers items to the Inbox in the user's web UI — use it for background findings that should not interrupt conversation; it can carry file attachments (paths to files already on disk) alongside the title and body. Every agent shares the user's view: user_inbox_list shows what each agent has already sent, inbox_read reads any agent's item by its ref with the earlier messages of its thread, and user_inbox_add with in_reply_to answers a message in its thread.
 - **Scheduled actions**: one-off future tasks via the action tools; they fire once then auto-remove.
 - **Sub-agents**: spawn background work with subagent_spawn, which returns its address right away. A sub-agent is an agent loop running off the main thread; pass a skill name to give it a role, and its instructions become the sub-agent's brief. Each turn's result is relayed back to you as a message, tagged with its address; use message_agent to send it a follow-up, and list_agents to see what's live. A sub-agent's result is its self-report, not verified fact — when it matters, have it return concrete handles (paths, IDs, URLs) and verify them.
@@ -30,7 +31,10 @@ const HARNESS: &str = "You run on Residuum, a personal-agent harness. These syst
 - **Skills**: loadable knowledge packs in skills/*/SKILL.md (yours) and team/skills/*/SKILL.md (shared with the team), activated with skill_activate. Author new skills yourself when you keep re-deriving the same procedure.
 - **Status lines**: in your main conversation, each user message carries a status line from when it arrived, starting with a `[Received: …]` tag; the newest one gives the current time to within the length of this turn.
 - **Notifications**: background results are filed to the inbox; a sub-agent that ends its summary with `HEARTBEAT_URGENT` also pushes to every configured notification channel.
-- **Senders**: a message from a chat interface starts with a `[From: name via interface (location)]` line naming who sent it and where. In shared spaces such as team channels, people other than the user can talk to you; that line is how you tell them apart. Messages from the web UI carry no such line and always come from the user. Keep the user's private information out of replies to other people unless the user has said otherwise. In your own direct messages with the user on Telegram, Discord and Teams, the user usually sees only your final reply, the text after your last tool call, so put the full answer there. A session handling any other chat (a group chat, a channel, someone else's direct messages) posts nothing there on its own: only send_message to that conversation reaches it.
+- **Senders**: a message from a chat interface starts with a `[From: name via interface (location)]` line naming who sent it and where. In shared spaces such as team channels, people other than the user can talk to you; that line is how you tell them apart. Messages from the web UI carry no such line and always come from the user. Keep the user's private information out of replies to other people unless the user has said otherwise. ";
+
+/// The harness orientation after the rendered chat-delivery sentences.
+const HARNESS_TAIL: &str = "
 
 The residuum-system skill is the authoritative reference for all of the above. Activate it before answering any question about what you can do, and whenever you are unsure whether the harness supports something.
 
@@ -48,12 +52,60 @@ pub(super) struct SystemPrompt {
     pub(super) sections: Vec<(SectionKind, Range<usize>)>,
 }
 
+/// The `HARNESS` section, with the Senders bullet telling the agent what
+/// reaches each chat under that chat's `deliver_intermediate` setting. The
+/// text is the same for every turn of an agent with the same settings.
+fn harness(delivery: IntermediateDelivery) -> String {
+    use std::fmt::Write as _;
+
+    let chats = [
+        ("Telegram", delivery.telegram),
+        ("Discord", delivery.discord),
+        ("Teams", delivery.teams),
+    ];
+    let final_only = chat_names(&chats, false);
+    let posted = chat_names(&chats, true);
+
+    let mut text = String::from(HARNESS_HEAD);
+    if !final_only.is_empty() {
+        _ = write!(
+            text,
+            "In your own direct messages with the user on {final_only}, the user usually sees only your final reply, the text after your last tool call, so put the full answer there. "
+        );
+    }
+    if posted.is_empty() {
+        text.push_str("A session handling any other chat (a group chat, a channel, someone else's direct messages) posts nothing there on its own: only send_message to that conversation reaches it.");
+    } else {
+        _ = write!(
+            text,
+            "On {posted}, the text you write before each tool call is also posted as its own message, both in your direct messages with the user and in any chat a session handles. A session handling any other chat (a group chat, a channel, someone else's direct messages) posts nothing else there on its own: only send_message to that conversation delivers its reply."
+        );
+    }
+    text.push_str(HARNESS_TAIL);
+    text
+}
+
+/// The names of the chats whose intermediate delivery is `posted`, joined
+/// as prose ("Telegram, Discord and Teams").
+fn chat_names(chats: &[(&str, bool)], posted: bool) -> String {
+    let names: Vec<&str> = chats
+        .iter()
+        .filter(|(_, on)| *on == posted)
+        .map(|(name, _)| *name)
+        .collect();
+    match names.split_last() {
+        None => String::new(),
+        Some((last, [])) => (*last).to_string(),
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
 /// Build the system prompt message from identity files, memory and skills.
 ///
 /// Assembly order:
 /// 1. `SOUL.md`
 /// 2. `AGENTS.md` (team)
-/// 3. `HARNESS` (code-owned, static — always present)
+/// 3. `HARNESS` (code-owned, always present; fixed for a given chat config)
 /// 4. `BOOTSTRAP.md` (first-run only, deleted after first conversation)
 /// 5. `USER.md` (team)
 /// 6. `WIKI_INDEX` (the team wiki's root `index.md`)
@@ -78,8 +130,9 @@ pub(super) struct SystemPrompt {
 pub(super) fn build_system_prompt(
     identity: &IdentityFiles,
     memory_ctx: &MemoryContext<'_>,
-    skills_ctx: &SkillsContext<'_>,
+    prompt_ctx: &PromptContext<'_>,
 ) -> SystemPrompt {
+    let skills_ctx = &prompt_ctx.skills;
     let mut stable = Vec::new();
 
     if let Some(soul) = &identity.soul {
@@ -90,7 +143,10 @@ pub(super) fn build_system_prompt(
         stable.push((SectionKind::Identity, section("AGENTS.md", agents)));
     }
 
-    stable.push((SectionKind::Harness, section("HARNESS", HARNESS)));
+    stable.push((
+        SectionKind::Harness,
+        section("HARNESS", &harness(prompt_ctx.intermediate_delivery)),
+    ));
 
     if let Some(bootstrap) = &identity.bootstrap {
         stable.push((SectionKind::Identity, section("BOOTSTRAP.md", bootstrap)));
@@ -163,14 +219,15 @@ pub(super) fn build_system_prompt(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::types::SkillsContext;
 
     /// The system prompt's text, as every provider sends it.
     fn system_text(
         identity: &IdentityFiles,
         memory_ctx: &MemoryContext<'_>,
-        skills_ctx: &SkillsContext<'_>,
+        prompt_ctx: &PromptContext<'_>,
     ) -> String {
-        build_system_prompt(identity, memory_ctx, skills_ctx)
+        build_system_prompt(identity, memory_ctx, prompt_ctx)
             .message
             .content
     }
@@ -187,6 +244,68 @@ mod tests {
         }
     }
 
+    fn with_skills(skills: SkillsContext<'_>) -> PromptContext<'_> {
+        PromptContext {
+            skills,
+            ..PromptContext::default()
+        }
+    }
+
+    fn harness_with(telegram: bool, discord: bool, teams: bool) -> String {
+        harness(IntermediateDelivery {
+            telegram,
+            discord,
+            teams,
+        })
+    }
+
+    #[test]
+    fn harness_says_chats_get_only_the_final_reply_by_default() {
+        let text = harness(IntermediateDelivery::default());
+        assert!(
+            text.contains("In your own direct messages with the user on Telegram, Discord and Teams, the user usually sees only your final reply"),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "posts nothing there on its own: only send_message to that conversation reaches it."
+            ),
+            "{text}"
+        );
+        assert!(!text.contains("before each tool call"), "{text}");
+    }
+
+    #[test]
+    fn harness_says_intermediate_text_is_posted_where_it_is_on() {
+        let text = harness_with(false, true, true);
+        assert!(
+            text.contains("In your own direct messages with the user on Telegram, the user usually sees only your final reply"),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "On Discord and Teams, the text you write before each tool call is also posted"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains("posts nothing else there on its own"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn harness_drops_the_final_reply_advice_when_every_chat_posts_intermediate_text() {
+        let text = harness_with(true, true, true);
+        assert!(!text.contains("sees only your final reply"), "{text}");
+        assert!(
+            text.contains(
+                "On Telegram, Discord and Teams, the text you write before each tool call"
+            ),
+            "{text}"
+        );
+    }
+
     #[test]
     fn system_content_includes_identity() {
         let identity = IdentityFiles {
@@ -196,7 +315,7 @@ mod tests {
             ..IdentityFiles::default()
         };
 
-        let content = system_text(&identity, &no_memory(), &SkillsContext::default());
+        let content = system_text(&identity, &no_memory(), &PromptContext::default());
         assert!(
             content.contains("test agent"),
             "should include soul content"
@@ -219,7 +338,7 @@ mod tests {
     fn system_content_includes_harness_even_with_empty_identity() {
         let identity = IdentityFiles::default();
 
-        let content = system_text(&identity, &no_memory(), &SkillsContext::default());
+        let content = system_text(&identity, &no_memory(), &PromptContext::default());
 
         assert!(
             content.contains("<HARNESS>"),
@@ -239,7 +358,7 @@ mod tests {
             observations: Some("episode ep-001: user prefers concise output"),
             recent_context: None,
         };
-        let content = system_text(&identity, &mem, &SkillsContext::default());
+        let content = system_text(&identity, &mem, &PromptContext::default());
 
         assert!(
             content.contains("<OBSERVATION_LOG>"),
@@ -263,7 +382,7 @@ mod tests {
             observations: Some(""),
             recent_context: None,
         };
-        let content = system_text(&identity, &mem, &SkillsContext::default());
+        let content = system_text(&identity, &mem, &PromptContext::default());
         assert!(
             !content.contains("OBSERVATION_LOG"),
             "empty observations should be skipped"
@@ -274,7 +393,7 @@ mod tests {
     fn system_content_skips_none_observations() {
         let identity = IdentityFiles::default();
 
-        let content = system_text(&identity, &no_memory(), &SkillsContext::default());
+        let content = system_text(&identity, &no_memory(), &PromptContext::default());
         assert!(
             !content.contains("OBSERVATION_LOG"),
             "None observations should be skipped"
@@ -292,7 +411,7 @@ mod tests {
             observations: Some("some observation"),
             recent_context: None,
         };
-        let content = system_text(&identity, &mem, &SkillsContext::default());
+        let content = system_text(&identity, &mem, &PromptContext::default());
 
         assert!(
             content.contains("<SOUL.md>\nI am the soul.\n</SOUL.md>"),
@@ -332,7 +451,7 @@ mod tests {
             observations: Some("obs"),
             recent_context: None,
         };
-        let content = system_text(&identity, &mem, &SkillsContext::default());
+        let content = system_text(&identity, &mem, &PromptContext::default());
 
         assert!(
             content.contains("<TEAM>\nYou are \"a\".\n- b (running): Reviews\n</TEAM>"),
@@ -362,7 +481,7 @@ mod tests {
             index: Some("index"),
             active_instructions: Some("active"),
         };
-        let message = build_system_prompt(&identity, &mem, &skills).message;
+        let message = build_system_prompt(&identity, &mem, &with_skills(skills)).message;
 
         let (stable, rest) = split(&message);
         assert!(stable.ends_with("</TEAM>"), "{stable}");
@@ -392,11 +511,18 @@ mod tests {
             observations: Some("obs"),
             recent_context: Some("recent"),
         };
-        let skills = SkillsContext {
-            index: Some("<available_skills/>"),
-            active_instructions: Some("<active_skill/>"),
+        let delivery = IntermediateDelivery {
+            discord: true,
+            ..IntermediateDelivery::default()
         };
-        let prompt = build_system_prompt(&identity, &mem, &skills);
+        let prompt_ctx = PromptContext {
+            skills: SkillsContext {
+                index: Some("- pdf (team, /skills/pdf/SKILL.md): Reads PDFs"),
+                active_instructions: Some("<active_skill/>"),
+            },
+            intermediate_delivery: delivery,
+        };
+        let prompt = build_system_prompt(&identity, &mem, &prompt_ctx);
         let text = &prompt.message.content;
 
         let kinds: Vec<SectionKind> = prompt.sections.iter().map(|(kind, _)| *kind).collect();
@@ -425,8 +551,8 @@ mod tests {
             .unwrap();
         assert_eq!(
             harness,
-            format!("\n\n{}", section("HARNESS", HARNESS)),
-            "a section's range holds its text and the separator ahead of it"
+            format!("\n\n{}", section("HARNESS", &harness(delivery))),
+            "a section's range holds its text, for the agent's chat settings, and the separator ahead of it"
         );
     }
 
@@ -441,10 +567,10 @@ mod tests {
             observations: Some("obs"),
             recent_context: None,
         };
-        let content = system_text(&identity, &mem, &SkillsContext::default());
+        let content = system_text(&identity, &mem, &PromptContext::default());
         let expected = [
             section("SOUL.md", "soul"),
-            section("HARNESS", HARNESS),
+            section("HARNESS", &harness(IntermediateDelivery::default())),
             section("TEAM", "roster"),
             section("OBSERVATION_LOG", "obs"),
         ]
@@ -459,12 +585,12 @@ mod tests {
             ..IdentityFiles::default()
         };
         let before =
-            build_system_prompt(&identity, &no_memory(), &SkillsContext::default()).message;
+            build_system_prompt(&identity, &no_memory(), &PromptContext::default()).message;
         let mem = MemoryContext {
             observations: Some("a new observation"),
             recent_context: None,
         };
-        let after = build_system_prompt(&identity, &mem, &SkillsContext::default()).message;
+        let after = build_system_prompt(&identity, &mem, &PromptContext::default()).message;
 
         let (stable_before, rest_before) = split(&before);
         let (stable_after, _) = split(&after);
@@ -477,7 +603,7 @@ mod tests {
         let content = system_text(
             &IdentityFiles::default(),
             &no_memory(),
-            &SkillsContext::default(),
+            &PromptContext::default(),
         );
         assert!(!content.contains("<TEAM>"));
     }
@@ -489,7 +615,7 @@ mod tests {
             observations: None,
             recent_context: Some("We were implementing a caching layer."),
         };
-        let content = system_text(&identity, &mem, &SkillsContext::default());
+        let content = system_text(&identity, &mem, &PromptContext::default());
 
         assert!(
             content.contains("<RECENT_CONTEXT>"),
@@ -508,7 +634,7 @@ mod tests {
             observations: None,
             recent_context: Some(""),
         };
-        let content = system_text(&identity, &mem, &SkillsContext::default());
+        let content = system_text(&identity, &mem, &PromptContext::default());
         assert!(
             !content.contains("RECENT_CONTEXT"),
             "empty recent context should be skipped"
@@ -522,7 +648,7 @@ mod tests {
             observations: Some("some observations"),
             recent_context: Some("narrative summary"),
         };
-        let content = system_text(&identity, &mem, &SkillsContext::default());
+        let content = system_text(&identity, &mem, &PromptContext::default());
 
         let obs_close = content.find("</OBSERVATION_LOG>");
         let ctx_open = content.find("<RECENT_CONTEXT>");
@@ -546,7 +672,7 @@ mod tests {
             user: Some("user facts".to_string()),
             ..IdentityFiles::default()
         };
-        let content = system_text(&identity, &no_memory(), &SkillsContext::default());
+        let content = system_text(&identity, &no_memory(), &PromptContext::default());
 
         assert!(
             content.contains("<BOOTSTRAP.md>\nfirst run guidance\n</BOOTSTRAP.md>"),
@@ -590,7 +716,7 @@ mod tests {
             .unwrap();
 
         let identity = IdentityFiles::load(&layout).await.unwrap();
-        let content = system_text(&identity, &no_memory(), &SkillsContext::default());
+        let content = system_text(&identity, &no_memory(), &PromptContext::default());
 
         let positions: Vec<usize> = [
             "agent soul",
@@ -615,7 +741,7 @@ mod tests {
             agents: Some("agent rules".to_string()),
             ..IdentityFiles::default()
         };
-        let content = system_text(&identity, &no_memory(), &SkillsContext::default());
+        let content = system_text(&identity, &no_memory(), &PromptContext::default());
 
         assert!(
             !content.contains("BOOTSTRAP.md"),
@@ -629,12 +755,10 @@ mod tests {
     fn skills_index_in_prompt() {
         let identity = IdentityFiles::default();
         let skills = SkillsContext {
-            index: Some(
-                "<available_skills>\n  <skill><name>pdf</name></skill>\n</available_skills>",
-            ),
+            index: Some("- pdf (team, /skills/pdf/SKILL.md): Reads PDFs"),
             active_instructions: None,
         };
-        let content = system_text(&identity, &no_memory(), &skills);
+        let content = system_text(&identity, &no_memory(), &with_skills(skills));
         assert!(
             content.contains("<SKILLS_INDEX>"),
             "should have skills index section"
@@ -644,8 +768,8 @@ mod tests {
             "should have closing skills index tag"
         );
         assert!(
-            content.contains("<name>pdf</name>"),
-            "should contain skill name"
+            content.contains("- pdf (team, "),
+            "should contain the skill's line"
         );
     }
 
@@ -658,7 +782,7 @@ mod tests {
                 "<active_skill name=\"pdf\">\nUse this for PDFs.\n</active_skill>",
             ),
         };
-        let content = system_text(&identity, &no_memory(), &skills);
+        let content = system_text(&identity, &no_memory(), &with_skills(skills));
         assert!(
             content.contains("<ACTIVE_SKILLS>"),
             "should have active skills section"
@@ -676,7 +800,7 @@ mod tests {
             index: Some(""),
             active_instructions: None,
         };
-        let content = system_text(&identity, &no_memory(), &skills);
+        let content = system_text(&identity, &no_memory(), &with_skills(skills));
         assert!(
             !content.contains("SKILLS_INDEX"),
             "empty skills index should be skipped"
@@ -686,7 +810,7 @@ mod tests {
     #[test]
     fn skills_none_skipped() {
         let identity = IdentityFiles::default();
-        let content = system_text(&identity, &no_memory(), &SkillsContext::default());
+        let content = system_text(&identity, &no_memory(), &PromptContext::default());
         assert!(
             !content.contains("SKILLS_INDEX"),
             "None skills index should be skipped"

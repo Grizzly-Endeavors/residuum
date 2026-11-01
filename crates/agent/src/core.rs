@@ -2890,6 +2890,7 @@ mod tests {
                 index: skills_index,
                 active_instructions: None,
             },
+            ..PromptContext::default()
         };
         agent
             .process_message(

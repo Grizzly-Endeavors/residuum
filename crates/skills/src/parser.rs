@@ -12,8 +12,8 @@ use super::types::SkillFrontmatter;
 /// activates, since a skill someone actually wrote is more valuable than one
 /// silently dropped over a wire-format concern. This threshold only decides
 /// when to surface the recurring per-turn token cost of a long description —
-/// every activated skill's description is concatenated into the
-/// `<available_skills>` block sent on every turn (see
+/// every indexed skill's description is a line of the skills index sent on
+/// every turn (see
 /// `SkillIndex::format_for_prompt`).
 pub(super) const NOTICE_DESCRIPTION_LEN: usize = 1024;
 

@@ -13,21 +13,48 @@ pub fn estimate_tokens(text: &str) -> usize {
     text.len().div_ceil(4)
 }
 
-/// Estimate the total tokens across a slice of messages.
+/// Estimate the total tokens across a slice of stored history messages.
 ///
-/// Accounts for role labels and tool call metadata in addition to content.
+/// Accounts for role labels, tool call metadata, the sender prefix, the
+/// status line, reasoning text and images in addition to content.
 #[must_use]
 pub fn estimate_message_tokens(messages: &[Message]) -> usize {
     messages.iter().map(estimate_single_message).sum()
 }
 
+/// Tokens charged for one image.
+///
+/// `ImageData` stores the base64 bytes and media type but not the dimensions,
+/// so the provider's `width × height / 750` estimate can't be computed. This
+/// is that estimate for a typical resized image.
+const TOKENS_PER_IMAGE: usize = 1_600;
+
 /// Estimate tokens for a single message including metadata overhead.
+///
+/// Counts the message as the request carries it: the sender prefix as rendered,
+/// its stored status line, the reasoning text replayed with it, and its images.
+///
+/// `msg` is a stored history message. Assembly replays a stored status line
+/// as its own system message ahead of the message, so a stored message is
+/// where the line is counted, once.
 pub(crate) fn estimate_single_message(msg: &Message) -> usize {
-    // Base content
-    let mut chars = msg.content.len();
+    // Rendered content, including the `[From: …]` line for a known sender
+    let mut chars = msg.attributed_content().len();
 
     // Role label overhead (~10 chars)
     chars += 10;
+
+    // The status line, sent as its own system message with its own role label
+    if let Some(line) = &msg.status_line {
+        chars += line.len() + 10;
+    }
+
+    // Reasoning text; signatures and encrypted blocks are opaque and left out
+    chars += msg
+        .thinking
+        .iter()
+        .map(|block| block.text.len())
+        .sum::<usize>();
 
     // Tool call overhead
     if let Some(calls) = &msg.tool_calls {
@@ -45,13 +72,13 @@ pub(crate) fn estimate_single_message(msg: &Message) -> usize {
         chars += id.len();
     }
 
-    chars.div_ceil(4)
+    chars.div_ceil(4) + msg.images.len() * TOKENS_PER_IMAGE
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use residuum_inference::ToolCall;
+    use residuum_inference::{ImageData, MessageSender, ThinkingBlock, ToolCall};
 
     #[test]
     fn estimate_tokens_empty() {
@@ -152,27 +179,86 @@ mod tests {
     }
 
     #[test]
-    fn a_messages_size_does_not_count_the_models_thinking() {
-        let plain = Message::assistant("The answer is 42.".to_string(), None);
-        let reasoned =
-            residuum_inference::Message::assistant("The answer is 42.".to_string(), None)
-                .with_thinking(vec![residuum_inference::ThinkingBlock {
-                    text: "private reasoning about the answer".to_string(),
-                    signature: Some("sig-opaque-token".to_string()),
-                    redacted: Some("encrypted-blob".to_string()),
-                    part: None,
-                    origin: None,
-                    binding: None,
-                }]);
+    fn plain_text_message_estimate_is_unchanged() {
+        // "hello world" = 11 chars + 10 role = 21 => ceil(21/4) = 6 tokens
+        assert_eq!(estimate_single_message(&Message::user("hello world")), 6);
+    }
+
+    #[test]
+    fn reasoning_text_counts_toward_the_size() {
+        // "The answer is 42." = 17 chars + 10 role = 27 => 7 tokens
+        let plain = Message::assistant("The answer is 42.", None);
+        // 27 + 400 = 427 => ceil(427/4) = 107 tokens
+        let reasoned = Message::assistant("The answer is 42.", None)
+            .with_thinking(vec![ThinkingBlock::text("a".repeat(400))]);
+
+        assert_eq!(estimate_single_message(&plain), 7);
+        assert_eq!(estimate_single_message(&reasoned), 107);
+    }
+
+    #[test]
+    fn opaque_reasoning_blocks_are_not_counted() {
+        let plain = Message::assistant("The answer is 42.", None);
+        let opaque =
+            Message::assistant("The answer is 42.", None).with_thinking(vec![ThinkingBlock {
+                text: String::new(),
+                signature: Some("sig-opaque-token".to_string()),
+                redacted: Some("encrypted-blob".to_string()),
+                part: None,
+                origin: None,
+                binding: None,
+            }]);
 
         assert_eq!(
-            estimate_single_message(&reasoned),
+            estimate_single_message(&opaque),
             estimate_single_message(&plain),
-            "conversation size is what the agent said, not what it thought"
+            "signatures and encrypted blocks are not text the model reads"
+        );
+    }
+
+    #[test]
+    fn a_stored_status_line_counts_once_with_its_role_label() {
+        let line = "[Received: Sunday Nov 1st 2026 | 10:49]";
+        let mut stamped = Message::user("hello world");
+        stamped.status_line = Some(line.to_string());
+
+        // "hello world" 11 + 10 role, plus the 39-char line + 10 role = 70 => 18 tokens
+        assert_eq!(line.len(), 39);
+        assert_eq!(estimate_single_message(&stamped), 18);
+        assert_eq!(estimate_message_tokens(std::slice::from_ref(&stamped)), 18);
+    }
+
+    #[test]
+    fn sender_prefix_counts_as_rendered() {
+        let sender = MessageSender {
+            name: "Jane Doe".to_string(),
+            id: "u-1".to_string(),
+            interface: "teams".to_string(),
+            location: None,
+        };
+        // "[From: Jane Doe via teams]\nhi" = 29 chars + 10 role = 39 => 10 tokens
+        let msg = Message::user("hi").with_sender(Some(sender));
+
+        assert_eq!(estimate_single_message(&msg), 10);
+    }
+
+    #[test]
+    fn each_image_adds_a_fixed_estimate() {
+        let image = ImageData {
+            media_type: "image/png".to_string(),
+            data: "iVBORw0KGgo=".to_string(),
+        };
+        let plain_tokens = estimate_single_message(&Message::user(""));
+        let one = Message::user_with_images("", vec![image.clone()]);
+        let two = Message::user_with_images("", vec![image.clone(), image]);
+
+        assert_eq!(
+            estimate_single_message(&one),
+            plain_tokens + TOKENS_PER_IMAGE
         );
         assert_eq!(
-            estimate_message_tokens(std::slice::from_ref(&reasoned)),
-            estimate_message_tokens(std::slice::from_ref(&plain))
+            estimate_single_message(&two),
+            plain_tokens + 2 * TOKENS_PER_IMAGE
         );
     }
 }

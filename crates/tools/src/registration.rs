@@ -226,8 +226,19 @@ pub fn register_memory_tools(
 }
 
 /// Register skill management tools (`skill_activate`, `skill_deactivate`).
-pub fn register_skill_tools(tools: &mut ToolRegistry, state: SharedSkillState) {
-    tools.register(Box::new(skills::SkillActivateTool::new(Arc::clone(&state))));
+///
+/// `skill_activate` publishes the notices its rescan produces on the
+/// injections' publisher when there is one.
+pub fn register_skill_tools(
+    tools: &mut ToolRegistry,
+    injections: &RegistryInjections,
+    state: SharedSkillState,
+) {
+    let mut activate = skills::SkillActivateTool::new(Arc::clone(&state));
+    if let Some(publisher) = &injections.publisher {
+        activate = activate.with_publisher(publisher.clone());
+    }
+    tools.register(Box::new(activate));
     tools.register(Box::new(skills::SkillDeactivateTool::new(state)));
 }
 
@@ -415,8 +426,8 @@ pub fn register_web_fetch_tool(tools: &mut ToolRegistry) {
     tools.register(Box::new(web_fetch::WebFetchTool::new()));
 }
 
-/// Register the `workspace_history` and `workspace_restore` tools,
-/// scoped to the workspace checkpoint repository only.
+/// Register the `workspace_history` and `workspace_restore` tools, covering
+/// the workspace and team checkpoint repositories.
 pub fn register_workspace_checkpoint_tools(
     tools: &mut ToolRegistry,
     checkpoints: Arc<residuum_checkpoints::CheckpointEngine>,

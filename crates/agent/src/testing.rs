@@ -59,6 +59,7 @@ pub async fn render_model_request(inputs: &RequestInputs, tools: &ToolRegistry) 
             index: inputs.skills_index.as_deref(),
             active_instructions: inputs.active_skills.as_deref(),
         },
+        ..PromptContext::default()
     };
     build_model_request(
         &inputs.identity,

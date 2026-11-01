@@ -141,6 +141,7 @@ pub fn make_sequenced_resources(responses: Vec<&str>) -> SubAgentResources {
     SubAgentResources {
         max_tool_iterations: None,
         repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
+        intermediate_delivery: residuum_agent::context::IntermediateDelivery::default(),
         provider: Box::new(SequencedProvider::new(responses)),
         tools: residuum_agent::ToolRegistry::new(),
         mcp_registry: McpRegistry::new_shared(),

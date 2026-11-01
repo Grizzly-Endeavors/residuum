@@ -52,6 +52,10 @@ use serde_json::Value;
 
 use residuum_inference::ToolError;
 
+/// The `model` parameter of `subagent_spawn` and the `model_tier` parameter of
+/// `schedule_action`: both take a tier or an explicit model id.
+pub(crate) const MODEL_PARAMETER_DESCRIPTION: &str = "A tier (\"small\", \"medium\", or \"large\") or an explicit model id in provider/model form (the format providers.toml uses). An explicit model runs that one model with no failover. Defaults to \"medium\".";
+
 /// The most a tool that shapes its own output returns from one call: a
 /// `read_file` page, a `web_fetch` page, `exec`'s capped output. It sits under
 /// the history limit with room for the tool's header and notes, so the turn

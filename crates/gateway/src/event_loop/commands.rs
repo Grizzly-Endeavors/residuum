@@ -25,7 +25,7 @@ pub async fn handle_server_command(
                 .force_reflect(MemorySubsystems::from_runtime(rt));
         }
         "context" => {
-            let ctx_strings = load_prompt_context_strings(&rt.skill_state).await;
+            let ctx_strings = load_prompt_context_strings(&rt.skill_state, &rt.cfg).await;
             let prompt_ctx = ctx_strings.as_prompt_context();
             let bd = rt.agent.context_breakdown(&prompt_ctx).await;
             let msg = render_context_breakdown(&bd);
