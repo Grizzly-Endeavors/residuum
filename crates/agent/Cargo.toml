@@ -40,6 +40,8 @@ residuum-mcp = { workspace = true, features = ["test-support"] }
 residuum-workspace = { workspace = true, features = ["test-support"] }
 ctor = { workspace = true }
 rustls = { workspace = true }
+# raw_value: the wire tests compare request parts as the exact bytes sent
+serde_json = { workspace = true, features = ["raw_value"] }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 wiremock = { workspace = true }

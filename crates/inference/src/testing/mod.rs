@@ -2,5 +2,7 @@
 //! feature (and this crate's own `cfg(test)`).
 //!
 //! - [`model`]: a model server and provider that answer through a gate.
+//! - [`clients`]: the real provider clients, pointed at a test server.
 
+pub mod clients;
 pub mod model;

@@ -21,6 +21,8 @@ pub mod turn;
 #[cfg(test)]
 mod turn_conversation_tests;
 pub mod usage;
+#[cfg(test)]
+mod wire_prefix_tests;
 
 pub use core::{Agent, AgentConfig, FailedTurn, TurnWiring};
 pub use hop::HopCounter;
