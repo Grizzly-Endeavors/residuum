@@ -84,7 +84,9 @@ impl TeamWikiIndex {
             .clone()
     }
 
-    /// Whether wiki search uses vector similarity as well as full-text.
+    /// Whether wiki search uses vector similarity as well as full-text. Test
+    /// support only: a search reports its own use of vectors in `semantic`.
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn has_vector(&self) -> bool {
         self.vectors().is_some()

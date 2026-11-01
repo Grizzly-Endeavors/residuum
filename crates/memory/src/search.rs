@@ -1045,13 +1045,6 @@ impl HybridSearcher {
         self
     }
 
-    /// Whether vector search is available on either index (both store and
-    /// provider configured).
-    #[must_use]
-    pub fn has_vector(&self) -> bool {
-        self.memory_vector().is_some() || self.team_wiki.as_ref().is_some_and(|t| t.has_vector())
-    }
-
     fn memory_vector(&self) -> Option<VectorPair<'_>> {
         self.vector.as_ref().zip(self.embedding.as_ref())
     }
@@ -2149,7 +2142,10 @@ mod tests {
             .unwrap();
 
         let searcher = HybridSearcher::new(Arc::new(index), None, None, SearchConfig::default());
-        assert!(!searcher.has_vector(), "should not have vector search");
+        assert!(
+            searcher.memory_vector().is_none(),
+            "should not have vector search"
+        );
 
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -2502,7 +2498,13 @@ mod tests {
         // Text-only memory, vector wiki: wiki search is semantic, memory search is not.
         let searcher = HybridSearcher::new(memory(), None, None, SearchConfig::default())
             .with_team_wiki(vectored_team);
-        assert!(searcher.has_vector());
+        assert!(searcher.memory_vector().is_none());
+        assert!(
+            searcher
+                .team_wiki
+                .as_ref()
+                .is_some_and(|team| team.has_vector())
+        );
         assert!(
             search_source(&searcher, Some(DocSource::Wiki), 5, Some(0.0))
                 .await
@@ -2518,7 +2520,13 @@ mod tests {
         // Text-only on both sides.
         let text_only = HybridSearcher::new(memory(), None, None, SearchConfig::default())
             .with_team_wiki(text_only_team);
-        assert!(!text_only.has_vector());
+        assert!(text_only.memory_vector().is_none());
+        assert!(
+            text_only
+                .team_wiki
+                .as_ref()
+                .is_some_and(|team| !team.has_vector())
+        );
         assert!(!search_source(&text_only, None, 5, Some(0.0)).await.semantic);
     }
 
