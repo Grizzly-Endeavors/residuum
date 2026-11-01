@@ -21,7 +21,7 @@ use residuum_inference::{ToolError, ToolResult};
 use residuum_mcp::SharedMcpRegistry;
 use residuum_workspace::identity::IdentityFiles;
 
-use super::context::{MemoryContext, PromptContext, StatusLine, assemble_system_prompt};
+use super::context::{MemoryContext, PromptContext, StatusClock, assemble_system_prompt};
 use super::hop::HopCounter;
 use super::recent_messages::RecentMessages;
 use super::stream::{ChannelSink, DeltaCoalescer, DiscardSink, StreamPiece};
@@ -715,7 +715,6 @@ pub(crate) async fn build_model_request(
     recent_messages: &RecentMessages,
     memory_ctx: &MemoryContext<'_>,
     prompt_ctx: &PromptContext<'_>,
-    status_line: Option<&StatusLine>,
     tools: &ToolRegistry,
     mcp_registry: &SharedMcpRegistry,
 ) -> ModelRequest {
@@ -729,13 +728,7 @@ pub(crate) async fn build_model_request(
     tool_definitions.extend(mcp_guard.tool_definitions());
     drop(mcp_guard);
 
-    let messages = assemble_system_prompt(
-        identity,
-        recent_messages,
-        memory_ctx,
-        prompt_ctx,
-        status_line,
-    );
+    let messages = assemble_system_prompt(identity, recent_messages, memory_ctx, prompt_ctx);
 
     ModelRequest {
         messages,
@@ -924,7 +917,7 @@ pub async fn execute_turn(
     prompt_ctx: &PromptContext<'_>,
     recent_messages: &mut RecentMessages,
     events: &EventContext<'_>,
-    status_line: Option<&StatusLine>,
+    mut status_clock: Option<&mut StatusClock>,
     interrupt_rx: &mut dyn InterruptSource,
     subconscious: Option<&crate::subconscious::SubconsciousWatch>,
 ) -> anyhow::Result<Vec<String>> {
@@ -945,8 +938,15 @@ pub async fn execute_turn(
             return Ok(texts);
         }
 
-        if check_interrupts_and_stop(interrupt_rx, recent_messages, resources, events, iteration)
-            .await
+        if check_interrupts_and_stop(
+            interrupt_rx,
+            recent_messages,
+            status_clock.as_deref_mut(),
+            resources,
+            events,
+            iteration,
+        )
+        .await
         {
             return Ok(texts);
         }
@@ -960,7 +960,6 @@ pub async fn execute_turn(
             recent_messages,
             memory_ctx,
             prompt_ctx,
-            status_line,
             resources.tools,
             resources.mcp_registry,
         )
@@ -1193,6 +1192,7 @@ async fn handle_tool_call_response(
 async fn check_interrupts_and_stop(
     interrupt_rx: &mut dyn InterruptSource,
     recent_messages: &mut RecentMessages,
+    status_clock: Option<&mut StatusClock>,
     resources: &TurnResources<'_>,
     events: &EventContext<'_>,
     iteration: usize,
@@ -1200,6 +1200,7 @@ async fn check_interrupts_and_stop(
     let mut stopped = drain_interrupts(
         interrupt_rx,
         recent_messages,
+        status_clock,
         resources.transcript_sink,
         resources.hop_counter,
         events,
@@ -1240,9 +1241,13 @@ async fn check_interrupts_and_stop(
 /// at the moment it is folded in, so a client sees it at the position the
 /// model does. A message to a session is announced on the session's stream
 /// the same way (see [`EventContext::publish_message_read`]).
+///
+/// With a `status_clock` (the main conversation), each person's or agent's
+/// message is stamped with its own status line as it is folded in.
 async fn drain_interrupts(
     interrupt_rx: &mut dyn InterruptSource,
     recent_messages: &mut RecentMessages,
+    mut status_clock: Option<&mut StatusClock>,
     sink: Option<&dyn TranscriptSink>,
     hop_counter: &HopCounter,
     events: &EventContext<'_>,
@@ -1253,7 +1258,11 @@ async fn drain_interrupts(
             Interrupt::UserMessage(msg) => {
                 tracing::info!(msg_id = %msg.id, "injecting mid-turn user message");
                 events.publish_user_message(&msg).await;
-                push_and_record_many(recent_messages, sink, msg.into_history_messages()).await;
+                let entries = match status_clock.as_deref_mut() {
+                    Some(clock) => clock.admit(msg),
+                    None => msg.into_history_messages(),
+                };
+                push_and_record_many(recent_messages, sink, entries).await;
             }
             Interrupt::AgentMessage(msg) => {
                 tracing::info!(
@@ -1263,7 +1272,11 @@ async fn drain_interrupts(
                     "injecting agent message mid-turn"
                 );
                 hop_counter.bump(msg.hop_count);
-                push_and_record(recent_messages, sink, msg.to_history_message()).await;
+                let mut entry = msg.to_history_message();
+                if let Some(clock) = status_clock.as_deref_mut() {
+                    clock.stamp(&mut entry, None);
+                }
+                push_and_record(recent_messages, sink, entry).await;
                 // After the transcript records it, so a client reading the
                 // transcript on this event finds the message there.
                 events.publish_message_read(&msg).await;
@@ -1878,6 +1891,7 @@ mod tests {
         let stopped = drain_interrupts(
             &mut rx,
             &mut recent,
+            None,
             Some(&sink),
             &HopCounter::new(0),
             &silent_events(&Publisher::noop()),
@@ -1910,6 +1924,7 @@ mod tests {
         let stopped = drain_interrupts(
             &mut rx,
             &mut recent,
+            None,
             Some(&sink),
             &HopCounter::new(0),
             &silent_events(&Publisher::noop()),
@@ -1942,6 +1957,7 @@ mod tests {
         let stopped = drain_interrupts(
             &mut rx,
             &mut recent,
+            None,
             None,
             &HopCounter::new(0),
             &silent_events(&Publisher::noop()),
@@ -1979,6 +1995,7 @@ mod tests {
         let stopped = drain_interrupts(
             &mut rx,
             &mut recent,
+            None,
             Some(&sink),
             &HopCounter::new(0),
             &silent_events(&Publisher::noop()),
@@ -2026,6 +2043,7 @@ mod tests {
         let stopped = drain_interrupts(
             &mut rx,
             &mut recent,
+            None,
             Some(&sink),
             &HopCounter::new(0),
             &events,
@@ -2079,6 +2097,7 @@ mod tests {
         drain_interrupts(
             &mut rx,
             &mut recent,
+            None,
             None,
             &HopCounter::new(0),
             &silent_events(&publisher),

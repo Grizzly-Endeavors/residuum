@@ -84,6 +84,14 @@ pub struct Message {
     /// conversation to a person leaves it out, since nobody said it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub context: bool,
+    /// The status line (current time, time since the previous message, the
+    /// interface it came from) the agent reads with a user message, rendered
+    /// once when the message entered the main conversation. Every request
+    /// replays it unchanged as a system message immediately before the
+    /// message, so the request's bytes up to the newest message stay the
+    /// same from one turn to the next. `None` for every other entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_line: Option<String>,
 }
 
 /// One piece of a model's reasoning, as its provider returned it.
@@ -318,6 +326,7 @@ impl Message {
             id: None,
             attachments: Vec::new(),
             context: false,
+            status_line: None,
         }
     }
 
@@ -336,6 +345,7 @@ impl Message {
             id: None,
             attachments: Vec::new(),
             context: false,
+            status_line: None,
         }
     }
 
@@ -354,6 +364,7 @@ impl Message {
             id: None,
             attachments: Vec::new(),
             context: false,
+            status_line: None,
         }
     }
 
@@ -372,6 +383,7 @@ impl Message {
             id: None,
             attachments: Vec::new(),
             context: false,
+            status_line: None,
         }
     }
 
@@ -390,6 +402,7 @@ impl Message {
             id: None,
             attachments: Vec::new(),
             context: false,
+            status_line: None,
         }
     }
 
@@ -412,6 +425,7 @@ impl Message {
             id: None,
             attachments: Vec::new(),
             context: false,
+            status_line: None,
         }
     }
 

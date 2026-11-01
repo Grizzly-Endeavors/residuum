@@ -34,7 +34,6 @@ pub struct RequestInputs {
     pub skills_index: Option<String>,
     /// The active skills' instructions XML.
     pub active_skills: Option<String>,
-    pub status_line: Option<StatusLine>,
     /// The MCP registry whose tools join the request; `None` means no MCP
     /// servers are connected.
     pub mcp: Option<SharedMcpRegistry>,
@@ -64,7 +63,6 @@ pub async fn render_model_request(inputs: &RequestInputs, tools: &ToolRegistry) 
         &inputs.recent_messages,
         &memory_ctx,
         &prompt_ctx,
-        inputs.status_line.as_ref(),
         tools,
         &mcp,
     )

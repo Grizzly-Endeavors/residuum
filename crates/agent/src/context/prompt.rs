@@ -1,9 +1,8 @@
 //! System prompt content builders.
 
-use residuum_core::time::{format_display_datetime, format_relative_time};
 use residuum_workspace::identity::IdentityFiles;
 
-use super::types::{MemoryContext, SkillsContext, StatusLine};
+use super::types::{MemoryContext, SkillsContext};
 
 fn section(tag: &str, content: &str) -> String {
     format!("<{tag}>\n{content}\n</{tag}>")
@@ -32,26 +31,6 @@ const HARNESS: &str = "You run on Residuum, a personal-agent harness. These syst
 The residuum-system skill is the authoritative reference for all of the above. Activate it before answering any question about what you can do, and whenever you are unsure whether the harness supports something.
 
 Extend, don't just operate: authoring pulses and skills for the user's recurring needs is part of your job.";
-
-/// Build the `[Current Time: ...][Last Message: ...][Message Source: ...]` tag string.
-pub(super) fn build_status_line(ctx: &StatusLine) -> String {
-    use std::fmt::Write as _;
-
-    let current = format_display_datetime(ctx.now);
-    let mut tag = format!("[Current Time: {current}]");
-
-    if let Some(prev) = ctx.last_message_at {
-        let delta = ctx.now - prev;
-        let relative = format_relative_time(delta);
-        _ = write!(tag, "[Last Message: {relative}]");
-    }
-
-    if let Some(source) = &ctx.message_source {
-        _ = write!(tag, "[Message Source: {source}]");
-    }
-
-    tag
-}
 
 /// Build the system prompt content from identity files.
 ///
@@ -133,8 +112,6 @@ pub(super) fn build_system_content(
 
 #[cfg(test)]
 mod tests {
-    use chrono::NaiveDateTime;
-
     use super::*;
 
     fn no_memory() -> MemoryContext<'static> {
@@ -142,13 +119,6 @@ mod tests {
             observations: None,
             recent_context: None,
         }
-    }
-
-    fn dt(year: i32, month: u32, day: u32, hour: u32, min: u32) -> NaiveDateTime {
-        chrono::NaiveDate::from_ymd_opt(year, month, day)
-            .unwrap()
-            .and_hms_opt(hour, min, 0)
-            .unwrap()
     }
 
     #[test]
@@ -532,58 +502,6 @@ mod tests {
         assert!(
             !content.contains("ACTIVE_SKILLS"),
             "None active skills should be skipped"
-        );
-    }
-
-    // ── build_status_line tests ───────────────────────────────────────────────
-
-    #[test]
-    fn status_line_no_last_message() {
-        let ctx = StatusLine {
-            now: dt(2026, 2, 22, 17, 0),
-            last_message_at: None,
-            message_source: None,
-        };
-        let result = build_status_line(&ctx);
-        assert!(
-            result.contains("[Current Time:"),
-            "should have current time tag"
-        );
-        assert!(
-            !result.contains("[Last Message:"),
-            "should not have last message tag"
-        );
-    }
-
-    #[test]
-    fn status_line_with_last_message() {
-        let ctx = StatusLine {
-            now: dt(2026, 2, 22, 17, 0),
-            last_message_at: Some(dt(2026, 2, 22, 16, 45)),
-            message_source: None,
-        };
-        let result = build_status_line(&ctx);
-        assert!(
-            result.contains("[Current Time:"),
-            "should have current time tag"
-        );
-        assert!(
-            result.contains("[Last Message:"),
-            "should have last message tag"
-        );
-    }
-
-    #[test]
-    fn status_line_with_source() {
-        let ctx = StatusLine {
-            now: dt(2026, 2, 22, 17, 0),
-            last_message_at: None,
-            message_source: Some("discord".to_string()),
-        };
-        let result = build_status_line(&ctx);
-        assert!(
-            result.contains("[Message Source: discord]"),
-            "should have message source tag"
         );
     }
 }
