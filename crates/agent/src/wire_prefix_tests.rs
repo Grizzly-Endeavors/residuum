@@ -309,7 +309,7 @@ fn main_options(thinking: Option<ThinkingConfig>) -> CompletionOptions {
     }
 }
 
-fn anthropic_reply(thinking: &str, signature: &str, last: Value, stop_reason: &str) -> Value {
+fn anthropic_reply(thinking: &str, signature: &str, last: &Value, stop_reason: &str) -> Value {
     json!({
         "content": [
             {"type": "thinking", "thinking": thinking, "signature": signature},
@@ -333,32 +333,32 @@ fn anthropic_wire() -> Wire {
             anthropic_reply(
                 "look at it first",
                 "sig-1",
-                json!({"type": "tool_use", "id": "toolu_1", "name": "echo", "input": {}}),
+                &json!({"type": "tool_use", "id": "toolu_1", "name": "echo", "input": {}}),
                 "tool_use",
             ),
             anthropic_reply(
                 "wrap up",
                 "sig-2",
-                json!({"type": "text", "text": "a lighthouse"}),
+                &json!({"type": "text", "text": "a lighthouse"}),
                 "end_turn",
             ),
             anthropic_reply(
                 "answer the follow-up",
                 "sig-3",
-                json!({"type": "text", "text": "nothing new"}),
+                &json!({"type": "text", "text": "nothing new"}),
                 "end_turn",
             ),
             anthropic_reply(
                 "still here",
                 "sig-4",
-                json!({"type": "text", "text": "yes"}),
+                &json!({"type": "text", "text": "yes"}),
                 "end_turn",
             ),
         ],
     }
 }
 
-fn openai_reply(message: Value, finish_reason: &str) -> Value {
+fn openai_reply(message: &Value, finish_reason: &str) -> Value {
     json!({
         "id": "chatcmpl-test",
         "object": "chat.completion",
@@ -368,7 +368,7 @@ fn openai_reply(message: Value, finish_reason: &str) -> Value {
 }
 
 fn openai_text(text: &str) -> Value {
-    openai_reply(json!({"role": "assistant", "content": text}), "stop")
+    openai_reply(&json!({"role": "assistant", "content": text}), "stop")
 }
 
 /// An OpenAI-compatible host without reasoning: the reasoning of a tool
@@ -386,7 +386,7 @@ fn openai_compatible_wire() -> Wire {
         options: main_options(None),
         replies: [
             openai_reply(
-                json!({"role": "assistant", "content": null, "tool_calls": [
+                &json!({"role": "assistant", "content": null, "tool_calls": [
                     {"id": "call_1", "type": "function",
                      "function": {"name": "echo", "arguments": "{}"}}
                 ]}),
