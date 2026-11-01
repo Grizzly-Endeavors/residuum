@@ -451,10 +451,10 @@ mod tests {
     #[test]
     fn a_request_that_extends_the_previous_one_reports_nothing() {
         let mut watch = PrefixWatch::default();
+        let first = watch.compare(&request(SYSTEM, &["a"], &two_tools()), false);
         assert!(
-            watch
-                .compare(&request(SYSTEM, &["a"], &two_tools()), false)
-                .is_empty()
+            first.is_empty(),
+            "the first request has nothing to compare: {first:?}"
         );
         let extended = watch.compare(&request(SYSTEM, &["a", "b", "c"], &two_tools()), true);
         assert!(
