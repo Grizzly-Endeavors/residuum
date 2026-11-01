@@ -83,10 +83,8 @@ impl Cause {
     /// The level the first change with this cause logs at.
     fn level(self) -> Level {
         match self {
-            Self::ToolSetChanged | Self::SystemChangedWithHistory | Self::HistoryRewritten => {
-                Level::Debug
-            }
-            Self::ToolDefinitionChanged | Self::SystemChanged => Level::Info,
+            Self::SystemChangedWithHistory | Self::HistoryRewritten => Level::Debug,
+            Self::ToolSetChanged | Self::ToolDefinitionChanged | Self::SystemChanged => Level::Info,
             Self::ToolOrderChanged
             | Self::ToolDefinitionChangedMidTurn
             | Self::SystemChangedMidTurn
@@ -557,7 +555,7 @@ mod tests {
         let joined = watch.compare(&request(SYSTEM, &[], &added), true);
         assert_eq!(
             causes(&joined),
-            vec![(Cause::ToolSetChanged, 2, Level::Debug)],
+            vec![(Cause::ToolSetChanged, 2, Level::Info)],
             "a tool joining the end is a real change"
         );
 
