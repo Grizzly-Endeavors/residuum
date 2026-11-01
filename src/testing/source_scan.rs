@@ -632,7 +632,7 @@ fn request_order_covers(entry: &str, path: &str) -> bool {
 
 /// An unordered collection, by name.
 fn unordered_collection() -> Regex {
-    Regex::new(r"(?:HashMap|HashSet)").unwrap()
+    Regex::new(r"\b(?:HashMap|HashSet)\b").unwrap()
 }
 
 /// Each request-order file's production lines that name an unordered
@@ -1401,8 +1401,8 @@ mod tests {
             "crates/agent/src/context/mod.rs"
         ));
         assert!(!request_order_covers(
-            "crates/agent/src/tool.rs",
-            "crates/agent/src/tool_result.rs"
+            "crates/agent/src/turn.rs",
+            "crates/agent/src/turn_conversation_tests.rs"
         ));
     }
 
