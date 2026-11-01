@@ -1008,7 +1008,7 @@ mod tests {
     #[test]
     fn shown_streams_show_small_output_whole() {
         let stdout = captured(b"out\n", 0, b"");
-        let stderr = captured(b"err\n", 0, b"");
+        let stderr = captured(b"", 0, b"err\n");
         assert_eq!(
             shown_streams(&stdout, &stderr, true),
             ("out\n".to_string(), "err\n".to_string())
