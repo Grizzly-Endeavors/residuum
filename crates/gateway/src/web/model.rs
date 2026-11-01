@@ -115,7 +115,8 @@ pub(super) struct ModelCompleteRequest {
     temperature: Option<f32>,
 }
 
-/// Token usage reported back to the caller.
+/// Token usage reported back to the caller. `input_tokens` is the whole
+/// prompt, cached or not; a count the provider didn't report is 0.
 #[derive(Serialize, Default)]
 #[cfg_attr(test, derive(serde::Deserialize))]
 struct UsageResponse {
@@ -126,8 +127,8 @@ struct UsageResponse {
 impl From<Usage> for UsageResponse {
     fn from(usage: Usage) -> Self {
         Self {
-            input_tokens: usage.input_tokens,
-            output_tokens: usage.output_tokens,
+            input_tokens: usage.total_input_tokens().unwrap_or(0),
+            output_tokens: usage.output_tokens.unwrap_or(0),
         }
     }
 }
@@ -287,7 +288,7 @@ async fn run_completion(
             } else {
                 None
             };
-            let usage = resp.usage.unwrap_or_default();
+            let usage = UsageResponse::from(resp.usage.unwrap_or_default());
             tracing::info!(
                 artifact = identity_label,
                 model = model_label,
@@ -299,7 +300,7 @@ async fn run_completion(
                 content: resp.content,
                 json,
                 model: model_label.to_string(),
-                usage: UsageResponse::from(usage),
+                usage,
             })
             .into_response()
         }
@@ -611,10 +612,10 @@ mod tests {
         let provider = StubProvider::once(Ok(ok_response(
             "hello there",
             Usage {
-                input_tokens: 10,
-                output_tokens: 5,
-                cache_creation_tokens: None,
-                cache_read_tokens: None,
+                uncached_input_tokens: Some(4),
+                cache_read_tokens: Some(6),
+                output_tokens: Some(5),
+                ..Default::default()
             },
         )));
         let messages = vec![Message::user("hi")];
@@ -632,7 +633,10 @@ mod tests {
         assert_eq!(parsed.content, "hello there");
         assert!(parsed.json.is_none());
         assert_eq!(parsed.model, "anthropic/claude-test");
-        assert_eq!(parsed.usage.input_tokens, 10);
+        assert_eq!(
+            parsed.usage.input_tokens, 10,
+            "input counts the whole prompt, cache reads included"
+        );
         assert_eq!(parsed.usage.output_tokens, 5);
     }
 

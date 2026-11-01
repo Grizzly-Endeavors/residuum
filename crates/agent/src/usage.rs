@@ -44,7 +44,7 @@ impl TurnUsage {
             return;
         };
         self.has_usage = true;
-        self.output_tokens += usage.output_tokens;
+        self.output_tokens += usage.output_tokens.unwrap_or(0);
     }
 
     /// Fold `n` more executed tool calls into this turn's running count.
@@ -101,10 +101,11 @@ pub async fn load_session_usage_totals(path: &Path) -> SessionUsageTotals {
     }
 }
 
-/// Persist session usage totals. Logs at `warn` and returns without error on
-/// failure — a missed write only means the next restart's conversation size starts
-/// from a slightly stale total, never a reason to fail the turn that
-/// produced it.
+/// Persist session usage totals, atomically so a crash mid-write leaves the
+/// previous totals rather than a truncated file that loads as zero. Logs at
+/// `warn` and returns without error on failure — a missed write only means
+/// the next restart's conversation size starts from a slightly stale total,
+/// never a reason to fail the turn that produced it.
 pub async fn save_session_usage_totals(path: &Path, totals: &SessionUsageTotals) {
     let json = match serde_json::to_string(totals) {
         Ok(j) => j,
@@ -113,8 +114,8 @@ pub async fn save_session_usage_totals(path: &Path, totals: &SessionUsageTotals)
             return;
         }
     };
-    if let Err(e) = tokio::fs::write(path, json).await {
-        tracing::warn!(error = %e, path = %path.display(), "failed to persist usage totals");
+    if let Err(e) = residuum_core::util::fs::atomic_write(path, json).await {
+        tracing::warn!(error = format!("{e:#}"), path = %path.display(), "failed to persist usage totals");
     }
 }
 
@@ -176,10 +177,9 @@ mod tests {
 
     fn usage(input: u32, output: u32) -> Usage {
         Usage {
-            input_tokens: input,
-            output_tokens: output,
-            cache_creation_tokens: None,
-            cache_read_tokens: None,
+            uncached_input_tokens: Some(input),
+            output_tokens: Some(output),
+            ..Usage::default()
         }
     }
 
@@ -254,10 +254,73 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("usage_totals.json");
         let mut totals = SessionUsageTotals::default();
-        totals.accumulate(Some(usage(200, 40)));
+        totals.accumulate(Some(Usage {
+            uncached_input_tokens: Some(200),
+            cache_read_tokens: Some(1_000),
+            cache_write_tokens: Some(50),
+            output_tokens: Some(40),
+            ..Usage::default()
+        }));
         save_session_usage_totals(&path, &totals).await;
         let loaded = load_session_usage_totals(&path).await;
         assert_eq!(loaded, totals);
+        assert_eq!(
+            (loaded.cache_read_tokens, loaded.cache_write_tokens),
+            (1_000, 50),
+            "the cache totals survive a restart"
+        );
+    }
+
+    #[tokio::test]
+    async fn load_session_usage_totals_reads_a_file_written_before_the_cache_totals() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("usage_totals.json");
+        tokio::fs::write(
+            &path,
+            r#"{"input_tokens":900,"output_tokens":80,"context_tokens":300,"tool_calls":4}"#,
+        )
+        .await
+        .unwrap();
+        let loaded = load_session_usage_totals(&path).await;
+        assert_eq!(
+            loaded,
+            SessionUsageTotals {
+                input_tokens: 900,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                output_tokens: 80,
+                context_tokens: Some(300),
+                tool_calls: 4,
+            },
+            "an old totals file keeps its figures instead of resetting to zero"
+        );
+    }
+
+    #[tokio::test]
+    async fn save_session_usage_totals_replaces_the_file_through_a_temp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("usage_totals.json");
+        tokio::fs::write(
+            &path,
+            "{\"stale\": true, \"padding\": \"a long earlier file\"}",
+        )
+        .await
+        .unwrap();
+        let mut totals = SessionUsageTotals::default();
+        totals.accumulate(Some(usage(5, 1)));
+        save_session_usage_totals(&path, &totals).await;
+
+        assert_eq!(load_session_usage_totals(&path).await, totals);
+        let mut names = Vec::new();
+        let mut entries = tokio::fs::read_dir(dir.path()).await.unwrap();
+        while let Some(entry) = entries.next_entry().await.unwrap() {
+            names.push(entry.file_name().to_string_lossy().into_owned());
+        }
+        assert_eq!(
+            names,
+            ["usage_totals.json"],
+            "the write renames its temp file into place and leaves nothing behind"
+        );
     }
 
     #[tokio::test]

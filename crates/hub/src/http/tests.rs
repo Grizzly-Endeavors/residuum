@@ -1256,10 +1256,9 @@ async fn chat_history_and_usage_are_served_from_disk_in_every_agent_state() {
     h.add_failed_agent();
     let mut totals = residuum_bus::usage::SessionUsageTotals::default();
     totals.accumulate(Some(residuum_inference::Usage {
-        input_tokens: 300,
-        output_tokens: 60,
-        cache_creation_tokens: None,
-        cache_read_tokens: None,
+        uncached_input_tokens: Some(300),
+        output_tokens: Some(60),
+        ..Default::default()
     }));
 
     for name in EVERY_STATE {

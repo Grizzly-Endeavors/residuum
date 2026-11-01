@@ -269,6 +269,8 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
     const { usage } = state;
     state.usage = {
       input_tokens: usage.input_tokens + TURN_USAGE.input,
+      cache_read_tokens: usage.cache_read_tokens,
+      cache_write_tokens: usage.cache_write_tokens,
       output_tokens: usage.output_tokens + TURN_USAGE.output,
       context_tokens: (usage.context_tokens ?? TURN_USAGE.context) + TURN_USAGE.growth,
       tool_calls: usage.tool_calls + tools,

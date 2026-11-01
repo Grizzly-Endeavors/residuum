@@ -610,12 +610,7 @@ impl AnthropicClient {
             }
         }
 
-        let usage = response.usage.map(|u| Usage {
-            input_tokens: u.input_tokens,
-            output_tokens: u.output_tokens,
-            cache_creation_tokens: u.cache_creation_input_tokens,
-            cache_read_tokens: u.cache_read_input_tokens,
-        });
+        let usage = response.usage.map(AnthropicUsage::usage);
 
         let mut resp = InferenceResponse::new(text_parts.join(""), tool_calls);
         resp.usage = usage;
@@ -870,7 +865,7 @@ enum StreamEvent {
     MessageDelta {
         delta: MessageDeltaBody,
         #[serde(default)]
-        usage: Option<PartialUsage>,
+        usage: Option<AnthropicUsage>,
     },
     MessageStop {},
     Ping {},
@@ -885,7 +880,7 @@ enum StreamEvent {
 #[derive(Deserialize)]
 struct StreamMessageStart {
     #[serde(default)]
-    usage: Option<PartialUsage>,
+    usage: Option<AnthropicUsage>,
     #[serde(default)]
     input_transformations: Option<Vec<AnthropicInputTransformation>>,
 }
@@ -924,26 +919,54 @@ struct StreamErrorBody {
     message: String,
 }
 
-/// Token counts as they stream in. Every report is cumulative and may omit
-/// fields, so each field keeps the last value it was given.
-#[derive(Deserialize, Default, Clone, Copy)]
-struct PartialUsage {
-    #[serde(rename = "input_tokens")]
+/// Token counts as Anthropic reports them, whole or streamed.
+///
+/// `input_tokens` excludes the cache: reads and writes are reported beside
+/// it, so the three are already the disjoint parts [`Usage`] wants. Any
+/// field may be missing; a missing one stays unknown. A stream reports
+/// cumulative counts in `message_start` and `message_delta`, so merging
+/// keeps the last value each field was given.
+#[derive(Debug, Deserialize, Default, Clone, Copy)]
+struct AnthropicUsage {
+    #[serde(default, rename = "input_tokens")]
     input: Option<u32>,
-    #[serde(rename = "output_tokens")]
+    #[serde(default, rename = "output_tokens")]
     output: Option<u32>,
-    #[serde(rename = "cache_creation_input_tokens")]
-    cache_creation: Option<u32>,
-    #[serde(rename = "cache_read_input_tokens")]
+    #[serde(default, rename = "cache_creation_input_tokens")]
+    cache_write: Option<u32>,
+    #[serde(default, rename = "cache_read_input_tokens")]
     cache_read: Option<u32>,
+    /// The cache writes split by TTL.
+    #[serde(default, rename = "cache_creation")]
+    cache_write_by_ttl: Option<AnthropicCacheWriteByTtl>,
 }
 
-impl PartialUsage {
+#[derive(Debug, Deserialize, Default, Clone, Copy)]
+struct AnthropicCacheWriteByTtl {
+    #[serde(default)]
+    ephemeral_1h_input_tokens: Option<u32>,
+}
+
+impl AnthropicUsage {
     fn merge(&mut self, latest: Self) {
         self.input = latest.input.or(self.input);
         self.output = latest.output.or(self.output);
-        self.cache_creation = latest.cache_creation.or(self.cache_creation);
+        self.cache_write = latest.cache_write.or(self.cache_write);
         self.cache_read = latest.cache_read.or(self.cache_read);
+        self.cache_write_by_ttl = latest.cache_write_by_ttl.or(self.cache_write_by_ttl);
+    }
+
+    fn usage(self) -> Usage {
+        Usage {
+            uncached_input_tokens: self.input,
+            cache_read_tokens: self.cache_read,
+            cache_write_tokens: self.cache_write,
+            cache_write_long_tokens: self
+                .cache_write_by_ttl
+                .and_then(|ttl| ttl.ephemeral_1h_input_tokens),
+            output_tokens: self.output,
+            reasoning_tokens: None,
+        }
     }
 }
 
@@ -959,7 +982,7 @@ struct StreamBlock {
 struct StreamAssembler<'a> {
     sink: &'a dyn StreamSink,
     blocks: BTreeMap<usize, StreamBlock>,
-    usage: Option<PartialUsage>,
+    usage: Option<AnthropicUsage>,
     stop_reason: Option<String>,
     input_transformations: Option<Vec<AnthropicInputTransformation>>,
     stopped: bool,
@@ -1019,9 +1042,9 @@ impl<'a> StreamAssembler<'a> {
         Ok(Flow::Continue)
     }
 
-    fn merge_usage(&mut self, latest: PartialUsage) {
+    fn merge_usage(&mut self, latest: AnthropicUsage) {
         self.usage
-            .get_or_insert_with(PartialUsage::default)
+            .get_or_insert_with(AnthropicUsage::default)
             .merge(latest);
     }
 
@@ -1141,15 +1164,9 @@ impl<'a> StreamAssembler<'a> {
             }
             content.push(block);
         }
-        let usage = self.usage.map(|u| AnthropicUsage {
-            input_tokens: u.input.unwrap_or(0),
-            output_tokens: u.output.unwrap_or(0),
-            cache_creation_input_tokens: u.cache_creation,
-            cache_read_input_tokens: u.cache_read,
-        });
         Ok(AnthropicResponse {
             content,
-            usage,
+            usage: self.usage,
             stop_reason: self.stop_reason,
             input_transformations: self.input_transformations,
         })
@@ -1545,17 +1562,6 @@ fn map_stop_reason(raw: &str) -> StopReason {
 }
 
 #[derive(Debug, Deserialize)]
-#[expect(clippy::struct_field_names, reason = "field names match Anthropic API")]
-struct AnthropicUsage {
-    input_tokens: u32,
-    output_tokens: u32,
-    #[serde(default)]
-    cache_creation_input_tokens: Option<u32>,
-    #[serde(default)]
-    cache_read_input_tokens: Option<u32>,
-}
-
-#[derive(Debug, Deserialize)]
 struct AnthropicErrorResponse {
     error: AnthropicErrorDetail,
 }
@@ -1653,8 +1659,12 @@ mod tests {
         assert!(resp.tool_calls.is_empty(), "should have no tool calls");
 
         let usage = resp.usage.unwrap();
-        assert_eq!(usage.input_tokens, 10, "input tokens should match");
-        assert_eq!(usage.output_tokens, 15, "output tokens should match");
+        assert_eq!(
+            usage.uncached_input_tokens,
+            Some(10),
+            "input tokens should match"
+        );
+        assert_eq!(usage.output_tokens, Some(15), "output tokens should match");
         assert_eq!(
             resp.stop_reason,
             Some(StopReason::EndTurn),
@@ -2091,46 +2101,70 @@ mod tests {
         assert!(result.is_ok(), "request with temperature should succeed");
     }
 
-    #[tokio::test]
-    async fn cache_tokens_parsed_from_response() {
-        let server = MockServer::start().await;
-        let body = json!({
-            "content": [
-                {"type": "text", "text": "cached response"}
-            ],
-            "stop_reason": "end_turn",
-            "usage": {
-                "input_tokens": 10,
-                "output_tokens": 15,
-                "cache_creation_input_tokens": 100,
-                "cache_read_input_tokens": 50
-            }
-        });
+    /// Usage as Anthropic documents it, with the cache writes split by TTL.
+    fn documented_usage() -> Value {
+        json!({
+            "input_tokens": 12,
+            "cache_creation_input_tokens": 2051,
+            "cache_read_input_tokens": 1800,
+            "cache_creation": {
+                "ephemeral_5m_input_tokens": 51,
+                "ephemeral_1h_input_tokens": 2000
+            },
+            "output_tokens": 503,
+            "service_tier": "standard"
+        })
+    }
 
+    fn documented_usage_normalized() -> Usage {
+        Usage {
+            uncached_input_tokens: Some(12),
+            cache_read_tokens: Some(1800),
+            cache_write_tokens: Some(2051),
+            cache_write_long_tokens: Some(2000),
+            output_tokens: Some(503),
+            reasoning_tokens: None,
+        }
+    }
+
+    async fn whole_usage(usage: Value) -> Option<Usage> {
+        let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/v1/messages"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "content": [{"type": "text", "text": "ok"}],
+                "stop_reason": "end_turn",
+                "usage": usage
+            })))
             .mount(&server)
             .await;
-
-        let client = test_client(&server.uri());
-        let result = client
+        test_client(&server.uri())
             .complete(&simple_user_message(), &[], &CompletionOptions::default())
-            .await;
-        assert!(result.is_ok(), "cache token response should succeed");
+            .await
+            .unwrap()
+            .usage
+    }
 
-        let usage = result.unwrap().usage.unwrap();
-        assert_eq!(usage.input_tokens, 10, "input tokens should match");
-        assert_eq!(usage.output_tokens, 15, "output tokens should match");
+    #[tokio::test]
+    async fn cache_tokens_parsed_from_response() {
+        let usage = whole_usage(documented_usage()).await.unwrap();
+        assert_eq!(usage, documented_usage_normalized());
         assert_eq!(
-            usage.cache_creation_tokens,
-            Some(100),
-            "cache creation tokens should match"
+            usage.total_input_tokens(),
+            Some(3863),
+            "input_tokens excludes the cache, so the whole prompt adds all three"
         );
+    }
+
+    #[tokio::test]
+    async fn missing_usage_counts_stay_unknown_in_a_whole_response() {
         assert_eq!(
-            usage.cache_read_tokens,
-            Some(50),
-            "cache read tokens should match"
+            whole_usage(json!({"output_tokens": 4})).await,
+            Some(Usage {
+                output_tokens: Some(4),
+                ..Usage::default()
+            }),
+            "a missing input count is unknown, not a parse error or zero"
         );
     }
 
@@ -3568,6 +3602,55 @@ mod tests {
         (result, sink, server)
     }
 
+    /// A text reply streamed with the given `message_start` and
+    /// `message_delta` usage.
+    fn text_stream(start_usage: Value, end_usage: Value) -> String {
+        [
+            message_start(start_usage),
+            block_start(0, json!({"type": "text", "text": ""})),
+            delta(0, json!({"type": "text_delta", "text": "ok"})),
+            block_stop(0),
+            message_end("end_turn", end_usage),
+        ]
+        .concat()
+    }
+
+    #[tokio::test]
+    async fn streamed_usage_is_normalized_like_the_whole_response() {
+        let mut start_usage = documented_usage();
+        start_usage["output_tokens"] = json!(1);
+        let (streamed, _sink, _server) = stream_from(
+            sse_response(&[text_stream(start_usage, documented_usage())]),
+            test_client,
+        )
+        .await;
+        assert_eq!(
+            streamed.unwrap().usage,
+            Some(documented_usage_normalized()),
+            "cumulative message_delta counts, TTL split included, match a whole response"
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_usage_counts_stay_unknown_in_a_stream() {
+        let (streamed, _sink, _server) = stream_from(
+            sse_response(&[text_stream(
+                json!({"output_tokens": 1}),
+                json!({"output_tokens": 4}),
+            )]),
+            test_client,
+        )
+        .await;
+        assert_eq!(
+            streamed.unwrap().usage,
+            Some(Usage {
+                output_tokens: Some(4),
+                ..Usage::default()
+            }),
+            "a stream that never reports input leaves it unknown, as a whole response does"
+        );
+    }
+
     #[tokio::test]
     async fn streamed_response_matches_the_non_streaming_one() {
         let (streamed, sink, server) =
@@ -3601,11 +3684,11 @@ mod tests {
         let usage = streamed.usage.unwrap();
         assert_eq!(
             (
-                usage.input_tokens,
+                usage.uncached_input_tokens,
                 usage.output_tokens,
                 usage.cache_read_tokens
             ),
-            (25, 42, Some(3)),
+            (Some(25), Some(42), Some(3)),
             "message_start and message_delta usage merge, the later output count winning"
         );
         assert_eq!(

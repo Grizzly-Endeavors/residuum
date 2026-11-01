@@ -7,19 +7,35 @@
  */
 export type SessionUsageTotals = { 
 /**
- * Prompt tokens sent across every model call this session has made.
+ * Input tokens sent across every model call this session has made,
+ * counting every prompt whole: uncached input, cache reads and cache
+ * writes together ([`Usage::total_input_tokens`]). The uncached part is
+ * this minus `cache_read_tokens` and `cache_write_tokens`.
  */
 input_tokens: number, 
 /**
- * Completion tokens generated across every model call this session
- * has made.
+ * The part of `input_tokens` read from the prompt cache.
+ *
+ * `#[serde(default)]` so a totals file or run record persisted before
+ * this field existed still deserializes, showing zero.
+ */
+cache_read_tokens: number, 
+/**
+ * The part of `input_tokens` written to the prompt cache.
+ *
+ * `#[serde(default)]` for the same reason as `cache_read_tokens`.
+ */
+cache_write_tokens: number, 
+/**
+ * Output tokens generated across every model call this session has
+ * made, reasoning included.
  */
 output_tokens: number, 
 /**
- * Context size at the most recent model call: that call's input
- * tokens plus its cache reads/writes — the actual token count the
+ * Context size at the most recent model call that reported its input:
+ * that call's whole prompt, cached or not — the token count the
  * provider processed as context, not an estimate. `None` until the
- * first call that reports usage. There is no per-model context-window
+ * first call that reports input. There is no per-model context-window
  * size known to the codebase, so this is shown as an absolute count
  * rather than a percentage.
  */

@@ -20,7 +20,7 @@ use crate::http::{
 };
 use crate::reply::{ReplyAssembler, plain_reasoning};
 use crate::stream::{Flow, SseEvent, TrackedSink, answered_whole, read_sse};
-use crate::types::current_exchange_start;
+use crate::types::{current_exchange_start, uncached_from_inclusive_prompt};
 use crate::with_retry;
 use crate::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message, ProviderApi,
@@ -448,15 +448,26 @@ fn parse_response(
     Ok(resp)
 }
 
+/// Normalize `OpenAI`-shaped usage. `prompt_tokens` counts the whole prompt,
+/// cache reads and writes included, so the uncached part is what remains
+/// after subtracting them.
 fn usage_from(usage: OpenAiUsage, header_cached_tokens: Option<u32>) -> Usage {
+    let prompt_details = usage.prompt_tokens_details.unwrap_or_default();
+    let cache_read_tokens = prompt_details.cached_tokens.or(header_cached_tokens);
+    let cache_write_tokens = prompt_details.cache_write_tokens;
     Usage {
-        input_tokens: usage.prompt_tokens.unwrap_or(0),
-        output_tokens: usage.completion_tokens.unwrap_or(0),
-        cache_creation_tokens: None,
-        cache_read_tokens: usage
-            .prompt_tokens_details
-            .and_then(|d| d.cached_tokens)
-            .or(header_cached_tokens),
+        uncached_input_tokens: uncached_from_inclusive_prompt(
+            usage.prompt_tokens,
+            cache_read_tokens,
+            cache_write_tokens,
+        ),
+        cache_read_tokens,
+        cache_write_tokens,
+        cache_write_long_tokens: None,
+        output_tokens: usage.completion_tokens,
+        reasoning_tokens: usage
+            .completion_tokens_details
+            .and_then(|d| d.reasoning_tokens),
     }
 }
 
@@ -933,11 +944,19 @@ struct OpenAiUsage {
     completion_tokens: Option<u32>,
     #[serde(default)]
     prompt_tokens_details: Option<OpenAiPromptTokensDetails>,
+    #[serde(default)]
+    completion_tokens_details: Option<OpenAiCompletionTokensDetails>,
+}
+
+#[derive(Deserialize, Default)]
+struct OpenAiPromptTokensDetails {
+    cached_tokens: Option<u32>,
+    cache_write_tokens: Option<u32>,
 }
 
 #[derive(Deserialize)]
-struct OpenAiPromptTokensDetails {
-    cached_tokens: Option<u32>,
+struct OpenAiCompletionTokensDetails {
+    reasoning_tokens: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -1881,52 +1900,72 @@ mod tests {
         );
     }
 
+    /// Usage as `OpenAI` documents it: `prompt_tokens` counts the whole
+    /// prompt, cache reads and writes included.
+    fn documented_usage() -> Value {
+        json!({
+            "prompt_tokens": 2006,
+            "completion_tokens": 300,
+            "total_tokens": 2306,
+            "prompt_tokens_details": {
+                "cached_tokens": 1920,
+                "cache_write_tokens": 64,
+                "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+                "reasoning_tokens": 256,
+                "audio_tokens": 0,
+                "accepted_prediction_tokens": 0,
+                "rejected_prediction_tokens": 0
+            }
+        })
+    }
+
+    fn documented_usage_normalized() -> Usage {
+        Usage {
+            uncached_input_tokens: Some(22),
+            cache_read_tokens: Some(1920),
+            cache_write_tokens: Some(64),
+            cache_write_long_tokens: None,
+            output_tokens: Some(300),
+            reasoning_tokens: Some(256),
+        }
+    }
+
     #[tokio::test]
-    async fn usage_with_cached_tokens_parsed() {
-        let mock_server = MockServer::start().await;
+    async fn usage_is_normalized_to_disjoint_input_parts() {
+        let resp = whole_response(json!({
+            "choices": [{"message": {"role": "assistant", "content": "cached hello"},
+                "finish_reason": "stop"}],
+            "usage": documented_usage()
+        }))
+        .await;
 
-        Mock::given(method("POST"))
-            .and(path("/chat/completions"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "choices": [{
-                    "message": {
-                        "role": "assistant",
-                        "content": "cached hello"
-                    }
-                }],
-                "usage": {
-                    "prompt_tokens": 100,
-                    "completion_tokens": 50,
-                    "prompt_tokens_details": {
-                        "cached_tokens": 30
-                    }
-                }
-            })))
-            .mount(&mock_server)
-            .await;
-
-        let client = make_client(mock_server.uri(), "gpt-4");
-        let result = client
-            .complete(
-                &[Message::user("Hello")],
-                &[],
-                &CompletionOptions::default(),
-            )
-            .await;
-        assert!(result.is_ok(), "usage with cache tokens should succeed");
-
-        let resp = result.unwrap();
         let usage = resp.usage.unwrap();
-        assert_eq!(usage.input_tokens, 100, "input tokens should match");
-        assert_eq!(usage.output_tokens, 50, "output tokens should match");
+        assert_eq!(usage, documented_usage_normalized());
         assert_eq!(
-            usage.cache_creation_tokens, None,
-            "OpenAI does not report cache creation tokens"
+            usage.total_input_tokens(),
+            Some(2006),
+            "the parts add back up to prompt_tokens"
         );
+    }
+
+    #[tokio::test]
+    async fn usage_missing_counts_stay_unknown() {
+        let resp = whole_response(json!({
+            "choices": [{"message": {"role": "assistant", "content": "hi"},
+                "finish_reason": "stop"}],
+            "usage": {"completion_tokens": 3}
+        }))
+        .await;
+
         assert_eq!(
-            usage.cache_read_tokens,
-            Some(30),
-            "cache read tokens should match cached_tokens"
+            resp.usage.unwrap(),
+            Usage {
+                output_tokens: Some(3),
+                ..Usage::default()
+            },
+            "a missing prompt count is unknown, not zero"
         );
     }
 
@@ -2194,6 +2233,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn streamed_usage_is_normalized_like_the_whole_response() {
+        let stream = [
+            delta_chunk(json!({"role": "assistant", "content": "ok"})),
+            finish_chunk("stop"),
+            sse_data(json!({"choices": [], "usage": documented_usage()})),
+            DONE.to_string(),
+        ]
+        .concat();
+        let (streamed, _sink, _server) = stream_from(sse_response(&[stream]), plain_client).await;
+
+        assert_eq!(
+            streamed.unwrap().usage,
+            Some(documented_usage_normalized()),
+            "the final usage chunk normalizes the same way as a whole response"
+        );
+    }
+
+    #[tokio::test]
     async fn streamed_text_matches_the_non_streaming_response() {
         let stream = [
             delta_chunk(json!({"role": "assistant", "content": ""})),
@@ -2218,8 +2275,8 @@ mod tests {
         assert_eq!(streamed.content, "Hello w\u{f6}rld", "text assembled");
         assert_eq!(sink.text(), "Hello w\u{f6}rld", "text streamed");
         assert_eq!(
-            streamed.usage.unwrap().input_tokens,
-            11,
+            streamed.usage.unwrap().uncached_input_tokens,
+            Some(11),
             "usage from the last chunk"
         );
         assert_eq!(

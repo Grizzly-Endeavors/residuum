@@ -120,7 +120,14 @@ describe("chat routes", () => {
   it("reports the conversation's usage totals", async () => {
     expect(await fetchJson(`${harness.baseUrl}/api/usage`)).toEqual({
       status: 200,
-      body: { input_tokens: 412_880, output_tokens: 9_214, context_tokens: 18_402, tool_calls: 37 },
+      body: {
+        input_tokens: 412_880,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        output_tokens: 9_214,
+        context_tokens: 18_402,
+        tool_calls: 37,
+      },
     });
   });
 });

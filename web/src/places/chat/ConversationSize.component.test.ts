@@ -19,6 +19,8 @@ import ConversationSizeHarness from "../../test/ui/ConversationSizeHarness.svelt
 
 const TOTALS = {
   input_tokens: 412_880,
+  cache_read_tokens: 0,
+  cache_write_tokens: 0,
   output_tokens: 9_214,
   context_tokens: 18_402,
   tool_calls: 37,

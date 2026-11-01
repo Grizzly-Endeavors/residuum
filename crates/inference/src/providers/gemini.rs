@@ -18,7 +18,7 @@ use crate::http::{
     warn_if_insecure_remote,
 };
 use crate::stream::{Flow, SseEvent, TrackedSink, answered_whole, read_sse};
-use crate::types::current_exchange_start;
+use crate::types::{current_exchange_start, uncached_from_inclusive_prompt};
 use crate::with_retry;
 use crate::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message, ProviderApi,
@@ -169,17 +169,9 @@ impl GeminiClient {
             }
         }
 
-        // Thought tokens are billed as output but reported apart from the
-        // candidates' own, so they are added in, as Anthropic's and
-        // OpenAI's output counts already include theirs.
-        let usage = gemini_response.usage_metadata.map(|u| Usage {
-            input_tokens: u.prompt_token_count,
-            output_tokens: u
-                .candidates_token_count
-                .saturating_add(u.thoughts_token_count),
-            cache_creation_tokens: None,
-            cache_read_tokens: u.cached_content_token_count,
-        });
+        let usage = gemini_response
+            .usage_metadata
+            .map(GeminiUsageMetadata::usage);
 
         let mut model_response = InferenceResponse::new(content_text, tool_calls);
         model_response.usage = usage;
@@ -898,13 +890,44 @@ struct GeminiResponseContent {
 #[expect(clippy::struct_field_names, reason = "field names match Gemini API")]
 struct GeminiUsageMetadata {
     #[serde(default, rename = "promptTokenCount")]
-    prompt_token_count: u32,
+    prompt_token_count: Option<u32>,
     #[serde(default, rename = "candidatesTokenCount")]
-    candidates_token_count: u32,
+    candidates_token_count: Option<u32>,
     #[serde(default, rename = "thoughtsTokenCount")]
-    thoughts_token_count: u32,
+    thoughts_token_count: Option<u32>,
     #[serde(default, rename = "cachedContentTokenCount")]
     cached_content_token_count: Option<u32>,
+}
+
+impl GeminiUsageMetadata {
+    /// Normalize Gemini's counts.
+    ///
+    /// `promptTokenCount` is the whole prompt with the cached part included,
+    /// so the uncached part is what remains after subtracting it. Thought
+    /// tokens are billed as output but reported apart from the candidates'
+    /// own, so they are added into output, as `Anthropic`'s and `OpenAI`'s
+    /// output counts already include theirs. `toolUsePromptTokenCount` is
+    /// left out of input: it counts context a hosted tool fetched, and the
+    /// only hosted tool sent here is Google Search, whose retrieved context
+    /// Google does not bill as input.
+    fn usage(self) -> Usage {
+        let output_tokens = [self.candidates_token_count, self.thoughts_token_count]
+            .into_iter()
+            .flatten()
+            .reduce(u32::saturating_add);
+        Usage {
+            uncached_input_tokens: uncached_from_inclusive_prompt(
+                self.prompt_token_count,
+                self.cached_content_token_count,
+                None,
+            ),
+            cache_read_tokens: self.cached_content_token_count,
+            cache_write_tokens: None,
+            cache_write_long_tokens: None,
+            output_tokens,
+            reasoning_tokens: self.thoughts_token_count,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -1317,8 +1340,12 @@ mod tests {
         assert!(response.tool_calls.is_empty(), "should have no tool calls");
         assert!(response.usage.is_some(), "should report usage");
         let usage = response.usage.unwrap();
-        assert_eq!(usage.input_tokens, 10, "input tokens should match");
-        assert_eq!(usage.output_tokens, 5, "output tokens should match");
+        assert_eq!(
+            usage.uncached_input_tokens,
+            Some(10),
+            "input tokens should match"
+        );
+        assert_eq!(usage.output_tokens, Some(5), "output tokens should match");
         assert!(response.is_complete(), "text-only response is complete");
         assert_eq!(
             response.stop_reason,
@@ -1676,17 +1703,17 @@ mod tests {
         assert!(result.is_ok(), "cache token response should succeed");
 
         let usage = result.unwrap().usage.unwrap();
-        assert_eq!(usage.input_tokens, 10, "input tokens should match");
-        assert_eq!(usage.output_tokens, 5, "output tokens should match");
         assert_eq!(
-            usage.cache_creation_tokens, None,
-            "Gemini does not report cache creation tokens"
+            usage,
+            Usage {
+                uncached_input_tokens: Some(2),
+                cache_read_tokens: Some(8),
+                output_tokens: Some(5),
+                ..Usage::default()
+            },
+            "promptTokenCount includes the cached part, so 2 of 10 are uncached"
         );
-        assert_eq!(
-            usage.cache_read_tokens,
-            Some(8),
-            "cache read tokens should match cachedContentTokenCount"
-        );
+        assert_eq!(usage.total_input_tokens(), Some(10));
     }
 
     #[tokio::test]
@@ -2328,14 +2355,15 @@ mod tests {
             vec!["call_0", "call_1"],
             "calls numbered across events"
         );
-        let usage = streamed.usage.unwrap();
         assert_eq!(
-            (
-                usage.input_tokens,
-                usage.output_tokens,
-                usage.cache_read_tokens
-            ),
-            (21, 14, Some(4)),
+            streamed.usage,
+            Some(Usage {
+                uncached_input_tokens: Some(17),
+                cache_read_tokens: Some(4),
+                output_tokens: Some(14),
+                reasoning_tokens: Some(5),
+                ..Usage::default()
+            }),
             "usage from the last event, with the 5 thought tokens counted as output"
         );
         assert_eq!(
@@ -2566,10 +2594,74 @@ mod tests {
             .unwrap()
             .usage
             .unwrap();
-        assert_eq!(usage.input_tokens, 10, "input tokens unchanged");
         assert_eq!(
-            usage.output_tokens, 43,
+            usage.uncached_input_tokens,
+            Some(10),
+            "input tokens unchanged"
+        );
+        assert_eq!(
+            usage.output_tokens,
+            Some(43),
             "the 40 thought tokens are output tokens beside the 3 of the answer"
+        );
+        assert_eq!(
+            usage.reasoning_tokens,
+            Some(40),
+            "the thought tokens are also kept apart"
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_usage_counts_stay_unknown() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"/models/gemini-2\.0-flash:generateContent"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "candidates": [{"content": {"role": "model", "parts": [{"text": "ok"}]},
+                    "finishReason": "STOP"}],
+                "usageMetadata": {"candidatesTokenCount": 3, "totalTokenCount": 3}
+            })))
+            .mount(&mock_server)
+            .await;
+        let usage = make_client(&mock_server.uri())
+            .complete(&[Message::user("hi")], &[], &CompletionOptions::default())
+            .await
+            .unwrap()
+            .usage
+            .unwrap();
+        assert_eq!(
+            usage,
+            Usage {
+                output_tokens: Some(3),
+                ..Usage::default()
+            },
+            "a missing prompt count is unknown, not zero"
+        );
+    }
+
+    #[tokio::test]
+    async fn tool_use_prompt_tokens_stay_out_of_input() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"/models/gemini-2\.0-flash:generateContent"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "candidates": [{"content": {"role": "model", "parts": [{"text": "found it"}]},
+                    "finishReason": "STOP"}],
+                "usageMetadata": {"promptTokenCount": 120, "candidatesTokenCount": 30,
+                    "toolUsePromptTokenCount": 900, "totalTokenCount": 1050}
+            })))
+            .mount(&mock_server)
+            .await;
+        let usage = make_client(&mock_server.uri())
+            .complete(&[Message::user("hi")], &[], &CompletionOptions::default())
+            .await
+            .unwrap()
+            .usage
+            .unwrap();
+        assert_eq!(
+            usage.total_input_tokens(),
+            Some(120),
+            "search-grounding context is not billed as input"
         );
     }
 

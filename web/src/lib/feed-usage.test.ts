@@ -10,6 +10,8 @@ function totals(
 ): SessionUsageTotals {
   return {
     input_tokens: input,
+    cache_read_tokens: 0,
+    cache_write_tokens: 0,
     output_tokens: output,
     context_tokens: context,
     tool_calls: toolCalls,

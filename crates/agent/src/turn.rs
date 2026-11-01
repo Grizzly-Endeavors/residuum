@@ -1696,10 +1696,12 @@ async fn stop_repeated_tool_call(
 fn log_usage(response: &InferenceResponse) {
     if let Some(usage) = response.usage {
         tracing::debug!(
-            input_tokens = usage.input_tokens,
-            output_tokens = usage.output_tokens,
-            cache_creation_tokens = usage.cache_creation_tokens,
+            uncached_input_tokens = usage.uncached_input_tokens,
             cache_read_tokens = usage.cache_read_tokens,
+            cache_write_tokens = usage.cache_write_tokens,
+            cache_write_long_tokens = usage.cache_write_long_tokens,
+            output_tokens = usage.output_tokens,
+            reasoning_tokens = usage.reasoning_tokens,
             "token usage"
         );
     } else {
@@ -2830,10 +2832,9 @@ mod tests {
 
     fn usage(input: u32, output: u32) -> residuum_inference::Usage {
         residuum_inference::Usage {
-            input_tokens: input,
-            output_tokens: output,
-            cache_creation_tokens: None,
-            cache_read_tokens: None,
+            uncached_input_tokens: Some(input),
+            output_tokens: Some(output),
+            ..Default::default()
         }
     }
 

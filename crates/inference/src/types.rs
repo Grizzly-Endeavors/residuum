@@ -534,17 +534,57 @@ pub struct ToolDefinition {
     pub parameters: serde_json::Value,
 }
 
-/// Token usage information from a model response.
+/// Token usage of one model response, normalized so every provider means the
+/// same thing by each field.
+///
+/// The three input parts are disjoint and together make up the whole prompt.
+/// `None` always means the provider did not report the number, never zero.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Usage {
-    /// Number of input/prompt tokens consumed.
-    pub input_tokens: u32,
-    /// Number of output/completion tokens generated.
-    pub output_tokens: u32,
-    /// Tokens written to the prompt cache (Anthropic-specific).
-    pub cache_creation_tokens: Option<u32>,
-    /// Tokens read from the prompt cache.
+    /// Input tokens billed at the full input rate: neither read from nor written to the prompt cache.
+    pub uncached_input_tokens: Option<u32>,
+    /// Input tokens read from the prompt cache.
     pub cache_read_tokens: Option<u32>,
+    /// Input tokens written to the prompt cache, all TTLs.
+    pub cache_write_tokens: Option<u32>,
+    /// The part of `cache_write_tokens` written with a long (1 hour) TTL, when the provider reports the split.
+    pub cache_write_long_tokens: Option<u32>,
+    /// Output tokens generated, reasoning included.
+    pub output_tokens: Option<u32>,
+    /// The part of `output_tokens` spent on reasoning, when reported separately.
+    pub reasoning_tokens: Option<u32>,
+}
+
+impl Usage {
+    /// The whole prompt: uncached input plus cache reads plus cache writes.
+    ///
+    /// `None` only when the provider reported none of the three parts.
+    #[must_use]
+    pub fn total_input_tokens(&self) -> Option<u32> {
+        [
+            self.uncached_input_tokens,
+            self.cache_read_tokens,
+            self.cache_write_tokens,
+        ]
+        .into_iter()
+        .flatten()
+        .reduce(u32::saturating_add)
+    }
+}
+
+/// Uncached input for providers whose prompt count includes the cached part:
+/// the prompt minus cache reads and writes, `None` when the prompt count is
+/// missing.
+pub(crate) fn uncached_from_inclusive_prompt(
+    prompt_tokens: Option<u32>,
+    cache_read_tokens: Option<u32>,
+    cache_write_tokens: Option<u32>,
+) -> Option<u32> {
+    prompt_tokens.map(|prompt| {
+        prompt
+            .saturating_sub(cache_read_tokens.unwrap_or(0))
+            .saturating_sub(cache_write_tokens.unwrap_or(0))
+    })
 }
 
 /// Why a model response ended, normalized across providers. Each provider
@@ -772,6 +812,49 @@ pub trait InferenceProvider: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn total_input_sums_the_reported_parts() {
+        let usage = Usage {
+            uncached_input_tokens: Some(10),
+            cache_read_tokens: Some(200),
+            cache_write_tokens: Some(30),
+            ..Usage::default()
+        };
+        assert_eq!(usage.total_input_tokens(), Some(240));
+        let only_read = Usage {
+            cache_read_tokens: Some(5),
+            ..Usage::default()
+        };
+        assert_eq!(
+            only_read.total_input_tokens(),
+            Some(5),
+            "missing parts count as absent, not as unknown totals"
+        );
+        assert_eq!(
+            Usage::default().total_input_tokens(),
+            None,
+            "nothing reported means the total is unknown"
+        );
+    }
+
+    #[test]
+    fn uncached_from_inclusive_prompt_subtracts_cache_and_saturates() {
+        assert_eq!(
+            uncached_from_inclusive_prompt(Some(100), Some(30), Some(20)),
+            Some(50)
+        );
+        assert_eq!(
+            uncached_from_inclusive_prompt(Some(100), None, None),
+            Some(100)
+        );
+        assert_eq!(
+            uncached_from_inclusive_prompt(Some(10), Some(30), None),
+            Some(0),
+            "an inconsistent report saturates instead of wrapping"
+        );
+        assert_eq!(uncached_from_inclusive_prompt(None, Some(30), None), None);
+    }
 
     fn jane_in_channel() -> MessageSender {
         MessageSender {

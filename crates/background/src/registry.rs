@@ -831,10 +831,9 @@ mod tests {
 
     fn usage(input: u32, output: u32) -> residuum_inference::Usage {
         residuum_inference::Usage {
-            input_tokens: input,
-            output_tokens: output,
-            cache_creation_tokens: None,
-            cache_read_tokens: None,
+            uncached_input_tokens: Some(input),
+            output_tokens: Some(output),
+            ..Default::default()
         }
     }
 

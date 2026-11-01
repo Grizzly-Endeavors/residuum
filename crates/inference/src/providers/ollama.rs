@@ -11,7 +11,7 @@ use crate::http::{
 };
 use crate::reply::{ReplyAssembler, plain_reasoning};
 use crate::stream::{Flow, TrackedSink, read_ndjson};
-use crate::types::current_exchange_start;
+use crate::types::{current_exchange_start, uncached_from_inclusive_prompt};
 use crate::with_retry;
 use crate::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message, ProviderApi,
@@ -564,20 +564,27 @@ struct OllamaStreamChunk {
 /// The token counts Ollama reports when a response is done.
 #[derive(Deserialize, Default, Clone, Copy)]
 struct TokenCounts {
-    #[serde(default)]
-    prompt_eval_count: Option<u32>,
-    #[serde(default)]
-    eval_count: Option<u32>,
+    /// The whole prompt, the part reused from the KV cache included.
+    #[serde(default, rename = "prompt_eval_count")]
+    prompt: Option<u32>,
+    /// The part of the prompt reused from the KV cache.
+    #[serde(default, rename = "prompt_eval_cached_count")]
+    cached: Option<u32>,
+    #[serde(default, rename = "eval_count")]
+    generated: Option<u32>,
 }
 
 impl TokenCounts {
     fn usage(self) -> Option<Usage> {
-        (self.prompt_eval_count.is_some() || self.eval_count.is_some()).then(|| Usage {
-            input_tokens: self.prompt_eval_count.unwrap_or(0),
-            output_tokens: self.eval_count.unwrap_or(0),
-            cache_creation_tokens: None,
-            cache_read_tokens: None,
-        })
+        let usage = Usage {
+            uncached_input_tokens: uncached_from_inclusive_prompt(self.prompt, self.cached, None),
+            cache_read_tokens: self.cached,
+            cache_write_tokens: None,
+            cache_write_long_tokens: None,
+            output_tokens: self.generated,
+            reasoning_tokens: None,
+        };
+        (usage != Usage::default()).then_some(usage)
     }
 }
 
@@ -1868,6 +1875,7 @@ mod tests {
             "done": true,
             "done_reason": "stop",
             "prompt_eval_count": 26,
+            "prompt_eval_cached_count": 20,
             "eval_count": 12
         }))
     }
@@ -1905,6 +1913,7 @@ mod tests {
             "done": true,
             "done_reason": "stop",
             "prompt_eval_count": 26,
+            "prompt_eval_cached_count": 20,
             "eval_count": 12
         })
     }
@@ -1965,10 +1974,9 @@ mod tests {
             vec!["call_0", "call_1"],
             "calls from different chunks get ids by position"
         );
-        let usage = streamed.usage.unwrap();
         assert_eq!(
-            (usage.input_tokens, usage.output_tokens),
-            (26, 12),
+            streamed.usage,
+            Some(full_usage()),
             "usage comes from the final line's counts"
         );
         assert_eq!(
@@ -2207,11 +2215,49 @@ mod tests {
             .complete(&[Message::user("hi")], &[], &CompletionOptions::default())
             .await
             .unwrap();
-        let usage = response.usage.unwrap();
         assert_eq!(
-            (usage.input_tokens, usage.output_tokens),
-            (26, 12),
+            response.usage,
+            Some(full_usage()),
             "complete reports usage too"
+        );
+    }
+
+    /// The fixtures' counts: 20 of the 26 prompt tokens came from the KV
+    /// cache.
+    fn full_usage() -> Usage {
+        Usage {
+            uncached_input_tokens: Some(6),
+            cache_read_tokens: Some(20),
+            output_tokens: Some(12),
+            ..Usage::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_counts_stay_unknown() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "model": "m",
+                "message": {"role": "assistant", "content": "ok"},
+                "done": true,
+                "done_reason": "stop",
+                "eval_count": 2
+            })))
+            .mount(&server)
+            .await;
+        let response = make_client(server.uri(), "m")
+            .complete(&[Message::user("hi")], &[], &CompletionOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            response.usage,
+            Some(Usage {
+                output_tokens: Some(2),
+                ..Usage::default()
+            }),
+            "a missing prompt count is unknown, not zero"
         );
     }
 }

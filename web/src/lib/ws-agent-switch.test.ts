@@ -116,6 +116,8 @@ function installServer(): FakeServer {
         const tokens = agent === "scout" ? 111 : 222;
         return json({
           input_tokens: tokens,
+          cache_read_tokens: 0,
+          cache_write_tokens: 0,
           output_tokens: tokens,
           context_tokens: null,
           tool_calls: 0,

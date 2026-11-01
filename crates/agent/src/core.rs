@@ -759,10 +759,9 @@ mod tests {
                 content: "first".to_string(),
                 tool_calls: vec![],
                 usage: Some(residuum_inference::Usage {
-                    input_tokens: 100,
-                    output_tokens: 20,
-                    cache_creation_tokens: None,
-                    cache_read_tokens: None,
+                    uncached_input_tokens: Some(100),
+                    output_tokens: Some(20),
+                    ..Default::default()
                 }),
                 thinking: Vec::new(),
                 stop_reason: None,
@@ -773,10 +772,9 @@ mod tests {
                 content: "second".to_string(),
                 tool_calls: vec![],
                 usage: Some(residuum_inference::Usage {
-                    input_tokens: 150,
-                    output_tokens: 30,
-                    cache_creation_tokens: None,
-                    cache_read_tokens: None,
+                    uncached_input_tokens: Some(150),
+                    output_tokens: Some(30),
+                    ..Default::default()
                 }),
                 thinking: Vec::new(),
                 stop_reason: None,
@@ -849,10 +847,9 @@ mod tests {
 
         let mut restored = SessionUsageTotals::default();
         restored.accumulate(Some(residuum_inference::Usage {
-            input_tokens: 500,
-            output_tokens: 90,
-            cache_creation_tokens: None,
-            cache_read_tokens: None,
+            uncached_input_tokens: Some(500),
+            output_tokens: Some(90),
+            ..Default::default()
         }));
         agent.restore_usage_totals(restored).await;
 
