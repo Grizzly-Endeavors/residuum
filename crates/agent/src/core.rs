@@ -2690,22 +2690,17 @@ mod tests {
 
     #[tokio::test]
     async fn a_breakdown_that_cannot_be_saved_leaves_the_turn_alone() {
-        use crate::context::load_context_snapshot;
-
         let (mut agent, layout, _dir) = scripted_agent_with_workspace(vec![Ok(reply("one"))]).await;
-        tokio::fs::remove_dir_all(layout.memory_dir())
-            .await
-            .unwrap();
+        // A directory where the file goes: the rename into place fails.
+        let path = layout.context_breakdown_json();
+        tokio::fs::create_dir(&path).await.unwrap();
 
         let replies = send(&mut agent, "hi", "t1", &[]).await.unwrap();
 
         assert_eq!(replies, ["one"], "the turn answers as usual");
-        assert_eq!(
-            load_context_snapshot(&layout.context_breakdown_json())
-                .await
-                .unwrap(),
-            None,
-            "with nowhere to write, nothing is saved"
+        assert!(
+            tokio::fs::metadata(&path).await.unwrap().is_dir(),
+            "nothing replaced what was in the way"
         );
     }
 
