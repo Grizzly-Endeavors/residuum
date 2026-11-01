@@ -629,13 +629,14 @@ mod tests {
     #[tokio::test]
     async fn an_empty_answer_cut_off_by_the_output_limit_is_a_failed_evaluation() {
         let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
         let sub = Subconscious::new(
             Box::new(ReasonedOutOfTokens),
             SubconsciousConfig {
                 enabled: true,
                 ..SubconsciousConfig::default()
             },
-            WorkspaceLayout::new(dir.path()),
+            layout.clone(),
         );
 
         let error = sub
@@ -646,6 +647,19 @@ mod tests {
         assert!(
             error.to_string().contains("output limit before answering"),
             "the error names the cause: {error}"
+        );
+        let records = UsageRecorder::new(&layout)
+            .load(
+                chrono::DateTime::<chrono::Utc>::MIN_UTC,
+                chrono::DateTime::<chrono::Utc>::MAX_UTC,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            records.len(),
+            1,
+            "the call that spent its limit reasoning is still recorded"
         );
     }
 
