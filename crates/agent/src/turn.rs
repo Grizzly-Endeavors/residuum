@@ -695,12 +695,17 @@ async fn publish_stream_pieces(
     }
 }
 
-/// The request one model call sends: the messages, and the tool definitions
-/// built-in tools first, then MCP tools.
+/// The request one model call sends: the messages, the tool definitions
+/// (built-in tools first, then MCP tools), and the call's options.
 #[derive(Debug)]
 pub struct ModelRequest {
+    /// The system prompt, carrying its cache boundary, then the
+    /// conversation with each stored status line ahead of its message.
     pub messages: Vec<Message>,
     pub tools: Vec<ToolDefinition>,
+    /// The turn's options, whose cache hints name the conversation and how
+    /// long this turn's cached prefix should be kept.
+    pub options: CompletionOptions,
 }
 
 /// Build the request a model call sends from the turn's current state.
@@ -711,6 +716,13 @@ pub struct ModelRequest {
 /// time to pick up MCP changes. Identity is a snapshot taken at turn entry
 /// (reloaded from disk each turn), so mid-turn identity-file edits apply on
 /// the next turn.
+///
+/// Everything a provider caches on comes from here: the system prompt's
+/// cache boundary (set by its builder), the stored status lines, the tool
+/// order, and `options`' cache hints. The conversation key in those hints is
+/// set where the conversation's options are made (the main agent's at
+/// startup, a session's when its run starts), and the main agent sets each
+/// turn's retention from who started the turn.
 pub(crate) async fn build_model_request(
     identity: &IdentityFiles,
     recent_messages: &RecentMessages,
@@ -718,6 +730,7 @@ pub(crate) async fn build_model_request(
     prompt_ctx: &PromptContext<'_>,
     tools: &ToolRegistry,
     mcp_registry: &SharedMcpRegistry,
+    options: &CompletionOptions,
 ) -> ModelRequest {
     let mut tool_definitions = tools.definitions();
 
@@ -735,6 +748,7 @@ pub(crate) async fn build_model_request(
     ModelRequest {
         messages,
         tools: tool_definitions,
+        options: options.clone(),
     }
 }
 
@@ -751,8 +765,7 @@ pub(crate) async fn build_model_request(
 async fn call_model(
     resources: &TurnResources<'_>,
     events: &EventContext<'_>,
-    messages: &[Message],
-    tool_definitions: &[ToolDefinition],
+    request: &ModelRequest,
     call: u32,
 ) -> anyhow::Result<ModelCall> {
     let (channel_sink, mut deltas) = ChannelSink::channel();
@@ -761,11 +774,13 @@ async fn call_model(
     } else {
         &DiscardSink
     };
-    let request =
-        resources
-            .provider
-            .complete_streaming(messages, tool_definitions, resources.options, sink);
-    tokio::pin!(request);
+    let completion = resources.provider.complete_streaming(
+        &request.messages,
+        &request.tools,
+        &request.options,
+        sink,
+    );
+    tokio::pin!(completion);
 
     let mut coalescer = DeltaCoalescer::default();
     let mut streamed = false;
@@ -781,7 +796,7 @@ async fn call_model(
             () = sleep_until_deadline(flush_at) => {
                 publish_stream_pieces(events, call, coalescer.take_pending(), &mut streamed).await;
             }
-            result = &mut request => break Some(result),
+            result = &mut completion => break Some(result),
         }
     };
 
@@ -898,10 +913,11 @@ async fn request_model_response(
         prompt_ctx,
         resources.tools,
         resources.mcp_registry,
+        resources.options,
     )
     .await;
 
-    match call_model(resources, events, &request.messages, &request.tools, call).await? {
+    match call_model(resources, events, &request, call).await? {
         ModelCall::Completed { response, streamed } => Ok(Some((response, streamed))),
         ModelCall::Stopped => {
             tracing::info!(iterations = call, "turn stopped by user during model call");
@@ -1822,6 +1838,50 @@ mod tests {
     use residuum_inference::Role;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex as StdMutex};
+
+    #[tokio::test]
+    async fn the_built_request_carries_everything_a_provider_caches_on() {
+        let mut recent_messages = RecentMessages::new();
+        let mut stamped = Message::user("hi");
+        stamped.status_line = Some("[Received: Mon 9:00]".to_string());
+        recent_messages.push(stamped);
+        let options = CompletionOptions {
+            cache: residuum_inference::CacheHints {
+                conversation_key: Some("main-conversation".to_string()),
+                retention: residuum_inference::CacheRetention::Long,
+            },
+            ..CompletionOptions::default()
+        };
+        let inputs = crate::testing::RequestInputs {
+            recent_messages,
+            options,
+            ..crate::testing::RequestInputs::default()
+        };
+
+        let request = crate::testing::render_model_request(&inputs, &ToolRegistry::new()).await;
+
+        assert_eq!(
+            request.options.cache, inputs.options.cache,
+            "the call is sent the turn's cache hints"
+        );
+        let system = request.messages.first().unwrap();
+        assert_eq!(system.role, Role::System);
+        assert!(
+            system.cache_boundary.is_some(),
+            "the system prompt carries its cache boundary"
+        );
+        let rest: Vec<(Role, &str)> = request
+            .messages
+            .iter()
+            .skip(1)
+            .map(|m| (m.role, m.content.as_str()))
+            .collect();
+        assert_eq!(
+            rest,
+            [(Role::System, "[Received: Mon 9:00]"), (Role::User, "hi")],
+            "the stored status line goes just ahead of its message"
+        );
+    }
 
     /// Counts the replies it is told went out.
     #[derive(Default)]

@@ -17,7 +17,7 @@ use super::context::{MemoryContext, PromptContext, SkillsContext};
 use super::recent_messages::RecentMessages;
 use super::tool::ToolRegistry;
 use super::turn::{ModelRequest, build_model_request};
-use residuum_inference::{ToolDefinition, ToolError, ToolResult};
+use residuum_inference::{CompletionOptions, ToolDefinition, ToolError, ToolResult};
 
 /// The inputs one model request is assembled from. `Default` is an agent
 /// with no identity files, no history, no memory, no skills and no MCP
@@ -37,6 +37,8 @@ pub struct RequestInputs {
     /// The MCP registry whose tools join the request; `None` means no MCP
     /// servers are connected.
     pub mcp: Option<SharedMcpRegistry>,
+    /// The turn's options, cache hints included.
+    pub options: CompletionOptions,
 }
 
 /// Render the request a turn would send for `inputs` and `tools`, through the
@@ -65,6 +67,7 @@ pub async fn render_model_request(inputs: &RequestInputs, tools: &ToolRegistry) 
         &prompt_ctx,
         tools,
         &mcp,
+        &inputs.options,
     )
     .await
 }
