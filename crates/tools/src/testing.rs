@@ -282,6 +282,7 @@ impl RegistryHarness {
             "test",
             residuum_config::AutoModeConfig::default(),
             residuum_inference::system_one::SystemOneService::new(None),
+            residuum_inference::UsageRecorder::new(&self.layout),
         );
         let model_catalog = residuum_config::ModelCatalog::default().into_shared();
         let deps = crate::main_tools::ToolRegistryDeps {
