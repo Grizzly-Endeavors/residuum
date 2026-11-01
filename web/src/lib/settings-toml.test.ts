@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  type ConfigFields,
   defaultConfigFields,
   defaultModels,
   diffConfigFields,
@@ -137,6 +138,90 @@ describe("diffConfigFields", () => {
       ],
     };
     expect(diffConfigFields(baseline, current)).toEqual({ webhooks: { gh: { routing: "queue" } } });
+  });
+});
+
+describe("hub pricing table", () => {
+  const sonnet = {
+    name: "anthropic/claude-sonnet-5-5",
+    input: "3",
+    output: "15",
+    cache_read: "0.3",
+    cache_write: "3.75",
+    cache_write_long: "6",
+  };
+  function withPrice(price: typeof sonnet): ConfigFields {
+    return { ...defaultConfigFields(), pricing: [price] };
+  }
+
+  it("reads each [pricing] entry, keyed by provider/model, as text rates", () => {
+    const raw = [
+      '[pricing."anthropic/claude-sonnet-5-5"]',
+      "input = 3",
+      "output = 15",
+      "cache_read = 0.3",
+      "cache_write = 3.75",
+      "cache_write_long = 6",
+    ].join("\n");
+    expect(parseConfigToml("", raw).pricing).toEqual([sonnet]);
+  });
+
+  it("writes a new price as all five rates", () => {
+    const current = withPrice(sonnet);
+    expect(diffConfigFields(defaultConfigFields(), current)).toEqual({
+      pricing: {
+        [sonnet.name]: {
+          input: 3,
+          output: 15,
+          cache_read: 0.3,
+          cache_write: 3.75,
+          cache_write_long: 6,
+        },
+      },
+    });
+  });
+
+  it("writes every rate of a changed price, so the entry on disk is never mixed", () => {
+    const current = withPrice({ ...sonnet, output: "16" });
+    expect(diffConfigFields(withPrice(sonnet), current)).toEqual({
+      pricing: {
+        [sonnet.name]: {
+          input: 3,
+          output: 16,
+          cache_read: 0.3,
+          cache_write: 3.75,
+          cache_write_long: 6,
+        },
+      },
+    });
+  });
+
+  it("removes a deleted price by name", () => {
+    expect(diffConfigFields(withPrice(sonnet), defaultConfigFields())).toEqual({
+      pricing: { [sonnet.name]: null },
+    });
+  });
+
+  it("sends an empty or negative rate as a removal, so the hub refuses the incomplete row", () => {
+    const current = withPrice({ ...sonnet, input: "", cache_read: "-1" });
+    const entry = (
+      diffConfigFields(defaultConfigFields(), current).pricing as Record<
+        string,
+        Record<string, unknown>
+      >
+    )[sonnet.name];
+    expect(entry).toMatchObject({ input: null, cache_read: null, output: 15 });
+  });
+
+  it("leaves pricing out of the patch when nothing changed", () => {
+    expect(diffConfigFields(withPrice(sonnet), withPrice(sonnet))).toEqual({});
+  });
+
+  it("saves pricing to the hub's config, never the agent's", () => {
+    const patch = diffConfigFields(defaultConfigFields(), withPrice(sonnet));
+    expect(configFieldOwner(["pricing"])).toBe("hub");
+    expect(splitConfigPatch(patch).agent).toEqual({});
+    expect(Object.keys(splitConfigPatch(patch).hub)).toEqual(["pricing"]);
   });
 });
 

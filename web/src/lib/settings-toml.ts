@@ -38,6 +38,27 @@ export interface WebhookFormEntry {
   content_fields: string;
 }
 
+/** The five rates of a `[pricing]` entry, in the order the Settings form shows them. */
+export const PRICE_RATES = [
+  "input",
+  "output",
+  "cache_read",
+  "cache_write",
+  "cache_write_long",
+] as const;
+
+export type PriceRate = (typeof PRICE_RATES)[number];
+
+/** One `[pricing."provider/model"]` override. The rates are text, as every form keeps numbers. */
+export interface PriceFormEntry {
+  name: string;
+  input: string;
+  output: string;
+  cache_read: string;
+  cache_write: string;
+  cache_write_long: string;
+}
+
 export interface ConfigFields {
   timezone: string;
   timeout_secs: string;
@@ -117,6 +138,8 @@ export interface ConfigFields {
   a2a_public_url: string;
   a2a_visibility: string;
   webhooks: WebhookFormEntry[];
+  // hub pricing, for estimated costs
+  pricing: PriceFormEntry[];
   // cloud
   cloud_enabled: boolean;
   cloud_token: string;
@@ -223,6 +246,7 @@ export function defaultConfigFields(): ConfigFields {
     a2a_public_url: "",
     a2a_visibility: "",
     webhooks: [],
+    pricing: [],
     cloud_enabled: true,
     cloud_token: "",
     cloud_relay_url: "",
@@ -447,6 +471,20 @@ export function parseConfigToml(raw: string, hubRaw = ""): ConfigFields {
         content_fields: Array.isArray(entry.content_fields)
           ? (entry.content_fields as string[]).join(", ")
           : "",
+      });
+    }
+  }
+
+  const pricing = doc.pricing as Record<string, Record<string, unknown>> | undefined;
+  if (pricing) {
+    for (const [name, entry] of Object.entries(pricing)) {
+      fields.pricing.push({
+        name,
+        input: str(entry.input),
+        output: str(entry.output),
+        cache_read: str(entry.cache_read),
+        cache_write: str(entry.cache_write),
+        cache_write_long: str(entry.cache_write_long),
       });
     }
   }
@@ -1147,6 +1185,23 @@ function diffNamedCollection<T extends { name: string }>(
 }
 
 /**
+ * A rate as the price it saves: null while the box is empty, and for a value
+ * that isn't a finite price of 0 or more. A null in the patch removes the key,
+ * so an entry left incomplete is refused by the hub's validation rather than
+ * saved with an old rate still in it.
+ */
+function priceRate(raw: string): number | null {
+  const trimmed = raw.trim();
+  if (trimmed === "") return null;
+  const value = Number(trimmed);
+  return Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function priceToJson(entry: PriceFormEntry): Record<string, unknown> {
+  return Object.fromEntries(PRICE_RATES.map((rate) => [rate, priceRate(entry[rate])]));
+}
+
+/**
  * Diff two `ConfigFields` snapshots into the JSON patch shape
  * `PATCH /api/config/patch` expects — only fields that actually changed.
  */
@@ -1170,6 +1225,15 @@ export function diffConfigFields(
   );
   if (touched) patch.webhooks = webhooksPatch;
 
+  // A changed price writes all five rates, so the entry on disk is never a mix of old and new.
+  const { patch: pricingPatch, touched: pricingTouched } = diffNamedCollection(
+    baseline.pricing,
+    current.pricing,
+    priceToJson,
+    (base, entry) => (jsonEqual(priceToJson(base), priceToJson(entry)) ? {} : priceToJson(entry)),
+  );
+  if (pricingTouched) patch.pricing = pricingPatch;
+
   return patch;
 }
 
@@ -1183,6 +1247,7 @@ const HUB_SECTIONS: ReadonlySet<string> = new Set([
   "push",
   "system_one",
   "tracing",
+  "pricing",
 ]);
 
 /** Keys of shared sections (`[a2a]`, `[background]`) that live in the hub's `config.toml`. */
