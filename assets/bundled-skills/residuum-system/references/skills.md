@@ -66,7 +66,7 @@ Detailed instructions, workflows, and reference material.
 
 - **Activation** reads the SKILL.md body from disk and adds it to the active skill list. The body persists in the system prompt until deactivated.
 - **Deactivation** removes the body from the prompt.
-- **Rescan** re-reads all skill directories. It runs on config reload and before each `skill_activate`, so a newly written skill can be activated without a reload. Active skills whose source files no longer exist are removed; the removal is reported once, on the notification channel and, for `skill_activate`, in its result. Each rescan publishes its notices (an unreadable directory, a skill skipped for invalid frontmatter, a skill with an oversized description).
+- **Rescan** re-reads all skill directories. It runs on config reload and before each `skill_activate`, so a newly written skill can be activated without a reload. Active skills whose source files no longer exist are removed; the removal is reported once, on the notification channel and, for `skill_activate`, in its result. Startup and each config reload publish every notice the scan produces (an unreadable directory, a skill skipped for invalid frontmatter, a skill with an oversized description). `skill_activate` publishes only the notices that are new since the last scan, and a failed `skill_activate` names those new notices in its result.
 - Skill lookup is **case-insensitive** by name.
 
 ## Gotchas

@@ -68,8 +68,7 @@ impl Tool for SkillActivateTool {
 
         // Rescan before activating, so a skill authored since startup can be
         // activated and an active skill whose files were removed is dropped,
-        // without a config reload. The notices go out after the lock is
-        // released.
+        // without a config reload. The lock is released before publishing.
         let (activation, report) = {
             let mut state = self.state.lock().await;
             let report = match state.rescan().await {
@@ -81,12 +80,17 @@ impl Tool for SkillActivateTool {
             let activation = state.activate(name).await.map(|active| active.name.clone());
             (activation, report)
         };
-        for message in report.messages() {
-            publish_notice(self.publisher.as_ref(), message.to_owned()).await;
+
+        // A dropped skill is new by construction: the rescan removes it from
+        // the active list. A notice is published only when the rescan reports
+        // it as new, so one that persists is not repeated on every activation.
+        for message in report.dropped.iter().chain(&report.new_notices) {
+            publish_notice(self.publisher.as_ref(), message.clone()).await;
         }
 
-        // A skill the rescan dropped is named in the result as well as
-        // published: the agent is the one that was relying on it.
+        // The agent is the one relying on a dropped skill, so the result names
+        // it. A failed activation also names the new notices, so an agent that
+        // just wrote a skill learns why it is not loadable.
         let (is_error, mut output) = match activation {
             Ok(skill_name) => (false, format!("Activated skill '{skill_name}'.")),
             Err(e) => (true, e.to_string()),
@@ -94,6 +98,12 @@ impl Tool for SkillActivateTool {
         for dropped in &report.dropped {
             output.push('\n');
             output.push_str(dropped);
+        }
+        if is_error {
+            for notice in &report.new_notices {
+                output.push('\n');
+                output.push_str(notice);
+            }
         }
         Ok(if is_error {
             ToolResult::error(output)
@@ -364,17 +374,42 @@ mod tests {
         );
     }
 
+    /// Publish a sentinel and return the notices received before it. The bus
+    /// delivers one channel's messages in the order they were sent, so these
+    /// are the notices published since the previous call.
+    async fn notices_since_last_call(
+        publisher: &residuum_bus::Publisher,
+        notices: &mut residuum_bus::Subscriber<residuum_bus::NoticeEvent>,
+    ) -> Vec<String> {
+        const SENTINEL: &str = "sentinel";
+        residuum_bus::notice::publish_notice(publisher, SENTINEL.to_string()).await;
+        let mut messages = Vec::new();
+        loop {
+            let notice = notices
+                .recv()
+                .await
+                .unwrap()
+                .expect("the sentinel notice is delivered");
+            if notice.message == SENTINEL {
+                return messages;
+            }
+            messages.push(notice.message);
+        }
+    }
+
     #[tokio::test]
-    async fn activate_publishes_the_notices_its_rescan_produced() {
+    async fn activate_publishes_a_notice_once_when_it_is_new() {
         use residuum_bus::{NoticeEvent, NotifyName, SYSTEM_CHANNEL, topics};
 
         let dir = tempfile::tempdir().unwrap();
-        write_skill(
-            dir.path(),
-            "good-skill",
-            "---\nname: good-skill\ndescription: \"Valid\"\n---\n\nGood body.\n",
-        )
-        .await;
+        for name in ["first-skill", "second-skill", "third-skill"] {
+            write_skill(
+                dir.path(),
+                name,
+                &format!("---\nname: {name}\ndescription: \"Valid\"\n---\n\nBody.\n"),
+            )
+            .await;
+        }
         write_skill(dir.path(), "bad-skill", "---\n: invalid [[\n---\n").await;
         let state = Arc::new(tokio::sync::Mutex::new(SkillState::new(
             SkillIndex::default(),
@@ -386,23 +421,80 @@ mod tests {
             .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
             .await
             .unwrap();
+        let publisher = bus.publisher();
         let tool = SkillActivateTool::new(Arc::clone(&state)).with_publisher(bus.publisher());
 
-        let result = tool
-            .execute(serde_json::json!({"name": "good-skill"}))
+        // The first rescan finds the broken skill for the first time.
+        let activated = tool
+            .execute(serde_json::json!({"name": "first-skill"}))
             .await
             .unwrap();
-        assert!(!result.is_error, "{}", result.output);
-
-        let notice = notices
-            .recv()
-            .await
-            .unwrap()
-            .expect("a notice was published for the skipped skill");
+        assert!(!activated.is_error, "{}", activated.output);
+        let first = notices_since_last_call(&publisher, &mut notices).await;
+        assert_eq!(
+            first.len(),
+            1,
+            "one notice for the new broken skill: {first:?}"
+        );
         assert!(
-            notice.message.contains("bad-skill"),
-            "the notice should name the skipped skill: {}",
-            notice.message
+            first.first().is_some_and(|m| m.contains("bad-skill")),
+            "the notice should name the broken skill: {first:?}"
+        );
+
+        // A later rescan reports the same broken skill, which is not repeated.
+        let second_activation = tool
+            .execute(serde_json::json!({"name": "second-skill"}))
+            .await
+            .unwrap();
+        assert!(!second_activation.is_error, "{}", second_activation.output);
+        let second = notices_since_last_call(&publisher, &mut notices).await;
+        assert!(
+            second.is_empty(),
+            "a notice that persists is not published again: {second:?}"
+        );
+
+        // A skill that breaks after startup is new, so it is published once.
+        write_skill(dir.path(), "worse-skill", "---\n: broken [[\n---\n").await;
+        let third_activation = tool
+            .execute(serde_json::json!({"name": "third-skill"}))
+            .await
+            .unwrap();
+        assert!(!third_activation.is_error, "{}", third_activation.output);
+        let third = notices_since_last_call(&publisher, &mut notices).await;
+        assert_eq!(third.len(), 1, "only the new broken skill: {third:?}");
+        assert!(
+            third.first().is_some_and(|m| m.contains("worse-skill")),
+            "the notice should name the new broken skill: {third:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_activation_names_the_skipped_skill_in_its_result() {
+        let dir = tempfile::tempdir().unwrap();
+        write_skill(dir.path(), "bad-skill", "---\n: invalid [[\n---\n").await;
+        let state = Arc::new(tokio::sync::Mutex::new(SkillState::new(
+            SkillIndex::default(),
+            vec![SkillDir::agent(dir.path())],
+        )));
+
+        let result = SkillActivateTool::new(Arc::clone(&state))
+            .execute(serde_json::json!({"name": "bad-skill"}))
+            .await
+            .unwrap();
+        assert!(
+            result.is_error,
+            "a skipped skill is not active: {}",
+            result.output
+        );
+        assert!(
+            result.output.contains("skipped skill at"),
+            "the failed activation should carry the rescan's notice: {}",
+            result.output
+        );
+        assert!(
+            result.output.contains("bad-skill"),
+            "the notice should name the skipped skill's file: {}",
+            result.output
         );
     }
 }

@@ -14,6 +14,10 @@ pub struct SkillState {
     index: SkillIndex,
     active: Vec<ActiveSkill>,
     dirs: Vec<SkillDir>,
+    /// The notices the owner has been shown: those of the scan that built the
+    /// index, then those of each rescan. A rescan reports as new only the
+    /// notices missing from this list.
+    published_notices: Vec<String>,
 }
 
 /// What a rescan reports to the user.
@@ -22,9 +26,13 @@ pub struct RescanReport {
     /// Active skills this rescan deactivated, one line each. A dropped skill
     /// is reported once, because the rescan removes it from the active list.
     pub dropped: Vec<String>,
-    /// Problems with skill directories and skills that are still indexed.
-    /// These repeat on every rescan until they are fixed.
+    /// Problems with skill directories and skills that are still indexed,
+    /// as this scan found them. A notice that persists repeats here on every
+    /// rescan until it is fixed.
     pub notices: Vec<String>,
+    /// The notices in `notices` that the previous scan did not produce. A
+    /// notice that persists is new only the first time it appears.
+    pub new_notices: Vec<String>,
 }
 
 impl RescanReport {
@@ -34,11 +42,29 @@ impl RescanReport {
     }
 }
 
+/// The notices a scan of `index` produced: each skipped directory, then the
+/// index's own notices.
+fn scan_notices(index: &SkillIndex) -> Vec<String> {
+    index
+        .skipped_dirs()
+        .iter()
+        .map(|(dir, err)| {
+            format!(
+                "Skipped your skills directory \"{}\" — it couldn't be read ({err}). Skills in your other directories were still rescanned.",
+                dir.display()
+            )
+        })
+        .chain(index.notices().iter().cloned())
+        .collect()
+}
+
 impl SkillState {
-    /// Create a new skill state with a pre-built index.
+    /// Create a new skill state with a pre-built index. The index's notices
+    /// count as shown, because whoever built the index reports them.
     #[must_use]
     pub fn new(index: SkillIndex, dirs: Vec<SkillDir>) -> Self {
         Self {
+            published_notices: scan_notices(&index),
             index,
             active: Vec::new(),
             dirs,
@@ -122,8 +148,8 @@ impl SkillState {
     ///
     /// The report names every skill this rescan deactivated and carries the
     /// notices for directories that couldn't be read and skills that loaded
-    /// with a notice or were skipped. Callers publish its messages so they
-    /// reach the user.
+    /// with a notice or were skipped, with the ones this state has not shown
+    /// before marked as new. Callers choose what to publish from it.
     ///
     /// # Errors
     /// Returns an error if scanning fails.
@@ -206,16 +232,18 @@ impl SkillState {
         }
         self.active = still_active;
 
-        let skipped = self.index.skipped_dirs().iter().map(|(dir, err)| {
-            format!(
-                "Skipped your skills directory \"{}\" — it couldn't be read ({err}). Skills in your other directories were still rescanned.",
-                dir.display()
-            )
-        });
-        let notices = skipped
-            .chain(self.index.notices().iter().cloned())
+        let notices = scan_notices(&self.index);
+        let new_notices = notices
+            .iter()
+            .filter(|notice| !self.published_notices.contains(notice))
+            .cloned()
             .collect();
-        Ok(RescanReport { dropped, notices })
+        self.published_notices.clone_from(&notices);
+        Ok(RescanReport {
+            dropped,
+            notices,
+            new_notices,
+        })
     }
 
     /// Format the skill index for the system prompt.
@@ -493,6 +521,72 @@ mod tests {
         assert!(
             report.dropped.is_empty(),
             "no skill was active, so none was dropped"
+        );
+    }
+
+    #[tokio::test]
+    async fn rescan_marks_a_notice_new_only_when_it_first_appears() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill_dir = dir.path().join("flaky-skill");
+        tokio::fs::create_dir(&skill_dir).await.unwrap();
+        let broken = "---\n: invalid [[\n---\n";
+        let valid = "---\nname: flaky-skill\ndescription: \"Valid\"\n---\n\nBody.\n";
+        tokio::fs::write(skill_dir.join("SKILL.md"), broken)
+            .await
+            .unwrap();
+
+        let mut state = SkillState::new(SkillIndex::default(), vec![SkillDir::agent(dir.path())]);
+
+        let first = state.rescan().await.unwrap();
+        assert_eq!(first.notices.len(), 1, "one skipped skill: {first:?}");
+        assert_eq!(
+            first.new_notices, first.notices,
+            "a notice the state has not shown is new"
+        );
+
+        let repeat = state.rescan().await.unwrap();
+        assert_eq!(repeat.notices.len(), 1, "the notice persists: {repeat:?}");
+        assert!(
+            repeat.new_notices.is_empty(),
+            "a notice that persists is not new: {repeat:?}"
+        );
+
+        tokio::fs::write(skill_dir.join("SKILL.md"), valid)
+            .await
+            .unwrap();
+        let fixed = state.rescan().await.unwrap();
+        assert!(fixed.notices.is_empty(), "the skill is fixed: {fixed:?}");
+
+        tokio::fs::write(skill_dir.join("SKILL.md"), broken)
+            .await
+            .unwrap();
+        let broken_again = state.rescan().await.unwrap();
+        assert_eq!(
+            broken_again.new_notices.len(),
+            1,
+            "a notice that reappears after a fix is new again: {broken_again:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rescan_does_not_mark_the_notices_of_the_index_it_was_built_from_as_new() {
+        let dir = tempfile::tempdir().unwrap();
+        let bad_dir = dir.path().join("bad-skill");
+        tokio::fs::create_dir(&bad_dir).await.unwrap();
+        tokio::fs::write(bad_dir.join("SKILL.md"), "---\n: invalid [[\n---\n")
+            .await
+            .unwrap();
+
+        let index = SkillIndex::scan(&[SkillDir::agent(dir.path())])
+            .await
+            .unwrap();
+        let mut state = SkillState::new(index, vec![SkillDir::agent(dir.path())]);
+
+        let report = state.rescan().await.unwrap();
+        assert_eq!(report.notices.len(), 1, "one skipped skill: {report:?}");
+        assert!(
+            report.new_notices.is_empty(),
+            "the owner of the index already has its notice: {report:?}"
         );
     }
 
