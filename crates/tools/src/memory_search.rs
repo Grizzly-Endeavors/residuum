@@ -242,9 +242,10 @@ mod tests {
     #[test]
     fn definition_states_the_limit_maximum() {
         let (_dir, tool) = create_test_tool();
+        let parameters = tool.definition().parameters;
         assert_eq!(
-            tool.definition().parameters["properties"]["limit"]["maximum"],
-            serde_json::json!(MAX_LIMIT)
+            parameters.pointer("/properties/limit/maximum"),
+            Some(&serde_json::json!(MAX_LIMIT))
         );
     }
 

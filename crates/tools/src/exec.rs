@@ -957,7 +957,11 @@ mod tests {
 
     #[test]
     fn shown_streams_keep_only_the_head_of_stdout_on_success() {
-        let stdout = captured(&[b'h'; MAX_OUTPUT_BYTES], 5_000, &[b't'; MAX_OUTPUT_BYTES]);
+        let stdout = captured(
+            &vec![b'h'; MAX_OUTPUT_BYTES],
+            5_000,
+            &vec![b't'; MAX_OUTPUT_BYTES],
+        );
         let (shown, _) = shown_streams(&stdout, &Captured::default(), false);
         assert!(shown.starts_with('h'));
         assert!(
@@ -969,7 +973,11 @@ mod tests {
 
     #[test]
     fn shown_streams_keep_the_tail_of_stdout_when_the_command_fails() {
-        let stdout = captured(&[b'h'; MAX_OUTPUT_BYTES], 5_000, &[b't'; MAX_OUTPUT_BYTES]);
+        let stdout = captured(
+            &vec![b'h'; MAX_OUTPUT_BYTES],
+            5_000,
+            &vec![b't'; MAX_OUTPUT_BYTES],
+        );
         let (shown, _) = shown_streams(&stdout, &Captured::default(), true);
         assert!(shown.starts_with('h'));
         assert!(shown.ends_with('t'));
@@ -978,7 +986,11 @@ mod tests {
 
     #[test]
     fn shown_streams_keep_the_tail_of_stderr_and_stay_within_the_cap() {
-        let stdout = captured(&[b'h'; MAX_OUTPUT_BYTES], 9_000, &[b't'; MAX_OUTPUT_BYTES]);
+        let stdout = captured(
+            &vec![b'h'; MAX_OUTPUT_BYTES],
+            9_000,
+            &vec![b't'; MAX_OUTPUT_BYTES],
+        );
         let stderr = captured(b"", 1_000, b"final error\n");
         for failed in [false, true] {
             let (stdout_text, stderr_text) = shown_streams(&stdout, &stderr, failed);

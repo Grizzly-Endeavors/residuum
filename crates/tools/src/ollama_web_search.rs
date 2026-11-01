@@ -296,8 +296,8 @@ mod tests {
         let tool = OllamaWebSearchTool::new("key".into(), "http://localhost".into());
         let schema = tool.definition().parameters;
         assert_eq!(
-            schema["properties"]["max_results"]["maximum"],
-            serde_json::json!(MAX_RESULTS),
+            schema.pointer("/properties/max_results/maximum"),
+            Some(&serde_json::json!(MAX_RESULTS)),
             "schema should carry the maximum"
         );
     }
