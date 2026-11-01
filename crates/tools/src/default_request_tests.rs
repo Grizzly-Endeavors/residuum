@@ -218,10 +218,10 @@ async fn a_skill_rescan_that_finds_nothing_new_keeps_the_request_prefix() {
     state.activate(&active).await.unwrap();
 
     let identity = IdentityFiles::load(&layout).await.unwrap();
-    let inputs_of = |state: &SkillState| RequestInputs {
+    let inputs_of = |skills: &SkillState| RequestInputs {
         identity: identity.clone(),
-        skills_index: Some(state.format_index_for_prompt()),
-        active_skills: state.format_active_for_prompt(),
+        skills_index: Some(skills.format_index_for_prompt()),
+        active_skills: skills.format_active_for_prompt(),
         ..RequestInputs::default()
     };
     let tools = ToolRegistry::new();
