@@ -2385,6 +2385,7 @@ mod tests {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
+        let usage_dir = tempfile::tempdir().unwrap();
         let server = MockServer::start().await;
         if let Some(p) = probability {
             Mock::given(method("POST"))
@@ -2420,6 +2421,9 @@ mod tests {
                 threshold: 0.5,
             },
             service,
+            residuum_inference::UsageRecorder::new(&residuum_config::WorkspaceLayout::new(
+                usage_dir.path(),
+            )),
         );
 
         let runs = Arc::new(AtomicUsize::new(0));
