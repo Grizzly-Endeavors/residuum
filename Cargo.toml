@@ -64,9 +64,14 @@ thiserror = "2"
 
 # HTML content extraction
 dom_smoothie = "0.15"
+# Decodes HTML entities in text extracted from pages. Pinned to the 0.2 line that
+# dom_smoothie already resolves, so the lock gains no second copy.
+html-escape = "0.2"
 
 # Encoding
 base64 = "0.22"
+# Decodes page bodies in the charset their Content-Type declares (already resolved by reqwest).
+encoding_rs = "0.8"
 
 # Temp file management (used by bug-report editor mode)
 tempfile = "3"
