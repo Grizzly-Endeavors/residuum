@@ -3,7 +3,7 @@
 //! Tracks which MCP servers are running, manages live `McpClient` handles,
 //! and exposes discovered tools to the agent's tool loop.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -92,7 +92,10 @@ pub struct McpReconcileReport {
 
 /// Registry tracking MCP server lifecycle state and live client handles.
 pub struct McpRegistry {
-    servers: Vec<TrackedServer>,
+    /// Tracked servers keyed by name. Name order is the order everything else
+    /// sees: tool definitions, which server wins a tool-name collision, and
+    /// where a restarted server sits, none of which depend on connect order.
+    servers: BTreeMap<String, TrackedServer>,
     /// Effective `PATH` handle prepended to stdio servers' `PATH` at spawn.
     ///
     /// `None` in bare registries (tests); the gateway injects the configured
@@ -117,7 +120,7 @@ pub struct McpRegistry {
     /// reachable. Set once by the gateway after the tool registry is built via
     /// [`set_reserved_tool_names`](Self::set_reserved_tool_names); empty in
     /// bare registries (tests). See `crates/mcp/src/CLAUDE.md` for the full policy.
-    reserved_tool_names: HashSet<String>,
+    reserved_tool_names: BTreeSet<String>,
     /// The agent's workspace root, passed to every spawned stdio server as
     /// its `current_dir` (see [`McpClient::connect`]) instead of the
     /// process's current directory, which is shared across every agent
@@ -137,11 +140,11 @@ impl McpRegistry {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            servers: Vec::new(),
+            servers: BTreeMap::new(),
             tools_path: None,
             agent_keys: None,
             secrets_dir: None,
-            reserved_tool_names: HashSet::new(),
+            reserved_tool_names: BTreeSet::new(),
             workspace_root: None,
         }
     }
@@ -165,11 +168,11 @@ impl McpRegistry {
         workspace_root: PathBuf,
     ) -> SharedMcpRegistry {
         Arc::new(RwLock::new(Self {
-            servers: Vec::new(),
+            servers: BTreeMap::new(),
             tools_path: Some(tools_path),
             agent_keys: Some(agent_keys),
             secrets_dir: Some(secrets_dir),
-            reserved_tool_names: HashSet::new(),
+            reserved_tool_names: BTreeSet::new(),
             workspace_root: Some(workspace_root),
         }))
     }
@@ -198,7 +201,7 @@ impl McpRegistry {
         let snapshot = keys.snapshot().await.map_err(|e| {
             anyhow::anyhow!("mcp server '{}' references agent keys: {e}", entry.name)
         })?;
-        let expand = |map: &std::collections::HashMap<String, String>, kind: &str| {
+        let expand = |map: &std::collections::BTreeMap<String, String>, kind: &str| {
             map.iter()
                 .map(|(k, v)| {
                     residuum_config::agent_keys::expand_references(v, &snapshot.store)
@@ -210,7 +213,7 @@ impl McpRegistry {
                             )
                         })
                 })
-                .collect::<Result<std::collections::HashMap<_, _>, _>>()
+                .collect::<Result<std::collections::BTreeMap<_, _>, _>>()
         };
         let mut resolved = entry.clone();
         resolved.env = expand(&entry.env, "env var")?;
@@ -259,7 +262,7 @@ impl McpRegistry {
                 entry.name
             )
         })?;
-        let expand = |map: &std::collections::HashMap<String, String>, kind: &str| {
+        let expand = |map: &std::collections::BTreeMap<String, String>, kind: &str| {
             map.iter()
                 .map(|(k, v)| {
                     let resolved = match v.strip_prefix("secret:") {
@@ -273,7 +276,7 @@ impl McpRegistry {
                     };
                     Ok((k.clone(), resolved))
                 })
-                .collect::<Result<std::collections::HashMap<_, _>, anyhow::Error>>()
+                .collect::<Result<std::collections::BTreeMap<_, _>, anyhow::Error>>()
         };
         let mut resolved = entry.clone();
         resolved.env = expand(&entry.env, "env var")?;
@@ -292,7 +295,7 @@ impl McpRegistry {
         self.reserved_tool_names = names.into_iter().collect();
         for server in self
             .servers
-            .iter()
+            .values()
             .filter(|s| s.status == McpStatus::Running)
         {
             for tool in &server.tools {
@@ -307,6 +310,30 @@ impl McpRegistry {
         }
     }
 
+    /// Whether `name` is tracked as `Running` or `Pending`, so a start request
+    /// for it is a no-op.
+    fn is_active(&self, name: &str) -> bool {
+        self.servers
+            .get(name)
+            .is_some_and(|s| matches!(s.status, McpStatus::Running | McpStatus::Pending))
+    }
+
+    /// Track `entry` as `Pending`, replacing any earlier state for its name.
+    /// Replacing keeps the server at its name-ordered position.
+    fn track_pending(&mut self, entry: &McpServerEntry) {
+        self.servers.insert(
+            entry.name.clone(),
+            TrackedServer {
+                name: entry.name.clone(),
+                command: entry.command.clone(),
+                args: entry.args.clone(),
+                status: McpStatus::Pending,
+                client: None,
+                tools: Vec::new(),
+            },
+        );
+    }
+
     /// Reconcile desired servers against current state (pure diff, no connections).
     ///
     /// Returns lists of servers to start and stop. The caller is responsible
@@ -314,46 +341,26 @@ impl McpRegistry {
     pub(crate) fn reconcile(&mut self, desired: &[McpServerEntry]) -> McpReconcileResult {
         let mut result = McpReconcileResult::default();
 
-        // Servers in desired but not currently tracked (or failed) → to_start
         for entry in desired {
-            let existing = self.servers.iter().find(|s| s.name == entry.name);
-            match existing {
-                Some(s) if s.status == McpStatus::Running || s.status == McpStatus::Pending => {
-                    // Already running or starting — no-op
-                }
-                _ => {
-                    result.to_start.push(entry.clone());
-                    // Remove old entry if exists, add as pending
-                    self.servers.retain(|s| s.name != entry.name);
-                    self.servers.push(TrackedServer {
-                        name: entry.name.clone(),
-                        command: entry.command.clone(),
-                        args: entry.args.clone(),
-                        status: McpStatus::Pending,
-                        client: None,
-                        tools: Vec::new(),
-                    });
-                }
+            if !self.is_active(&entry.name) {
+                result.to_start.push(entry.clone());
+                self.track_pending(entry);
             }
         }
 
-        // Servers currently tracked but not in desired → to_stop
-        let desired_names: std::collections::HashSet<&str> =
-            desired.iter().map(|e| e.name.as_str()).collect();
-        let to_stop: Vec<String> = self
+        let desired_names: BTreeSet<&str> = desired.iter().map(|e| e.name.as_str()).collect();
+        result.to_stop = self
             .servers
-            .iter()
+            .values()
             .filter(|s| !desired_names.contains(s.name.as_str()))
             .filter(|s| s.status == McpStatus::Running || s.status == McpStatus::Pending)
             .map(|s| s.name.clone())
             .collect();
-
-        result.to_stop = to_stop;
         result
     }
 
     fn mark_failed_if_tracked(&mut self, name: &str, reason: &str) {
-        if let Some(server) = self.servers.iter_mut().find(|s| s.name == name) {
+        if let Some(server) = self.servers.get_mut(name) {
             server.status = McpStatus::Failed(reason.to_string());
         }
     }
@@ -407,12 +414,12 @@ impl McpRegistry {
             }
         };
 
-        // Detect name collisions before exposing this server's tools. The
-        // check runs against reserved built-in names and already-running
-        // servers, so it must happen before the new server is marked running.
+        // Warn before exposing this server's tools. The check only reads the
+        // other servers and reserved names, so it doesn't matter whether this
+        // server is already marked running.
         self.warn_shadowed_tools(&entry.name, &tools);
 
-        if let Some(server) = self.servers.iter_mut().find(|s| s.name == entry.name) {
+        if let Some(server) = self.servers.get_mut(&entry.name) {
             server.status = McpStatus::Running;
             server.client = Some(client);
             server.tools = tools;
@@ -430,8 +437,7 @@ impl McpRegistry {
     /// Disconnect a specific server by name.
     #[tracing::instrument(skip_all, fields(mcp.server = %name))]
     pub async fn disconnect(&mut self, name: &str) {
-        if let Some(idx) = self.servers.iter().position(|s| s.name == name) {
-            let server = self.servers.remove(idx);
+        if let Some(server) = self.servers.remove(name) {
             if let Some(client) = server.client {
                 client.shutdown().await;
             }
@@ -444,10 +450,11 @@ impl McpRegistry {
     /// Returns names of servers that were disconnected.
     #[tracing::instrument(skip_all)]
     pub async fn disconnect_all(&mut self) -> Vec<String> {
-        let mut names = Vec::with_capacity(self.servers.len());
+        let servers = std::mem::take(&mut self.servers);
+        let mut names = Vec::with_capacity(servers.len());
 
-        for TrackedServer { name, client, .. } in self.servers.drain(..) {
-            if let Some(c) = client {
+        for (name, server) in servers {
+            if let Some(c) = server.client {
                 c.shutdown().await;
             }
             names.push(name);
@@ -477,24 +484,10 @@ impl McpRegistry {
         let mut report = McpReconcileReport::default();
 
         for entry in entries {
-            let existing = self.servers.iter().find(|s| s.name == entry.name);
-            if let Some(tracked) = existing {
-                if tracked.status == McpStatus::Running || tracked.status == McpStatus::Pending {
-                    continue;
-                }
-                // Remove failed entry so we can re-add as Pending
-                self.servers.retain(|s| s.name != entry.name);
+            if self.is_active(&entry.name) {
+                continue;
             }
-
-            self.servers.push(TrackedServer {
-                name: entry.name.clone(),
-                command: entry.command.clone(),
-                args: entry.args.clone(),
-                status: McpStatus::Pending,
-                client: None,
-                tools: Vec::new(),
-            });
-
+            self.track_pending(entry);
             self.attempt_connect(entry, &mut report).await;
         }
 
@@ -524,16 +517,15 @@ impl McpRegistry {
         report
     }
 
-    /// Warn about tool-name collisions for a server that is about to expose
-    /// `tools`, without changing which tools win.
+    /// Warn about tool-name collisions for the server `server_name`, which is
+    /// about to expose `tools`, without changing which tools win.
     ///
     /// Precedence is fixed so shadowing is deterministic: a built-in tool
     /// always wins (it is dispatched first in the turn loop), and among MCP
-    /// servers the first-registered running server wins. This server's
-    /// colliding tools are therefore shadowed — excluded from
-    /// [`tool_definitions`](Self::tool_definitions) and never dispatched to.
-    /// The winner and this server's non-colliding tools keep working. See
-    /// `crates/mcp/src/CLAUDE.md`.
+    /// servers the one whose name sorts first wins. The losing tool is
+    /// shadowed: excluded from [`tool_definitions`](Self::tool_definitions)
+    /// and never dispatched to. The winner and the losing server's other tools
+    /// keep working. See `crates/mcp/src/CLAUDE.md`.
     fn warn_shadowed_tools(&self, server_name: &str, tools: &[ToolDefinition]) {
         for tool in tools {
             if self.reserved_tool_names.contains(&tool.name) {
@@ -542,21 +534,33 @@ impl McpRegistry {
                     mcp.server = %server_name,
                     "mcp tool name collides with a built-in tool; the built-in wins and the mcp tool is shadowed (unreachable)"
                 );
-            } else if let Some(owner) = self.running_owner_of_tool(&tool.name) {
+                continue;
+            }
+            for other in self
+                .servers
+                .values()
+                .filter(|s| s.status == McpStatus::Running && s.name != server_name)
+                .filter(|s| s.tools.iter().any(|t| t.name == tool.name))
+            {
+                let (winner, shadowed) = if other.name.as_str() < server_name {
+                    (other.name.as_str(), server_name)
+                } else {
+                    (server_name, other.name.as_str())
+                };
                 tracing::warn!(
                     tool = %tool.name,
-                    mcp.server = %server_name,
-                    winner = %owner,
-                    "mcp tool name collides with a tool from another mcp server; the first-registered server wins and this one is shadowed (unreachable)"
+                    mcp.server = %shadowed,
+                    winner = %winner,
+                    "mcp tool name collides with a tool from another mcp server; the server whose name sorts first wins and the other is shadowed (unreachable)"
                 );
             }
         }
     }
 
-    /// Name of the first running server that already exposes `tool_name`, if any.
+    /// Name of the first running server, in name order, that exposes `tool_name`, if any.
     fn running_owner_of_tool(&self, tool_name: &str) -> Option<&str> {
         self.servers
-            .iter()
+            .values()
             .filter(|s| s.status == McpStatus::Running)
             .find(|s| s.tools.iter().any(|t| t.name == tool_name))
             .map(|s| s.name.as_str())
@@ -581,15 +585,16 @@ impl McpRegistry {
     /// The result is de-duplicated so the model is offered each name exactly
     /// once, matching what [`call_tool`](Self::call_tool) will dispatch to:
     /// names reserved by a built-in tool are excluded (the built-in wins), and
-    /// when two MCP servers expose the same name only the first-registered
-    /// running server's definition is kept. See `crates/mcp/src/CLAUDE.md`.
+    /// when two MCP servers expose the same name only the definition of the
+    /// running server whose name sorts first is kept. See
+    /// `crates/mcp/src/CLAUDE.md`.
     #[must_use]
     pub fn tool_definitions(&self) -> Vec<ToolDefinition> {
-        let mut seen: HashSet<&str> = HashSet::new();
+        let mut seen: BTreeSet<&str> = BTreeSet::new();
         let mut defs: Vec<ToolDefinition> = Vec::new();
         for server in self
             .servers
-            .iter()
+            .values()
             .filter(|s| s.status == McpStatus::Running)
         {
             for tool in &server.tools {
@@ -598,8 +603,8 @@ impl McpRegistry {
                 if self.reserved_tool_names.contains(&tool.name) {
                     continue;
                 }
-                // First running server to claim a name wins; later duplicates
-                // are shadowed.
+                // The first running server in name order to claim a name wins;
+                // later duplicates are shadowed.
                 if seen.insert(tool.name.as_str()) {
                     defs.push(tool.clone());
                 }
@@ -618,8 +623,8 @@ impl McpRegistry {
     /// then never blocks a config reload's write lock, or another agent's
     /// next iteration, for as long as the call takes.
     ///
-    /// When two running servers expose the same name the first-registered one
-    /// wins, matching the de-duplication in
+    /// When two running servers expose the same name the one whose name sorts
+    /// first wins, matching the de-duplication in
     /// [`tool_definitions`](Self::tool_definitions). Names reserved by a
     /// built-in tool never reach here: the turn loop dispatches built-ins
     /// first and only falls back to MCP when no built-in matches.
@@ -629,7 +634,7 @@ impl McpRegistry {
     pub fn resolve_tool(&self, name: &str) -> Result<McpClientHandle, ToolError> {
         let server = self
             .servers
-            .iter()
+            .values()
             .filter(|s| s.status == McpStatus::Running)
             .find(|s| s.tools.iter().any(|t| t.name == name));
 
@@ -670,7 +675,7 @@ impl McpRegistry {
     /// Mark a server as running without a live client.
     #[cfg(test)]
     pub(crate) fn mark_running(&mut self, name: &str) {
-        if let Some(server) = self.servers.iter_mut().find(|s| s.name == name) {
+        if let Some(server) = self.servers.get_mut(name) {
             server.status = McpStatus::Running;
         }
     }
@@ -678,13 +683,13 @@ impl McpRegistry {
     /// Mark a server as stopped and remove it from tracking.
     #[cfg(test)]
     pub(crate) fn mark_stopped(&mut self, name: &str) {
-        self.servers.retain(|s| s.name != name);
+        self.servers.remove(name);
     }
 
     /// Mark a server as failed with a reason.
     #[cfg(test)]
     pub(crate) fn mark_failed(&mut self, name: &str, reason: &str) {
-        if let Some(server) = self.servers.iter_mut().find(|s| s.name == name) {
+        if let Some(server) = self.servers.get_mut(name) {
             server.status = McpStatus::Failed(reason.to_string());
         }
     }
@@ -697,7 +702,7 @@ impl McpRegistry {
     pub(crate) fn stop_all(&mut self) -> Vec<String> {
         let names: Vec<String> = self
             .servers
-            .iter()
+            .values()
             .filter(|s| s.status == McpStatus::Running || s.status == McpStatus::Pending)
             .map(|s| s.name.clone())
             .collect();
@@ -709,7 +714,7 @@ impl McpRegistry {
     /// Get a snapshot of all tracked servers.
     #[must_use]
     pub fn servers(&self) -> Vec<McpServerState> {
-        self.servers.iter().map(TrackedServer::snapshot).collect()
+        self.servers.values().map(TrackedServer::snapshot).collect()
     }
 }
 
@@ -730,9 +735,9 @@ mod tests {
             name: name.to_string(),
             command: command.to_string(),
             args: vec![],
-            env: std::collections::HashMap::new(),
+            env: std::collections::BTreeMap::new(),
             transport: crate::types::McpTransport::default(),
-            headers: std::collections::HashMap::new(),
+            headers: std::collections::BTreeMap::new(),
             timeout_secs: None,
         }
     }
@@ -812,6 +817,25 @@ mod tests {
             "should not restart pending server"
         );
         assert!(result.to_stop.is_empty(), "nothing to stop");
+    }
+
+    #[test]
+    fn a_restarted_server_keeps_its_name_ordered_position() {
+        let mut registry = McpRegistry::new();
+        let desired = [entry("alpha", "a"), entry("beta", "b"), entry("gamma", "g")];
+        registry.reconcile(&desired);
+        for name in ["alpha", "beta", "gamma"] {
+            registry.mark_running(name);
+        }
+        registry.mark_failed("beta", "crashed");
+
+        let result = registry.reconcile(&desired);
+        assert_eq!(result.to_start.len(), 1, "the failed server restarts");
+        // The restart succeeds; the server must come back where it was.
+        registry.mark_running("beta");
+
+        let names: Vec<String> = registry.servers().into_iter().map(|s| s.name).collect();
+        assert_eq!(names, ["alpha", "beta", "gamma"]);
     }
 
     #[test]
@@ -895,21 +919,40 @@ mod tests {
     /// Push a running server with the given tools directly (bypassing connect,
     /// which needs a live client).
     fn push_running_server(registry: &mut McpRegistry, name: &str, tools: &[&str]) {
-        registry.servers.push(TrackedServer {
-            name: name.to_string(),
-            command: "cmd".to_string(),
-            args: vec![],
-            status: McpStatus::Running,
-            client: None,
-            tools: tools.iter().map(|t| tool_def(t)).collect(),
-        });
+        registry.servers.insert(
+            name.to_string(),
+            TrackedServer {
+                name: name.to_string(),
+                command: "cmd".to_string(),
+                args: vec![],
+                status: McpStatus::Running,
+                client: None,
+                tools: tools.iter().map(|t| tool_def(t)).collect(),
+            },
+        );
     }
 
     #[test]
-    fn tool_definitions_dedupes_mcp_collisions_first_server_wins() {
+    fn tool_definitions_follow_server_name_order_not_insertion_order() {
         let mut registry = McpRegistry::new();
-        push_running_server(&mut registry, "first", &["shared", "only_first"]);
+        push_running_server(&mut registry, "zeta", &["z_tool"]);
+        push_running_server(&mut registry, "alpha", &["a_tool"]);
+
+        let names: Vec<String> = registry
+            .tool_definitions()
+            .into_iter()
+            .map(|d| d.name)
+            .collect();
+        assert_eq!(names, ["a_tool", "z_tool"]);
+    }
+
+    #[test]
+    fn tool_definitions_dedupes_mcp_collisions_lowest_name_wins() {
+        let mut registry = McpRegistry::new();
+        // Inserted out of name order: the name decides the winner, not the
+        // order servers connected in.
         push_running_server(&mut registry, "second", &["shared", "only_second"]);
+        push_running_server(&mut registry, "first", &["shared", "only_first"]);
 
         let defs = registry.tool_definitions();
         let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
@@ -919,7 +962,11 @@ mod tests {
             1,
             "colliding name should appear exactly once"
         );
-        // The kept definition is the first server's (first-registered wins).
+        assert_eq!(
+            registry.server_name_for_tool("shared").as_deref(),
+            Some("first"),
+            "the server whose name sorts first owns the colliding name"
+        );
         let shared = defs.iter().find(|d| d.name == "shared").unwrap();
         assert_eq!(
             shared.description, "desc for shared",
@@ -949,8 +996,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn call_tool_routes_collision_to_first_registered_server() {
-        // Both servers claim "shared"; first-registered wins the routing.
+    async fn call_tool_routes_collision_to_lowest_name_server() {
+        // Both servers claim "shared"; the name that sorts first wins the routing.
         // Neither has a live client, so the winner surfaces the "no client"
         // execution error — proving the call was routed to it, not NotFound.
         let mut registry = McpRegistry::new();
@@ -963,7 +1010,7 @@ mod tests {
             .unwrap_err();
         assert!(
             matches!(&err, ToolError::Execution(msg) if msg.contains("first")),
-            "call should route to the first-registered server, got: {err:?}"
+            "call should route to the server whose name sorts first, got: {err:?}"
         );
     }
 
@@ -990,7 +1037,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_tool_routes_collision_to_first_registered_server() {
+    fn resolve_tool_routes_collision_to_lowest_name_server() {
         let mut registry = McpRegistry::new();
         push_running_server(&mut registry, "first", &["shared"]);
         push_running_server(&mut registry, "second", &["shared"]);
@@ -1001,7 +1048,7 @@ mod tests {
         let err = registry.resolve_tool("shared").unwrap_err();
         assert!(
             matches!(&err, ToolError::Execution(msg) if msg.contains("first")),
-            "should resolve to the first-registered server, got: {err:?}"
+            "should resolve to the server whose name sorts first, got: {err:?}"
         );
     }
 

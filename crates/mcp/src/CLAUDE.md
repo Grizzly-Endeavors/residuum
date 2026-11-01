@@ -8,7 +8,7 @@ MCP servers can expose a tool with any name, including one that collides with a 
 
 **Precedence (which tool keeps the name):**
 1. A **built-in** tool always wins. It is dispatched first in the turn loop (`crates/agent/src/turn.rs::execute_tool`), so a colliding MCP tool could never be reached anyway.
-2. Among MCP servers, the **first-registered running server** wins (matches the iteration order in `call_tool`).
+2. Among MCP servers, the **running server whose name sorts first** wins. The registry keeps servers in name order, so the winner doesn't depend on connect order.
 
 The losing tool is **shadowed**: excluded from the definitions offered to the model and never dispatched to. The winner and the losing server's *other* (non-colliding) tools keep working — shadowing is per-tool, not per-server.
 
@@ -19,6 +19,6 @@ The losing tool is **shadowed**: excluded from the definitions offered to the mo
 - `set_reserved_tool_names` — the gateway calls this once after the built-in tool registry is built, handing over the built-in names so MCP tools that reuse them can be detected. Re-scans already-connected servers.
 - `warn_shadowed_tools` — called from `connect`; emits the collision warnings for a newly connecting server.
 - `tool_definitions` — returns the de-duplicated union actually offered to the model: reserved (built-in) names dropped, later MCP duplicates dropped.
-- `resolve_tool` — resolves a name to the first running server owning it, consistent with the de-duplication above, and returns a cheap-to-clone `McpClientHandle` that doesn't borrow the registry. This is what `crates/agent/src/turn.rs::execute_mcp_tool` calls while holding the registry's read lock, dropping that guard before awaiting the call on the handle — so a slow or hung MCP server never holds the lock for the call's duration. `call_tool` is a `resolve_tool` + await convenience wrapper for callers that aren't holding the registry behind a lock they need to release first (tests, and any other owned-registry caller).
+- `resolve_tool` — resolves a name to the running server owning it whose name sorts first, consistent with the de-duplication above, and returns a cheap-to-clone `McpClientHandle` that doesn't borrow the registry. This is what `crates/agent/src/turn.rs::execute_mcp_tool` calls while holding the registry's read lock, dropping that guard before awaiting the call on the handle — so a slow or hung MCP server never holds the lock for the call's duration. `call_tool` is a `resolve_tool` + await convenience wrapper for callers that aren't holding the registry behind a lock they need to release first (tests, and any other owned-registry caller).
 
 Because the registry hands `crates/agent/src/turn.rs` an already-clean union, the turn loop's merge and built-in-first dispatch need no collision logic of their own — this module is the single source of truth for the policy.
