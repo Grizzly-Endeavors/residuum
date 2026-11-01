@@ -697,6 +697,7 @@ async fn publish_stream_pieces(
 
 /// The request one model call sends: the messages, and the tool definitions
 /// built-in tools first, then MCP tools.
+#[derive(Debug)]
 pub struct ModelRequest {
     pub messages: Vec<Message>,
     pub tools: Vec<ToolDefinition>,
