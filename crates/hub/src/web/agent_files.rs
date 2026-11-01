@@ -1,6 +1,7 @@
 //! The per-agent routes that only read and write the agent's files (chat
-//! history and usage, the inbox attachments, the raw A2A client settings,
-//! and the file links: workspace links and token links), and the state they run on.
+//! history and usage, the latest context breakdown, the inbox attachments,
+//! the raw A2A client settings, and the file links: workspace links and token
+//! links), and the state they run on.
 //!
 //! The state holds no open checkpoint repositories. The one handler that
 //! takes a checkpoint, the raw A2A settings write, opens them when it runs,
@@ -18,7 +19,7 @@ use residuum_checkpoints::{
     CheckpointContext, CheckpointEngine, CheckpointError, CheckpointTrigger,
 };
 
-use super::{ConfigApiState, a2a, chat, inbox};
+use super::{ConfigApiState, a2a, chat, context, inbox};
 
 /// Opens an agent's checkpoint repositories.
 type OpenCheckpoints = dyn Fn() -> Result<Arc<CheckpointEngine>, CheckpointError> + Send + Sync;
@@ -124,8 +125,8 @@ impl AgentFilesState {
 }
 
 /// The routes that read and write an agent's files and nothing of its live
-/// state: chat history, session usage, the user inbox, the raw A2A client
-/// settings, and the file links the agent hands out.
+/// state: chat history, session usage, the latest context breakdown, the user
+/// inbox, the raw A2A client settings, and the file links the agent hands out.
 pub fn agent_files_api_router(state: AgentFilesState) -> axum::Router {
     // A workspace link serves a file under the workspace root by its path,
     // and a token link the file its saved registration names, so both answer
@@ -140,6 +141,7 @@ pub fn agent_files_api_router(state: AgentFilesState) -> axum::Router {
     axum::Router::new()
         .route("/api/chat/history", get(chat::api_chat_history))
         .route("/api/usage", get(chat::api_usage))
+        .route("/api/context", get(context::api_context))
         .route("/api/a2a/agents/raw", get(a2a::api_a2a_agents_raw_get))
         .route("/api/a2a/agents/raw", put(a2a::api_a2a_agents_raw_put))
         .route(

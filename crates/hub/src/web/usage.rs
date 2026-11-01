@@ -319,8 +319,8 @@ fn parse_component(text: Option<&str>) -> Result<Option<&str>, String> {
     }
 }
 
-/// A usage route's refusal: the status, and the message the answer carries
-/// under `error`.
+/// A usage or context route's refusal: the status, and the message the
+/// answer carries under `error`.
 #[derive(Debug)]
 pub(super) struct UsageError {
     status: StatusCode,
@@ -335,7 +335,14 @@ impl UsageError {
         }
     }
 
-    fn internal(message: &str) -> Self {
+    pub(super) fn not_found(message: &str) -> Self {
+        Self {
+            status: StatusCode::NOT_FOUND,
+            message: message.to_string(),
+        }
+    }
+
+    pub(super) fn internal(message: &str) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             message: message.to_string(),
