@@ -275,8 +275,9 @@ impl RegistryHarness {
     /// Build the main agent's tool registry over these handles, the way
     /// [`crate::main_tools::init_tool_registry`] builds it at startup, with
     /// the UTC timezone and the default model catalog.
+    #[cfg(test)]
     #[must_use]
-    pub fn main_registry(&self) -> ToolRegistry {
+    pub(crate) fn main_registry(&self) -> ToolRegistry {
         let auto_mode = residuum_agent::auto_mode::AutoModeGate::new_shared(
             "test",
             residuum_config::AutoModeConfig::default(),
