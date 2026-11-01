@@ -877,6 +877,39 @@ async fn finish_turn_with_notice(
     Ok(vec![notice])
 }
 
+/// Build the request for one loop iteration and make the model call.
+///
+/// Returns the response and whether it streamed to the main conversation,
+/// or `None` when the user stopped the turn during the call; the stop note
+/// is recorded before returning `None`.
+async fn request_model_response(
+    resources: &TurnResources<'_>,
+    memory_ctx: &MemoryContext<'_>,
+    prompt_ctx: &PromptContext<'_>,
+    recent_messages: &mut RecentMessages,
+    events: &EventContext<'_>,
+    call: u32,
+) -> anyhow::Result<Option<(InferenceResponse, bool)>> {
+    let request = build_model_request(
+        resources.identity,
+        recent_messages,
+        memory_ctx,
+        prompt_ctx,
+        resources.tools,
+        resources.mcp_registry,
+    )
+    .await;
+
+    match call_model(resources, events, &request.messages, &request.tools, call).await? {
+        ModelCall::Completed { response, streamed } => Ok(Some((response, streamed))),
+        ModelCall::Stopped => {
+            tracing::info!(iterations = call, "turn stopped by user during model call");
+            record_stop(recent_messages, resources).await;
+            Ok(None)
+        }
+    }
+}
+
 /// Execute the tool loop against the given message buffer.
 ///
 /// Calls the provider repeatedly until it returns a text response (no tool calls),
@@ -956,28 +989,18 @@ pub async fn execute_turn(
         // repeats it, so it always equals the iteration.
         let call = u32::try_from(iteration).unwrap_or(u32::MAX);
 
-        let request = build_model_request(
-            resources.identity,
-            recent_messages,
+        let Some((mut response, streamed)) = request_model_response(
+            resources,
             memory_ctx,
             prompt_ctx,
-            resources.tools,
-            resources.mcp_registry,
+            recent_messages,
+            events,
+            call,
         )
-        .await;
-
-        let (mut response, streamed) =
-            match call_model(resources, events, &request.messages, &request.tools, call).await? {
-                ModelCall::Completed { response, streamed } => (response, streamed),
-                ModelCall::Stopped => {
-                    tracing::info!(
-                        iterations = iteration,
-                        "turn stopped by user during model call"
-                    );
-                    record_stop(recent_messages, resources).await;
-                    return Ok(texts);
-                }
-            };
+        .await?
+        else {
+            return Ok(texts);
+        };
         settle_response(&mut response, events, call).await;
         notice_images_omitted(
             &response,
