@@ -175,17 +175,24 @@ mod tests {
         .await;
     }
 
+    /// A watch over a subconscious answering `response`, with the workspace
+    /// its usage records go to (kept alive by the returned directory).
     fn make_watch(
         response: &str,
         config: SubconsciousConfig,
-    ) -> (SubconsciousWatch, mpsc::UnboundedReceiver<Interrupt>) {
+    ) -> (
+        SubconsciousWatch,
+        mpsc::UnboundedReceiver<Interrupt>,
+        tempfile::TempDir,
+    ) {
         let (tx, rx) = mpsc::unbounded_channel();
+        let dir = tempfile::tempdir().unwrap();
         let sub = Arc::new(Subconscious::new(
             Box::new(MockMemoryProvider::new(response)),
             config,
-            WorkspaceLayout::new("/tmp/ws"),
+            WorkspaceLayout::new(dir.path()),
         ));
-        (SubconsciousWatch::new(sub, tx), rx)
+        (SubconsciousWatch::new(sub, tx), rx, dir)
     }
 
     fn enabled_config() -> SubconsciousConfig {
@@ -206,7 +213,7 @@ mod tests {
 
     #[tokio::test]
     async fn act_finding_lands_in_interrupt_channel() {
-        let (watch, mut rx) = make_watch(ACT_RESPONSE, enabled_config());
+        let (watch, mut rx, _dir) = make_watch(ACT_RESPONSE, enabled_config());
         watch.maybe_spawn(0, transcript());
 
         let interrupt = wait::guarded("a subconscious interrupt", rx.recv())
@@ -227,7 +234,7 @@ mod tests {
 
     #[tokio::test]
     async fn empty_findings_send_nothing() {
-        let (watch, mut rx) = make_watch(EMPTY_RESPONSE, enabled_config());
+        let (watch, mut rx, _dir) = make_watch(EMPTY_RESPONSE, enabled_config());
         watch.maybe_spawn(0, transcript());
 
         wait_until_idle(&watch).await;
@@ -236,7 +243,7 @@ mod tests {
 
     #[tokio::test]
     async fn cadence_gates_iterations() {
-        let (watch, mut rx) = make_watch(
+        let (watch, mut rx, _dir) = make_watch(
             ACT_RESPONSE,
             SubconsciousConfig {
                 every_n_iterations: 3,
@@ -260,7 +267,7 @@ mod tests {
 
     #[tokio::test]
     async fn disabled_mid_turn_never_spawns() {
-        let (watch, mut rx) = make_watch(
+        let (watch, mut rx, _dir) = make_watch(
             ACT_RESPONSE,
             SubconsciousConfig {
                 mid_turn: false,
@@ -276,7 +283,7 @@ mod tests {
     async fn every_correction_is_delivered_with_no_cap() {
         // There is no per-turn cap: a second evaluation's `act` finding is
         // still delivered live, not demoted to a note.
-        let (watch, mut rx) = make_watch(ACT_RESPONSE, enabled_config());
+        let (watch, mut rx, _dir) = make_watch(ACT_RESPONSE, enabled_config());
 
         watch.maybe_spawn(0, transcript());
         let first = wait::guarded("the first subconscious interrupt", rx.recv())
@@ -315,7 +322,7 @@ mod tests {
 
     #[tokio::test]
     async fn applied_correction_is_recorded_in_scratch() {
-        let (watch, mut rx) = make_watch(ACT_RESPONSE, enabled_config());
+        let (watch, mut rx, _dir) = make_watch(ACT_RESPONSE, enabled_config());
         watch.maybe_spawn(0, transcript());
         // Drain the interrupt so we know the eval task ran to completion.
         wait::guarded("a subconscious interrupt", rx.recv()).await;
@@ -342,7 +349,7 @@ mod tests {
                 {"kind": "omission", "severity": "note", "instruction": "Consider saving the preference."}
             ]
         }"#;
-        let (watch, mut rx) = make_watch(NOTE_RESPONSE, enabled_config());
+        let (watch, mut rx, _dir) = make_watch(NOTE_RESPONSE, enabled_config());
         watch.maybe_spawn(0, transcript());
         wait_until_idle(&watch).await;
 
@@ -366,7 +373,7 @@ mod tests {
 
     #[tokio::test]
     async fn dropped_receiver_does_not_panic() {
-        let (watch, rx) = make_watch(ACT_RESPONSE, enabled_config());
+        let (watch, rx, _dir) = make_watch(ACT_RESPONSE, enabled_config());
         drop(rx);
         watch.maybe_spawn(0, transcript());
         // Give the spawned task time to run; spawn_monitored would log a panic,
