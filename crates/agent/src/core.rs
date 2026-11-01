@@ -767,6 +767,7 @@ mod tests {
                 stop_reason: None,
                 images_omitted: None,
                 thinking_dropped: 0,
+                attempts: Vec::new(),
             },
             InferenceResponse {
                 content: "second".to_string(),
@@ -780,6 +781,7 @@ mod tests {
                 stop_reason: None,
                 images_omitted: None,
                 thinking_dropped: 0,
+                attempts: Vec::new(),
             },
         ]);
 

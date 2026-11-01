@@ -597,6 +597,7 @@ mod tests {
             stop_reason: None,
             images_omitted: None,
             thinking_dropped: 0,
+            attempts: Vec::new(),
         }
     }
 

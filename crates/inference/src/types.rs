@@ -539,19 +539,25 @@ pub struct ToolDefinition {
 ///
 /// The three input parts are disjoint and together make up the whole prompt.
 /// `None` always means the provider did not report the number, never zero.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
     /// Input tokens billed at the full input rate: neither read from nor written to the prompt cache.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uncached_input_tokens: Option<u32>,
     /// Input tokens read from the prompt cache.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_read_tokens: Option<u32>,
     /// Input tokens written to the prompt cache, all TTLs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_write_tokens: Option<u32>,
     /// The part of `cache_write_tokens` written with a long (1 hour) TTL, when the provider reports the split.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_write_long_tokens: Option<u32>,
     /// Output tokens generated, reasoning included.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_tokens: Option<u32>,
     /// The part of `output_tokens` spent on reasoning, when reported separately.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_tokens: Option<u32>,
 }
 
@@ -629,6 +635,32 @@ pub struct InferenceResponse {
     /// changed (Anthropic's `thinking_dropped` input transformation). The
     /// model answered without that reasoning.
     pub thinking_dropped: usize,
+    /// Every attempt the call made, in order; the last one answered.
+    pub attempts: Vec<AttemptUsage>,
+}
+
+/// How one attempt of a model call ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttemptOutcome {
+    /// The attempt answered.
+    Succeeded,
+    /// The attempt failed and the call retried, moved to the next provider, or gave up.
+    Failed,
+}
+
+/// One attempt of a model call: which provider and model it went to, how it
+/// ended, and what it reported spending.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttemptUsage {
+    /// The provider the attempt went to.
+    pub provider: String,
+    /// The model the attempt asked for.
+    pub model: String,
+    /// How the attempt ended.
+    pub outcome: AttemptOutcome,
+    /// Token usage the attempt reported, if any.
+    pub usage: Option<Usage>,
 }
 
 impl InferenceResponse {
@@ -643,6 +675,7 @@ impl InferenceResponse {
             stop_reason: None,
             images_omitted: None,
             thinking_dropped: 0,
+            attempts: Vec::new(),
         }
     }
 

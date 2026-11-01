@@ -113,6 +113,13 @@ impl WorkspaceLayout {
         self.root.join("memory/usage_totals.json")
     }
 
+    /// Directory of per-attempt model usage records, one JSON-lines file per
+    /// UTC month (`YYYY-MM.jsonl`), appended after every model call.
+    #[must_use]
+    pub fn usage_records_dir(&self) -> PathBuf {
+        self.root.join("memory/usage")
+    }
+
     /// Path to the tantivy search index directory.
     #[must_use]
     pub fn search_index_dir(&self) -> PathBuf {
@@ -534,6 +541,11 @@ mod tests {
             layout.usage_totals_json(),
             PathBuf::from("/tmp/ws/memory/usage_totals.json"),
             "usage_totals_json path"
+        );
+        assert_eq!(
+            layout.usage_records_dir(),
+            PathBuf::from("/tmp/ws/memory/usage"),
+            "usage_records_dir path"
         );
     }
 

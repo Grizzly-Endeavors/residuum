@@ -10,6 +10,7 @@ pub(crate) mod embedding;
 mod error;
 pub(crate) mod factory;
 pub(crate) mod failover;
+mod gen_ai_span;
 mod http;
 mod image_input;
 pub(crate) mod providers;
@@ -24,6 +25,7 @@ mod test_support;
 pub mod testing;
 mod tool;
 mod types;
+mod usage_record;
 
 pub use embedding::{EmbeddingProvider, EmbeddingResponse, build_embedding_provider};
 pub use error::{FailureDescription, InferenceError, describe_turn_failure};
@@ -41,9 +43,10 @@ pub(crate) use retry::with_retry;
 pub use role_options::completion_options_for_role;
 pub use tool::{ToolError, ToolResult};
 pub use types::{
-    AgentSender, CompletionOptions, ImageData, InferenceProvider, InferenceResponse, Message,
-    MessageAttachment, MessageSender, ProviderApi, ResponseFormat, Role, StopReason, StreamDelta,
-    StreamSink, ThinkingBlock, ThinkingOrigin, ToolCall, ToolDefinition, Usage,
-    WebSearchNativeConfig, joined_thinking_text, readable_thinking,
+    AgentSender, AttemptOutcome, AttemptUsage, CompletionOptions, ImageData, InferenceProvider,
+    InferenceResponse, Message, MessageAttachment, MessageSender, ProviderApi, ResponseFormat,
+    Role, StopReason, StreamDelta, StreamSink, ThinkingBlock, ThinkingOrigin, ToolCall,
+    ToolDefinition, Usage, WebSearchNativeConfig, joined_thinking_text, readable_thinking,
 };
 pub(crate) use types::{ReplayScope, blocks_produced_at};
+pub use usage_record::{UsageComponent, UsageRecord, UsageRecorder};
