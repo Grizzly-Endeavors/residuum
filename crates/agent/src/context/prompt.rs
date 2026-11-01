@@ -544,13 +544,13 @@ mod tests {
             end = range.end;
         }
         assert_eq!(end, text.len(), "the sections cover the whole text");
-        let harness = prompt
+        let harness_range_text = prompt
             .sections
             .get(1)
             .and_then(|(_, range)| text.get(range.clone()))
             .unwrap();
         assert_eq!(
-            harness,
+            harness_range_text,
             format!("\n\n{}", section("HARNESS", &harness(delivery))),
             "a section's range holds its text, for the agent's chat settings, and the separator ahead of it"
         );
