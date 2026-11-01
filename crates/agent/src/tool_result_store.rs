@@ -4,7 +4,7 @@
 //! model call, so one huge result (a long MCP response, a big `exec` dump)
 //! would make every request after it larger. The turn loop hands each
 //! redacted result to [`ToolResultStore::keep_for_history`]: a result over
-//! [`OFFLOAD_THRESHOLD_CHARS`] is saved to a file, and history keeps its
+//! [`HISTORY_RESULT_MAX_CHARS`] is saved to a file, and history keeps its
 //! head and tail with a note naming the file. The note is computed once and
 //! stored as the tool message, so replaying history sends the same bytes.
 
@@ -15,7 +15,10 @@ use tokio::io::AsyncWriteExt;
 
 /// A tool result longer than this many characters is saved to a file and
 /// kept in history as an excerpt. About 8k tokens of English text.
-pub(crate) const OFFLOAD_THRESHOLD_CHARS: usize = 32_000;
+///
+/// Tools that page or cap their own output size their pages below this, so
+/// an ordinary read is never cut a second time here.
+pub const HISTORY_RESULT_MAX_CHARS: usize = 32_000;
 
 /// Characters of the result's start kept in history.
 const HEAD_CHARS: usize = 8_000;
@@ -58,14 +61,17 @@ impl ToolResultStore {
     ///
     /// When the file can't be written, the full output is kept, so nothing
     /// the tool returned is lost; the failure is logged.
+    ///
+    /// Each save also starts a background [`Self::sweep_expired`], so a
+    /// daemon that stays up for weeks still deletes expired results.
     pub(crate) async fn keep_for_history(
         &self,
         output: String,
         tool_name: &str,
         tool_call_id: &str,
     ) -> String {
-        if output.len() <= OFFLOAD_THRESHOLD_CHARS
-            || output.chars().count() <= OFFLOAD_THRESHOLD_CHARS
+        if output.len() <= HISTORY_RESULT_MAX_CHARS
+            || output.chars().count() <= HISTORY_RESULT_MAX_CHARS
         {
             return output;
         }
@@ -78,6 +84,10 @@ impl ToolResultStore {
                     path = %path.display(),
                     "saved an oversized tool result to a file and kept an excerpt in history"
                 );
+                let store = self.clone();
+                drop(residuum_core::util::spawn_in_span(async move {
+                    store.sweep_expired().await;
+                }));
                 excerpt(&output, &path)
             }
             Err(e) => {
@@ -243,18 +253,26 @@ fn excerpt(output: &str, path: &Path) -> String {
     } else {
         newlines_before_tail + 1
     };
-    let omitted = if first_omitted >= last_omitted {
-        format!("Part of line {first_omitted} is left out here; read it")
+    // One read_file call over the whole omitted range would be as long as
+    // the result itself and get cut again, so the note points at a paged read:
+    // each read_file page fits under the threshold and names the next offset.
+    let how_to_read = if first_omitted >= last_omitted {
+        format!(
+            "Part of line {first_omitted} is left out here; read it with exec (for example \
+             cut -c or head -c), since read_file cuts long lines."
+        )
     } else {
-        format!("Lines {first_omitted}-{last_omitted} are left out here; read them")
+        format!(
+            "Lines {first_omitted}-{last_omitted} are left out here; read them with read_file \
+             starting at offset {}, a page at a time (each page names the next offset), or \
+             search the file with exec.",
+            first_omitted.saturating_sub(1)
+        )
     };
-    let offset = first_omitted.saturating_sub(1);
-    let limit = last_omitted.saturating_sub(first_omitted) + 1;
 
     let note = format!(
         "[Output too long to keep in full: {total_chars} characters, {total_lines} lines. \
-         The full output is saved at {}. {omitted} with read_file \
-         (offset {offset}, limit {limit}), or search the file with exec.]",
+         The full output is saved at {}. {how_to_read}]",
         path.display()
     );
     format!("{}\n\n{note}\n\n{tail}", head.trim_end_matches('\n'))
@@ -313,7 +331,7 @@ mod tests {
     async fn a_result_at_the_threshold_is_kept_whole() {
         let root = tempfile::tempdir().unwrap();
         let store = ToolResultStore::new(root.path(), "scout");
-        let output = "x".repeat(OFFLOAD_THRESHOLD_CHARS);
+        let output = "x".repeat(HISTORY_RESULT_MAX_CHARS);
 
         let kept = store
             .keep_for_history(output.clone(), "exec", "call-1")
@@ -329,7 +347,7 @@ mod tests {
         let store = ToolResultStore::new(root.path(), "scout");
         // Three bytes per character: over the threshold in bytes, under it in
         // characters.
-        let output = "€".repeat(OFFLOAD_THRESHOLD_CHARS);
+        let output = "€".repeat(HISTORY_RESULT_MAX_CHARS);
 
         let kept = store
             .keep_for_history(output.clone(), "exec", "call-1")
@@ -394,16 +412,45 @@ mod tests {
             .parse()
             .unwrap();
         let expected = format!(
-            "Lines {}-{} are left out here; read them with read_file (offset {}, limit {})",
+            "Lines {}-{} are left out here; read them with read_file starting at offset {}, \
+             a page at a time",
             last_head_line + 1,
             first_tail_line - 1,
             last_head_line,
-            first_tail_line - 1 - last_head_line,
         );
         assert!(
             note.contains(&expected),
             "expected {expected:?} in {note:?}"
         );
+        assert!(
+            !note.contains("limit"),
+            "the note never suggests one read covering the whole omitted range: {note:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn saving_a_result_also_deletes_expired_ones() {
+        let root = tempfile::tempdir().unwrap();
+        let store = ToolResultStore::new(root.path(), "scout");
+        std::fs::create_dir_all(store.dir()).unwrap();
+        let expired = store.dir().join("expired.txt");
+        std::fs::write(&expired, "old result").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&expired)
+            .unwrap()
+            .set_modified(SystemTime::now() - RETENTION - Duration::from_secs(60))
+            .unwrap();
+
+        store
+            .keep_for_history(numbered_lines(10_000), "exec", "call-1")
+            .await;
+
+        residuum_core::testing::wait::until_true("the expired result to be deleted", || {
+            !expired.exists()
+        })
+        .await;
+        assert_eq!(saved_files(store.dir()).len(), 1, "the new result is kept");
     }
 
     #[test]

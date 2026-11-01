@@ -2479,7 +2479,7 @@ mod tests {
         assert_eq!(full, redacted, "the file holds the full redacted result");
 
         assert!(
-            content.chars().count() < crate::tool_result_store::OFFLOAD_THRESHOLD_CHARS,
+            content.chars().count() < crate::HISTORY_RESULT_MAX_CHARS,
             "history keeps an excerpt, not the whole result ({} chars)",
             content.chars().count()
         );
@@ -2496,7 +2496,10 @@ mod tests {
             content.contains(&format!("saved at {}", saved.display())),
             "the excerpt names the saved file: {content}"
         );
-        assert!(content.contains("read_file (offset"), "{content}");
+        assert!(
+            content.contains("read_file starting at offset"),
+            "{content}"
+        );
     }
 
     #[tokio::test]
@@ -2586,7 +2589,7 @@ done
         assert!(content.starts_with("MCP-HEAD"), "{content}");
         assert!(content.ends_with("MCP-TAIL"), "{content}");
         assert!(
-            content.chars().count() < crate::tool_result_store::OFFLOAD_THRESHOLD_CHARS,
+            content.chars().count() < crate::HISTORY_RESULT_MAX_CHARS,
             "history keeps an excerpt of the MCP result"
         );
 

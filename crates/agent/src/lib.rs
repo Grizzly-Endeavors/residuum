@@ -26,5 +26,5 @@ pub use core::{Agent, AgentConfig, FailedTurn, TurnWiring};
 pub use hop::HopCounter;
 pub use team_roster::TeamRoster;
 pub use tool::{Tool, ToolRegistry};
-pub use tool_result_store::ToolResultStore;
+pub use tool_result_store::{HISTORY_RESULT_MAX_CHARS, ToolResultStore};
 pub use turn::{LiveOutputEndpoint, ReplyAudience, TurnOutput};
