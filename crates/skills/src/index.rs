@@ -13,13 +13,13 @@ pub struct SkillIndex {
     /// Directories that couldn't be read during the scan that built this
     /// index (permission errors, etc. — a missing directory is not an
     /// error and isn't recorded here), as `(dir, error message)` pairs. The
-    /// rest of the scan still ran; callers with a publisher in scope
-    /// surface these as a notice.
+    /// rest of the scan still ran; `SkillState::rescan` turns these into
+    /// notices.
     skipped: Vec<(PathBuf, String)>,
     /// User-facing notices produced by the most recent scan: a skill with an
     /// oversized description that loaded anyway, or a skill skipped for
-    /// invalid frontmatter. Callers publish these to the bus rather than
-    /// leaving them as debug/warn log lines only.
+    /// invalid frontmatter. `SkillState::rescan` returns them for the caller
+    /// to publish, so they reach the user rather than only the logs.
     notices: Vec<String>,
 }
 
@@ -124,8 +124,8 @@ impl SkillIndex {
     /// User-facing notices produced by the most recent scan.
     ///
     /// Covers a skill with an oversized description that loaded anyway, and
-    /// a skill skipped for invalid frontmatter. Callers are expected to
-    /// publish these to the bus so they reach the user, not just the logs.
+    /// a skill skipped for invalid frontmatter. `SkillState::rescan` returns
+    /// them for the caller to publish, so they reach the user.
     #[must_use]
     pub fn notices(&self) -> &[String] {
         &self.notices

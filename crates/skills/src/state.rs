@@ -102,10 +102,14 @@ impl SkillState {
     /// skill of the same name), refreshes its body from the new source, or
     /// deactivates it with a warning if the new source can't be loaded.
     ///
+    /// Returns the user-facing notices the rescan produced, one per directory
+    /// that couldn't be read and one per skill that loaded with a notice or
+    /// was skipped. Callers publish them so they reach the user.
+    ///
     /// # Errors
     /// Returns an error if scanning fails.
     #[tracing::instrument(skip_all, fields(dirs = self.dirs.len()))]
-    pub async fn rescan(&mut self) -> anyhow::Result<()> {
+    pub async fn rescan(&mut self) -> anyhow::Result<Vec<String>> {
         let skills_before = self.index.entries().len();
         tracing::info!(
             skills_before = skills_before,
@@ -173,7 +177,15 @@ impl SkillState {
         }
         self.active = still_active;
 
-        Ok(())
+        let skipped = self.index.skipped_dirs().iter().map(|(dir, err)| {
+            format!(
+                "Skipped your skills directory \"{}\" — it couldn't be read ({err}). Skills in your other directories were still rescanned.",
+                dir.display()
+            )
+        });
+        Ok(skipped
+            .chain(self.index.notices().iter().cloned())
+            .collect())
     }
 
     /// Format the skill index for the system prompt.
@@ -421,6 +433,29 @@ mod tests {
             }
             other => panic!("unexpected active skills after rescan: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn rescan_returns_notice_for_skill_it_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let bad_dir = dir.path().join("bad-skill");
+        tokio::fs::create_dir(&bad_dir).await.unwrap();
+        tokio::fs::write(bad_dir.join("SKILL.md"), "---\n: invalid [[\n---\n")
+            .await
+            .unwrap();
+
+        let mut state = SkillState::new(SkillIndex::default(), vec![SkillDir::agent(dir.path())]);
+
+        let notices = state.rescan().await.unwrap();
+        assert_eq!(
+            notices.len(),
+            1,
+            "the skipped skill should produce one notice"
+        );
+        assert!(
+            notices[0].contains("bad-skill"),
+            "the notice should name the skipped skill: {notices:?}"
+        );
     }
 
     #[tokio::test]
