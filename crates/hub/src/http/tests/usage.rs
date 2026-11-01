@@ -35,14 +35,14 @@ fn call(
     }
 }
 
-fn counts(uncached: u32, cache_read: u32, cache_write: u32, output: u32) -> Option<Usage> {
-    Some(Usage {
+fn counts(uncached: u32, cache_read: u32, cache_write: u32, output: u32) -> Usage {
+    Usage {
         uncached_input_tokens: Some(uncached),
         cache_read_tokens: Some(cache_read),
         cache_write_tokens: Some(cache_write),
         output_tokens: Some(output),
         ..Default::default()
-    })
+    }
 }
 
 /// Four calls on 1 and 2 October 2026, one of them failed and one without usage.
@@ -54,7 +54,7 @@ fn october_calls() -> Vec<UsageRecord> {
             "claude-opus",
             instant("2026-10-01T09:00:00Z"),
             AttemptOutcome::Succeeded,
-            counts(400, 400, 200, 10),
+            Some(counts(400, 400, 200, 10)),
         ),
         call(
             UsageComponent::Session {
@@ -64,7 +64,7 @@ fn october_calls() -> Vec<UsageRecord> {
             "claude-sonnet",
             instant("2026-10-01T10:00:00Z"),
             AttemptOutcome::Succeeded,
-            counts(100, 0, 0, 5),
+            Some(counts(100, 0, 0, 5)),
         ),
         call(
             UsageComponent::Main,
@@ -72,7 +72,7 @@ fn october_calls() -> Vec<UsageRecord> {
             "claude-opus",
             instant("2026-10-02T09:00:00Z"),
             AttemptOutcome::Failed,
-            counts(200, 0, 0, 0),
+            Some(counts(200, 0, 0, 0)),
         ),
         call(
             UsageComponent::Observer,
@@ -271,13 +271,13 @@ async fn records_filter_by_component_and_read_a_half_open_range() {
         "`from` is included"
     );
 
-    let body = h
+    let main_only = h
         .get_expect(
             &format!("/api/agents/scout/usage/records?{OCTOBER}&component=main"),
             StatusCode::OK,
         )
         .await;
-    assert_eq!(body["records"].as_array().unwrap().len(), 2);
+    assert_eq!(main_only["records"].as_array().unwrap().len(), 2);
 }
 
 #[tokio::test]

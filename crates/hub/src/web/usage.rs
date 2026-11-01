@@ -167,7 +167,7 @@ impl Tally {
         self.reasoning_tokens += u64::from(usage.reasoning_tokens.unwrap_or(0));
         match cost {
             Some(usd) => {
-                self.estimated_cost_usd = Some(self.estimated_cost_usd.unwrap_or(0.0) + usd)
+                self.estimated_cost_usd = Some(self.estimated_cost_usd.unwrap_or(0.0) + usd);
             }
             None => self.unpriced_calls += 1,
         }
@@ -284,7 +284,9 @@ fn resolve_range(
 fn parse_instant(name: &str, text: &str) -> Result<DateTime<Utc>, String> {
     DateTime::parse_from_rfc3339(text)
         .map(|instant| instant.with_timezone(&Utc))
-        .map_err(|_| format!("{name} must be an RFC 3339 time, such as 2026-10-01T00:00:00Z"))
+        .map_err(|error| {
+            format!("{name} must be an RFC 3339 time, such as 2026-10-01T00:00:00Z: {error}")
+        })
 }
 
 /// The `limit` a request names: at least one, at most [`MAX_LIMIT`].
@@ -303,7 +305,7 @@ fn parse_limit(text: Option<&str>) -> Result<usize, String> {
 fn parse_component(text: Option<&str>) -> Result<Option<&str>, String> {
     match text {
         None => Ok(None),
-        Some(name) if UsageComponent::NAMES.iter().any(|known| *known == name) => Ok(Some(name)),
+        Some(name) if UsageComponent::NAMES.contains(&name) => Ok(Some(name)),
         Some(name) => Err(format!(
             "component must be one of {}, not '{name}'",
             UsageComponent::NAMES.join(", ")
@@ -426,14 +428,14 @@ mod tests {
         }
     }
 
-    fn counts(uncached: u32, cache_read: u32, cache_write: u32, output: u32) -> Option<Usage> {
-        Some(Usage {
+    fn counts(uncached: u32, cache_read: u32, cache_write: u32, output: u32) -> Usage {
+        Usage {
             uncached_input_tokens: Some(uncached),
             cache_read_tokens: Some(cache_read),
             cache_write_tokens: Some(cache_write),
             output_tokens: Some(output),
             ..Default::default()
-        })
+        }
     }
 
     fn no_price(_: &UsageRecord) -> Option<f64> {
@@ -534,7 +536,7 @@ mod tests {
                 "m",
                 "2026-10-02T09:00:00Z",
                 AttemptOutcome::Succeeded,
-                counts(10, 0, 0, 5),
+                Some(counts(10, 0, 0, 5)),
             ),
             record(
                 UsageComponent::Main,
@@ -542,7 +544,7 @@ mod tests {
                 "m",
                 "2026-10-01T09:00:00Z",
                 AttemptOutcome::Succeeded,
-                counts(1, 2, 3, 4),
+                Some(counts(1, 2, 3, 4)),
             ),
             record(
                 UsageComponent::Main,
@@ -550,13 +552,13 @@ mod tests {
                 "m",
                 "2026-10-01T10:00:00Z",
                 AttemptOutcome::Succeeded,
-                counts(5, 6, 7, 8),
+                Some(counts(5, 6, 7, 8)),
             ),
         ];
         let summary = summarize(&records, GroupBy::Component, no_price);
         let keys: Vec<&str> = summary.groups.iter().map(|g| g.key.as_str()).collect();
         assert_eq!(keys, ["main", "web_model"]);
-        let main = &summary.groups[0];
+        let main = summary.groups.first().expect("the main group");
         assert_eq!(main.calls, 2);
         assert_eq!(main.uncached_input_tokens, 6);
         assert_eq!(main.cache_read_tokens, 8);
@@ -577,7 +579,7 @@ mod tests {
                 "opus",
                 "2026-10-01T09:00:00Z",
                 AttemptOutcome::Succeeded,
-                counts(1, 0, 0, 1),
+                Some(counts(1, 0, 0, 1)),
             ),
             record(
                 UsageComponent::Observer,
@@ -585,7 +587,7 @@ mod tests {
                 "opus",
                 "2026-10-01T09:30:00Z",
                 AttemptOutcome::Succeeded,
-                counts(1, 0, 0, 1),
+                Some(counts(1, 0, 0, 1)),
             ),
             record(
                 UsageComponent::Main,
@@ -593,7 +595,7 @@ mod tests {
                 "gpt",
                 "2026-10-01T10:00:00Z",
                 AttemptOutcome::Succeeded,
-                counts(1, 0, 0, 1),
+                Some(counts(1, 0, 0, 1)),
             ),
         ];
         let summary = summarize(&records, GroupBy::Model, no_price);
@@ -650,10 +652,13 @@ mod tests {
             "m",
             "2026-10-01T09:00:00Z",
             AttemptOutcome::Succeeded,
-            counts(500, 250, 250, 10),
+            Some(counts(500, 250, 250, 10)),
         )];
         let summary = summarize(&records, GroupBy::Component, no_price);
-        assert_eq!(summary.groups[0].cache_hit_rate, Some(0.25));
+        assert_eq!(
+            summary.groups.first().expect("a group").cache_hit_rate,
+            Some(0.25)
+        );
         assert_eq!(summary.total.cache_hit_rate, Some(0.25));
     }
 
@@ -674,11 +679,14 @@ mod tests {
                 "m",
                 "2026-10-01T09:05:00Z",
                 AttemptOutcome::Succeeded,
-                counts(0, 0, 0, 40),
+                Some(counts(0, 0, 0, 40)),
             ),
         ];
         let summary = summarize(&records, GroupBy::Component, no_price);
-        assert_eq!(summary.groups[0].cache_hit_rate, None);
+        assert_eq!(
+            summary.groups.first().expect("a group").cache_hit_rate,
+            None
+        );
         assert_eq!(summary.total.cache_hit_rate, None);
     }
 
@@ -691,7 +699,7 @@ mod tests {
                 "m",
                 "2026-10-01T09:00:00Z",
                 AttemptOutcome::Succeeded,
-                counts(1, 0, 0, 1),
+                Some(counts(1, 0, 0, 1)),
             ),
             record(
                 UsageComponent::Main,
@@ -699,7 +707,7 @@ mod tests {
                 "m",
                 "2026-10-01T09:01:00Z",
                 AttemptOutcome::Succeeded,
-                counts(1, 0, 0, 1),
+                Some(counts(1, 0, 0, 1)),
             ),
             record(
                 UsageComponent::Main,
@@ -707,7 +715,7 @@ mod tests {
                 "m",
                 "2026-10-01T09:02:00Z",
                 AttemptOutcome::Succeeded,
-                counts(1, 0, 0, 1),
+                Some(counts(1, 0, 0, 1)),
             ),
             record(
                 UsageComponent::Main,
@@ -720,11 +728,11 @@ mod tests {
         ];
         let cost = |record: &UsageRecord| (record.provider == "priced").then_some(0.25);
         let summary = summarize(&records, GroupBy::Model, cost);
-        let priced = &summary.groups[1];
+        let priced = summary.groups.get(1).expect("the priced group");
         assert_eq!(priced.key, "priced/m");
         assert_eq!(priced.estimated_cost_usd, Some(0.5));
         assert_eq!(priced.unpriced_calls, 0);
-        let free = &summary.groups[0];
+        let free = summary.groups.first().expect("the free group");
         assert_eq!(free.key, "free/m");
         assert_eq!(free.estimated_cost_usd, None);
         assert_eq!(
@@ -738,7 +746,7 @@ mod tests {
     #[test]
     fn a_summary_with_no_records_has_no_groups_and_a_null_rate() {
         let summary = summarize(&[], GroupBy::Component, no_price);
-        assert!(summary.groups.is_empty());
+        assert_eq!(summary.groups.len(), 0);
         assert_eq!(summary.total.calls, 0);
         assert_eq!(summary.total.cache_hit_rate, None);
         assert_eq!(summary.total.estimated_cost_usd, None);
@@ -753,7 +761,7 @@ mod tests {
                 "m",
                 "2026-10-01T09:00:00Z",
                 AttemptOutcome::Failed,
-                counts(4, 0, 0, 0),
+                Some(counts(4, 0, 0, 0)),
             ),
             record(
                 UsageComponent::Main,
@@ -761,7 +769,7 @@ mod tests {
                 "m",
                 "2026-10-01T09:01:00Z",
                 AttemptOutcome::Succeeded,
-                counts(4, 0, 0, 2),
+                Some(counts(4, 0, 0, 2)),
             ),
         ];
         let summary = summarize(&records, GroupBy::Component, no_price);

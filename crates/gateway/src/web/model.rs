@@ -309,20 +309,20 @@ async fn run_completion(
                 || model_label.to_string(),
                 |attempt| format!("{}/{}", attempt.provider, attempt.model),
             );
-            let usage = UsageResponse::from(resp.usage.unwrap_or_default());
+            let reported = UsageResponse::from(resp.usage.unwrap_or_default());
             tracing::info!(
                 artifact = identity_label,
                 model = %answered_by,
                 attempts = resp.attempts.len(),
-                input_tokens = usage.input_tokens,
-                output_tokens = usage.output_tokens,
+                input_tokens = reported.input_tokens,
+                output_tokens = reported.output_tokens,
                 "model call completed"
             );
             Json(ModelCompleteResponse {
                 content: resp.content,
                 json,
                 model: answered_by,
-                usage,
+                usage: reported,
             })
             .into_response()
         }
