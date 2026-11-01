@@ -859,46 +859,39 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn real_streams_failing_over_mid_response_restart_exactly_once() {
-        use crate::providers::anthropic::AnthropicClient;
-        use crate::test_support::{ScriptedServer, sse_response};
-        use crate::{HttpClientConfig, SharedHttpClient};
-        use residuum_config::RetryConfig;
+    /// One server-sent event, framed as the Anthropic stream sends it.
+    fn sse(name: &str, data: &str) -> String {
+        format!("event: {name}\ndata: {data}\n\n")
+    }
 
-        fn sse(name: &str, data: &str) -> String {
-            format!("event: {name}\ndata: {data}\n\n")
-        }
-        let start = sse(
-            "message_start",
-            r#"{"type":"message_start","message":{"usage":{"input_tokens":3,"output_tokens":1}}}"#,
-        );
-        let open_text = sse(
-            "content_block_start",
-            r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
-        );
-        let text = |t: &str| {
+    /// The events that open an Anthropic answer: `message_start`, then a text block.
+    fn anthropic_stream_open() -> String {
+        [
             sse(
-                "content_block_delta",
-                &format!(
-                    r#"{{"type":"content_block_delta","index":0,"delta":{{"type":"text_delta","text":"{t}"}}}}"#
-                ),
-            )
-        };
-        let primary_stream = [
-            start.clone(),
-            open_text.clone(),
-            text("half"),
+                "message_start",
+                r#"{"type":"message_start","message":{"usage":{"input_tokens":3,"output_tokens":1}}}"#,
+            ),
             sse(
-                "error",
-                r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#,
+                "content_block_start",
+                r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
             ),
         ]
-        .concat();
-        let fallback_stream = [
-            start,
-            open_text,
-            text("the whole answer"),
+        .concat()
+    }
+
+    /// A text delta on the answer's first content block.
+    fn anthropic_text_delta(text: &str) -> String {
+        sse(
+            "content_block_delta",
+            &format!(
+                r#"{{"type":"content_block_delta","index":0,"delta":{{"type":"text_delta","text":"{text}"}}}}"#
+            ),
+        )
+    }
+
+    /// The events that close a complete Anthropic answer with `end_turn`.
+    fn anthropic_stream_close() -> String {
+        [
             sse(
                 "content_block_stop",
                 r#"{"type":"content_block_stop","index":0}"#,
@@ -908,6 +901,30 @@ mod tests {
                 r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":4}}"#,
             ),
             sse("message_stop", r#"{"type":"message_stop"}"#),
+        ]
+        .concat()
+    }
+
+    #[tokio::test]
+    async fn real_streams_failing_over_mid_response_restart_exactly_once() {
+        use crate::providers::anthropic::AnthropicClient;
+        use crate::test_support::{ScriptedServer, sse_response};
+        use crate::{HttpClientConfig, SharedHttpClient};
+        use residuum_config::RetryConfig;
+
+        let primary_stream = [
+            anthropic_stream_open(),
+            anthropic_text_delta("half"),
+            sse(
+                "error",
+                r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#,
+            ),
+        ]
+        .concat();
+        let fallback_stream = [
+            anthropic_stream_open(),
+            anthropic_text_delta("the whole answer"),
+            anthropic_stream_close(),
         ]
         .concat();
         let primary_server = ScriptedServer::start(vec![sse_response(&[primary_stream])]).await;
