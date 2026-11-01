@@ -30,7 +30,9 @@ use residuum_config::BackgroundConfig;
 use residuum_tracing_service::{ClientContext, TracingService};
 
 use super::messaging::{AgentMessenger, DeliveryOutcome, PendingInput};
-use super::session_memory::{SessionMemory, SessionMemoryEnv, complete_session_memory};
+use super::session_memory::{
+    SessionMemory, SessionMemoryEnv, TimedMessage, complete_session_memory,
+};
 use super::store::{RunTranscriptSink, SessionStore};
 use super::subagent::{SessionTurnIdentity, SubAgentResources, TurnKickoff, execute_subagent};
 use super::types::{SubAgentConfig, truncate_prompt_preview};
@@ -585,15 +587,15 @@ async fn recover_from_panic(
     )
     .await;
 
-    let mut transcript = env
+    let lines = env
         .store
-        .read_incremental_transcript(&info.run_id, info.started_at)
+        .read_transcript_lines(&info.run_id, info.started_at)
         .await;
 
     let episode_id = if let Some(extras) = mem_extras.as_ref() {
-        let summary = transcript
+        let summary = lines
             .last()
-            .map(|m| m.content.clone())
+            .map(|line| line.message.content.clone())
             .unwrap_or_default();
         let mem_env = SessionMemoryEnv {
             observer: extras.observer.as_ref(),
@@ -607,10 +609,16 @@ async fn recover_from_panic(
             info.run_id.clone(),
             info.category.as_str(),
         );
-        complete_session_memory(tag, &summary, &transcript, SessionMemory::new(), &mem_env).await
+        let timed: Vec<_> = lines
+            .iter()
+            .map(super::store::TranscriptLine::timed)
+            .collect();
+        complete_session_memory(tag, &summary, &timed, SessionMemory::new(), &mem_env).await
     } else {
         None
     };
+    let mut transcript: Vec<residuum_inference::Message> =
+        lines.into_iter().map(|line| line.message).collect();
 
     let status = AgentResultStatus::Failed {
         error: format!("session task panicked: {panic_msg}"),
@@ -797,7 +805,7 @@ async fn after_turn(
     // observation on completion.
     if let Some(res) = resources {
         let mem_env = session_memory_env(res, env.tz);
-        memory.maybe_stage(history.own(), &mem_env).await;
+        memory.maybe_stage(&history.own_timed(), &mem_env).await;
     }
     let recent_messages = &mut history.messages;
 
@@ -840,6 +848,18 @@ impl RunHistory {
     /// The messages this run produced itself, after anything it carried in.
     fn own(&self) -> &[residuum_inference::Message] {
         self.messages.messages_since(self.carried)
+    }
+
+    /// [`Self::own`], each message with the time it entered the history.
+    fn own_timed(&self) -> Vec<TimedMessage<'_>> {
+        self.own()
+            .iter()
+            .zip(self.messages.recorded_at_since(self.carried))
+            .map(|(message, at)| TimedMessage {
+                message,
+                recorded_at: Some(*at),
+            })
+            .collect()
     }
 }
 
@@ -1074,7 +1094,7 @@ async fn finish_run(
             info.run_id.clone(),
             info.category.as_str(),
         );
-        complete_session_memory(tag, &summary, history.own(), memory, &mem_env).await
+        complete_session_memory(tag, &summary, &history.own_timed(), memory, &mem_env).await
     } else {
         None
     };
