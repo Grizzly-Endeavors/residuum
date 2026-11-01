@@ -123,11 +123,11 @@ A relative `path` resolves against the agent's workspace root, not the process's
 
 **Source:** `exec.rs` · `ExecTool`
 
-**Description sent to LLM:**
-> Execute a shell command and return its output. Commands run via `sh -c` (Unix) or `cmd /C` (Windows) with a configurable timeout (default 120 seconds). Output over 30000 bytes keeps the start of stdout and the end of stderr (and the end of stdout when the command fails) and says how many bytes were left out. Terminal colour codes are removed. Use `keys` to expose agent keys as environment variables (see agent_keys_list); use `store_output_as` to store stdout as a new agent key instead of returning it.
+**Description sent to LLM (Unix):**
+> Execute a shell command and return its output. Commands run via `sh -c` with a configurable timeout (default 120 seconds). Output over 30000 bytes keeps the start of stdout and the end of stderr (and the end of stdout when the command fails) and says how many bytes were left out. Terminal colour codes are removed. Use `keys` to expose agent keys as environment variables (see agent_keys_list); use `store_output_as` to store stdout as a new agent key instead of returning it.
 
 **Description sent to LLM (Windows):**
-> Execute a shell command and return its output. Commands run via `cmd /C` with a configurable timeout (default 120 seconds). Use `keys` to expose agent keys as environment variables (see agent_keys_list); use `store_output_as` to store stdout as a new agent key instead of returning it.
+> Execute a shell command and return its output. Commands run via `cmd /C` with a configurable timeout (default 120 seconds). Output over 30000 bytes keeps the start of stdout and the end of stderr (and the end of stdout when the command fails) and says how many bytes were left out. Terminal colour codes are removed. Use `keys` to expose agent keys as environment variables (see agent_keys_list); use `store_output_as` to store stdout as a new agent key instead of returning it.
 
 Both forms are listed because the description reflects the platform the binary was built for.
 
