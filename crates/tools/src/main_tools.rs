@@ -337,12 +337,15 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let h = RegistryHarness::build(dir.path()).await;
 
+        // A Windows checkout with autocrlf turns TOOLS.md's line endings into
+        // CRLF, while the descriptions are LF, so compare on LF.
+        let tools_md = TOOLS_MD.replace("\r\n", "\n");
         let definitions = build_main_registry(&h).definitions();
         assert!(!definitions.is_empty(), "main registers no tools");
         for definition in definitions {
             let expected = format!("\n{}\n", quote_as_tools_md(&definition.description));
             assert!(
-                TOOLS_MD.contains(&expected),
+                tools_md.contains(&expected),
                 "crates/tools/src/TOOLS.md does not quote the current description of `{}`: \
                  update that tool's \"Description sent to LLM\" block to match its \
                  definition() exactly",
