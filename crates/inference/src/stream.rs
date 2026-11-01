@@ -199,7 +199,7 @@ pub(crate) async fn read_sse(
     let mut body = response.bytes_stream();
     let mut decoder = SseDecoder::default();
     while let Some(chunk) = body.next().await {
-        let bytes = chunk.map_err(|e| map_stream_read_error(&e, idle_secs))?;
+        let bytes = chunk.map_err(|e| map_stream_read_error(e, idle_secs))?;
         for event in decoder.push(&bytes) {
             if matches!(on_event(event)?, Flow::Done) {
                 return Ok(());
@@ -222,7 +222,7 @@ pub(crate) async fn read_ndjson(
     let mut body = response.bytes_stream();
     let mut buffer = LineBuffer::default();
     while let Some(chunk) = body.next().await {
-        let bytes = chunk.map_err(|e| map_stream_read_error(&e, idle_secs))?;
+        let bytes = chunk.map_err(|e| map_stream_read_error(e, idle_secs))?;
         for line in buffer.push(&bytes) {
             if !line.trim().is_empty() && matches!(on_line(&line)?, Flow::Done) {
                 return Ok(());

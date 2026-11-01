@@ -162,7 +162,7 @@ impl SystemOneClient {
                 SystemOneError::Unreachable {
                     provider: provider.clone(),
                     url: self.endpoint.base_url.clone(),
-                    detail: e.to_string(),
+                    detail: e.without_url().to_string(),
                 }
             }
         })?;
@@ -174,7 +174,7 @@ impl SystemOneClient {
                 .map_err(|e| SystemOneError::Unreachable {
                     provider: provider.clone(),
                     url: self.endpoint.base_url.clone(),
-                    detail: format!("the response was cut off: {e}"),
+                    detail: format!("the response was cut off: {}", e.without_url()),
                 });
         }
         let body = read_error_body(response).await;
