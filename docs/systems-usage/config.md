@@ -17,7 +17,7 @@ Everything else lives in the agent's own `config/` directory (`~/.residuum/<agen
 │   ├── a2a-keys.toml, a2a-keys.lock
 │   ├── push-vapid.key, push-devices.json
 │   ├── remote-access.json
-│   ├── logs/, bin/, checkpoints/
+│   ├── logs/, bin/, checkpoints/, tool-results/
 │   ├── residuum.pid, residuum.lock, residuum.ready, residuum.startup-error, crash.log
 │   └── *.last-known-good.toml (hub's and each agent's), update markers
 └── <agent-name>/              # the agent's directory, and its workspace root
