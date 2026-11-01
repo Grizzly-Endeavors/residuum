@@ -10,11 +10,10 @@
 //! restart that persists and reloads the history, and check every request
 //! body against the one before it.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::Mutex;
 
 use async_trait::async_trait;
-use serde::Deserialize;
 use serde_json::value::RawValue;
 use serde_json::{Value, json};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -26,6 +25,7 @@ use residuum_bus::MessageEvent;
 use residuum_bus::interrupt::Interrupt;
 use residuum_bus::origin::MessageOrigin;
 use residuum_config::{ThinkingConfig, ThinkingLevel};
+use residuum_core::testing::log::EventLog;
 use residuum_inference::{
     CacheHints, CacheRetention, CompletionOptions, ImageData, InferenceError, InferenceProvider,
     InferenceResponse, Message, StreamSink, ToolDefinition,
@@ -108,17 +108,22 @@ struct Wire {
     replies: [Value; 4],
 }
 
-/// A request body's parts in the order Anthropic caches them, as the exact
-/// bytes sent. An OpenAI-compatible body carries its system prompt as the
-/// first message, so `system` is `None` there.
-#[derive(Deserialize)]
-struct WireParts<'a> {
-    #[serde(borrow)]
-    tools: Option<&'a RawValue>,
-    #[serde(borrow)]
-    system: Option<&'a RawValue>,
-    #[serde(borrow)]
+/// A request body as the exact bytes sent: each top-level field, and each
+/// message of `messages`. Every field is compared, so one that varies between
+/// calls fails the test whatever it is (a cache-relevant `thinking`,
+/// `tool_choice` or `system`, or one a provider adds later).
+struct Body<'a> {
+    fields: BTreeMap<&'a str, &'a RawValue>,
     messages: Vec<&'a RawValue>,
+}
+
+impl<'a> Body<'a> {
+    fn parse(json: &'a str) -> Self {
+        let fields: BTreeMap<&'a str, &'a RawValue> = serde_json::from_str(json).unwrap();
+        let raw_messages: &'a RawValue = fields["messages"];
+        let messages: Vec<&'a RawValue> = serde_json::from_str(raw_messages.get()).unwrap();
+        Self { fields, messages }
+    }
 }
 
 fn inbound(id: &str, content: &str) -> MessageEvent {
@@ -258,28 +263,34 @@ async fn converse(wire: &Wire) -> Vec<String> {
         .collect()
 }
 
-/// Assert each body repeats the previous body's tools, system prompt and
-/// messages byte for byte, and appends at least one message.
+/// Assert each body repeats the previous body's top-level fields byte for
+/// byte, apart from `messages`, repeats its messages byte for byte, and
+/// appends at least one message.
 fn assert_each_request_extends_the_last(wire: &Wire, bodies: &[String]) {
     for (call, pair) in bodies.windows(2).enumerate() {
         let [earlier, later] = pair else {
             unreachable!("windows(2) yields pairs");
         };
-        let earlier: WireParts<'_> = serde_json::from_str(earlier).unwrap();
-        let later: WireParts<'_> = serde_json::from_str(later).unwrap();
+        let earlier = Body::parse(earlier);
+        let later = Body::parse(later);
         let (first, next) = (call + 1, call + 2);
         assert_eq!(
-            earlier.tools.map(RawValue::get),
-            later.tools.map(RawValue::get),
-            "{}: call {next} sends call {first}'s tools unchanged",
+            later.fields.keys().collect::<Vec<_>>(),
+            earlier.fields.keys().collect::<Vec<_>>(),
+            "{}: call {next} has call {first}'s top-level fields",
             wire.name
         );
-        assert_eq!(
-            earlier.system.map(RawValue::get),
-            later.system.map(RawValue::get),
-            "{}: call {next} sends call {first}'s system prompt unchanged",
-            wire.name
-        );
+        for (key, sent) in &earlier.fields {
+            if *key == "messages" {
+                continue;
+            }
+            assert_eq!(
+                later.fields.get(key).map(|resent| resent.get()),
+                Some(sent.get()),
+                "{}: call {next} sends call {first}'s `{key}` unchanged",
+                wire.name
+            );
+        }
         assert!(
             later.messages.len() > earlier.messages.len(),
             "{}: call {next} appends to call {first}'s {} messages",
@@ -295,6 +306,20 @@ fn assert_each_request_extends_the_last(wire: &Wire, bodies: &[String]) {
             );
         }
     }
+}
+
+/// Assert the conversation logged no cache break at `info` or `warn`: it only
+/// appends, so the prefix watch stays quiet through every part of it.
+fn assert_no_cache_break_warnings(log: &EventLog) {
+    let breaks: Vec<_> = log
+        .matching("prompt cache prefix changed")
+        .into_iter()
+        .filter(|event| matches!(event.level, tracing::Level::INFO | tracing::Level::WARN))
+        .collect();
+    assert!(
+        breaks.is_empty(),
+        "a conversation that only appends logs no cache break at info or warn: {breaks:?}"
+    );
 }
 
 /// The options of a main-conversation turn: keyed to the conversation.
@@ -401,11 +426,14 @@ fn openai_compatible_wire() -> Wire {
 
 #[tokio::test]
 async fn anthropic_requests_extend_each_other_across_turns_and_a_restart() {
+    let log = EventLog::default();
+    let _capture = log.capture();
     let wire = anthropic_wire();
     let bodies = converse(&wire).await;
 
     assert_eq!(bodies.len(), 4, "two calls in turn one, one each after");
     assert_each_request_extends_the_last(&wire, &bodies);
+    assert_no_cache_break_warnings(&log);
     let after_restart = bodies.last().unwrap();
     for (sent, what) in [
         ("\"type\":\"image\"", "the picture"),
@@ -427,11 +455,14 @@ async fn anthropic_requests_extend_each_other_across_turns_and_a_restart() {
 
 #[tokio::test]
 async fn openai_compatible_requests_extend_each_other_across_turns_and_a_restart() {
+    let log = EventLog::default();
+    let _capture = log.capture();
     let wire = openai_compatible_wire();
     let bodies = converse(&wire).await;
 
     assert_eq!(bodies.len(), 4, "two calls in turn one, one each after");
     assert_each_request_extends_the_last(&wire, &bodies);
+    assert_no_cache_break_warnings(&log);
     let after_restart = bodies.last().unwrap();
     for (sent, what) in [
         ("\"image_url\"", "the picture"),
