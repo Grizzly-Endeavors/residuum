@@ -609,14 +609,16 @@ fn exec_grants(sources: &[SourceFile]) -> BTreeMap<String, Vec<(usize, String)>>
     found
 }
 
-/// The code that assembles a model request, or feeds one. An entry ending in
-/// `/` covers every file under that directory; any other entry is one file. A
-/// `HashMap` or `HashSet` iterates in an order that changes from process to
-/// process, so a request built from one changes its bytes between runs and
-/// misses the provider's prompt cache.
+/// The code that assembles a model request, or sets the tools it offers. An
+/// entry ending in `/` covers every file under that directory; any other entry
+/// is one file. A `HashMap` or `HashSet` iterates in an order that changes from
+/// process to process, so a request built from one changes its bytes between
+/// runs and misses the provider's prompt cache.
 const REQUEST_ORDER_PATHS: &[&str] = &[
-    "crates/agent/src/context/",
-    "crates/agent/src/tool.rs",
+    "crates/agent/src/",
+    "crates/tools/src/registration.rs",
+    "crates/tools/src/main_tools.rs",
+    "crates/tools/src/registry.rs",
     "crates/mcp/src/registry.rs",
     "crates/inference/src/providers/",
 ];
@@ -1369,7 +1371,7 @@ mod tests {
         }
         assert!(
             problems.is_empty(),
-            "request-assembly code names an unordered collection. Use BTreeMap or BTreeSet, whose iteration order is fixed. A collection that never reaches a model request belongs in a file outside REQUEST_ORDER_PATHS in src/testing/source_scan.rs, with that file's reason.\n{problems}"
+            "code that builds a model request or sets its tools names an unordered collection (file:line below). A HashMap or HashSet iterates in an order that changes between processes, so the request's bytes change and miss the provider's prompt cache. Use BTreeMap or BTreeSet, whose iteration order is fixed. If an entry in REQUEST_ORDER_PATHS (src/testing/source_scan.rs) holds code that never feeds a model request, narrow that entry and say why in its comment.\n{problems}"
         );
     }
 
@@ -1404,6 +1406,19 @@ mod tests {
             "crates/agent/src/turn.rs",
             "crates/agent/src/turn_conversation_tests.rs"
         ));
+        for covered in [
+            "crates/agent/src/turn.rs",
+            "crates/tools/src/registration.rs",
+            "crates/tools/src/main_tools.rs",
+            "crates/tools/src/registry.rs",
+        ] {
+            assert!(
+                REQUEST_ORDER_PATHS
+                    .iter()
+                    .any(|entry| request_order_covers(entry, covered)),
+                "{covered} assembles or sets the tools of a model request, so it is scanned"
+            );
+        }
     }
 
     /// The build version and commit are read in one place, `src/lib.rs`, which
