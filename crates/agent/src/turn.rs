@@ -916,6 +916,7 @@ async fn request_model_response(
         resources.options,
     )
     .await;
+    recent_messages.watch_request(&request, call > 0);
 
     match call_model(resources, events, &request, call).await? {
         ModelCall::Completed { response, streamed } => Ok(Some((response, streamed))),

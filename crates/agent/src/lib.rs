@@ -8,6 +8,7 @@ pub mod auto_mode;
 pub mod context;
 mod core;
 pub mod hop;
+mod prefix_watch;
 pub mod recent_messages;
 mod stream;
 pub mod subconscious;
