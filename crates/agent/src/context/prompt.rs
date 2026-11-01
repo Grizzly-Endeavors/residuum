@@ -1,9 +1,11 @@
 //! System prompt content builders.
 
+use std::ops::Range;
+
 use residuum_inference::Message;
 use residuum_workspace::identity::IdentityFiles;
 
-use super::types::{MemoryContext, SkillsContext};
+use super::types::{MemoryContext, SectionKind, SkillsContext};
 
 fn section(tag: &str, content: &str) -> String {
     format!("<{tag}>\n{content}\n</{tag}>")
@@ -37,6 +39,15 @@ Extend, don't just operate: authoring pulses and skills for the user's recurring
 /// Separates the system prompt's sections.
 const SECTION_SEPARATOR: &str = "\n\n";
 
+/// The system prompt message, and what each part of its text is.
+pub(super) struct SystemPrompt {
+    pub(super) message: Message,
+    /// Each section's kind and the byte range of the message's text it
+    /// covers, the separator ahead of it included: in order, together
+    /// covering the whole text.
+    pub(super) sections: Vec<(SectionKind, Range<usize>)>,
+}
+
 /// Build the system prompt message from identity files, memory and skills.
 ///
 /// Assembly order:
@@ -64,37 +75,37 @@ const SECTION_SEPARATOR: &str = "\n\n";
 /// models) get the same effect from the order alone. The skills index (10)
 /// comes before the active skills (11) so activating a skill leaves the
 /// index cached.
-pub(super) fn build_system_message(
+pub(super) fn build_system_prompt(
     identity: &IdentityFiles,
     memory_ctx: &MemoryContext<'_>,
     skills_ctx: &SkillsContext<'_>,
-) -> Message {
+) -> SystemPrompt {
     let mut stable = Vec::new();
 
     if let Some(soul) = &identity.soul {
-        stable.push(section("SOUL.md", soul));
+        stable.push((SectionKind::Identity, section("SOUL.md", soul)));
     }
 
     if let Some(agents) = &identity.agents {
-        stable.push(section("AGENTS.md", agents));
+        stable.push((SectionKind::Identity, section("AGENTS.md", agents)));
     }
 
-    stable.push(section("HARNESS", HARNESS));
+    stable.push((SectionKind::Harness, section("HARNESS", HARNESS)));
 
     if let Some(bootstrap) = &identity.bootstrap {
-        stable.push(section("BOOTSTRAP.md", bootstrap));
+        stable.push((SectionKind::Identity, section("BOOTSTRAP.md", bootstrap)));
     }
 
     if let Some(user) = &identity.user {
-        stable.push(section("USER.md", user));
+        stable.push((SectionKind::Identity, section("USER.md", user)));
     }
 
     if let Some(wiki_index) = &identity.wiki_index {
-        stable.push(section("WIKI_INDEX", wiki_index));
+        stable.push((SectionKind::Identity, section("WIKI_INDEX", wiki_index)));
     }
 
     if let Some(team) = &identity.team {
-        stable.push(section("TEAM", team));
+        stable.push((SectionKind::Identity, section("TEAM", team)));
     }
 
     let mut changing = Vec::new();
@@ -102,34 +113,51 @@ pub(super) fn build_system_message(
     if let Some(obs) = memory_ctx.observations
         && !obs.is_empty()
     {
-        changing.push(section("OBSERVATION_LOG", obs));
+        changing.push((SectionKind::Memory, section("OBSERVATION_LOG", obs)));
     }
 
     if let Some(ctx) = memory_ctx.recent_context
         && !ctx.is_empty()
     {
-        changing.push(section("RECENT_CONTEXT", ctx));
+        changing.push((SectionKind::Memory, section("RECENT_CONTEXT", ctx)));
     }
 
     if let Some(idx) = skills_ctx.index
         && !idx.is_empty()
     {
-        changing.push(section("SKILLS_INDEX", idx));
+        changing.push((SectionKind::SkillsIndex, section("SKILLS_INDEX", idx)));
     }
 
     if let Some(active) = skills_ctx.active_instructions
         && !active.is_empty()
     {
-        changing.push(section("ACTIVE_SKILLS", active));
+        changing.push((SectionKind::ActiveSkills, section("ACTIVE_SKILLS", active)));
     }
 
+    let mut sections = Vec::with_capacity(stable.len() + changing.len());
+    let mut stable_text = String::new();
+    for (position, (kind, part)) in stable.iter().enumerate() {
+        let start = stable_text.len();
+        if position > 0 {
+            stable_text.push_str(SECTION_SEPARATOR);
+        }
+        stable_text.push_str(part);
+        sections.push((*kind, start..stable_text.len()));
+    }
     // The separator opens the changing part rather than closing the stable
     // one, so the stable part's bytes don't depend on what follows it.
-    let rest: String = changing
-        .iter()
-        .flat_map(|part| [SECTION_SEPARATOR, part.as_str()])
-        .collect();
-    Message::system_with_cache_boundary(stable.join(SECTION_SEPARATOR), &rest)
+    let boundary = stable_text.len();
+    let mut rest = String::new();
+    for (kind, part) in &changing {
+        let start = boundary + rest.len();
+        rest.push_str(SECTION_SEPARATOR);
+        rest.push_str(part);
+        sections.push((*kind, start..boundary + rest.len()));
+    }
+    SystemPrompt {
+        message: Message::system_with_cache_boundary(stable_text, &rest),
+        sections,
+    }
 }
 
 #[cfg(test)]
@@ -142,7 +170,9 @@ mod tests {
         memory_ctx: &MemoryContext<'_>,
         skills_ctx: &SkillsContext<'_>,
     ) -> String {
-        build_system_message(identity, memory_ctx, skills_ctx).content
+        build_system_prompt(identity, memory_ctx, skills_ctx)
+            .message
+            .content
     }
 
     /// The system message's text on either side of its cache boundary.
@@ -332,7 +362,7 @@ mod tests {
             index: Some("index"),
             active_instructions: Some("active"),
         };
-        let message = build_system_message(&identity, &mem, &skills);
+        let message = build_system_prompt(&identity, &mem, &skills).message;
 
         let (stable, rest) = split(&message);
         assert!(stable.ends_with("</TEAM>"), "{stable}");
@@ -349,6 +379,55 @@ mod tests {
             );
             assert!(rest.contains(changing), "{changing} is after the boundary");
         }
+    }
+
+    #[test]
+    fn the_sections_cover_the_whole_text_in_order_with_their_kinds() {
+        let identity = IdentityFiles {
+            soul: Some("soul".to_string()),
+            user: Some("user".to_string()),
+            ..IdentityFiles::default()
+        };
+        let mem = MemoryContext {
+            observations: Some("obs"),
+            recent_context: Some("recent"),
+        };
+        let skills = SkillsContext {
+            index: Some("<available_skills/>"),
+            active_instructions: Some("<active_skill/>"),
+        };
+        let prompt = build_system_prompt(&identity, &mem, &skills);
+        let text = &prompt.message.content;
+
+        let kinds: Vec<SectionKind> = prompt.sections.iter().map(|(kind, _)| *kind).collect();
+        assert_eq!(
+            kinds,
+            [
+                SectionKind::Identity,
+                SectionKind::Harness,
+                SectionKind::Identity,
+                SectionKind::Memory,
+                SectionKind::Memory,
+                SectionKind::SkillsIndex,
+                SectionKind::ActiveSkills,
+            ]
+        );
+        let mut end = 0;
+        for (_, range) in &prompt.sections {
+            assert_eq!(range.start, end, "each section starts where the last ended");
+            end = range.end;
+        }
+        assert_eq!(end, text.len(), "the sections cover the whole text");
+        let harness = prompt
+            .sections
+            .get(1)
+            .and_then(|(_, range)| text.get(range.clone()))
+            .unwrap();
+        assert_eq!(
+            harness,
+            format!("\n\n{}", section("HARNESS", HARNESS)),
+            "a section's range holds its text and the separator ahead of it"
+        );
     }
 
     #[test]
@@ -379,12 +458,13 @@ mod tests {
             soul: Some("soul".to_string()),
             ..IdentityFiles::default()
         };
-        let before = build_system_message(&identity, &no_memory(), &SkillsContext::default());
+        let before =
+            build_system_prompt(&identity, &no_memory(), &SkillsContext::default()).message;
         let mem = MemoryContext {
             observations: Some("a new observation"),
             recent_context: None,
         };
-        let after = build_system_message(&identity, &mem, &SkillsContext::default());
+        let after = build_system_prompt(&identity, &mem, &SkillsContext::default()).message;
 
         let (stable_before, rest_before) = split(&before);
         let (stable_after, _) = split(&after);

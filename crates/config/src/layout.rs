@@ -113,6 +113,13 @@ impl WorkspaceLayout {
         self.root.join("memory/usage_totals.json")
     }
 
+    /// Path to the main agent's latest context breakdown: what its next
+    /// model request is made of, saved after each turn for the hub to serve.
+    #[must_use]
+    pub fn context_breakdown_json(&self) -> PathBuf {
+        self.root.join("memory/context_breakdown.json")
+    }
+
     /// Directory of per-attempt model usage records, one JSON-lines file per
     /// UTC month (`YYYY-MM.jsonl`), appended after every model call.
     #[must_use]
@@ -546,6 +553,11 @@ mod tests {
             layout.usage_records_dir(),
             PathBuf::from("/tmp/ws/memory/usage"),
             "usage_records_dir path"
+        );
+        assert_eq!(
+            layout.context_breakdown_json(),
+            PathBuf::from("/tmp/ws/memory/context_breakdown.json"),
+            "context_breakdown_json path"
         );
     }
 

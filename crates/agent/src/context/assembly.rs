@@ -1,56 +1,14 @@
 //! System prompt assembly: combines identity, memory, and context into messages.
 
 use residuum_inference::Message;
-use residuum_memory::tokens::{estimate_message_tokens, estimate_tokens};
 use residuum_workspace::identity::IdentityFiles;
 
 use super::super::recent_messages::RecentMessages;
-use super::prompt::build_system_message;
-use super::types::{ContextBreakdown, MemoryContext, PromptContext};
+use super::prompt::build_system_prompt;
+use super::types::{MemoryContext, PromptContext, RequestLayout};
 
-/// Compute a per-section token breakdown for the current agent context.
-pub(crate) fn compute_context_breakdown(
-    identity: &IdentityFiles,
-    memory_ctx: &MemoryContext<'_>,
-    prompt_ctx: &PromptContext<'_>,
-    recent_messages: &RecentMessages,
-    system_tool_tokens: usize,
-    mcp_tool_tokens: usize,
-) -> ContextBreakdown {
-    let identity_tokens = [
-        identity.soul.as_deref(),
-        identity.agents.as_deref(),
-        identity.bootstrap.as_deref(),
-        identity.user.as_deref(),
-        identity.wiki_index.as_deref(),
-        identity.team.as_deref(),
-    ]
-    .into_iter()
-    .flatten()
-    .map(estimate_tokens)
-    .sum();
-
-    let memory_pipeline_tokens = memory_ctx.observations.map_or(0, estimate_tokens)
-        + memory_ctx.recent_context.map_or(0, estimate_tokens);
-
-    let msgs = recent_messages.messages();
-
-    ContextBreakdown {
-        identity_tokens,
-        memory_pipeline_tokens,
-        skills_index_tokens: prompt_ctx.skills.index.map_or(0, estimate_tokens),
-        active_skills_tokens: prompt_ctx
-            .skills
-            .active_instructions
-            .map_or(0, estimate_tokens),
-        system_tool_tokens,
-        mcp_tool_tokens,
-        history_tokens: estimate_message_tokens(msgs),
-        history_count: msgs.len(),
-    }
-}
-
-/// Assemble the full message list for a model call.
+/// Assemble the full message list for a model call, and what each part of
+/// it is (its tool count left for the caller that adds the tools).
 ///
 /// Creates a system message from identity files and observation log content,
 /// then appends the recent messages. A message that carries a status line
@@ -62,7 +20,7 @@ pub(crate) fn assemble_system_prompt(
     recent_messages: &RecentMessages,
     memory_ctx: &MemoryContext<'_>,
     prompt_ctx: &PromptContext<'_>,
-) -> Vec<Message> {
+) -> (Vec<Message>, RequestLayout) {
     let conversation = recent_messages.messages();
     let status_lines = conversation
         .iter()
@@ -70,13 +28,15 @@ pub(crate) fn assemble_system_prompt(
         .count();
     let mut messages = Vec::with_capacity(1 + conversation.len() + status_lines);
 
-    messages.push(build_system_message(
-        identity,
-        memory_ctx,
-        &prompt_ctx.skills,
-    ));
+    let system = build_system_prompt(identity, memory_ctx, &prompt_ctx.skills);
+    messages.push(system.message);
+    let mut layout = RequestLayout {
+        system_sections: system.sections,
+        ..RequestLayout::default()
+    };
     for m in conversation {
         if let Some(line) = &m.status_line {
+            layout.status_lines.insert(messages.len());
             messages.push(Message::system(line.clone()));
         }
         let mut rendered = m.clone();
@@ -86,7 +46,7 @@ pub(crate) fn assemble_system_prompt(
         messages.push(rendered);
     }
 
-    messages
+    (messages, layout)
 }
 
 #[cfg(test)]
@@ -96,7 +56,6 @@ pub(crate) fn assemble_system_prompt(
 )]
 mod tests {
     use super::*;
-    use crate::context::types::SkillsContext;
     use residuum_inference::Role;
 
     fn no_memory() -> MemoryContext<'static> {
@@ -111,7 +70,7 @@ mod tests {
         let identity = IdentityFiles::default();
         let recent = RecentMessages::new();
 
-        let messages =
+        let (messages, _) =
             assemble_system_prompt(&identity, &recent, &no_memory(), &PromptContext::default());
         assert_eq!(messages.len(), 1, "should have system message only");
         assert_eq!(
@@ -135,7 +94,7 @@ mod tests {
         let mut recent = RecentMessages::new();
         recent.push(Message::user("hello"));
 
-        let messages =
+        let (messages, _) =
             assemble_system_prompt(&identity, &recent, &no_memory(), &PromptContext::default());
         assert_eq!(messages.len(), 2, "should have system + user message");
         assert_eq!(
@@ -169,7 +128,7 @@ mod tests {
         recent.push(Message::user("second").with_sender(Some(sender("Sam"))));
         recent.push(Message::user("from the web ui"));
 
-        let messages =
+        let (messages, _) =
             assemble_system_prompt(&identity, &recent, &no_memory(), &PromptContext::default());
         let contents: Vec<&str> = messages[1..].iter().map(|m| m.content.as_str()).collect();
         assert_eq!(
@@ -199,9 +158,14 @@ mod tests {
         recent.push(Message::system("background note"));
         recent.push(stamped_user("second", "[Received: two]"));
 
-        let messages =
+        let (messages, layout) =
             assemble_system_prompt(&identity, &recent, &no_memory(), &PromptContext::default());
 
+        assert_eq!(
+            layout.status_lines.iter().copied().collect::<Vec<_>>(),
+            [1, 5],
+            "the layout names each stored line, and not a system message of the conversation"
+        );
         let rendered: Vec<(Role, &str)> = messages[1..]
             .iter()
             .map(|m| (m.role, m.content.as_str()))
@@ -226,128 +190,8 @@ mod tests {
         let mut recent = RecentMessages::new();
         recent.push(Message::user("hello"));
 
-        let messages =
+        let (messages, _) =
             assemble_system_prompt(&identity, &recent, &no_memory(), &PromptContext::default());
         assert_eq!(messages.len(), 2, "system prompt + user, no status line");
-    }
-
-    #[test]
-    fn context_breakdown_empty_identity_no_messages() {
-        let identity = IdentityFiles::default();
-        let memory = no_memory();
-        let recent = RecentMessages::new();
-
-        let bd =
-            compute_context_breakdown(&identity, &memory, &PromptContext::default(), &recent, 0, 0);
-        assert_eq!(bd.history_count, 0, "no messages should give count 0");
-        assert_eq!(bd.history_tokens, 0, "no messages should give 0 tokens");
-        assert_eq!(bd.identity_tokens, 0, "empty identity should give 0 tokens");
-        assert_eq!(
-            bd.memory_pipeline_tokens, 0,
-            "no memory should give 0 tokens"
-        );
-    }
-
-    #[test]
-    fn context_breakdown_with_identity_has_nonzero_identity_tokens() {
-        let identity = IdentityFiles {
-            soul: Some("I am a helpful assistant.".to_string()),
-            ..IdentityFiles::default()
-        };
-        let memory = no_memory();
-        let recent = RecentMessages::new();
-
-        let bd =
-            compute_context_breakdown(&identity, &memory, &PromptContext::default(), &recent, 0, 0);
-        assert!(
-            bd.identity_tokens > 0,
-            "non-empty identity should give positive identity token count"
-        );
-    }
-
-    #[test]
-    fn context_breakdown_history_count_matches_messages() {
-        let identity = IdentityFiles::default();
-        let memory = no_memory();
-        let mut recent = RecentMessages::new();
-        recent.push(Message::user("hello"));
-        recent.push(Message::assistant("hi there", None));
-
-        let bd =
-            compute_context_breakdown(&identity, &memory, &PromptContext::default(), &recent, 0, 0);
-        assert_eq!(
-            bd.history_count, 2,
-            "history count should match message count"
-        );
-        assert!(
-            bd.history_tokens > 0,
-            "non-empty history should have positive token count"
-        );
-    }
-
-    #[test]
-    fn context_breakdown_memory_counts_separately() {
-        let identity = IdentityFiles::default();
-        let observations = "Episode 1: the user asked about rust.".to_string();
-        let memory = MemoryContext {
-            observations: Some(&observations),
-            recent_context: None,
-        };
-        let recent = RecentMessages::new();
-
-        let bd =
-            compute_context_breakdown(&identity, &memory, &PromptContext::default(), &recent, 0, 0);
-        assert!(
-            bd.memory_pipeline_tokens > 0,
-            "observation content should produce nonzero memory_pipeline_tokens"
-        );
-    }
-
-    #[test]
-    fn context_breakdown_tool_tokens_passed_through() {
-        let identity = IdentityFiles::default();
-        let memory = no_memory();
-        let recent = RecentMessages::new();
-
-        let bd = compute_context_breakdown(
-            &identity,
-            &memory,
-            &PromptContext::default(),
-            &recent,
-            42,
-            7,
-        );
-        assert_eq!(
-            bd.system_tool_tokens, 42,
-            "system_tool_tokens should pass through unchanged"
-        );
-        assert_eq!(
-            bd.mcp_tool_tokens, 7,
-            "mcp_tool_tokens should pass through unchanged"
-        );
-    }
-
-    #[test]
-    fn context_breakdown_prompt_context_tokens() {
-        let identity = IdentityFiles::default();
-        let memory = no_memory();
-        let recent = RecentMessages::new();
-
-        let prompt_ctx = PromptContext {
-            skills: SkillsContext {
-                index: Some("<available_skills/>"),
-                active_instructions: Some("<active_skill>instructions</active_skill>"),
-            },
-        };
-
-        let bd = compute_context_breakdown(&identity, &memory, &prompt_ctx, &recent, 0, 0);
-        assert!(
-            bd.skills_index_tokens > 0,
-            "skills index should produce nonzero tokens"
-        );
-        assert!(
-            bd.active_skills_tokens > 0,
-            "active skills should produce nonzero tokens"
-        );
     }
 }
