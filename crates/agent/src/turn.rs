@@ -939,6 +939,9 @@ async fn request_model_response(
 /// usually the triggering messages were pushed just before this call and are
 /// the last ones, while a rerun of a failed turn starts from the message that
 /// started it, with the failed attempt's work still in history after it.
+///
+/// `status_clock` is `Some` for the main conversation, which stamps each
+/// message folded in mid-turn with its status line.
 #[tracing::instrument(skip_all, fields(operation = "execute_turn"))]
 #[expect(
     clippy::too_many_arguments,
