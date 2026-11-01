@@ -2454,9 +2454,13 @@ mod tests {
         )
         .await
         .unwrap();
-        let body: String = (1..=5_000)
-            .map(|n| format!("row {n} of the dump\n"))
-            .collect();
+        let body = {
+            use std::fmt::Write as _;
+            (1..=5_000).fold(String::new(), |mut text, n| {
+                _ = writeln!(text, "row {n} of the dump");
+                text
+            })
+        };
         let raw = format!("HEAD-MARK sk-live-redactme42\n{body}TAIL-MARK sk-live-redactme42");
         let store = crate::ToolResultStore::new(dir.path().join("tool-results"), "scout");
 

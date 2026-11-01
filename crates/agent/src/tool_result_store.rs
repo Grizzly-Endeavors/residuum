@@ -26,7 +26,7 @@ const TAIL_CHARS: usize = 4_000;
 
 /// How long a saved result is kept before [`ToolResultStore::sweep_expired`]
 /// deletes it.
-const RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+const RETENTION: Duration = Duration::from_hours(7 * 24);
 
 /// Where an agent's oversized tool results are saved.
 #[derive(Debug, Clone)]
@@ -295,7 +295,11 @@ mod tests {
     use super::*;
 
     fn numbered_lines(count: usize) -> String {
-        (1..=count).map(|n| format!("line {n}\n")).collect()
+        use std::fmt::Write as _;
+        (1..=count).fold(String::new(), |mut text, n| {
+            _ = writeln!(text, "line {n}");
+            text
+        })
     }
 
     fn saved_files(dir: &Path) -> Vec<PathBuf> {
@@ -332,7 +336,7 @@ mod tests {
             .await;
 
         assert_eq!(kept, output);
-        assert!(saved_files(store.dir()).is_empty());
+        assert_eq!(saved_files(store.dir()), Vec::<PathBuf>::new());
     }
 
     #[tokio::test]
