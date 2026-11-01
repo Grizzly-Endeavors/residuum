@@ -112,7 +112,7 @@ Each price is in USD per million tokens and has five rates. `input` is for uncac
 
 A model with no price has no estimate at all: local models such as Ollama's, and any model not in the built-in table. An unreported count is treated as zero.
 
-The built-in prices cover the default models of the Anthropic, OpenAI, Gemini and Fireworks providers. Each is the base rate of the provider's published price list. A provider that bills longer prompts higher (Anthropic's Haiku 5.5 above 100,000 input tokens, Gemini 2.5 Pro above 200,000) is estimated at the base rate, so its estimates for those prompts run low until an override states the rate that applies.
+The built-in prices cover a set of current models from the Anthropic, OpenAI, Gemini and Fireworks providers, and a model outside that set has no estimate until a `[pricing]` entry prices it. Each price is the base rate of the provider's published price list. A provider that bills longer prompts higher (Anthropic's Haiku 5.5 above 100,000 input tokens, Gemini 2.5 Pro above 200,000) is estimated at the base rate, so its estimates for those prompts run low until an override states the rate that applies.
 
 To set or correct a price, add a `[pricing]` table to `hub/config.toml`, keyed by the provider kind and model id that usage records carry (`anthropic`, `openai`, `gemini`, `fireworks`, `ollama`, not the name of a `[providers.<name>]` entry):
 
