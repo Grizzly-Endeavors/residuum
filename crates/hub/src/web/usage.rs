@@ -78,24 +78,26 @@ pub(super) struct RecordsResponse {
 }
 
 /// One group of a usage summary: token totals, cache hit rate and cost
-/// across the calls that fall in it.
+/// across the attempts that fall in it.
 #[derive(Debug, Serialize, PartialEq)]
 pub(super) struct UsageGroup {
     key: String,
-    calls: u64,
-    failed_calls: u64,
+    attempts: u64,
+    failed_attempts: u64,
     uncached_input_tokens: u64,
     cache_read_tokens: u64,
     cache_write_tokens: u64,
+    /// The part of `cache_write_tokens` written with a 1-hour TTL.
+    cache_write_long_tokens: u64,
     output_tokens: u64,
     reasoning_tokens: u64,
-    /// Cache reads as a share of all input tokens, `null` when the calls
+    /// Cache reads as a share of all input tokens, `null` when the attempts
     /// reported no input.
     cache_hit_rate: Option<f64>,
-    /// The cost of the priced calls; `null` when none of them was priced.
+    /// The cost of the priced attempts; `null` when none of them was priced.
     estimated_cost_usd: Option<f64>,
-    /// Calls that reported usage but have no price for their model.
-    unpriced_calls: u64,
+    /// Attempts that reported usage but have no price for their model.
+    unpriced_attempts: u64,
 }
 
 /// What a summary groups its calls by.
@@ -139,23 +141,24 @@ pub(super) struct SummaryResponse {
 /// The summed counts of the calls in one group.
 #[derive(Debug, Default)]
 struct Tally {
-    calls: u64,
-    failed_calls: u64,
+    attempts: u64,
+    failed_attempts: u64,
     uncached_input_tokens: u64,
     cache_read_tokens: u64,
     cache_write_tokens: u64,
+    cache_write_long_tokens: u64,
     output_tokens: u64,
     reasoning_tokens: u64,
     estimated_cost_usd: Option<f64>,
-    unpriced_calls: u64,
+    unpriced_attempts: u64,
 }
 
 impl Tally {
     /// Count one call, priced at `cost` when it has a price.
     fn add(&mut self, record: &UsageRecord, cost: Option<f64>) {
-        self.calls += 1;
+        self.attempts += 1;
         if record.outcome == AttemptOutcome::Failed {
-            self.failed_calls += 1;
+            self.failed_attempts += 1;
         }
         let Some(usage) = &record.usage else {
             return;
@@ -163,30 +166,33 @@ impl Tally {
         self.uncached_input_tokens += u64::from(usage.uncached_input_tokens.unwrap_or(0));
         self.cache_read_tokens += u64::from(usage.cache_read_tokens.unwrap_or(0));
         self.cache_write_tokens += u64::from(usage.cache_write_tokens.unwrap_or(0));
+        self.cache_write_long_tokens += u64::from(usage.cache_write_long_tokens.unwrap_or(0));
         self.output_tokens += u64::from(usage.output_tokens.unwrap_or(0));
         self.reasoning_tokens += u64::from(usage.reasoning_tokens.unwrap_or(0));
         match cost {
             Some(usd) => {
                 self.estimated_cost_usd = Some(self.estimated_cost_usd.unwrap_or(0.0) + usd);
             }
-            None => self.unpriced_calls += 1,
+            None => self.unpriced_attempts += 1,
         }
     }
 
     fn into_group(self, key: String) -> UsageGroup {
+        // The cache writes already include the long-TTL part, so it is not added again.
         let input = self.uncached_input_tokens + self.cache_read_tokens + self.cache_write_tokens;
         UsageGroup {
             key,
-            calls: self.calls,
-            failed_calls: self.failed_calls,
+            attempts: self.attempts,
+            failed_attempts: self.failed_attempts,
             uncached_input_tokens: self.uncached_input_tokens,
             cache_read_tokens: self.cache_read_tokens,
             cache_write_tokens: self.cache_write_tokens,
+            cache_write_long_tokens: self.cache_write_long_tokens,
             output_tokens: self.output_tokens,
             reasoning_tokens: self.reasoning_tokens,
             cache_hit_rate: share(self.cache_read_tokens, input),
             estimated_cost_usd: self.estimated_cost_usd,
-            unpriced_calls: self.unpriced_calls,
+            unpriced_attempts: self.unpriced_attempts,
         }
     }
 }
@@ -580,13 +586,13 @@ mod tests {
         let keys: Vec<&str> = summary.groups.iter().map(|g| g.key.as_str()).collect();
         assert_eq!(keys, ["main", "web_model"]);
         let main = summary.groups.first().expect("the main group");
-        assert_eq!(main.calls, 2);
+        assert_eq!(main.attempts, 2);
         assert_eq!(main.uncached_input_tokens, 6);
         assert_eq!(main.cache_read_tokens, 8);
         assert_eq!(main.cache_write_tokens, 10);
         assert_eq!(main.output_tokens, 12);
         assert_eq!(summary.total.key, "total");
-        assert_eq!(summary.total.calls, 3);
+        assert_eq!(summary.total.attempts, 3);
         assert_eq!(summary.total.uncached_input_tokens, 16);
         assert_eq!(summary.total.output_tokens, 17);
     }
@@ -623,7 +629,7 @@ mod tests {
         let keys: Vec<(&str, u64)> = summary
             .groups
             .iter()
-            .map(|g| (g.key.as_str(), g.calls))
+            .map(|g| (g.key.as_str(), g.attempts))
             .collect();
         assert_eq!(keys, [("anthropic/opus", 2), ("openai/gpt", 1)]);
     }
@@ -660,7 +666,7 @@ mod tests {
         let keys: Vec<(&str, u64)> = summary
             .groups
             .iter()
-            .map(|g| (g.key.as_str(), g.calls))
+            .map(|g| (g.key.as_str(), g.attempts))
             .collect();
         assert_eq!(keys, [("2026-10-01", 1), ("2026-10-02", 2)]);
     }
@@ -681,6 +687,33 @@ mod tests {
             Some(0.25)
         );
         assert_eq!(summary.total.cache_hit_rate, Some(0.25));
+    }
+
+    #[test]
+    fn the_long_ttl_part_of_cache_writes_is_counted_once_as_input() {
+        let usage = Usage {
+            uncached_input_tokens: Some(100),
+            cache_read_tokens: Some(100),
+            cache_write_tokens: Some(200),
+            cache_write_long_tokens: Some(200),
+            ..Default::default()
+        };
+        let records = [record(
+            UsageComponent::Main,
+            "a",
+            "m",
+            "2026-10-01T09:00:00Z",
+            AttemptOutcome::Succeeded,
+            Some(usage),
+        )];
+        let summary = summarize(&records, GroupBy::Component, no_price);
+        assert_eq!(summary.total.cache_write_tokens, 200);
+        assert_eq!(summary.total.cache_write_long_tokens, 200);
+        assert_eq!(
+            summary.total.cache_hit_rate,
+            Some(0.25),
+            "the 1-hour writes are already in cache_write_tokens, so the input is 400"
+        );
     }
 
     #[test]
@@ -712,7 +745,7 @@ mod tests {
     }
 
     #[test]
-    fn cost_sums_priced_calls_and_counts_the_unpriced_ones_with_usage() {
+    fn cost_sums_priced_attempts_and_counts_the_unpriced_ones_with_usage() {
         let records = [
             record(
                 UsageComponent::Main,
@@ -752,29 +785,29 @@ mod tests {
         let priced = summary.groups.get(1).expect("the priced group");
         assert_eq!(priced.key, "priced/m");
         assert_eq!(priced.estimated_cost_usd, Some(0.5));
-        assert_eq!(priced.unpriced_calls, 0);
+        assert_eq!(priced.unpriced_attempts, 0);
         let free = summary.groups.first().expect("the free group");
         assert_eq!(free.key, "free/m");
         assert_eq!(free.estimated_cost_usd, None);
         assert_eq!(
-            free.unpriced_calls, 1,
+            free.unpriced_attempts, 1,
             "a call without usage isn't unpriced"
         );
         assert_eq!(summary.total.estimated_cost_usd, Some(0.5));
-        assert_eq!(summary.total.unpriced_calls, 1);
+        assert_eq!(summary.total.unpriced_attempts, 1);
     }
 
     #[test]
     fn a_summary_with_no_records_has_no_groups_and_a_null_rate() {
         let summary = summarize(&[], GroupBy::Component, no_price);
         assert_eq!(summary.groups.len(), 0);
-        assert_eq!(summary.total.calls, 0);
+        assert_eq!(summary.total.attempts, 0);
         assert_eq!(summary.total.cache_hit_rate, None);
         assert_eq!(summary.total.estimated_cost_usd, None);
     }
 
     #[test]
-    fn failed_calls_are_counted_with_their_usage() {
+    fn failed_attempts_are_counted_with_their_usage() {
         let records = [
             record(
                 UsageComponent::Main,
@@ -794,8 +827,8 @@ mod tests {
             ),
         ];
         let summary = summarize(&records, GroupBy::Component, no_price);
-        assert_eq!(summary.total.calls, 2);
-        assert_eq!(summary.total.failed_calls, 1);
+        assert_eq!(summary.total.attempts, 2);
+        assert_eq!(summary.total.failed_attempts, 1);
         assert_eq!(summary.total.uncached_input_tokens, 8);
     }
 

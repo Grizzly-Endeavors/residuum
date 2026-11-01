@@ -149,19 +149,20 @@ An agent's routes come in two groups:
 
 ### Usage
 
-`GET /api/agents/{name}/usage/records?from=&to=&component=&limit=` answers `{ "records": [...] }`: the agent's model calls as they are recorded in its usage files (see [Turn Control](turn-control.md#the-main-conversation-stream)), newest first. Each record has the fields the file stores (`recorded_at`, `component`, `conversation` when it is set, `provider`, `model`, `outcome`, and `usage` when the call reported any) and `estimated_cost_usd`: what the record's usage is estimated to cost at the hub's prices, or `null` when it has no usage or its model has no price. `from` and `to` are RFC 3339 times. The window includes `from` and excludes `to`; `to` defaults to now and `from` to a week before `to`. `component` keeps one component by name: `main`, `session`, `observer`, `reflector`, `subconscious`, `system_one` or `web_model`. `limit` defaults to 500, and a larger one is clamped to 5000.
+`GET /api/agents/{name}/usage/records?from=&to=&component=&limit=` answers `{ "records": [...] }`: the agent's model request attempts as they are recorded in its usage files (see [Turn Control](turn-control.md#turn-progress-and-usage-totals)), newest first. Each record has the fields the file stores (`recorded_at`, `component`, `conversation` when it is set, `provider`, `model`, `outcome`, and `usage` when the call reported any) and `estimated_cost_usd`: what the record's usage is estimated to cost at the hub's prices, or `null` when it has no usage or its model has no price. `from` and `to` are RFC 3339 times. The window includes `from` and excludes `to`; `to` defaults to now and `from` to a week before `to`. `component` keeps one component by name: `main`, `session`, `observer`, `reflector`, `subconscious`, `system_one` or `web_model`. `limit` defaults to 500, and a larger one is clamped to 5000.
 
-`GET /api/agents/{name}/usage/summary?from=&to=&group_by=` answers `{ from, to, groups, total }` over the same window, with the same defaults. `group_by` is `component` (the default), `model` (`provider/model`) or `day` (the UTC date). `groups` are sorted by key, and `total` covers every call, with the key `total`. Each group is:
+`GET /api/agents/{name}/usage/summary?from=&to=&group_by=` answers `{ from, to, groups, total }` over the same window, with the same defaults. `group_by` is `component` (the default), `model` (`provider/model`) or `day` (the UTC date). `groups` are sorted by key, and `total` covers every attempt, with the key `total`. Each group is:
 
 ```
 {
-  key, calls, failed_calls,
-  uncached_input_tokens, cache_read_tokens, cache_write_tokens, output_tokens, reasoning_tokens,
-  cache_hit_rate, estimated_cost_usd, unpriced_calls
+  key, attempts, failed_attempts,
+  uncached_input_tokens, cache_read_tokens, cache_write_tokens, cache_write_long_tokens,
+  output_tokens, reasoning_tokens,
+  cache_hit_rate, estimated_cost_usd, unpriced_attempts
 }
 ```
 
-`calls` counts every attempt, failed ones included, and the token fields sum what those calls reported, counting zero for a count that wasn't reported. `cache_hit_rate` is the cache reads as a share of all input tokens (uncached input, cache reads and cache writes), to six decimal places, and `null` when the calls reported no input. `estimated_cost_usd` sums the priced calls and is `null` when none was priced. `unpriced_calls` counts the calls that reported usage but whose model has no price.
+`attempts` counts every request sent, failed ones included, and the token fields sum what those attempts reported, counting zero for a count that wasn't reported. `cache_write_long_tokens` is the part of `cache_write_tokens` written with a 1-hour TTL; the cache writes at the default TTL are the rest. `cache_hit_rate` is the cache reads as a share of all input tokens (uncached input, cache reads and cache writes, which already include the 1-hour part), to six decimal places, and `null` when the attempts reported no input. `estimated_cost_usd` sums the priced attempts and is `null` when none was priced. `unpriced_attempts` counts the attempts that reported usage but whose model has no price.
 
 Errors are `{ "error": message }`: `400` for a `from` or `to` that isn't an RFC 3339 time, a `from` that isn't before `to`, a `component` that isn't one of the names, a `limit` that isn't a whole number of at least 1, or a `group_by` other than the three; and `500` when the usage files can't be read, with the details in Residuum's logs. The routes answer in every agent state and never open a checkpoint repository.
 

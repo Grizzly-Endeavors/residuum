@@ -146,7 +146,7 @@ async fn usage_records_and_summaries_are_served_from_disk_in_every_agent_state()
                 StatusCode::OK,
             )
             .await;
-        assert_eq!(summary["total"]["calls"], 4, "{name}");
+        assert_eq!(summary["total"]["attempts"], 4, "{name}");
     }
 }
 
@@ -358,18 +358,18 @@ async fn a_summary_groups_by_component_with_hit_rates_and_a_total() {
     assert_eq!(keys(&summary), ["main", "observer", "session"]);
 
     let main = group(&summary, "main");
-    assert_eq!(main["calls"], 2);
-    assert_eq!(main["failed_calls"], 1);
+    assert_eq!(main["attempts"], 2);
+    assert_eq!(main["failed_attempts"], 1);
     assert_eq!(main["uncached_input_tokens"], 600);
     assert_eq!(main["cache_read_tokens"], 400);
     assert_eq!(main["cache_write_tokens"], 200);
     assert_eq!(main["output_tokens"], 10);
     assert_eq!(main["reasoning_tokens"], 0);
     assert_eq!(main["cache_hit_rate"], json!(0.333_333));
-    assert_eq!(main["unpriced_calls"], 2);
+    assert_eq!(main["unpriced_attempts"], 2);
 
     let observer = group(&summary, "observer");
-    assert_eq!(observer["calls"], 1);
+    assert_eq!(observer["attempts"], 1);
     assert_eq!(
         observer["cache_hit_rate"],
         Value::Null,
@@ -377,11 +377,11 @@ async fn a_summary_groups_by_component_with_hit_rates_and_a_total() {
     );
 
     assert_eq!(summary["total"]["key"], "total");
-    assert_eq!(summary["total"]["calls"], 4);
-    assert_eq!(summary["total"]["failed_calls"], 1);
+    assert_eq!(summary["total"]["attempts"], 4);
+    assert_eq!(summary["total"]["failed_attempts"], 1);
     assert_eq!(summary["total"]["uncached_input_tokens"], 700);
     assert_eq!(summary["total"]["estimated_cost_usd"], Value::Null);
-    assert_eq!(summary["total"]["unpriced_calls"], 3);
+    assert_eq!(summary["total"]["unpriced_attempts"], 3);
 }
 
 #[tokio::test]
@@ -403,7 +403,7 @@ async fn a_summary_groups_by_model_and_by_utc_day() {
             "openai/gpt"
         ]
     );
-    assert_eq!(group(&by_model, "anthropic/claude-opus")["calls"], 2);
+    assert_eq!(group(&by_model, "anthropic/claude-opus")["attempts"], 2);
 
     let by_day = h
         .get_expect(
@@ -412,8 +412,8 @@ async fn a_summary_groups_by_model_and_by_utc_day() {
         )
         .await;
     assert_eq!(keys(&by_day), ["2026-10-01", "2026-10-02"]);
-    assert_eq!(group(&by_day, "2026-10-01")["calls"], 2);
-    assert_eq!(group(&by_day, "2026-10-02")["calls"], 2);
+    assert_eq!(group(&by_day, "2026-10-01")["attempts"], 2);
+    assert_eq!(group(&by_day, "2026-10-02")["attempts"], 2);
 }
 
 #[tokio::test]
@@ -426,7 +426,7 @@ async fn an_empty_summary_has_no_groups_and_null_rates() {
         )
         .await;
     assert_eq!(summary["groups"], json!([]));
-    assert_eq!(summary["total"]["calls"], 0);
+    assert_eq!(summary["total"]["attempts"], 0);
     assert_eq!(summary["total"]["cache_hit_rate"], Value::Null);
     assert_eq!(summary["total"]["estimated_cost_usd"], Value::Null);
 }
