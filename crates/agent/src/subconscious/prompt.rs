@@ -231,9 +231,9 @@ fn format_prior_steering(prior: &TurnScratch) -> String {
 /// triage rather than re-classify from scratch.
 ///
 /// The user message runs transcript, phase question, steering. Within a turn the
-/// transcript and question repeat between calls and the steering grows, so
-/// keeping the steering last leaves the longest shared prefix for the provider's
-/// prompt cache.
+/// transcript grows between calls until the token cap starts dropping its head,
+/// so putting it first leaves the earlier transcript as a shared prefix. The
+/// phase question is fixed per phase and the steering grows, so both follow it.
 pub(super) fn build_eval_prompt(
     policy: &str,
     identity: &str,
@@ -472,13 +472,14 @@ mod tests {
     #[test]
     fn mid_turn_prompts_share_prefix_through_transcript() {
         let identity = "## SOUL.md\n\nBe kind.";
-        let transcript = format_turn_transcript(
-            &[
-                Message::user("write the report"),
-                Message::assistant("drafting it now".to_string(), None),
-            ],
-            10_000,
-        );
+        let earlier = vec![
+            Message::user("write the report"),
+            Message::assistant("drafting it now".to_string(), None),
+        ];
+        let transcript = format_turn_transcript(&earlier, 10_000);
+        let mut later = earlier.clone();
+        later.push(Message::tool("wrote draft.md", "call_1"));
+        let grown = format_turn_transcript(&later, 10_000);
         let prior = TurnScratch {
             applied_corrections: vec!["Re-read AGENTS.md before editing.".to_string()],
             queued_notes: Vec::new(),
@@ -495,10 +496,14 @@ mod tests {
         let second = build_eval_prompt(
             "policy",
             identity,
-            &transcript,
+            &grown,
             EvalPhase::MidTurn,
             Some(&prior),
             false,
+        );
+        assert!(
+            grown.starts_with(&transcript),
+            "a later call's transcript extends the earlier one"
         );
 
         assert_eq!(
@@ -516,7 +521,7 @@ mod tests {
         );
         assert!(
             second_user.starts_with(&shared_prefix),
-            "user message must begin with the same transcript"
+            "a later call's user message must begin with the earlier transcript it extends"
         );
 
         let question_at = second_user.find("still working");
