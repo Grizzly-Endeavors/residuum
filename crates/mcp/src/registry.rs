@@ -832,6 +832,38 @@ mod tests {
         assert!(result.to_stop.is_empty(), "nothing to stop");
     }
 
+    #[tokio::test]
+    async fn reconcile_and_connect_leaves_an_unchanged_running_server_alone() {
+        let mut registry = McpRegistry::new();
+        push_running_server(&mut registry, "fs", &["read_file"]);
+
+        // The same server is still in mcp.json. Connecting it again would
+        // fail here (the command doesn't exist), so a reported failure or a
+        // lost status would show the reload touched it.
+        let report = registry
+            .reconcile_and_connect(&[entry("fs", "mcp-fs")])
+            .await;
+
+        assert_eq!(
+            report.started, 0,
+            "an unchanged server is not connected again"
+        );
+        assert_eq!(report.stopped, 0, "an unchanged server is not stopped");
+        assert!(
+            report.failures.is_empty(),
+            "an unchanged server is not connected again: {:?}",
+            report.failures
+        );
+        let server = registry
+            .servers()
+            .into_iter()
+            .find(|s| s.name == "fs")
+            .unwrap();
+        assert_eq!(server.status, McpStatus::Running);
+        let names: Vec<&str> = server.tools.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["read_file"], "its tools are kept");
+    }
+
     #[test]
     fn reconcile_skips_already_pending() {
         let mut registry = McpRegistry::new();
