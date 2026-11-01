@@ -312,4 +312,38 @@ mod tests {
 
         assert!(HubConfig::load_at(dir.path()).is_err());
     }
+
+    #[test]
+    fn load_at_reads_the_pricing_table() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "timezone = \"UTC\"\n\n[pricing.\"openai/gpt-4o\"]\ninput = 2.5\noutput = 10.0\ncache_read = 1.25\ncache_write = 2.5\ncache_write_long = 2.5\n",
+        )
+        .unwrap();
+
+        let cfg = HubConfig::load_at(dir.path()).unwrap();
+
+        assert_eq!(
+            cfg.pricing.get("openai/gpt-4o").map(|p| p.cache_read),
+            Some(1.25)
+        );
+    }
+
+    #[test]
+    fn load_at_rejects_a_negative_price() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "timezone = \"UTC\"\n\n[pricing.\"openai/gpt-4o\"]\ninput = -2.5\noutput = 10.0\ncache_read = 1.25\ncache_write = 2.5\ncache_write_long = 2.5\n",
+        )
+        .unwrap();
+
+        let message = HubConfig::load_at(dir.path()).unwrap_err().to_string();
+
+        assert!(
+            message.contains("[pricing] \"openai/gpt-4o\" input"),
+            "{message}"
+        );
+    }
 }

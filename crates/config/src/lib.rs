@@ -50,7 +50,8 @@ pub use constants::{
 };
 pub use deserialize::{AgentConfigFile, HubConfigFile, ProvidersFile};
 pub use hub_types::{
-    HubA2aConfig, HubBackgroundConfig, HubConfig, HubPushConfig, SystemOneConfig, SystemOneProvider,
+    HubA2aConfig, HubBackgroundConfig, HubConfig, HubPushConfig, ModelPrice, SystemOneConfig,
+    SystemOneProvider,
 };
 pub use layout::WorkspaceLayout;
 pub use model_catalog::{ModelCatalog, SharedModelCatalog};

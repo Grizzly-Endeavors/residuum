@@ -1,13 +1,19 @@
 //! Hub-level config resolution: timezone, gateway, cloud, the A2A listener,
-//! tracing, Web Push, and the shared background limits — everything that
-//! lives in `hub/config.toml` rather than an agent's own config.
+//! tracing, Web Push, the shared background limits and the model price
+//! overrides — everything that lives in `hub/config.toml` rather than an
+//! agent's own config.
 
+use std::collections::BTreeMap;
 use std::path::Path;
+use std::str::FromStr;
 
 use residuum_core::util::FatalError;
 
 use super::super::deserialize::{HubBackgroundConfigFile, HubConfigFile, HubPushConfigFile};
-use super::super::hub_types::{HubA2aConfig, HubBackgroundConfig, HubConfig, HubPushConfig};
+use super::super::hub_types::{
+    HubA2aConfig, HubBackgroundConfig, HubConfig, HubPushConfig, ModelPrice,
+};
+use super::super::provider::ModelSpec;
 use super::gateway;
 use super::load_secrets_degraded;
 use super::tracing_config;
@@ -16,8 +22,9 @@ use super::tracing_config;
 /// variables.
 ///
 /// # Errors
-/// Returns `FatalError::Config` if the timezone is missing/invalid or the
-/// tracing log level string is invalid.
+/// Returns `FatalError::Config` if the timezone is missing/invalid, the
+/// tracing log level string is invalid, or a `[pricing]` key or rate is
+/// invalid.
 pub fn from_file_and_env(
     file: Option<&HubConfigFile>,
     hub_dir: &Path,
@@ -80,6 +87,7 @@ fn from_file_and_env_inner(
         &secrets,
         &mut notices,
     );
+    let pricing = resolve_hub_pricing(file.and_then(|f| f.pricing.as_ref()))?;
 
     Ok(HubConfig {
         timezone,
@@ -90,6 +98,7 @@ fn from_file_and_env_inner(
         background,
         push,
         system_one,
+        pricing,
         config_dir: hub_dir.to_path_buf(),
         load_notices: notices,
     })
@@ -168,6 +177,40 @@ fn resolve_hub_background_config(section: Option<&HubBackgroundConfigFile>) -> H
     cfg
 }
 
+/// Resolve the hub's `[pricing]` overrides. A key must name a provider kind
+/// and a model, and each rate must be a finite, non-negative number of USD per
+/// million tokens. A bad price fails the load: an estimate built on a wrong
+/// rate looks plausible, so it is not guessed around.
+///
+/// # Errors
+/// Returns `FatalError::Config` naming the key and rate that is wrong.
+fn resolve_hub_pricing(
+    section: Option<&BTreeMap<String, ModelPrice>>,
+) -> Result<BTreeMap<String, ModelPrice>, FatalError> {
+    let Some(section) = section else {
+        return Ok(BTreeMap::new());
+    };
+    for (key, price) in section {
+        ModelSpec::from_str(key)
+            .map_err(|reason| FatalError::Config(format!("[pricing] \"{key}\": {reason}")))?;
+        let rates = [
+            ("input", price.input),
+            ("output", price.output),
+            ("cache_read", price.cache_read),
+            ("cache_write", price.cache_write),
+            ("cache_write_long", price.cache_write_long),
+        ];
+        for (rate, value) in rates {
+            if !value.is_finite() || value < 0.0 {
+                return Err(FatalError::Config(format!(
+                    "[pricing] \"{key}\" {rate} must be a finite number of zero or more USD per million tokens, got {value}"
+                )));
+            }
+        }
+    }
+    Ok(section.clone())
+}
+
 #[cfg(test)]
 #[expect(
     unsafe_code,
@@ -180,6 +223,9 @@ mod tests {
     fn parse(toml: &str) -> HubConfigFile {
         toml::from_str(toml).unwrap()
     }
+
+    const FULL_PRICE: &str =
+        "input = 1.0\noutput = 5.0\ncache_read = 0.1\ncache_write = 1.25\ncache_write_long = 2.0\n";
 
     fn test_dir() -> std::path::PathBuf {
         std::env::temp_dir().join("residuum-test-hub-config")
@@ -354,5 +400,91 @@ hop_hard_limit = 16
                 "hub config should reject {agent_only:?}"
             );
         }
+    }
+
+    #[test]
+    fn pricing_is_empty_by_default() {
+        let file = parse("timezone = \"UTC\"\n");
+        let cfg = from_file_and_env(Some(&file), &test_dir()).unwrap();
+        assert!(cfg.pricing.is_empty());
+    }
+
+    #[test]
+    fn pricing_table_is_keyed_by_provider_and_model() {
+        let file = parse(
+            r#"
+timezone = "UTC"
+
+[pricing."anthropic/claude-sonnet-4-6"]
+input = 3.0
+output = 15.0
+cache_read = 0.3
+cache_write = 3.75
+cache_write_long = 6.0
+
+[pricing."fireworks/accounts/fireworks/models/kimi-k3"]
+input = 3.0
+output = 15.0
+cache_read = 0.3
+cache_write = 3.0
+cache_write_long = 3.0
+"#,
+        );
+        let cfg = from_file_and_env(Some(&file), &test_dir()).unwrap();
+        assert_eq!(cfg.pricing.len(), 2);
+        assert_eq!(
+            cfg.pricing.get("anthropic/claude-sonnet-4-6"),
+            Some(&ModelPrice {
+                input: 3.0,
+                output: 15.0,
+                cache_read: 0.3,
+                cache_write: 3.75,
+                cache_write_long: 6.0,
+            })
+        );
+        assert!(
+            cfg.pricing
+                .contains_key("fireworks/accounts/fireworks/models/kimi-k3")
+        );
+    }
+
+    #[test]
+    fn a_negative_or_non_finite_price_fails_the_load() {
+        for value in ["-2.5", "nan", "inf"] {
+            let file = parse(&format!(
+                "timezone = \"UTC\"\n\n[pricing.\"openai/gpt-4o\"]\ninput = {value}\noutput = 10.0\ncache_read = 1.25\ncache_write = 2.5\ncache_write_long = 2.5\n"
+            ));
+            let err = from_file_and_env(Some(&file), &test_dir())
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("openai/gpt-4o") && err.contains("input"),
+                "{value} should name the key and rate: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_price_key_must_name_a_known_provider_and_model() {
+        for key in ["gpt-4o", "mistral/large", "openai/"] {
+            let file = parse(&format!(
+                "timezone = \"UTC\"\n\n[pricing.\"{key}\"]\n{FULL_PRICE}"
+            ));
+            assert!(
+                from_file_and_env(Some(&file), &test_dir()).is_err(),
+                "{key} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn a_price_entry_must_state_every_rate() {
+        let result = toml::from_str::<HubConfigFile>(
+            "[pricing.\"openai/gpt-4o\"]\ninput = 2.5\noutput = 10.0\n",
+        );
+        assert!(
+            result.is_err(),
+            "a price without cache rates should not load"
+        );
     }
 }

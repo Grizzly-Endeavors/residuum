@@ -19,6 +19,7 @@ pub fn test_hub_config() -> crate::HubConfig {
         background: crate::HubBackgroundConfig::default(),
         push: crate::HubPushConfig::default(),
         system_one: None,
+        pricing: std::collections::BTreeMap::new(),
         config_dir: std::env::temp_dir().join("residuum-test-hub"),
         load_notices: Vec::new(),
     }
