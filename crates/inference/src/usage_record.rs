@@ -277,8 +277,8 @@ fn month_file_name(year: i32, month: u32) -> String {
 /// The `(year, month)` a [`month_file_name`] names; `None` for any other file.
 fn parse_month_file_name(name: &str) -> Option<(i32, u32)> {
     let (year, month) = name.strip_suffix(".jsonl")?.split_once('-')?;
-    let year = year.parse().ok()?;
-    let month = month.parse().ok().filter(|m| (1..=12).contains(m))?;
+    let year = year.parse::<i32>().ok()?;
+    let month = month.parse::<u32>().ok().filter(|m| (1..=12).contains(m))?;
     (month_file_name(year, month) == name).then_some((year, month))
 }
 
@@ -337,7 +337,8 @@ mod tests {
     use async_trait::async_trait;
     use chrono::TimeZone;
 
-    struct FixedProvider(Result<InferenceResponse, InferenceError>);
+    /// A provider known only by its model name.
+    struct FixedProvider;
 
     #[async_trait]
     impl InferenceProvider for FixedProvider {
@@ -347,10 +348,7 @@ mod tests {
             _tools: &[ToolDefinition],
             _options: &CompletionOptions,
         ) -> Result<InferenceResponse, InferenceError> {
-            match &self.0 {
-                Ok(response) => Ok(response.clone()),
-                Err(_) => Err(InferenceError::Api("refused".to_string())),
-            }
+            Ok(InferenceResponse::new(String::new(), vec![]))
         }
 
         fn model_name(&self) -> &'static str {
@@ -402,7 +400,7 @@ mod tests {
             attempt("primary", AttemptOutcome::Failed, Some(usage(40, 0))),
             attempt("fallback", AttemptOutcome::Succeeded, Some(usage(100, 7))),
         ];
-        let provider = FixedProvider(Ok(response.clone()));
+        let provider = FixedProvider;
         recorder
             .record_call(
                 &UsageComponent::Session {
@@ -443,7 +441,7 @@ mod tests {
         let (_dir, recorder) = recorder();
         let mut response = InferenceResponse::new("ok".to_string(), vec![]);
         response.usage = Some(usage(12, 3));
-        let provider = FixedProvider(Ok(response.clone()));
+        let provider = FixedProvider;
         recorder
             .record_call(&UsageComponent::Observer, None, &provider, &Ok(response))
             .await;
@@ -462,7 +460,7 @@ mod tests {
     #[tokio::test]
     async fn a_failed_call_records_every_attempt_it_carries() {
         let (_dir, recorder) = recorder();
-        let provider = FixedProvider(Err(InferenceError::Api("refused".to_string())));
+        let provider = FixedProvider;
         let error = InferenceError::Attempted {
             error: Box::new(InferenceError::Timeout(30)),
             attempts: vec![
@@ -491,7 +489,7 @@ mod tests {
     #[tokio::test]
     async fn a_call_that_failed_before_sending_anything_records_nothing() {
         let (_dir, recorder) = recorder();
-        let provider = FixedProvider(Err(InferenceError::Api("refused".to_string())));
+        let provider = FixedProvider;
         recorder
             .record_call(
                 &UsageComponent::Reflector,
