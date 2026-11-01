@@ -16,6 +16,25 @@ pub struct SkillState {
     dirs: Vec<SkillDir>,
 }
 
+/// What a rescan reports to the user.
+#[derive(Debug)]
+pub struct RescanReport {
+    /// Active skills this rescan deactivated, one line each. A dropped skill
+    /// is reported once, since it is no longer active after this rescan.
+    pub dropped: Vec<String>,
+    /// Problems with skill directories and skills that are still indexed.
+    /// These repeat on every rescan until they are fixed.
+    pub notices: Vec<String>,
+}
+
+impl RescanReport {
+    /// Every user-facing message in the report, dropped skills first.
+    #[must_use]
+    pub fn messages(&self) -> impl Iterator<Item = &str> {
+        self.dropped.iter().chain(&self.notices).map(String::as_str)
+    }
+}
+
 impl SkillState {
     /// Create a new skill state with a pre-built index.
     #[must_use]
@@ -100,16 +119,17 @@ impl SkillState {
     /// For an active skill whose name still resolves but whose backing source
     /// directory changed (e.g. an agent skill shadows a team
     /// skill of the same name), refreshes its body from the new source, or
-    /// deactivates it with a warning if the new source can't be loaded.
+    /// deactivates it if the new source can't be loaded.
     ///
-    /// Returns the user-facing notices the rescan produced, one per directory
-    /// that couldn't be read and one per skill that loaded with a notice or
-    /// was skipped. Callers publish them so they reach the user.
+    /// The report names every skill this rescan deactivated and carries the
+    /// notices for directories that couldn't be read and skills that loaded
+    /// with a notice or were skipped. Callers publish its messages so they
+    /// reach the user.
     ///
     /// # Errors
     /// Returns an error if scanning fails.
     #[tracing::instrument(skip_all, fields(dirs = self.dirs.len()))]
-    pub async fn rescan(&mut self) -> anyhow::Result<Vec<String>> {
+    pub async fn rescan(&mut self) -> anyhow::Result<RescanReport> {
         let skills_before = self.index.entries().len();
         tracing::info!(
             skills_before = skills_before,
@@ -134,9 +154,14 @@ impl SkillState {
         // be loaded, deactivate rather than silently keep the stale copy.
         let previously_active = std::mem::take(&mut self.active);
         let mut still_active = Vec::with_capacity(previously_active.len());
+        let mut dropped = Vec::new();
         for active_skill in previously_active {
             let Some(entry) = self.index.find_by_name(&active_skill.name) else {
                 tracing::warn!(name = %active_skill.name, "deactivating skill: no longer found after rescan");
+                dropped.push(format!(
+                    "Deactivated skill \"{}\" — its files were removed or it can't be loaded from your skill directories.",
+                    active_skill.name
+                ));
                 continue;
             };
 
@@ -172,6 +197,11 @@ impl SkillState {
                         error = %e,
                         "deactivating skill: backing source changed after rescan and new source failed to load"
                     );
+                    dropped.push(format!(
+                        "Deactivated skill \"{}\" — its source changed to \"{}\" and it couldn't be loaded ({e}).",
+                        active_skill.name,
+                        entry.skill_dir.display()
+                    ));
                 }
             }
         }
@@ -183,9 +213,10 @@ impl SkillState {
                 dir.display()
             )
         });
-        Ok(skipped
+        let notices = skipped
             .chain(self.index.notices().iter().cloned())
-            .collect())
+            .collect();
+        Ok(RescanReport { dropped, notices })
     }
 
     /// Format the skill index for the system prompt.
@@ -446,15 +477,57 @@ mod tests {
 
         let mut state = SkillState::new(SkillIndex::default(), vec![SkillDir::agent(dir.path())]);
 
-        let notices = state.rescan().await.unwrap();
+        let report = state.rescan().await.unwrap();
         assert_eq!(
-            notices.len(),
+            report.notices.len(),
             1,
             "the skipped skill should produce one notice"
         );
         assert!(
-            notices[0].contains("bad-skill"),
-            "the notice should name the skipped skill: {notices:?}"
+            report.notices[0].contains("bad-skill"),
+            "the notice should name the skipped skill: {:?}",
+            report.notices
+        );
+        assert!(
+            report.dropped.is_empty(),
+            "no skill was active, so none was dropped"
+        );
+    }
+
+    #[tokio::test]
+    async fn rescan_reports_active_skill_whose_files_were_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill_dir = dir.path().join("gone-skill");
+        tokio::fs::create_dir(&skill_dir).await.unwrap();
+        tokio::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: gone-skill\ndescription: \"Will be deleted\"\n---\n\nGone body.\n",
+        )
+        .await
+        .unwrap();
+        let index = SkillIndex::scan(&[SkillDir::agent(dir.path())])
+            .await
+            .unwrap();
+        let mut state = SkillState::new(index, vec![SkillDir::agent(dir.path())]);
+        state.activate("gone-skill").await.unwrap();
+
+        tokio::fs::remove_dir_all(&skill_dir).await.unwrap();
+
+        let report = state.rescan().await.unwrap();
+        assert!(
+            state.active_skill_names().is_empty(),
+            "the deleted skill should no longer be active"
+        );
+        assert_eq!(report.dropped.len(), 1, "one dropped skill: {report:?}");
+        assert!(
+            report.dropped[0].contains("gone-skill"),
+            "the dropped line should name the skill: {:?}",
+            report.dropped
+        );
+        assert!(
+            report.notices.is_empty(),
+            "a dropped skill is reported only as dropped: {:?}",
+            report.notices
         );
     }
 

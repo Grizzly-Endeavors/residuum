@@ -70,26 +70,36 @@ impl Tool for SkillActivateTool {
         // activated and an active skill whose files were removed is dropped,
         // without a config reload. The notices go out after the lock is
         // released.
-        let (activation, notices) = {
+        let (activation, report) = {
             let mut state = self.state.lock().await;
-            let notices = match state.rescan().await {
-                Ok(notices) => notices,
+            let report = match state.rescan().await {
+                Ok(report) => report,
                 Err(e) => {
                     return Ok(ToolResult::error(format!("failed to rescan skills: {e}")));
                 }
             };
             let activation = state.activate(name).await.map(|active| active.name.clone());
-            (activation, notices)
+            (activation, report)
         };
-        for notice in notices {
-            publish_notice(self.publisher.as_ref(), notice).await;
+        for message in report.messages() {
+            publish_notice(self.publisher.as_ref(), message.to_owned()).await;
         }
-        match activation {
-            Ok(skill_name) => Ok(ToolResult::success(format!(
-                "Activated skill '{skill_name}'."
-            ))),
-            Err(e) => Ok(ToolResult::error(e.to_string())),
+
+        // A skill the rescan dropped is named in the result as well as
+        // published: the agent is the one that was relying on it.
+        let (is_error, mut output) = match activation {
+            Ok(skill_name) => (false, format!("Activated skill '{skill_name}'.")),
+            Err(e) => (true, e.to_string()),
+        };
+        for dropped in &report.dropped {
+            output.push('\n');
+            output.push_str(dropped);
         }
+        Ok(if is_error {
+            ToolResult::error(output)
+        } else {
+            ToolResult::success(output)
+        })
     }
 }
 
@@ -317,7 +327,15 @@ mod tests {
             .await
             .unwrap();
 
-        let result = SkillActivateTool::new(Arc::clone(&state))
+        use residuum_bus::{NoticeEvent, NotifyName, SYSTEM_CHANNEL, topics};
+        let bus = residuum_bus::spawn_broker();
+        let mut notices: residuum_bus::Subscriber<NoticeEvent> = bus
+            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+        let tool = SkillActivateTool::new(Arc::clone(&state)).with_publisher(bus.publisher());
+
+        let result = tool
             .execute(serde_json::json!({"name": "kept-skill"}))
             .await
             .unwrap();
@@ -326,6 +344,22 @@ mod tests {
             state.lock().await.active_skill_names(),
             vec!["kept-skill"],
             "the deleted skill should be dropped by the activation's rescan"
+        );
+        assert!(
+            result.output.contains("gone-skill"),
+            "the result should name the dropped skill: {}",
+            result.output
+        );
+
+        let notice = notices
+            .recv()
+            .await
+            .unwrap()
+            .expect("a notice was published for the dropped skill");
+        assert!(
+            notice.message.contains("gone-skill"),
+            "the published notice should name the dropped skill: {}",
+            notice.message
         );
     }
 

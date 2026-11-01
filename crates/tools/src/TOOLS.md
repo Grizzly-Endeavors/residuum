@@ -318,7 +318,9 @@ On success: `"Activated skill '{name}'."`
 
 On error: skill not found, or the skill is already active, or the skills rescan failed (`"failed to rescan skills: …"`).
 
-**Side effects:** Rescans the skill directories before activating, so a skill authored since startup can be activated and an active skill whose files were removed is dropped. Each notice the rescan produces (an unreadable skills directory, a skill skipped for invalid frontmatter, a skill with an oversized description) is published to the system notification channel. Appends the skill's markdown body to the active system prompt.
+When the rescan dropped an active skill, one line per dropped skill follows the activation message (on success or error), e.g. `Deactivated skill "{name}" — its files were removed or it can't be loaded from your skill directories.`
+
+**Side effects:** Rescans the skill directories before activating, so a skill authored since startup can be activated and an active skill whose files were removed is dropped. Each dropped skill is published to the system notification channel and named in the output. Each other notice the rescan produces (an unreadable skills directory, a skill skipped for invalid frontmatter, a skill with an oversized description) is published to the system notification channel. Appends the skill's markdown body to the active system prompt.
 
 ---
 

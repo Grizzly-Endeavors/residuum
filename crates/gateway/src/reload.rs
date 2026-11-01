@@ -857,15 +857,14 @@ async fn reload_memory_thresholds(rt: &mut AgentRuntime, new_cfg: &Config) {
     tracing::debug!("memory thresholds updated");
 }
 
-/// Rescan skill directories and publish the notices the rescan produced
-/// (an unreadable directory, a skill that loaded with a notice, or a skill
-/// skipped for invalid frontmatter) so they reach the user, not just the
-/// logs.
+/// Rescan skill directories and publish what the rescan reports (active
+/// skills it dropped, an unreadable directory, a skill skipped for invalid
+/// frontmatter) so they reach the user, not just the logs.
 async fn reload_skills(rt: &mut AgentRuntime) {
-    let notices = {
+    let report = {
         let mut skill_guard = rt.skill_state.lock().await;
         match skill_guard.rescan().await {
-            Ok(notices) => notices,
+            Ok(report) => report,
             Err(err) => {
                 tracing::warn!(error = %err, "skill rescan failed during reload");
                 return;
@@ -873,8 +872,8 @@ async fn reload_skills(rt: &mut AgentRuntime) {
         }
     };
     tracing::debug!("skills rescanned");
-    for notice in notices {
-        publish_notice(&rt.publisher, notice).await;
+    for message in report.messages() {
+        publish_notice(&rt.publisher, message.to_owned()).await;
     }
 }
 
