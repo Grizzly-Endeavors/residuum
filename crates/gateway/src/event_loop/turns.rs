@@ -1378,56 +1378,13 @@ mod tests {
     use residuum_core::testing::wait;
     use residuum_core::util::telemetry::{SpanBufferConfig, SpanBufferLayer};
 
+    use crate::testing::test_config;
+
     const TEST_TZ: chrono_tz::Tz = chrono_tz::Tz::UTC;
 
     /// A chat interface's endpoint: the kind a turn's events are published to.
     fn endpoint() -> EndpointName {
         EndpointName::from("telegram")
-    }
-
-    /// Build a minimal test config; only `tracing` is meaningful to
-    /// `publish_turn_outcome`'s tests, the rest is filler to satisfy the type.
-    fn test_config() -> Config {
-        Config {
-            agent_name: "test-agent".to_string(),
-            autostart: true,
-            main: vec![],
-            observer: vec![],
-            reflector: vec![],
-            pulse: vec![],
-            subconscious: vec![],
-            embedding: None,
-            workspace_dir: std::path::PathBuf::from("/tmp/test"),
-            timeout_secs: 30,
-            max_tokens: 4096,
-            memory: residuum_config::MemoryConfig::default(),
-            pulse_enabled: false,
-            subconscious_settings: residuum_config::SubconsciousSettings::default(),
-            learning: residuum_config::LearningConfig::default(),
-            gateway: residuum_config::GatewayConfig::default(),
-            timezone: chrono_tz::UTC,
-            cloud: None,
-            discord: None,
-            telegram: None,
-            teams: None,
-            a2a: residuum_config::A2aConfig::default(),
-            webhooks: std::collections::HashMap::new(),
-            skills: residuum_config::SkillsConfig { dirs: vec![] },
-            tools: residuum_config::ToolsConfig { dirs: vec![] },
-            retry: residuum_config::RetryConfig::default(),
-            background: residuum_config::BackgroundConfig::default(),
-            agent: residuum_config::AgentAbilitiesConfig::default(),
-            auto_mode: residuum_config::AutoModeConfig::default(),
-            idle: residuum_config::IdleConfig::default(),
-            temperature: None,
-            thinking: None,
-            web_search: residuum_config::WebSearchConfig::default(),
-            tracing: residuum_config::TracingConfig::default(),
-            role_overrides: std::collections::HashMap::new(),
-            model_catalog: residuum_config::ModelCatalog::default(),
-            config_dir: std::path::PathBuf::from("/tmp/config"),
-            load_notices: vec![],
-        }
     }
 
     /// A `TracingService` with auto error reporting off — `on_error` calls
