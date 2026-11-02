@@ -50,7 +50,7 @@ pub use types::{
     ImageData, InferenceProvider, InferenceResponse, Message, MessageAttachment, MessageSender,
     ProviderApi, ResponseFormat, Role, StopReason, StreamDelta, StreamSink, ThinkingBlock,
     ThinkingOrigin, ToolCall, ToolDefinition, Usage, WebSearchNativeConfig, joined_thinking_text,
-    readable_thinking,
+    readable_thinking, sniff_image_media_type,
 };
 pub(crate) use types::{ReplayScope, blocks_produced_at};
 pub use usage_record::{UsageComponent, UsageRecord, UsageRecorder};

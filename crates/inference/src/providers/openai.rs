@@ -1057,7 +1057,7 @@ impl From<&Message> for OpenAiMessage {
             for img in &msg.images {
                 parts.push(OpenAiContentPart::ImageUrl {
                     image_url: OpenAiImageUrl {
-                        url: format!("data:{};base64,{}", img.media_type, img.data),
+                        url: format!("data:{};base64,{}", img.request_media_type(), img.data),
                     },
                 });
             }
@@ -1602,6 +1602,26 @@ mod tests {
                 .and_then(serde_json::Value::as_str),
             Some("data:image/jpeg;base64,base64abc123"),
             "image URL should use data URI format"
+        );
+    }
+
+    #[test]
+    fn message_conversion_sends_the_sniffed_image_media_type() {
+        use crate::ImageData;
+        let jpeg_labeled_png = ImageData {
+            media_type: "image/png".to_string(),
+            data: "/9j/4AAQSkZJRg==".to_string(),
+        };
+        let msg = Message::user_with_images("look at this", vec![jpeg_labeled_png]);
+        let openai_msg: OpenAiMessage = (&msg).into();
+        let content_json = serde_json::to_value(&openai_msg.content).unwrap();
+        let url = content_json
+            .pointer("/1/image_url/url")
+            .and_then(serde_json::Value::as_str);
+        assert_eq!(
+            url,
+            Some("data:image/jpeg;base64,/9j/4AAQSkZJRg=="),
+            "bytes decide the media type, not the stored label"
         );
     }
 
