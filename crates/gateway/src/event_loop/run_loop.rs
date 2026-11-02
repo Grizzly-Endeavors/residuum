@@ -747,11 +747,12 @@ impl WorkspaceReloadNote {
 async fn reload_mcp_servers_note(rt: &mut AgentRuntime) -> WorkspaceReloadNote {
     match residuum_workspace::config::load_mcp_servers(&rt.layout.mcp_json()) {
         Ok(servers) => {
+            let desired = crate::startup::with_web_search_mcp_entry(servers, &rt.cfg);
             let report = rt
                 .mcp_registry
                 .write()
                 .await
-                .reconcile_and_connect(&servers)
+                .reconcile_and_connect(&desired)
                 .await;
             tracing::info!(
                 started = report.started,

@@ -654,6 +654,30 @@ pub(crate) async fn connect_web_search_mcp(
     report
 }
 
+/// The desired server list for an `mcp.json` reconcile: `servers` plus the
+/// standalone web search server `cfg` configures, if any.
+///
+/// The registry stops every running server missing from the list it is given.
+/// The web search server comes from `[web_search]`, not `mcp.json`, so leaving
+/// it out would stop it on every `mcp.json` edit with nothing to reconnect it.
+/// A server of the same name in `mcp.json` is kept in place of the built-in one.
+pub(crate) fn with_web_search_mcp_entry(
+    mut servers: Vec<residuum_mcp::types::McpServerEntry>,
+    cfg: &Config,
+) -> Vec<residuum_mcp::types::McpServerEntry> {
+    let entry = cfg
+        .web_search
+        .standalone_backend
+        .as_ref()
+        .and_then(web_search_mcp_entry);
+    if let Some(entry) = entry
+        && !servers.iter().any(|s| s.name == entry.name)
+    {
+        servers.push(entry);
+    }
+    servers
+}
+
 /// Build the A2A client hub and outbound task tracker: load `config/a2a.json`,
 /// resolve its agents' cards, resume watching any outbound tasks left open
 /// from a prior run, and start the hub's background card-refresh loop.
@@ -1493,6 +1517,95 @@ pub(crate) async fn initialize(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn backend(name: &str) -> residuum_config::StandaloneBackendConfig {
+        residuum_config::StandaloneBackendConfig {
+            name: name.to_string(),
+            api_key: "key".to_string(),
+            base_url: None,
+        }
+    }
+
+    fn config_with_backend(name: Option<&str>) -> Config {
+        let mut cfg = crate::testing::test_config();
+        cfg.web_search.standalone_backend = name.map(backend);
+        cfg
+    }
+
+    fn workspace_entry(name: &str) -> residuum_mcp::types::McpServerEntry {
+        residuum_mcp::types::McpServerEntry {
+            name: name.to_string(),
+            command: "residuum-test-no-such-command".to_string(),
+            args: vec![],
+            env: std::collections::BTreeMap::new(),
+            transport: residuum_mcp::types::McpTransport::Stdio,
+            headers: std::collections::BTreeMap::new(),
+            timeout_secs: None,
+        }
+    }
+
+    fn names(servers: &[residuum_mcp::types::McpServerEntry]) -> Vec<&str> {
+        servers.iter().map(|s| s.name.as_str()).collect()
+    }
+
+    fn tool(name: &str) -> residuum_inference::ToolDefinition {
+        residuum_inference::ToolDefinition {
+            name: name.to_string(),
+            description: String::new(),
+            parameters: serde_json::json!({}),
+        }
+    }
+
+    #[test]
+    fn mcp_reload_list_adds_the_configured_web_search_server() {
+        let cfg = config_with_backend(Some("tavily"));
+        let desired = with_web_search_mcp_entry(vec![workspace_entry("fs")], &cfg);
+        assert_eq!(names(&desired), ["fs", "tavily_web_search"]);
+    }
+
+    #[test]
+    fn mcp_reload_list_is_unchanged_without_a_server_backed_web_search() {
+        for backend in [None, Some("ollama")] {
+            let cfg = config_with_backend(backend);
+            let desired = with_web_search_mcp_entry(vec![workspace_entry("fs")], &cfg);
+            assert_eq!(names(&desired), ["fs"], "backend {backend:?}");
+        }
+    }
+
+    #[test]
+    fn mcp_reload_list_keeps_a_workspace_server_of_the_same_name() {
+        let cfg = config_with_backend(Some("tavily"));
+        let desired = with_web_search_mcp_entry(vec![workspace_entry("tavily_web_search")], &cfg);
+        assert_eq!(desired.len(), 1);
+        assert_eq!(
+            desired.first().map(|s| s.command.as_str()),
+            Some("residuum-test-no-such-command")
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_reload_reconcile_leaves_the_web_search_server_running() {
+        let cfg = config_with_backend(Some("tavily"));
+        let mut registry = residuum_mcp::McpRegistry::new();
+        registry.insert_running_server("tavily_web_search", vec![tool("tavily_search")]);
+        registry.insert_running_server("old", vec![tool("old_tool")]);
+
+        let desired = with_web_search_mcp_entry(vec![workspace_entry("added")], &cfg);
+        let report = registry.reconcile_and_connect(&desired).await;
+
+        assert_eq!(report.stopped, 1, "only the removed mcp.json server stops");
+        assert_eq!(
+            report.failures.len(),
+            1,
+            "the added mcp.json server is attempted"
+        );
+        let tools: Vec<String> = registry
+            .tool_definitions()
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+        assert_eq!(tools, ["tavily_search"]);
+    }
 
     #[test]
     fn degradation_notice_is_none_when_nothing_degraded() {
