@@ -1445,7 +1445,7 @@ fn append_image_blocks(blocks: &mut Vec<AnthropicContentBlock>, images: &[ImageD
         blocks.push(AnthropicContentBlock::Image {
             source: AnthropicImageSource {
                 r#type: String::from("base64"),
-                media_type: img.media_type.clone(),
+                media_type: img.request_media_type().to_string(),
                 data: img.data.clone(),
             },
         });
@@ -2964,6 +2964,39 @@ mod tests {
             resp.content
                 .contains("Rust is a systems programming language"),
             "text content should be preserved"
+        );
+    }
+
+    #[test]
+    fn convert_messages_sends_the_sniffed_image_media_type() {
+        let jpeg_labeled_png = ImageData {
+            media_type: "image/png".to_string(),
+            data: "/9j/4AAQSkZJRg==".to_string(),
+        };
+        let messages = vec![
+            Message::user("Look at the file"),
+            Message::assistant(
+                "",
+                Some(vec![ToolCall {
+                    id: "tool_1".to_string(),
+                    name: "read_file".to_string(),
+                    arguments: json!({"path": "render.png"}),
+                    server: None,
+                }]),
+            ),
+            Message::tool_with_images("[Image: render.png]", "tool_1", vec![jpeg_labeled_png]),
+        ];
+
+        let (_system, api_msgs) = convert(&messages);
+
+        let wire = serde_json::to_string(&api_msgs).unwrap();
+        assert!(
+            wire.contains(r#""media_type":"image/jpeg""#),
+            "bytes decide the media type, not the stored label: {wire}"
+        );
+        assert!(
+            !wire.contains("image/png"),
+            "the wrong stored label must not be sent: {wire}"
         );
     }
 

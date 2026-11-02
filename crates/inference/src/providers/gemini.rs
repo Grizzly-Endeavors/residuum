@@ -255,7 +255,7 @@ impl GeminiClient {
                         for img in &msg.images {
                             parts.push(GeminiPart {
                                 inline_data: Some(GeminiInlineData {
-                                    mime_type: img.media_type.clone(),
+                                    mime_type: img.request_media_type().to_string(),
                                     data: img.data.clone(),
                                 }),
                                 ..GeminiPart::default()
@@ -1320,6 +1320,27 @@ mod tests {
             contents.first().map(|c| c.role.as_str()),
             Some("user"),
             "content role should be user"
+        );
+    }
+
+    #[test]
+    fn convert_messages_sends_the_sniffed_image_media_type() {
+        let jpeg_labeled_png = crate::ImageData {
+            media_type: "image/png".to_string(),
+            data: "/9j/4AAQSkZJRg==".to_string(),
+        };
+        let messages = vec![Message::user_with_images("look", vec![jpeg_labeled_png])];
+        let (_, contents) = GeminiClient::convert_messages(&messages, &test_origin());
+
+        let mime_type = contents
+            .iter()
+            .flat_map(|content| &content.parts)
+            .find_map(|part| part.inline_data.as_ref())
+            .map(|data| data.mime_type.as_str());
+        assert_eq!(
+            mime_type,
+            Some("image/jpeg"),
+            "bytes decide the media type, not the stored label"
         );
     }
 

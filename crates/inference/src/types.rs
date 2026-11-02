@@ -18,6 +18,51 @@ pub struct ImageData {
     pub data: String,
 }
 
+impl ImageData {
+    /// The media type to send a provider: what the stored bytes are when they
+    /// match a known image format, otherwise the stored label. Providers
+    /// reject an image whose label disagrees with its bytes, and history is
+    /// replayed every turn, so a mislabeled image would fail every request.
+    #[must_use]
+    pub fn request_media_type(&self) -> &str {
+        sniff_image_media_type_base64(&self.data).unwrap_or(&self.media_type)
+    }
+}
+
+/// Identify an image format from its leading bytes: PNG, JPEG, GIF or WebP.
+#[must_use]
+pub fn sniff_image_media_type(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
+        Some("image/png")
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("image/jpeg")
+    } else if bytes.starts_with(b"GIF8") {
+        Some("image/gif")
+    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP".as_slice()) {
+        Some("image/webp")
+    } else {
+        None
+    }
+}
+
+/// [`sniff_image_media_type`] over base64 text, without decoding it. The
+/// prefixes are the base64 of the same magic bytes: `RIFF` is `UklGR` and
+/// `WEBP` at byte 8 is `XRUJQ` from character 11 (`X` is the low six bits of
+/// the `W`).
+fn sniff_image_media_type_base64(data: &str) -> Option<&'static str> {
+    if data.starts_with("iVBOR") {
+        Some("image/png")
+    } else if data.starts_with("/9j/") {
+        Some("image/jpeg")
+    } else if data.starts_with("R0lGO") {
+        Some("image/gif")
+    } else if data.starts_with("UklGR") && data.get(11..16) == Some("XRUJQ") {
+        Some("image/webp")
+    } else {
+        None
+    }
+}
+
 /// A file that came with a user's message, saved as a companion agent-inbox item.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -1277,6 +1322,78 @@ mod tests {
         let restored: Message = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.images.len(), 1, "images should roundtrip");
         assert_eq!(restored.images.first().unwrap().media_type, "image/jpeg");
+    }
+
+    #[test]
+    fn sniff_image_media_type_recognizes_each_format() {
+        let cases: [(&[u8], &str); 5] = [
+            (b"\x89PNG\r\n\x1A\nrest", "image/png"),
+            (b"\xFF\xD8\xFF\xE0rest", "image/jpeg"),
+            (b"GIF89a rest", "image/gif"),
+            (b"GIF87a rest", "image/gif"),
+            (b"RIFF\x24\x00\x00\x00WEBPVP8 ", "image/webp"),
+        ];
+        for (bytes, expected) in cases {
+            assert_eq!(sniff_image_media_type(bytes), Some(expected), "{expected}");
+        }
+    }
+
+    #[test]
+    fn sniff_image_media_type_returns_none_for_unknown_bytes() {
+        let cases: [&[u8]; 6] = [
+            b"",
+            b"plain text",
+            b"\xFF\xD8",
+            b"RIFF",
+            b"RIFF\x24\x00\x00\x00WAVEfmt ",
+            b"\x89PNX",
+        ];
+        for bytes in cases {
+            assert_eq!(sniff_image_media_type(bytes), None, "{bytes:?}");
+        }
+    }
+
+    fn image_with_label(media_type: &str, data: &str) -> ImageData {
+        ImageData {
+            media_type: media_type.to_string(),
+            data: data.to_string(),
+        }
+    }
+
+    #[test]
+    fn request_media_type_follows_the_bytes_over_the_label() {
+        let cases = [
+            ("iVBORw0KGgoAAAANSUhEUg==", "image/png"),
+            ("/9j/4AAQSkZJRgABAQ==", "image/jpeg"),
+            ("R0lGODlhAQABAA==", "image/gif"),
+            ("R0lGODdhAQABAA==", "image/gif"),
+            ("UklGRiQAAABXRUJQVlA4", "image/webp"),
+        ];
+        for (data, expected) in cases {
+            let mislabeled = image_with_label("image/bmp", data);
+            assert_eq!(mislabeled.request_media_type(), expected, "{data}");
+        }
+    }
+
+    #[test]
+    fn request_media_type_heals_png_label_over_jpeg_bytes() {
+        let image = image_with_label("image/png", "/9j/4AAQSkZJRgABAQ==");
+        assert_eq!(image.request_media_type(), "image/jpeg");
+    }
+
+    #[test]
+    fn request_media_type_keeps_the_label_when_bytes_are_unknown() {
+        let cases = [
+            "",
+            "aGVsbG8gd29ybGQ=",
+            "UklGRiQAAABXQVZFZm10",
+            "UklGR",
+            "/9j",
+        ];
+        for data in cases {
+            let image = image_with_label("image/webp", data);
+            assert_eq!(image.request_media_type(), "image/webp", "{data:?}");
+        }
     }
 
     #[test]

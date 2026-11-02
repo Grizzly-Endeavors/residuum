@@ -11,7 +11,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use super::file_tracker::SharedFileTracker;
 use crate::path_policy::SharedPathPolicy;
 use residuum_agent::Tool;
-use residuum_inference::{ImageData, ToolDefinition};
+use residuum_inference::{ImageData, ToolDefinition, sniff_image_media_type};
 use residuum_inference::{ToolError, ToolResult};
 use residuum_workspace::inbox::attachment::MAX_IMAGE_INLINE_SIZE;
 use residuum_workspace::team_files::{FileStamp, TeamFiles};
@@ -139,10 +139,14 @@ impl ReadTool {
 
         self.record_read(resolved_path, record).await;
 
+        // The extension is only a fallback: providers reject an image whose
+        // label disagrees with its bytes.
+        let media_type = sniff_image_media_type(&bytes).unwrap_or(mime);
+
         Ok(ToolResult::success_with_images(
             summary,
             vec![ImageData {
-                media_type: mime.to_string(),
+                media_type: media_type.to_string(),
                 data: encoded,
             }],
         ))
@@ -870,6 +874,68 @@ mod tests {
             result.images.is_empty(),
             "text files should not return images"
         );
+    }
+
+    async fn read_image_block(file_name: &str, bytes: &[u8]) -> ImageData {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join(file_name);
+        tokio::fs::write(&file_path, bytes).await.unwrap();
+
+        let result = make_tool()
+            .execute(serde_json::json!({ "path": file_path.to_str().unwrap() }))
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "image read should succeed");
+        result.images.into_iter().next().unwrap()
+    }
+
+    async fn read_image_media_type(file_name: &str, bytes: &[u8]) -> String {
+        read_image_block(file_name, bytes).await.media_type
+    }
+
+    #[tokio::test]
+    async fn read_image_labels_by_bytes_for_each_format() {
+        let png = b"\x89PNG\r\n\x1A\nfake png";
+        let jpeg = b"\xFF\xD8\xFF\xE0fake jpeg data";
+        let gif = b"GIF89a fake gif";
+        let webp = b"RIFF\x24\x00\x00\x00WEBPVP8 fake webp";
+
+        for (name, bytes, expected) in [
+            ("a.png", png.as_slice(), "image/png"),
+            ("a.jpg", jpeg.as_slice(), "image/jpeg"),
+            ("a.gif", gif.as_slice(), "image/gif"),
+            ("a.webp", webp.as_slice(), "image/webp"),
+        ] {
+            let image = read_image_block(name, bytes).await;
+            assert_eq!(image.media_type, expected, "{name}");
+
+            // The same bytes in stored history under a wrong label are
+            // recognized from the base64 text alone.
+            let mislabeled = ImageData {
+                media_type: "image/bmp".to_string(),
+                data: image.data,
+            };
+            assert_eq!(mislabeled.request_media_type(), expected, "{name} history");
+        }
+    }
+
+    #[tokio::test]
+    async fn read_jpeg_bytes_named_png_is_labeled_jpeg() {
+        let media_type = read_image_media_type("render.png", b"\xFF\xD8\xFF\xE0fake jpeg").await;
+        assert_eq!(media_type, "image/jpeg", "bytes win over the extension");
+    }
+
+    #[tokio::test]
+    async fn read_png_bytes_named_jpg_is_labeled_png() {
+        let media_type = read_image_media_type("shot.jpg", b"\x89PNG\r\n\x1A\nfake png").await;
+        assert_eq!(media_type, "image/png", "bytes win over the extension");
+    }
+
+    #[tokio::test]
+    async fn read_image_with_unrecognized_bytes_falls_back_to_extension() {
+        let media_type = read_image_media_type("odd.webp", b"not any known image format").await;
+        assert_eq!(media_type, "image/webp", "extension is the fallback");
     }
 
     #[tokio::test]
