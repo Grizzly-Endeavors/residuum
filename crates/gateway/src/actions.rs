@@ -332,7 +332,7 @@ mod tests {
         // forwards in publish order, so once its spawn arrives any notice
         // this tick published would already be queued.
         let mut good = due_action("action-ffffffff", "explicit model");
-        good.model_tier = Some("anthropic/claude-haiku-4-5".to_string());
+        good.model_tier = Some("openai/gpt-4o".to_string());
         action_store.lock().await.add(good);
         spawn_due_actions(
             &action_store,
@@ -344,7 +344,7 @@ mod tests {
         assert_eq!(event.source_label, "action:explicit model");
         assert_eq!(
             event.model,
-            ModelSelector::Explicit("anthropic/claude-haiku-4-5".to_string())
+            ModelSelector::Explicit("openai/gpt-4o".to_string())
         );
         assert!(
             notices.drain().is_empty(),

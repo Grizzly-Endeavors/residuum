@@ -105,6 +105,10 @@ async fn listener_loop(ctx: SpawnContextWatch, mut subscriber: Subscriber<SpawnR
                     let resume = ctx.session_registry.resume_point(&event.address).is_some();
                     (event.address.clone(), resume)
                 });
+                let spawner_relay = event
+                    .spawner
+                    .clone()
+                    .map(|spawner| (spawner, event.address.clone(), event.hop_count));
                 let outcome = handle_spawn_request(&ctx, event).await;
                 if let (Err(e), Some(address)) = (&outcome, pulse_address) {
                     publish_pulse_start_failed(&ctx.publisher, address, &source_label, e).await;
@@ -121,11 +125,10 @@ async fn listener_loop(ctx: SpawnContextWatch, mut subscriber: Subscriber<SpawnR
                     // A stop is not a recovery: a fork failure on record for
                     // this pulse stays deduplicated.
                     Ok(SpawnOutcome::FireStopped) => {}
-                    Err(e) => match owner_start {
-                        Some((address, resume)) => {
+                    Err(e) => {
+                        if let Some((address, resume)) = owner_start {
                             notify_owner_start_failed(&ctx.publisher, &address, resume, &e).await;
-                        }
-                        None => {
+                        } else {
                             handle_spawn_failure(
                                 &ctx.publisher,
                                 &mut spawn_failures,
@@ -134,8 +137,18 @@ async fn listener_loop(ctx: SpawnContextWatch, mut subscriber: Subscriber<SpawnR
                                 &e,
                             )
                             .await;
+                            if let Some((spawner, address, hop_count)) = spawner_relay {
+                                relay_fork_failure_to_spawner(
+                                    &ctx.messenger,
+                                    &spawner,
+                                    &address,
+                                    hop_count,
+                                    &e,
+                                )
+                                .await;
+                            }
                         }
-                    },
+                    }
                 }
             }
             Ok(None) => break,
@@ -228,6 +241,62 @@ async fn handle_spawn_failure(
         .await
     {
         tracing::warn!(source = %source_label, error = %e, "failed to publish spawn-failure notice");
+    }
+}
+
+/// Relay an asynchronous pre-fork failure to the agent session that requested
+/// the spawn (`spawner`), using the same `[Session Result] <address> — status:
+/// failed: <error>` envelope that a session failing during its turn sends via
+/// `relay_result_to_spawner`. Without this, a spawn request that passed tool
+/// preflight (`subagent_spawn` returned `status: "spawned"`) and then failed
+/// before entering `SessionRuntime` would leave its spawner waiting forever
+/// for a result that never arrives.
+async fn relay_fork_failure_to_spawner(
+    messenger: &crate::messaging::AgentMessenger,
+    spawner: &SessionAddress,
+    address: &SessionAddress,
+    hop_count: u32,
+    error: &anyhow::Error,
+) {
+    let status = residuum_bus::AgentResultStatus::Failed {
+        error: format!("{error:#}"),
+        details: None,
+    };
+    let content = format!("[Session Result] {address} — status: {status}");
+    let outgoing_hop = hop_count.saturating_add(1);
+    match messenger
+        .send(
+            spawner.as_ref(),
+            AgentMessageEvent::new(
+                address.clone(),
+                SessionCategory::Spawned.as_str(),
+                content,
+                outgoing_hop,
+            ),
+        )
+        .await
+    {
+        Ok(crate::messaging::DeliveryOutcome::Unknown) => {
+            tracing::warn!(
+                address = %address,
+                spawner = %spawner,
+                "failed to relay pre-fork failure to spawner: spawner is no longer reachable"
+            );
+        }
+        Ok(
+            crate::messaging::DeliveryOutcome::Main
+            | crate::messaging::DeliveryOutcome::Live(_)
+            | crate::messaging::DeliveryOutcome::Resumed(_)
+            | crate::messaging::DeliveryOutcome::Queued(_),
+        ) => {}
+        Err(e) => {
+            tracing::warn!(
+                address = %address,
+                spawner = %spawner,
+                error = %e,
+                "failed to relay pre-fork failure to spawner"
+            );
+        }
     }
 }
 
@@ -1892,6 +1961,45 @@ mod tests {
         );
         bus_barrier(&bus).await;
         assert_eq!(failures.drain(), Vec::<SessionStartFailedEvent>::new());
+    }
+
+    #[tokio::test]
+    async fn an_agent_spawn_that_fails_to_fork_relays_its_failure_to_its_spawner() {
+        let bus = residuum_bus::spawn_broker();
+        let mut main_inbox: Subscriber<MessageEvent> =
+            bus.subscribe(topics::UserMessage).await.unwrap();
+        let ctx = spawn_context_without_a_working_provider(&bus).await;
+        let _listener = spawn_listener(Arc::clone(&ctx), &bus).await.unwrap();
+
+        let mut by_main = owner_start();
+        by_main.address = SessionAddress::from("spawned-researcher-0a1b");
+        by_main.source_label = "agent:researcher".to_string();
+        by_main.spawner = Some(SessionAddress::from(MAIN_ADDRESS));
+        by_main.hop_count = 2;
+        bus.publisher()
+            .publish(topics::Background, by_main)
+            .await
+            .unwrap();
+
+        let relayed = next_event("the fork failure relayed to main", &mut main_inbox).await;
+        assert_eq!(
+            relayed
+                .origin
+                .agent_sender
+                .as_ref()
+                .map(|s| s.address.as_ref()),
+            Some("spawned-researcher-0a1b")
+        );
+        assert_eq!(ctx.messenger.take_main_hop(&relayed.id), 3);
+        assert!(
+            relayed.content.starts_with(
+                "[Agent Message from spawned-researcher-0a1b (spawned)]\n\
+                 [Session Result] spawned-researcher-0a1b — status: failed: \
+                 failed to build provider chain for model medium:"
+            ) && relayed.content.contains("API key"),
+            "spawner receives the full fork failure cause: {}",
+            relayed.content
+        );
     }
 
     #[tokio::test]
