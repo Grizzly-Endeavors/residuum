@@ -3050,3 +3050,173 @@ async fn dropping_a_start_or_restart_future_mid_launch_does_not_wedge_the_agent_
     host.stop("atlas").await.unwrap();
     assert_eq!(host.summary("atlas").unwrap().state, AgentState::Stopped);
 }
+
+#[tokio::test]
+async fn restart_while_turn_in_flight_defers_until_turn_completes_and_force_restarts_immediately() {
+    let hub = Fixture::new(&["scout"], "").await;
+    hub.gate("scout").close();
+    hub.host.start("scout").await.unwrap();
+    let mut events = hub.host.subscribe();
+
+    let mut ws = hub.start_a_turn("scout").await;
+    hub.gate("scout").until_held(1).await;
+
+    // Request a graceful restart over HTTP while the turn is in flight.
+    let resp = hub
+        .http
+        .post(hub.url("/api/hub/agents/scout/restart"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body.get("restart_pending"), Some(&json!(true)));
+    assert!(hub.activity_of("scout").restart_pending);
+    assert_eq!(hub.state_of("scout"), AgentState::Running);
+
+    // A second graceful restart while already pending coalesces cleanly.
+    hub.host.restart("scout").await.unwrap();
+    assert!(hub.activity_of("scout").restart_pending);
+
+    // Let the in-flight turn finish; the client receives the response and turn_ended
+    // before the deferred restart stops and restarts the agent.
+    hub.gate("scout").open_all();
+    let reply = wait::guarded("the in-flight turn's reply before restart", async {
+        let mut content = None;
+        while let Some(Ok(frame)) = ws.next().await {
+            let WsMessage::Text(raw) = frame else {
+                continue;
+            };
+            let value: Value = serde_json::from_str(&raw).unwrap();
+            match value.get("type").and_then(Value::as_str) {
+                Some("response") => {
+                    content = Some(str_at(&value, "content").to_string());
+                }
+                Some("turn_ended") => {
+                    if let Some(c) = content.take() {
+                        return c;
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("WebSocket closed before the in-flight turn finished");
+    })
+    .await;
+    assert_eq!(reply, "scout here");
+
+    // Now the deferred restart runs: wait for AgentStopping followed by Running.
+    wait::guarded("the deferred restart to stop and restart scout", async {
+        let mut saw_stopping = false;
+        loop {
+            match events.recv().await.unwrap() {
+                HubEvent::AgentStopping { name } if name == "scout" => {
+                    saw_stopping = true;
+                }
+                HubEvent::AgentState { agent }
+                    if saw_stopping
+                        && agent.name == "scout"
+                        && agent.state == AgentState::Running =>
+                {
+                    break;
+                }
+                HubEvent::AgentState { .. }
+                | HubEvent::AgentStopping { .. }
+                | HubEvent::AgentCreated { .. }
+                | HubEvent::AgentRestored { .. }
+                | HubEvent::AgentDeleted { .. }
+                | HubEvent::AgentActivity { .. }
+                | HubEvent::Notice { .. }
+                | HubEvent::HubConfigReloaded { .. } => {}
+            }
+        }
+    })
+    .await;
+    assert!(!hub.activity_of("scout").restart_pending);
+    assert_eq!(
+        hub.chat("scout", "after graceful restart").await,
+        "scout here"
+    );
+
+    // Now hold another turn at the gate and verify `?force=true` restarts immediately
+    // without waiting for the gate to open.
+    hub.gate("scout").close();
+    let _ws2 = hub.start_a_turn("scout").await;
+    hub.gate("scout").until_held(1).await;
+
+    let forced = hub
+        .http
+        .post(hub.url("/api/hub/agents/scout/restart?force=true"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(forced.status().as_u16(), 200);
+    let forced_body: Value = forced.json().await.unwrap();
+    assert_eq!(forced_body.get("restart_pending"), None);
+    assert_eq!(hub.state_of("scout"), AgentState::Running);
+    assert!(!hub.activity_of("scout").busy);
+    hub.gate("scout").open_all();
+}
+
+#[tokio::test]
+async fn graceful_restart_escalates_when_wait_timeout_expires() {
+    let hub = Fixture::new(&["scout"], "").await;
+    hub.host
+        .set_graceful_restart_timeout(std::time::Duration::from_millis(10));
+    hub.gate("scout").close();
+    hub.host.start("scout").await.unwrap();
+    let mut events = hub.host.subscribe();
+
+    let _ws = hub.start_a_turn("scout").await;
+    hub.gate("scout").until_held(1).await;
+
+    hub.host.restart("scout").await.unwrap();
+    assert!(hub.activity_of("scout").restart_pending);
+
+    // Without opening the gate, the bounded wait expires, publishes a Warn notice,
+    // and restarts the agent anyway.
+    wait::guarded(
+        "the graceful restart timeout to warn and restart scout",
+        async {
+            let mut saw_warn = false;
+            let mut saw_running_after_stop = false;
+            let mut saw_stopping = false;
+            loop {
+                match events.recv().await.unwrap() {
+                    HubEvent::Notice {
+                        agent: Some(name),
+                        message,
+                        ..
+                    } if name == "scout" && message.contains("pending restart ran immediately") => {
+                        saw_warn = true;
+                    }
+                    HubEvent::AgentStopping { name } if name == "scout" => {
+                        saw_stopping = true;
+                    }
+                    HubEvent::AgentState { agent }
+                        if saw_stopping
+                            && agent.name == "scout"
+                            && agent.state == AgentState::Running =>
+                    {
+                        saw_running_after_stop = true;
+                    }
+                    HubEvent::AgentState { .. }
+                    | HubEvent::AgentStopping { .. }
+                    | HubEvent::AgentCreated { .. }
+                    | HubEvent::AgentRestored { .. }
+                    | HubEvent::AgentDeleted { .. }
+                    | HubEvent::AgentActivity { .. }
+                    | HubEvent::Notice { .. }
+                    | HubEvent::HubConfigReloaded { .. } => {}
+                }
+                if saw_warn && saw_running_after_stop {
+                    break;
+                }
+            }
+        },
+    )
+    .await;
+    assert_eq!(hub.state_of("scout"), AgentState::Running);
+    assert!(!hub.activity_of("scout").restart_pending);
+    hub.gate("scout").open_all();
+}

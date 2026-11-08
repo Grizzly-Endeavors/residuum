@@ -68,6 +68,10 @@ const ABORT_SETTLE: Duration = Duration::from_secs(10);
 /// just wrote before answering anyway.
 const PATCH_RELOAD_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// How long a graceful restart waits for an in-flight main turn to finish
+/// before escalating to an immediate restart.
+const GRACEFUL_RESTART_TIMEOUT: Duration = Duration::from_secs(300);
+
 /// What start, restart, and create answer once the hub is shutting down.
 const SHUTTING_DOWN: &str = "Residuum is shutting down";
 
@@ -358,6 +362,9 @@ pub struct AgentHost {
     /// The embedding model the team wiki currently uses. Holding the lock
     /// covers choosing and swapping, so refreshes never interleave.
     team_embedding: tokio::sync::Mutex<Option<EmbeddingSource>>,
+    /// How long a graceful restart waits for an in-flight turn to finish
+    /// before escalating to an immediate restart.
+    graceful_restart_timeout: Mutex<Duration>,
 }
 
 impl AgentHost {
@@ -394,8 +401,26 @@ impl AgentHost {
                 teams_ports: Mutex::new(BTreeMap::new()),
                 teams_ports_tx,
                 team_embedding: tokio::sync::Mutex::new(None),
+                graceful_restart_timeout: Mutex::new(GRACEFUL_RESTART_TIMEOUT),
             }
         })
+    }
+
+    fn graceful_restart_timeout(&self) -> Duration {
+        *self
+            .graceful_restart_timeout
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Override how long a graceful restart waits for an in-flight turn to
+    /// finish before restarting immediately.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_graceful_restart_timeout(&self, timeout: Duration) {
+        *self
+            .graceful_restart_timeout
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = timeout;
     }
 
     fn slots(&self) -> Vec<Arc<AgentSlot>> {
@@ -571,6 +596,7 @@ impl AgentHost {
     /// Stop every running agent, concurrently.
     pub async fn stop_all(&self) {
         let stops = self.slots().into_iter().map(|slot| async move {
+            slot.activity.take_restart_pending();
             let _op = slot.op_lock.lock().await;
             // A slot deleted meanwhile has nothing left to stop.
             self.stop_locked(&slot).await.ok();
@@ -1187,6 +1213,7 @@ impl AgentHost {
                 )
             })
         else {
+            slot.activity.take_restart_pending();
             return Ok(());
         };
         stop_requested.store(true, Ordering::SeqCst);
@@ -1201,6 +1228,7 @@ impl AgentHost {
         });
         // A closed channel means the event loop is already gone.
         stop_tx.send(()).await.ok();
+        slot.activity.take_restart_pending();
         if tokio::time::timeout(STOP_TIMEOUT, done.wait_for(|finished| *finished))
             .await
             .is_ok()
@@ -1218,6 +1246,57 @@ impl AgentHost {
             self.set_state(slot, AgentState::Stopped, None);
         }
         Ok(())
+    }
+
+    /// Wait for the running main turn on `slot` (at `generation`) to finish
+    /// (up to [`Self::graceful_restart_timeout`]), then stop and restart the
+    /// agent if the deferred restart is still pending.
+    async fn run_deferred_restart(self: Arc<Self>, slot: Arc<AgentSlot>, generation: u64) {
+        let timeout = self.graceful_restart_timeout();
+        let timed_out =
+            tokio::time::timeout(timeout, slot.activity.wait_until_turn_ends_or_cancelled())
+                .await
+                .is_err();
+        if timed_out {
+            tracing::warn!(
+                agent = %slot.name,
+                timeout_secs = timeout.as_secs(),
+                "graceful restart timed out waiting for the active turn to finish; restarting immediately"
+            );
+            self.notice(
+                NoticeLevel::Warn,
+                format!(
+                    "{}'s turn was still running after {}s, so its pending restart ran immediately.",
+                    slot.current_meta().display_name,
+                    timeout.as_secs()
+                ),
+                Some(slot.name.clone()),
+            );
+        }
+        let _op = slot.op_lock.lock().await;
+        if self.ensure_not_stopping().is_err() || slot.is_removed() {
+            slot.activity.take_restart_pending();
+            return;
+        }
+        let still_current = {
+            let guard = slot.lock();
+            guard.state == AgentState::Running && guard.generation == generation
+        };
+        if !still_current || !slot.activity.snapshot().restart_pending {
+            slot.activity.take_restart_pending();
+            return;
+        }
+        tracing::info!(
+            agent = %slot.name,
+            timed_out,
+            "executing deferred restart after turn ended"
+        );
+        if let Err(e) = self.stop_locked(&slot).await {
+            tracing::error!(agent = %slot.name, error = %e, "deferred restart failed while stopping agent");
+            return;
+        }
+        let started = self.start_locked(&slot).await;
+        self.note_start_outcome(&slot, &started);
     }
 
     // ─── Create and delete ────────────────────────────────────────────
@@ -1358,8 +1437,10 @@ impl AgentHost {
         // even when `name` was the name people type.
         let slug = slot.name.clone();
         let display_name = self.summary_of(&slot).display_name;
+        slot.activity.take_restart_pending();
         let checkpoint_id = {
             let _op = slot.op_lock.lock().await;
+            slot.activity.take_restart_pending();
             self.stop_locked(&slot).await?;
             // Read before the role page goes, so a restore can bring it back.
             let mut record = super::deleted::DeletionRecord {
@@ -2176,8 +2257,10 @@ impl AgentDirectory for AgentHost {
 
     async fn stop(&self, name: &str) -> Result<AgentSummary, LifecycleError> {
         let slot = self.slot(name)?;
+        slot.activity.take_restart_pending();
         self.run_in_host_task(move |host| async move {
             let _op = slot.op_lock.lock().await;
+            slot.activity.take_restart_pending();
             host.stop_locked(&slot).await?;
             Ok(host.summary_of(&slot))
         })
@@ -2189,6 +2272,53 @@ impl AgentDirectory for AgentHost {
         let slot = self.slot(name)?;
         self.run_in_host_task(move |host| async move {
             let _op = slot.op_lock.lock().await;
+            slot.ensure_present()?;
+            host.ensure_not_stopping()?;
+            let running_gen = {
+                let guard = slot.lock();
+                (guard.state == AgentState::Running).then_some(guard.generation)
+            };
+            if let Some(generation) = running_gen {
+                let (deferred, newly_scheduled) = slot.activity.defer_restart_if_busy();
+                if deferred {
+                    if newly_scheduled {
+                        tracing::info!(
+                            agent = %slot.name,
+                            "agent is busy with a main turn; deferring restart until the turn ends"
+                        );
+                        let host_for_task = Arc::clone(&host);
+                        let slot_for_task = Arc::clone(&slot);
+                        residuum_core::util::spawn_in_span(
+                            async move {
+                                host_for_task
+                                    .run_deferred_restart(slot_for_task, generation)
+                                    .await;
+                            }
+                            .instrument(agent_span(&slot.name)),
+                        );
+                    } else {
+                        tracing::debug!(
+                            agent = %slot.name,
+                            "coalesced duplicate restart request into pending turn-end restart"
+                        );
+                    }
+                    return Ok(host.summary_of(&slot));
+                }
+            }
+            host.stop_locked(&slot).await?;
+            host.start_locked(&slot).await?;
+            Ok(host.summary_of(&slot))
+        })
+        .await
+    }
+
+    async fn restart_now(&self, name: &str) -> Result<AgentSummary, LifecycleError> {
+        self.ensure_not_stopping()?;
+        let slot = self.slot(name)?;
+        slot.activity.take_restart_pending();
+        self.run_in_host_task(move |host| async move {
+            let _op = slot.op_lock.lock().await;
+            slot.activity.take_restart_pending();
             host.stop_locked(&slot).await?;
             host.start_locked(&slot).await?;
             Ok(host.summary_of(&slot))
