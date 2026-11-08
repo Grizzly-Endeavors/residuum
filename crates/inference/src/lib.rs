@@ -37,7 +37,7 @@ pub use factory::{
 };
 pub use failover::NoticeSink;
 pub use http::{HttpClientConfig, SharedHttpClient};
-pub use image_input::ImagesOmitted;
+pub use image_input::{ImagesOmitted, prepare_inline_image};
 pub use pricing::{CostEstimate, PriceTable};
 pub use providers::anthropic;
 pub use providers::null::NullProvider;

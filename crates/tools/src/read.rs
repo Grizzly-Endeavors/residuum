@@ -4,14 +4,13 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
-use base64::Engine;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 use super::file_tracker::SharedFileTracker;
 use crate::path_policy::SharedPathPolicy;
 use residuum_agent::Tool;
-use residuum_inference::{ImageData, ToolDefinition, sniff_image_media_type};
+use residuum_inference::{ToolDefinition, prepare_inline_image};
 use residuum_inference::{ToolError, ToolResult};
 use residuum_workspace::inbox::attachment::MAX_IMAGE_INLINE_SIZE;
 use residuum_workspace::team_files::{FileStamp, TeamFiles};
@@ -128,28 +127,32 @@ impl ReadTool {
             }
         };
 
-        let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        let (image, downscaled) = match prepare_inline_image(&bytes, mime) {
+            Ok(prepared) => prepared,
+            Err(e) => {
+                return Ok(ToolResult::error(format!(
+                    "failed to read {display_path}: {e}"
+                )));
+            }
+        };
+
         let filename = resolved_path
             .file_name()
             .unwrap_or_default()
             .to_string_lossy();
 
         let size_kb = size as f64 / 1024.0;
-        let summary = format!("[Image: {filename}, {size_kb:.1} KB]");
+        let summary = match downscaled {
+            Some(((orig_w, orig_h), (new_w, new_h))) => format!(
+                "[Image: {filename}, {size_kb:.1} KB, downscaled from \
+                 {orig_w}\u{00d7}{orig_h} to {new_w}\u{00d7}{new_h}]"
+            ),
+            None => format!("[Image: {filename}, {size_kb:.1} KB]"),
+        };
 
         self.record_read(resolved_path, record).await;
 
-        // The extension is only a fallback: providers reject an image whose
-        // label disagrees with its bytes.
-        let media_type = sniff_image_media_type(&bytes).unwrap_or(mime);
-
-        Ok(ToolResult::success_with_images(
-            summary,
-            vec![ImageData {
-                media_type: media_type.to_string(),
-                data: encoded,
-            }],
-        ))
+        Ok(ToolResult::success_with_images(summary, vec![image]))
     }
 }
 
@@ -414,6 +417,7 @@ fn image_mime_type(path: &Path) -> Option<&'static str> {
 mod tests {
     use super::*;
     use crate::file_tracker::FileTracker;
+    use residuum_inference::ImageData;
 
     /// A workspace root that doesn't correspond to any real directory, for
     /// tests that always pass an absolute `path` (join drops the base for
@@ -1050,5 +1054,59 @@ mod tests {
         );
         assert_eq!(image_mime_type(Path::new("document.txt")), None,);
         assert_eq!(image_mime_type(Path::new("noext")), None,);
+    }
+
+    #[tokio::test]
+    async fn read_oversized_image_downscales_inline_copy_and_leaves_disk_file_intact() {
+        use base64::Engine as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("creek.jpg");
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            8448,
+            32,
+            image::Rgb([16, 96, 48]),
+        ));
+        let mut raw_bytes = Vec::new();
+        img.write_to(
+            &mut std::io::Cursor::new(&mut raw_bytes),
+            image::ImageFormat::Jpeg,
+        )
+        .unwrap();
+        tokio::fs::write(&file_path, &raw_bytes).await.unwrap();
+
+        let tool = make_tool();
+        let result = tool
+            .execute(serde_json::json!({ "path": file_path.to_str().unwrap() }))
+            .await
+            .unwrap();
+
+        assert!(
+            !result.is_error,
+            "oversized image should be downscaled, not rejected: {}",
+            result.output
+        );
+        assert!(
+            result
+                .output
+                .contains("downscaled from 8448\u{00d7}32 to 8000\u{00d7}30"),
+            "summary should report original and downscaled dimensions: {}",
+            result.output
+        );
+        let inline = result.images.first().expect("one inline image returned");
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(&inline.data)
+            .unwrap();
+        let (w, h) = image::ImageReader::new(std::io::Cursor::new(&decoded))
+            .with_guessed_format()
+            .unwrap()
+            .into_dimensions()
+            .unwrap();
+        assert_eq!((w, h), (8000, 30), "inline image should fit within 8000 px");
+        assert_eq!(
+            tokio::fs::read(&file_path).await.unwrap(),
+            raw_bytes,
+            "the file on disk must not be modified"
+        );
     }
 }

@@ -28,7 +28,6 @@ a2a-client = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }
-base64 = { workspace = true }
 chrono = { workspace = true }
 chrono-tz = { workspace = true }
 futures-util = { workspace = true }
