@@ -49,8 +49,8 @@ class AgentActions {
     return this.run(name, "stop", () => hub.stopAgent(name));
   }
 
-  restart(name: string): Promise<void> {
-    return this.run(name, "restart", () => hub.restartAgent(name));
+  restart(name: string, force = false): Promise<void> {
+    return this.run(name, "restart", () => hub.restartAgent(name, force));
   }
 
   /** Flip Start automatically. When the hub refuses, the menu goes back to the hub's value. */

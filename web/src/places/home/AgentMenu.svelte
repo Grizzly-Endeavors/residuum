@@ -1,6 +1,7 @@
 <script lang="ts">
   import { agentLabel } from "../../lib/agent-name";
   import type { AgentSummary } from "../../lib/hub-types";
+  import { hub } from "../../lib/hub.svelte";
   import { router } from "../../lib/router.svelte";
   import {
     IconButton,
@@ -28,6 +29,7 @@
   let { agent, state, working }: Props = $props();
 
   const busy = $derived(agentActions.pendingOf(agent.name));
+  const restartPending = $derived(hub.activityOf(agent.name).restart_pending === true);
 
   function offered(action: LifecycleAction): boolean {
     return lifecycleApplies(action, state) && busy === undefined;
@@ -61,9 +63,9 @@
   />
   <MenuItem
     icon="reload"
-    label={busy === "restart" ? "Restarting…" : "Restart"}
+    label={busy === "restart" ? "Restarting…" : restartPending ? "Restart now" : "Restart"}
     disabled={!offered("restart")}
-    onselect={() => void agentActions.restart(agent.name)}
+    onselect={() => void agentActions.restart(agent.name, restartPending)}
   />
   <MenuItem
     icon="clock"

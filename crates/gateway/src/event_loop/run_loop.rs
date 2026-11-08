@@ -1311,8 +1311,13 @@ async fn dispatch_pending_reloads(
 
 /// The message waiting in `deferred_inbound` to run next: one the person asked
 /// to send now goes ahead of the rest. A message withdrawn while it waited
-/// is dropped here, and the next one taken instead.
+/// is dropped here, and the next one taken instead. Returns `None` when a
+/// graceful restart is pending so queued messages stay in `deferred_inbound`
+/// and are persisted by `graceful_shutdown`.
 fn next_deferred_message(rt: &mut AgentRuntime) -> Option<residuum_bus::MessageEvent> {
+    if rt.activity.snapshot().restart_pending {
+        return None;
+    }
     loop {
         let next = rt
             .deferred_inbound
@@ -1377,7 +1382,7 @@ async fn run_agent_loop(mut rt: AgentRuntime) -> AgentExit {
                 dispatch_pending_reloads(first, &mut rt, &mut idle_deadline, &mut observe_deadline).await;
             }
 
-            event = rt.agent_subscriber.recv() => {
+            event = rt.agent_subscriber.recv(), if !rt.activity.snapshot().restart_pending => {
                 if let Some(exit) = Box::pin(apply_bus_event(event, &mut rt, &mut observe_deadline, &mut idle_deadline)).await {
                     return exit;
                 }
@@ -1390,7 +1395,7 @@ async fn run_agent_loop(mut rt: AgentRuntime) -> AgentExit {
                 }
             }
 
-            _ = pulse_tick.tick(), if rt.pulse_enabled => {
+            _ = pulse_tick.tick(), if rt.pulse_enabled && !rt.activity.snapshot().restart_pending => {
                 handle_pulse_tick(&mut rt).await;
             }
 
@@ -1398,9 +1403,9 @@ async fn run_agent_loop(mut rt: AgentRuntime) -> AgentExit {
 
             fire = rt.pulse_fire_subscriber.recv() => handle_pulse_fire_event(fire, &mut rt),
 
-            _ = action_tick.tick() => check_and_run_due_actions(&mut rt).await,
+            _ = action_tick.tick(), if !rt.activity.snapshot().restart_pending => check_and_run_due_actions(&mut rt).await,
 
-            () = rt.action_notify.notified() => check_and_run_due_actions(&mut rt).await,
+            () = rt.action_notify.notified(), if !rt.activity.snapshot().restart_pending => check_and_run_due_actions(&mut rt).await,
 
             () = wait_for_deadline(observe_deadline) => {
                 observe_deadline = None;

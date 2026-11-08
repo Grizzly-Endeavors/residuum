@@ -137,6 +137,22 @@ describe("a board row", () => {
       }),
     );
     expect(line).toEqual({ text: "Working on a reply · 42s", tone: "accent", echo: false });
+
+    const pending = nowLine(
+      row({
+        activity: {
+          busy: true,
+          busy_since: new Date(NOW - 42_000).toISOString(),
+          unread: 0,
+          restart_pending: true,
+        },
+      }),
+    );
+    expect(pending).toEqual({
+      text: "Restarting after this turn · 42s",
+      tone: "accent",
+      echo: false,
+    });
   });
 
   it("shows the newest live session's purpose, else Idle", () => {
