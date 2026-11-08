@@ -170,7 +170,7 @@ pub async fn run() -> Result<(), FatalError> {
             residuum::logging::init_default_tracing();
             update::run_update_command(args).await
         }
-        Command::UpdateWatchdog(ref args) => update_watchdog::run_update_watchdog(args),
+        Command::UpdateWatchdog(ref args) => update_watchdog::run_update_watchdog(args).await,
         Command::Tracing { ref command } => {
             residuum::logging::init_default_tracing();
             let gateway_addr = resolve_gateway_addr(&residuum::config::residuum_root()?);
