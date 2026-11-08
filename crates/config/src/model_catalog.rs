@@ -145,6 +145,17 @@ pub(super) fn provider_api_key_env(kind: ProviderKind) -> Option<String> {
     }
 }
 
+/// Providers that require a non-empty API key to build a client (matching
+/// `build_provider_client` in `residuum-inference`).
+const fn required_api_key(kind: ProviderKind) -> Option<(&'static str, &'static str)> {
+    match kind {
+        ProviderKind::Anthropic => Some(("anthropic", "ANTHROPIC_API_KEY")),
+        ProviderKind::Fireworks => Some(("fireworks", "FIREWORKS_API_KEY")),
+        ProviderKind::Gemini => Some(("gemini", "GEMINI_API_KEY")),
+        ProviderKind::OpenAi | ProviderKind::Ollama => None,
+    }
+}
+
 /// The providers an explicit `provider/model` id can name: this agent's
 /// `[providers]` entries, plus every provider type by name.
 #[derive(Clone, Default, PartialEq)]
@@ -203,18 +214,43 @@ impl ModelCatalog {
     }
 
     /// Check that `selector` can run: a tier always can, an explicit model
-    /// only when [`Self::resolve`] resolves it.
+    /// only when [`Self::resolve`] resolves it and any required provider API
+    /// key is present.
     ///
     /// # Errors
     /// Returns a plain-language message naming the model and why it doesn't
-    /// resolve.
+    /// resolve or cannot be built.
     pub fn check(&self, selector: &ModelSelector) -> Result<(), String> {
         match selector {
             ModelSelector::Tier(_) => Ok(()),
-            ModelSelector::Explicit(id) => self
-                .resolve(id)
-                .map(drop)
-                .map_err(|e| format!("model '{id}' can't be used: {e}")),
+            ModelSelector::Explicit(id) => {
+                let spec = self
+                    .resolve(id)
+                    .map_err(|e| format!("model '{id}' can't be used: {e}"))?;
+                if let Some((kind_name, env_var)) = required_api_key(spec.model.kind)
+                    && spec.api_key.as_deref().is_none_or(str::is_empty)
+                {
+                    let configured_hint = self.configured_providers_hint();
+                    return Err(format!(
+                        "model '{id}' can't be used: {kind_name} requires an API key \
+                         (set {env_var} or api_key in providers.toml{configured_hint})"
+                    ));
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn configured_providers_hint(&self) -> String {
+        let mut names: Vec<&str> = self.providers.keys().map(String::as_str).collect();
+        names.sort_unstable();
+        if names.is_empty() {
+            "; or pass a tier: \"small\", \"medium\", \"large\"".to_string()
+        } else {
+            format!(
+                "; configured providers in providers.toml: {}; or pass a tier: \"small\", \"medium\", \"large\"",
+                names.join(", ")
+            )
         }
     }
 
@@ -370,6 +406,25 @@ mod tests {
         assert_eq!(
             old_cat.credential_changed_providers(&old_cat),
             Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn check_rejects_implicit_provider_missing_required_api_key_and_names_configured_providers() {
+        let cat = catalog(&[("nabu", "openai")]);
+        assert!(
+            cat.check(&ModelSelector::Explicit("nabu/glm-5.3".to_string()))
+                .is_ok()
+        );
+        let err = cat
+            .check(&ModelSelector::Explicit(
+                "anthropic/claude-haiku-4-5".to_string(),
+            ))
+            .unwrap_err();
+        assert!(err.contains("anthropic requires an API key"), "{err}");
+        assert!(
+            err.contains("configured providers in providers.toml: nabu"),
+            "{err}"
         );
     }
 }

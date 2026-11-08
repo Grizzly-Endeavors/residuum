@@ -524,10 +524,8 @@ mod tests {
             Ok(ModelSelector::SMALL)
         );
         assert_eq!(
-            parse_model("anthropic/claude-haiku-4-5", &models).await,
-            Ok(ModelSelector::Explicit(
-                "anthropic/claude-haiku-4-5".to_string()
-            ))
+            parse_model("openai/gpt-4o", &models).await,
+            Ok(ModelSelector::Explicit("openai/gpt-4o".to_string()))
         );
     }
 
@@ -538,6 +536,7 @@ mod tests {
             ("SMALL", "'SMALL'"),
             ("lagre", "'lagre'"),
             ("nowhere/some-model", "not a known provider"),
+            ("anthropic/claude-haiku-4-5", "requires an API key"),
         ] {
             let err = parse_model(raw, &models).await.unwrap_err().to_string();
             assert!(err.contains(expected), "{raw}: {err}");
