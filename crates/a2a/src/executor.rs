@@ -119,7 +119,16 @@ impl SessionExecutor {
             return (None, Some(format!("[Requested skill: {requested}]")));
         }
 
-        let skill_state = self.skill_state.lock().await;
+        let mut skill_state = self.skill_state.lock().await;
+        if skill_state.index().find_by_name(requested).is_none()
+            && let Err(err) = skill_state.rescan().await
+        {
+            tracing::warn!(
+                skill = %requested,
+                error = %err,
+                "failed to rescan skill directories while resolving A2A skill"
+            );
+        }
         if skill_state.index().find_by_name(requested).is_some() {
             (Some(residuum_bus::SkillName::from(requested)), None)
         } else {
