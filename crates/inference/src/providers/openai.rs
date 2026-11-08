@@ -225,8 +225,29 @@ impl OpenAiClient {
     /// where, on such a host, a tool-calling message of that exchange has no
     /// reasoning to replay: the messages that get
     /// [`MISSING_REASONING_PLACEHOLDER`] once the host asks for it.
+    ///
+    /// Only the leading system message (position 0) goes out with
+    /// `role: "system"`. Any later `Role::System` message (status lines,
+    /// stop notes, operational notes) is converted to `role: "user"` with a
+    /// `"System: "` prefix, matching the Anthropic and Gemini providers so
+    /// strict chat templates (such as Qwen/DeepSeek on vLLM) never reject the
+    /// request with `System message must be at the beginning`.
     fn convert_messages(&self, messages: &[Message]) -> (Vec<OpenAiMessage>, Vec<usize>) {
-        let mut converted: Vec<OpenAiMessage> = messages.iter().map(OpenAiMessage::from).collect();
+        let mut converted: Vec<OpenAiMessage> = messages
+            .iter()
+            .enumerate()
+            .map(|(index, msg)| {
+                let mut wire = OpenAiMessage::from(msg);
+                if index > 0 && msg.role == Role::System {
+                    wire.role = Role::User.as_str().to_string();
+                    if !msg.content.is_empty() {
+                        wire.content =
+                            Some(OpenAiContent::Text(format!("System: {}", msg.content)));
+                    }
+                }
+                wire
+            })
+            .collect();
         let mut missing = Vec::new();
         if !self.replays_reasoning() {
             return (converted, missing);
@@ -3670,5 +3691,37 @@ mod tests {
                 "nothing is remembered for {body}"
             );
         }
+    }
+
+    #[test]
+    fn non_leading_system_messages_are_converted_to_user_role_on_the_wire() {
+        let client = make_client("http://localhost:8000", "qwen3");
+        let messages = [
+            Message::system("You are a helpful assistant."),
+            Message::system("[Received: Sun Nov 8 16:00]"),
+            Message::user("Continue the task"),
+            Message::system("[Stopped by user]"),
+        ];
+        let (converted, _) = client.convert_messages(&messages);
+        let wire: Vec<(&str, Option<&str>)> = converted
+            .iter()
+            .map(|m| {
+                let text = match &m.content {
+                    Some(OpenAiContent::Text(s)) => Some(s.as_str()),
+                    _ => None,
+                };
+                (m.role.as_str(), text)
+            })
+            .collect();
+        assert_eq!(
+            wire,
+            vec![
+                ("system", Some("You are a helpful assistant.")),
+                ("user", Some("System: [Received: Sun Nov 8 16:00]")),
+                ("user", Some("Continue the task")),
+                ("user", Some("System: [Stopped by user]")),
+            ],
+            "only position 0 keeps role=system so strict local chat templates never 400"
+        );
     }
 }
