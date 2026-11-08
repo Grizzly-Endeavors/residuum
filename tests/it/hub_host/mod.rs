@@ -2955,3 +2955,98 @@ async fn the_relay_agent_list_stops_announcing_agents_when_the_hub_shuts_down() 
 
     relay_agents.stop();
 }
+
+struct GatedLauncher {
+    inner: residuum::gateway::GatewayLauncher,
+    gate: residuum_core::testing::gate::GateEntry,
+}
+
+#[async_trait::async_trait]
+impl residuum::hub::launch::AgentLauncher for GatedLauncher {
+    async fn start(
+        &self,
+        inputs: residuum::hub::launch::AgentStartInputs,
+    ) -> Result<residuum::hub::launch::StartedAgent, residuum_core::util::FatalError> {
+        self.gate.pass().await;
+        self.inner.start(inputs).await
+    }
+}
+
+#[tokio::test]
+async fn dropping_a_start_or_restart_future_mid_launch_does_not_wedge_the_agent_in_starting() {
+    let root = tempfile::tempdir().unwrap();
+    let hub_dir = root.path().join("hub");
+    std::fs::create_dir_all(&hub_dir).unwrap();
+    std::fs::write(hub_dir.join("config.toml"), "timezone = \"UTC\"\n").unwrap();
+    let server = MockServer::start().await;
+    mount_reply(&server, "atlas here").await;
+    write_agent(root.path(), "atlas", &server.uri());
+
+    let hub_cfg = HubConfig::load_at(&hub_dir).unwrap();
+    let services = HubServices::for_tests(root.path(), &hub_cfg).await;
+    let launch_gate = Gate::closed("launch");
+    let host = AgentHost::new(
+        services,
+        hub_cfg,
+        Arc::new(GatedLauncher {
+            inner: residuum::gateway::GatewayLauncher::new(),
+            gate: launch_gate.entry(),
+        }),
+    );
+    host.discover().unwrap();
+    let mut events = host.subscribe();
+
+    // Start the agent and drop the caller's future as soon as `launcher.start`
+    // is reached (simulating an HTTP client timeout or disconnect mid-start).
+    tokio::select! {
+        res = host.start("atlas") => panic!("start should be held at the launch gate, got {res:?}"),
+        () = launch_gate.until_held(1) => {}
+    }
+    assert_eq!(host.summary("atlas").unwrap().state, AgentState::Starting);
+
+    // Release the gate; the host-owned lifecycle task finishes attaching the
+    // started agent instead of leaving the slot wedged in `Starting`.
+    launch_gate.open_all();
+    wait::guarded("atlas to finish starting after caller dropped", async {
+        loop {
+            if let Ok(HubEvent::AgentState { agent }) = events.recv().await
+                && agent.name == "atlas"
+                && agent.state == AgentState::Running
+            {
+                break;
+            }
+        }
+    })
+    .await;
+
+    assert_eq!(host.summary("atlas").unwrap().state, AgentState::Running);
+    assert!(
+        host.slot("atlas").unwrap().lock().running().is_some(),
+        "slot should hold the running agent control"
+    );
+
+    // Now test dropping a `restart` future mid-launch as well.
+    launch_gate.close();
+    tokio::select! {
+        res = host.restart("atlas") => panic!("restart should be held at the launch gate, got {res:?}"),
+        () = launch_gate.until_held(1) => {}
+    }
+    assert_eq!(host.summary("atlas").unwrap().state, AgentState::Starting);
+
+    launch_gate.open_all();
+    wait::guarded("atlas to finish restarting after caller dropped", async {
+        loop {
+            if let Ok(HubEvent::AgentState { agent }) = events.recv().await
+                && agent.name == "atlas"
+                && agent.state == AgentState::Running
+            {
+                break;
+            }
+        }
+    })
+    .await;
+
+    assert_eq!(host.summary("atlas").unwrap().state, AgentState::Running);
+    host.stop("atlas").await.unwrap();
+    assert_eq!(host.summary("atlas").unwrap().state, AgentState::Stopped);
+}
