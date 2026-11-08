@@ -183,6 +183,25 @@ impl ModelCatalog {
         std::sync::Arc::new(tokio::sync::RwLock::new(self))
     }
 
+    /// Names of `[providers]` entries whose resolved API key changed between
+    /// `self` and `other` while their provider type and URL stayed the same.
+    #[must_use]
+    pub fn credential_changed_providers(&self, other: &Self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .providers
+            .iter()
+            .filter_map(|(name, old_entry)| {
+                let new_entry = other.providers.get(name)?;
+                (old_entry.kind == new_entry.kind
+                    && old_entry.url == new_entry.url
+                    && old_entry.api_key != new_entry.api_key)
+                    .then(|| name.clone())
+            })
+            .collect();
+        names.sort();
+        names
+    }
+
     /// Check that `selector` can run: a tier always can, an explicit model
     /// only when [`Self::resolve`] resolves it.
     ///
@@ -328,5 +347,29 @@ mod tests {
         let shown = format!("{:?}", catalog(&[("local", "ollama")]));
         assert!(shown.contains("local"), "{shown}");
         assert!(!shown.contains("sk-literal"), "{shown}");
+    }
+
+    #[test]
+    fn credential_changed_providers_detects_api_key_rotations() {
+        let mut old_entry = entry("openai");
+        old_entry.api_key = Some("sk-old".to_string());
+        let mut new_entry = entry("openai");
+        new_entry.api_key = Some("sk-new".to_string());
+
+        let old_map = HashMap::from([("openrouter".to_string(), old_entry)]);
+        let new_map = HashMap::from([("openrouter".to_string(), new_entry)]);
+        let secrets = empty_secrets();
+        let ws = Path::new("/tmp/residuum-test-agent");
+        let old_cat = ModelCatalog::new(Some(&old_map), &secrets, ws);
+        let new_cat = ModelCatalog::new(Some(&new_map), &secrets, ws);
+
+        assert_eq!(
+            old_cat.credential_changed_providers(&new_cat),
+            vec!["openrouter".to_string()]
+        );
+        assert_eq!(
+            old_cat.credential_changed_providers(&old_cat),
+            Vec::<String>::new()
+        );
     }
 }

@@ -247,6 +247,10 @@ pub(crate) struct AgentRuntime {
     pub bus_infra_handles: Vec<tokio::task::JoinHandle<()>>,
     pub http_client: SharedHttpClient,
     pub spawn_context: Arc<SpawnContext>,
+    /// Pushes a fresh `Arc<SpawnContext>` to `residuum_background::spawn_listener`
+    /// on every config reload so sessions forked after a reload use the
+    /// current providers, credentials, and session observer.
+    pub spawn_context_tx: tokio::sync::watch::Sender<Arc<SpawnContext>>,
     /// Pushes a fresh `ModelCallResources` to the model-call HTTP endpoint on
     /// every config reload, alongside `spawn_context`, so `POST
     /// /api/agents/{name}/model/complete` resolves providers from the current config
