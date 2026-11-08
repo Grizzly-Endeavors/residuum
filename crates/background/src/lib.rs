@@ -28,7 +28,7 @@ pub mod testing;
 pub mod types;
 
 pub use conversation_router::ConversationRouter;
-pub use listener::spawn_listener;
+pub use listener::{SpawnContextWatch, spawn_listener};
 pub use messaging::{AgentMessenger, DeliveryOutcome, SendError};
 pub use owner_session::{OwnerSessionStart, load_main_conversation};
 pub use registry::{DeliverOutcome, SessionRegistry};
