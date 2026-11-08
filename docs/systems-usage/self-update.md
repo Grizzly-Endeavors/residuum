@@ -33,14 +33,14 @@ A successful install leaves a `PendingRollback` marker (`residuum.update-pending
 
 **Plain restart** — no `PendingRollback` marker present, e.g. `POST /api/hub/update/restart` on its own. The binary didn't change, so there's nothing to roll back to if it fails: Unix `exec()`s the same process image in place (the PID and PID file stay valid); Windows starts a new process and this one exits, since Windows can't replace a running process image.
 
-**Rollback-capable restart** — a `PendingRollback` marker is present. Rather than exec'ing directly into the new (possibly broken) binary, the current process hands off to the update-rollback watchdog (`commands::update_watchdog`, invoked as the hidden `residuum update-watchdog` subcommand) and exits. Critically, the watchdog runs *from the preserved previous binary*, not the new one — so even a new binary that can't execute at all (wrong platform, truncated download, corrupted file) still gets supervised and rolled back, instead of taking the supervisor down with it.
+**Rollback-capable restart** — a `PendingRollback` marker is present. Rather than exec'ing directly into the new (possibly broken) binary, the current process hands off to the update-rollback watchdog (`commands::update_watchdog`, invoked as the hidden `residuum update-watchdog` subcommand). On Unix, that handoff replaces the current process image via `exec()` (`daemon::exec_gateway_process`) so the main PID stays alive and service managers (`systemd`, Docker, `supervisord`) do not treat the handoff as a service exit; on Windows, the watchdog is spawned as a separate process. Critically, the watchdog runs *from the preserved previous binary*, not the new one — so even a new binary that can't execute at all (wrong platform, truncated download, corrupted file) still gets supervised and rolled back, instead of taking the supervisor down with it.
 
 The watchdog:
 
 1. Starts the new binary with the same arguments the restart it took over from was using, with stdout discarded and stderr appended to the same daemon stderr log.
 2. Waits up to `READINESS_TIMEOUT` for the readiness marker, the same way `residuum serve` does — bailing out early if the new process exits first, or if it couldn't even be spawned.
-3. **On success**: deletes the preserved previous binary and exits. Nothing further to do.
-4. **On failure** (crashed, timed out, or couldn't execute): kills the new process if it's still running, restores the preserved binary over the gateway's canonical path, writes a `RollbackNotice` (`residuum.rollback-notice.json` — attempted version, plain-language reason, timestamp) via `update::write_rollback_notice`, and starts the restored binary so the gateway comes back up on the version that was working before.
+3. **On success**: deletes the preserved previous binary and, on Unix, stays alive supervising the child gateway (forwarding `SIGTERM`/`SIGINT` and waiting for it to exit) so the service unit's main PID remains active for the lifetime of the run.
+4. **On failure** (crashed, timed out, or couldn't execute): kills the new process if it's still running, restores the preserved binary over the gateway's canonical path, writes a `RollbackNotice` (`residuum.rollback-notice.json` — attempted version, plain-language reason, timestamp) via `update::write_rollback_notice`, and starts and supervises the restored binary so the gateway comes back up on the version that was working before.
 
 ## Surfacing a Rollback
 
