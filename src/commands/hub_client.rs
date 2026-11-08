@@ -10,6 +10,13 @@ use residuum::util::FatalError;
 
 const NOT_RUNNING_MESSAGE: &str = "Residuum isn't running. Start it with `residuum serve`.";
 
+/// How long the CLI waits for the hub to answer before reporting a timeout.
+///
+/// Stopping or restarting an agent can wait up to `STOP_TIMEOUT` (`150s`) plus
+/// `ABORT_SETTLE` (`10s`) in `residuum-hub` before starting the agent again, so
+/// the client timeout must exceed that window.
+const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+
 /// Client for the hub's `/api/hub/...` routes on the local gateway address.
 pub(super) struct HubClient {
     addr: String,
@@ -20,7 +27,7 @@ impl HubClient {
     /// Build a client for the gateway listening at `addr` (`host:port`).
     pub(super) fn new(addr: &str) -> Result<Self, FatalError> {
         let http = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
+            .timeout(REQUEST_TIMEOUT)
             .build()
             .map_err(|e| {
                 tracing::error!(error = %e, "failed to build HTTP client");
