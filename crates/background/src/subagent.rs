@@ -164,7 +164,7 @@ impl TurnKickoff {
             } => {
                 let mut msgs = Vec::new();
                 if let Some(ctx) = context {
-                    msgs.push(Message::system(ctx).as_context());
+                    msgs.push(Message::user(ctx).as_context());
                 }
                 let user = if images.is_empty() {
                     Message::user(prompt)
@@ -880,7 +880,7 @@ mod tests {
         let [context, user, ..] = messages else {
             panic!("expected context then user message, got {messages:?}");
         };
-        assert_eq!(context.role, residuum_inference::Role::System);
+        assert_eq!(context.role, residuum_inference::Role::User);
         assert_eq!(context.content, "[14:00] Sam: build is red");
         assert!(context.context, "the context entry is marked as context");
         assert_eq!(user.role, residuum_inference::Role::User);
@@ -1086,7 +1086,7 @@ mod tests {
         let [context, user, ..] = messages else {
             panic!("expected context then user message, got {messages:?}");
         };
-        assert_eq!(context.role, residuum_inference::Role::System);
+        assert_eq!(context.role, residuum_inference::Role::User);
         assert_eq!(context.content, "[14:00] Sam: build is red");
         assert_eq!(user.content, "can you check the build?");
         assert_eq!(user.sender.as_ref().map(|s| s.name.as_str()), Some("Jane"));
