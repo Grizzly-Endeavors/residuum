@@ -133,4 +133,45 @@ describe("Paired browsers", () => {
     await settle();
     expect(screen.queryByRole("button", { name: "Enable remote access" })).toBeNull();
   });
+
+  it("renders duplicate browser names alongside pending approvals and revokes by id", async () => {
+    listing = {
+      ...empty(),
+      devices: [
+        {
+          id: "d-pixelbook-1",
+          name: "Pixelbook",
+          created_at: "2026-10-01T00:00:00Z",
+          last_seen: "2026-10-06T00:00:00Z",
+          current: true,
+        },
+        {
+          id: "d-pixelbook-2",
+          name: "Pixelbook",
+          created_at: "2026-10-02T00:00:00Z",
+          last_seen: "2026-10-05T00:00:00Z",
+          current: false,
+        },
+      ],
+      pending: [
+        {
+          id: "p1",
+          code: "K7QX2M",
+          device_name: "Pixelbook",
+          created_at: "2026-10-07T00:00:00Z",
+          expires_at: "2026-10-07T00:10:00Z",
+        },
+      ],
+    };
+    render(DevicesGroup);
+    await settle();
+
+    expect(screen.getByText("K7QX2M")).toBeInTheDocument();
+    const revokeButtons = screen.getAllByRole("button", { name: "Revoke Pixelbook" });
+    expect(revokeButtons).toHaveLength(2);
+
+    await fireEvent.click(revokeButtons[1]!);
+    await settle();
+    expect(calls).toContain("DELETE /api/hub/devices/d-pixelbook-2");
+  });
 });
