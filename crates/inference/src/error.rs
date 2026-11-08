@@ -151,8 +151,7 @@ impl InferenceError {
             Self::Api(msg) => {
                 let lower = msg.to_lowercase();
                 if let Some(status) = http_status(&lower) {
-                    // 498 is Groq's "Flex Tier Capacity Exceeded", a transient refusal.
-                    return matches!(status, 408 | 429 | 498) || status >= 500;
+                    return crate::http::is_retryable_status(status);
                 }
                 lower.contains("rate")
                     || lower.contains("limit")

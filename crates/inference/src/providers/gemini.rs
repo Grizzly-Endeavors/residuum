@@ -483,12 +483,7 @@ impl GeminiClient {
         if !response.status().is_success() {
             let status = response.status();
             let raw_body = read_error_body(response).await;
-            tracing::warn!(
-                status = %status,
-                response_body = %raw_body,
-                request_body = %crate::http::without_inline_media(&request_json),
-                "gemini API error — full request/response for diagnosis"
-            );
+            crate::http::log_api_error("gemini", status, &raw_body, &request_json);
             let error_body = serde_json::from_str::<GeminiErrorResponse>(&raw_body)
                 .map_or_else(|_| raw_body, |e| e.error.message);
             return Err(InferenceError::Api(format!("{status}: {error_body}")).into());

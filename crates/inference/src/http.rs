@@ -174,6 +174,55 @@ pub async fn read_error_body(response: reqwest::Response) -> String {
     }
 }
 
+/// Whether an HTTP status code represents a transient failure (timeout, rate
+/// limit, Groq capacity refusal, or 5xx server error) that will be retried.
+#[must_use]
+pub(crate) const fn is_retryable_status(status: u16) -> bool {
+    matches!(status, 408 | 429 | 498) || status >= 500
+}
+
+/// Log a non-2xx provider HTTP response without dumping full request prompts
+/// and observation history at `WARN`.
+///
+/// - `WARN` always records `provider`, `status`, `request_bytes`, and
+///   `response_body`.
+/// - For retryable transient statuses (`408`, `429`, `498`, `5xx`), the
+///   media-redacted `request_body` is logged at `TRACE`.
+/// - For non-retryable client errors (`400`, `404`, `422`, etc., where the
+///   request payload itself was rejected), the media-redacted `request_body`
+///   is logged at `DEBUG`.
+pub(crate) fn log_api_error(
+    provider: &str,
+    status: reqwest::StatusCode,
+    response_body: &str,
+    request_json: &str,
+) {
+    tracing::warn!(
+        provider = %provider,
+        status = %status,
+        request_bytes = request_json.len(),
+        response_body = %response_body,
+        "provider API error"
+    );
+    if is_retryable_status(status.as_u16()) {
+        if tracing::enabled!(tracing::Level::TRACE) {
+            tracing::trace!(
+                provider = %provider,
+                status = %status,
+                request_body = %without_inline_media(request_json),
+                "provider API error request payload"
+            );
+        }
+    } else if tracing::enabled!(tracing::Level::DEBUG) {
+        tracing::debug!(
+            provider = %provider,
+            status = %status,
+            request_body = %without_inline_media(request_json),
+            "provider API error request payload"
+        );
+    }
+}
+
 /// Shortest inline media payload [`without_inline_media`] replaces. Shorter
 /// strings are left alone: a base64-looking word in a message is kept.
 const INLINE_MEDIA_MIN_LEN: usize = 256;
@@ -433,5 +482,112 @@ mod tests {
                 "the cause is kept: {text}"
             );
         }
+    }
+
+    struct FieldFormatter(String);
+    impl tracing::field::Visit for FieldFormatter {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            use std::fmt::Write as _;
+            write!(self.0, "{}={value:?} ", field.name()).unwrap();
+        }
+    }
+
+    struct EventCollector {
+        max_level: tracing::Level,
+        events: std::sync::Mutex<Vec<(tracing::Level, String)>>,
+    }
+
+    impl tracing::Subscriber for EventCollector {
+        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+            metadata.level() <= &self.max_level
+        }
+
+        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+
+        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+
+        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+
+        fn event(&self, event: &tracing::Event<'_>) {
+            if !self.enabled(event.metadata()) {
+                return;
+            }
+            let mut visitor = FieldFormatter(String::new());
+            event.record(&mut visitor);
+            self.events
+                .lock()
+                .unwrap()
+                .push((*event.metadata().level(), visitor.0));
+        }
+
+        fn enter(&self, _span: &tracing::span::Id) {}
+
+        fn exit(&self, _span: &tracing::span::Id) {}
+    }
+
+    #[test]
+    fn retryable_errors_omit_request_body_above_trace_while_client_errors_log_at_debug() {
+        assert!(is_retryable_status(408));
+        assert!(is_retryable_status(429));
+        assert!(is_retryable_status(498));
+        assert!(is_retryable_status(503));
+        assert!(!is_retryable_status(400));
+        assert!(!is_retryable_status(422));
+
+        let collector = Arc::new(EventCollector {
+            max_level: tracing::Level::DEBUG,
+            events: std::sync::Mutex::new(Vec::new()),
+        });
+        let req_payload = r#"{"model":"glm-5.3","messages":[{"role":"system","content":"secret-system-prompt"}]}"#;
+        tracing::subscriber::with_default(Arc::clone(&collector), || {
+            log_api_error(
+                "openai",
+                reqwest::StatusCode::TOO_MANY_REQUESTS,
+                r#"{"error":{"message":"rate limit exceeded"}}"#,
+                req_payload,
+            );
+            log_api_error(
+                "openai",
+                reqwest::StatusCode::BAD_REQUEST,
+                r#"{"error":{"message":"invalid schema"}}"#,
+                req_payload,
+            );
+        });
+
+        let events = collector.events.lock().unwrap().clone();
+        // At DEBUG max level, 429 produces only the WARN event (without request_body),
+        // while 400 produces WARN (without request_body) + DEBUG (with request_body).
+        let warn_events: Vec<&String> = events
+            .iter()
+            .filter(|(lvl, _)| *lvl == tracing::Level::WARN)
+            .map(|(_, text)| text)
+            .collect();
+        assert_eq!(warn_events.len(), 2);
+        for w in &warn_events {
+            assert!(
+                !w.contains("secret-system-prompt"),
+                "WARN log must never contain request_body: {w}"
+            );
+            assert!(w.contains("request_bytes="), "WARN log records size: {w}");
+        }
+
+        let debug_events: Vec<&String> = events
+            .iter()
+            .filter(|(lvl, _)| *lvl == tracing::Level::DEBUG)
+            .map(|(_, text)| text)
+            .collect();
+        assert_eq!(
+            debug_events.len(),
+            1,
+            "only non-retryable 400 logs request_body at DEBUG"
+        );
+        assert!(
+            debug_events
+                .first()
+                .unwrap()
+                .contains("secret-system-prompt")
+        );
     }
 }
