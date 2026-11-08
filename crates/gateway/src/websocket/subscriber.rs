@@ -138,22 +138,129 @@ pub(crate) fn main_conversation_frame(event: MainConversationEvent) -> ServerMes
     }
 }
 
+/// Pending `send_message` call targeting this WebSocket endpoint inside the turn in flight.
+struct PendingEndpointSend {
+    file_path: Option<String>,
+    message: Option<String>,
+}
+
+/// Extract a `send_message` call targeting `endpoint` with no conversation override.
+fn parse_endpoint_send(
+    name: &str,
+    arguments: &serde_json::Value,
+    endpoint: &str,
+) -> Option<PendingEndpointSend> {
+    if name != "send_message" {
+        return None;
+    }
+    if arguments
+        .get("endpoint")
+        .and_then(serde_json::Value::as_str)
+        != Some(endpoint)
+    {
+        return None;
+    }
+    if arguments
+        .get("conversation")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|c| !c.is_empty())
+    {
+        return None;
+    }
+    let file_path = arguments
+        .get("file_path")
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let message = arguments
+        .get("message")
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    if file_path.is_none() && message.is_none() {
+        return None;
+    }
+    Some(PendingEndpointSend { file_path, message })
+}
+
 /// The turn in flight as a `turn_snapshot` frame carries it.
-fn turn_in_progress(record: TurnRecord) -> TurnInProgress {
+async fn turn_in_progress(
+    record: TurnRecord,
+    file_registry: &FileRegistry,
+    endpoint: &str,
+) -> TurnInProgress {
     let stamp =
         |at: chrono::DateTime<chrono::Utc>| at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let mut pending_sends: std::collections::HashMap<String, PendingEndpointSend> =
+        std::collections::HashMap::new();
+    let mut frames = Vec::with_capacity(record.entries.len());
+
+    for entry in record.entries {
+        let at = stamp(entry.at);
+        let follow_up = match &entry.event {
+            MainConversationEvent::ToolCall { event, .. } => {
+                if let Some(send) = parse_endpoint_send(&event.name, &event.arguments, endpoint) {
+                    pending_sends.insert(event.tool_call_id.clone(), send);
+                }
+                None
+            }
+            MainConversationEvent::ToolResult(result) => pending_sends
+                .remove(&result.tool_call_id)
+                .filter(|_| !result.is_error),
+            MainConversationEvent::TurnStarted { .. }
+            | MainConversationEvent::TurnEnded { .. }
+            | MainConversationEvent::UserMessage { .. }
+            | MainConversationEvent::MessageQueued { .. }
+            | MainConversationEvent::MessageWithdrawn { .. }
+            | MainConversationEvent::TextDelta { .. }
+            | MainConversationEvent::ThinkingDelta { .. }
+            | MainConversationEvent::StreamRestart { .. }
+            | MainConversationEvent::Thinking { .. }
+            | MainConversationEvent::Intermediate { .. }
+            | MainConversationEvent::Response { .. }
+            | MainConversationEvent::TurnUsage(_) => None,
+        };
+        frames.push(SnapshotFrame {
+            at: at.clone(),
+            frame: main_conversation_frame(entry.event),
+        });
+        if let Some(send) = follow_up {
+            if let Some(fp) = send.file_path {
+                if let Some(att) = file_registry
+                    .resolve_sent_attachment(std::path::Path::new(&fp), send.message)
+                    .await
+                {
+                    frames.push(SnapshotFrame {
+                        at,
+                        frame: ServerMessage::FileAttachment {
+                            reply_to: record.turn_id.clone(),
+                            filename: att.filename,
+                            mime_type: att.mime_type,
+                            size: att.size,
+                            url: att.url,
+                            caption: att.caption,
+                        },
+                    });
+                }
+            } else if let Some(content) = send.message {
+                frames.push(SnapshotFrame {
+                    at,
+                    frame: ServerMessage::Response {
+                        reply_to: String::new(),
+                        call: None,
+                        endpoint: endpoint.to_string(),
+                        content,
+                    },
+                });
+            }
+        }
+    }
+
     TurnInProgress {
         reply_to: record.turn_id,
         started_at: stamp(record.started_at),
         now: stamp(chrono::Utc::now()),
-        frames: record
-            .entries
-            .into_iter()
-            .map(|entry| SnapshotFrame {
-                at: stamp(entry.at),
-                frame: main_conversation_frame(entry.event),
-            })
-            .collect(),
+        frames,
     }
 }
 
@@ -325,11 +432,17 @@ impl WsSubscribers {
     }
 
     /// The turn in flight as of now; the relayed events it covers are dropped.
-    fn turn_snapshot_frame(&mut self) -> ServerMessage {
+    async fn turn_snapshot_frame(&mut self) -> ServerMessage {
         let snapshot = self.journal.snapshot();
         self.covered_through = snapshot.through;
+        let turn = match snapshot.turn {
+            Some(record) => {
+                Some(turn_in_progress(record, &self.file_registry, self.endpoint.as_ref()).await)
+            }
+            None => None,
+        };
         ServerMessage::TurnSnapshot {
-            turn: snapshot.turn.map(turn_in_progress),
+            turn,
             queued: snapshot.queued,
         }
     }
@@ -345,7 +458,7 @@ impl WsSubscribers {
                     Some(relayed) => Some(main_conversation_frame(relayed.event)),
                     None => return None,
                 },
-                Some(()) = self.resync_rx.recv() => Some(self.turn_snapshot_frame()),
+                Some(()) = self.resync_rx.recv() => Some(self.turn_snapshot_frame().await),
                 event = self.response.recv() => {
                     match event {
                         Ok(Some(resp)) => Some(
@@ -543,6 +656,98 @@ mod tests {
             subs.recv().await.unwrap(),
             ServerMessage::TurnSnapshot { turn: None, .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn a_turn_snapshot_includes_file_attachments_sent_earlier_in_the_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("plot.png");
+        tokio::fs::write(&file, b"png-data").await.unwrap();
+
+        let handle = residuum_bus::spawn_broker();
+        let journal = TurnJournal::spawn(&handle).await.unwrap();
+        let mut subs = WsSubscribers::new(
+            &handle,
+            &handle,
+            EndpointName::from("ws"),
+            residuum_hub::file_server::FileRegistry::new("scout"),
+            no_watch_set(),
+            &journal,
+        )
+        .await
+        .unwrap();
+        let mut seen = journal.follow();
+
+        publish_main(
+            &handle,
+            MainConversationEvent::TurnStarted {
+                turn_id: "t1".into(),
+                origin: origin("ws"),
+            },
+        )
+        .await;
+        publish_main(
+            &handle,
+            MainConversationEvent::ToolCall {
+                call: 0,
+                event: ToolCallEvent {
+                    correlation_id: "t1".into(),
+                    tool_call_id: "c1".into(),
+                    name: "send_message".into(),
+                    arguments: serde_json::json!({
+                        "endpoint": "ws",
+                        "file_path": file.to_string_lossy(),
+                        "message": "Plot ready"
+                    }),
+                    server: None,
+                },
+            },
+        )
+        .await;
+        publish_main(
+            &handle,
+            MainConversationEvent::ToolResult(ToolResultEvent {
+                correlation_id: "t1".into(),
+                tool_call_id: "c1".into(),
+                name: "send_message".into(),
+                output: "Message and file 'plot.png' published to endpoint 'ws'".into(),
+                is_error: false,
+                auto_mode: None,
+            }),
+        )
+        .await;
+        for _ in 0..3 {
+            seen.recv().await.unwrap();
+        }
+        subs.resync_requests().send(()).unwrap();
+
+        let turn = loop {
+            if let ServerMessage::TurnSnapshot { turn, .. } = subs.recv().await.unwrap() {
+                break turn.unwrap();
+            }
+        };
+        let has_attachment = turn.frames.iter().any(|entry| {
+            matches!(
+                &entry.frame,
+                ServerMessage::FileAttachment {
+                    reply_to,
+                    filename,
+                    mime_type,
+                    size,
+                    caption,
+                    ..
+                } if reply_to == "t1"
+                    && filename == "plot.png"
+                    && mime_type == "image/png"
+                    && *size == 8
+                    && caption.as_deref() == Some("Plot ready")
+            )
+        });
+        assert!(
+            has_attachment,
+            "expected FileAttachment frame in turn snapshot, got {:?}",
+            turn.frames
+        );
     }
 
     /// Publish `agent`'s message opening a turn, and check the socket gets it

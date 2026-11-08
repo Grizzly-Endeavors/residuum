@@ -142,6 +142,19 @@ impl TokenLinks {
         }
     }
 
+    /// Return an existing unexpired token ID for `path`, if one is registered.
+    async fn find_active(&self, path: &Path) -> Option<String> {
+        let now = Utc::now();
+        let entries = self.entries().await.read().await;
+        entries
+            .iter()
+            .filter(|(_, entry)| entry.path == path && !entry.is_expired(now))
+            .max_by(|(id_a, a), (id_b, b)| {
+                a.expires_at.cmp(&b.expires_at).then_with(|| id_a.cmp(id_b))
+            })
+            .map(|(id, _)| id.clone())
+    }
+
     /// Remove the expired entries. Returns `(removed, remaining)`.
     async fn sweep_expired(&self) -> (usize, usize) {
         let _persist = self.persist_lock.lock().await;
@@ -218,6 +231,22 @@ async fn save_file_links(path: &Path, entries: &Entries) -> anyhow::Result<()> {
     residuum_core::util::fs::atomic_write(path, json)
         .await
         .with_context(|| format!("failed to write file links to {}", path.display()))
+}
+
+/// Metadata for a file attachment the agent sent via `send_message`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SentAttachment {
+    /// Display filename.
+    pub filename: String,
+    /// Detected MIME type.
+    pub mime_type: String,
+    /// File size in bytes.
+    pub size: u64,
+    /// Serving URL (durable workspace link or token link).
+    pub url: String,
+    /// Optional caption text sent alongside the file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caption: Option<String>,
 }
 
 /// Thread-safe registry of files available for HTTP serving.
@@ -298,16 +327,57 @@ impl FileRegistry {
     /// path already known to exist and be readable): a durable
     /// workspace-relative URL when `path` is inside the configured
     /// workspace root and not blocked from exposure by
-    /// `workspace::access::is_blocked_path`, else the existing
-    /// [`Self::register`]-backed token URL.
+    /// `workspace::access::is_blocked_path`, else an existing unexpired token
+    /// URL or a newly [`Self::register`]-backed token URL.
     pub async fn url_for(&self, path: PathBuf, mime_type: String, filename: String) -> String {
         if let Some(relative) = self.workspace_relative_path(&path).await {
             let encoded: String =
                 url::form_urlencoded::byte_serialize(relative.as_bytes()).collect();
             return format!("{}/files/workspace?path={encoded}", self.url_prefix());
         }
-        let id = self.register(path, mime_type, filename).await;
+        let id = match self.links.find_active(&path).await {
+            Some(existing) => existing,
+            None => self.register(path, mime_type, filename).await,
+        };
         format!("{}/files/{id}", self.url_prefix())
+    }
+
+    /// Resolve a file attachment sent by the agent to a [`SentAttachment`]
+    /// descriptor with its serving URL, or `None` when the file no longer
+    /// exists on disk.
+    pub async fn resolve_sent_attachment(
+        &self,
+        file_path: &Path,
+        caption: Option<String>,
+    ) -> Option<SentAttachment> {
+        let resolved_path = if file_path.is_relative()
+            && let Some(root) = &self.workspace_root
+        {
+            root.join(file_path)
+        } else {
+            file_path.to_path_buf()
+        };
+        let att = match residuum_bus::attachment::FileAttachment::from_path(&resolved_path).await {
+            Ok(att) => att,
+            Err(err) => {
+                tracing::debug!(
+                    path = %resolved_path.display(),
+                    error = %err,
+                    "skipping sent attachment: file is no longer readable on disk",
+                );
+                return None;
+            }
+        };
+        let url = self
+            .url_for(att.path, att.mime_type.clone(), att.filename.clone())
+            .await;
+        Some(SentAttachment {
+            filename: att.filename,
+            mime_type: att.mime_type,
+            size: att.size,
+            url,
+            caption,
+        })
     }
 
     /// The hub URL prefix of this agent's routes.
@@ -812,6 +882,33 @@ mod tests {
                 && !url.starts_with("/api/agents/scout/files/workspace"),
             "a file outside the workspace should still get a token link: {url}"
         );
+    }
+
+    #[tokio::test]
+    async fn url_for_reuses_an_unexpired_token_link_for_the_same_outside_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let file_path = outside.path().join("scratch.txt");
+        std::fs::write(&file_path, "hello").unwrap();
+
+        let registry = FileRegistry::new("scout").with_workspace_root(dir.path().to_path_buf());
+        let first = registry
+            .url_for(
+                file_path.clone(),
+                "text/plain".to_string(),
+                "scratch.txt".to_string(),
+            )
+            .await;
+        let second = registry
+            .url_for(
+                file_path,
+                "text/plain".to_string(),
+                "scratch.txt".to_string(),
+            )
+            .await;
+
+        assert_eq!(first, second, "should reuse the active token link");
+        assert_eq!(registry.sweep_expired().await, (0, 1));
     }
 
     #[tokio::test]

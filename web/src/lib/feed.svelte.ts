@@ -106,7 +106,12 @@ type QueuedMessageFrame = Extract<ServerMessage, { type: "message_queued" }>["me
  * messages it names (`echoed`). Anything else of the turn stays as it is.
  */
 function redrawnBySnapshot(item: FeedItem, echoed: readonly string[]): boolean {
-  if (item.kind === "assistant" || item.kind === "thinking" || item.kind === "tool-group") {
+  if (
+    item.kind === "assistant" ||
+    item.kind === "thinking" ||
+    item.kind === "tool-group" ||
+    item.kind === "file-attachment"
+  ) {
     return true;
   }
   return (
@@ -502,11 +507,13 @@ export class FeedStore {
           size: msg.size,
           url: msg.url,
           caption: msg.caption,
-          timestamp: localTimestamp(),
+          timestamp: localTimestampAt(this.now()),
           ...this.ofLiveTurn(),
         };
         this.feed.push(item);
-        this.isProcessing = false;
+        if (this.activeTurnId === null) {
+          this.isProcessing = false;
+        }
         break;
       }
 
