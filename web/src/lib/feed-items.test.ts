@@ -235,3 +235,90 @@ describe("context a session reads in its transcript", () => {
     expect(chat).toMatchObject({ content: "is it green yet?", midTurn: true });
   });
 });
+
+describe("files and messages sent via send_message(endpoint='ws') in history", () => {
+  it("emits a file-attachment item after the tool group when sent_attachment is present", () => {
+    const { items } = convertHistory(
+      [
+        message("user", "Send me the chart", { turn_id: "t-1" }),
+        message("assistant", "", {
+          turn_id: "t-1",
+          tool_calls: [
+            {
+              id: "call-1",
+              name: "send_message",
+              arguments: {
+                endpoint: "ws",
+                file_path: "/workspace/outbox/chart.png",
+                message: "Q3 numbers",
+              },
+            },
+          ],
+        }),
+        message("tool", "Message and file 'chart.png' published to endpoint 'ws'", {
+          turn_id: "t-1",
+          tool_call_id: "call-1",
+          timestamp: "2026-10-09T10:05:15",
+          sent_attachment: {
+            filename: "chart.png",
+            mime_type: "image/png",
+            size: 2048,
+            url: "/api/agents/vex/files/workspace?path=outbox%2Fchart.png",
+            caption: "Q3 numbers",
+          },
+        }),
+      ],
+      { mode: "main" },
+    );
+
+    expect(items.map((item) => item.kind)).toEqual(["user", "tool-group", "file-attachment"]);
+    expect(items[2]).toMatchObject({
+      kind: "file-attachment",
+      filename: "chart.png",
+      mimeType: "image/png",
+      size: 2048,
+      url: "/api/agents/vex/files/workspace?path=outbox%2Fchart.png",
+      caption: "Q3 numbers",
+      turnId: "t-1",
+      timestamp: "2026-10-09T10:05:15",
+    });
+  });
+
+  it("emits an assistant item for a successful message-only send_message(endpoint='ws') call and skips failed ones", () => {
+    const { items } = convertHistory(
+      [
+        message("assistant", "", {
+          turn_id: "t-1",
+          tool_calls: [
+            {
+              id: "call-ok",
+              name: "send_message",
+              arguments: { endpoint: "ws", message: "Quick heads-up" },
+            },
+            {
+              id: "call-err",
+              name: "send_message",
+              arguments: { endpoint: "ws", message: "Should not appear" },
+            },
+          ],
+        }),
+        message("tool", "Message published to endpoint 'ws'", {
+          turn_id: "t-1",
+          tool_call_id: "call-ok",
+        }),
+        message("tool", "sessions cannot message the owner directly", {
+          turn_id: "t-1",
+          tool_call_id: "call-err",
+        }),
+      ],
+      { mode: "main" },
+    );
+
+    expect(items.map((item) => item.kind)).toEqual(["tool-group", "assistant"]);
+    expect(items[1]).toMatchObject({
+      kind: "assistant",
+      content: "Quick heads-up",
+      turnId: "t-1",
+    });
+  });
+});
