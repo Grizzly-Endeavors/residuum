@@ -252,7 +252,17 @@ async fn prepare_session_skill_state(
     skill: Option<&str>,
 ) -> anyhow::Result<(SharedSkillState, Option<String>)> {
     let (cloned_skill_index, skill_dirs) = {
-        let guard = main_skill_state.lock().await;
+        let mut guard = main_skill_state.lock().await;
+        if let Some(name) = skill
+            && guard.index().find_by_name(name).is_none()
+            && let Err(err) = guard.rescan().await
+        {
+            tracing::warn!(
+                skill = %name,
+                error = %err,
+                "failed to rescan skill directories before session fork"
+            );
+        }
         (guard.index().clone(), guard.dirs().to_vec())
     };
     let skill_state = SkillState::new_shared(cloned_skill_index, skill_dirs);
@@ -667,6 +677,54 @@ mod tests {
         assert!(
             skills_index.contains("- team-role (team, "),
             "index should label the team skill: {skills_index}"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_fork_rescans_when_requested_skill_was_added_after_startup() {
+        let agent_skills = tempfile::tempdir().unwrap();
+        let dirs = vec![SkillDir::agent(agent_skills.path())];
+        // Startup scan runs before `newly-added` exists on disk.
+        let index = SkillIndex::scan(&dirs).await.unwrap();
+        let main_state = SkillState::new_shared(index, dirs);
+
+        let new_dir = agent_skills.path().join("newly-added");
+        tokio::fs::create_dir_all(&new_dir).await.unwrap();
+        tokio::fs::write(
+            new_dir.join("SKILL.md"),
+            "---\nname: newly-added\ndescription: added without restart\n---\n\nFresh role body.\n",
+        )
+        .await
+        .unwrap();
+
+        let (session_state, skills_index) =
+            prepare_session_skill_state(&main_state, Some("newly-added"))
+                .await
+                .expect("prepare_session_skill_state should rescan on miss and find newly-added");
+
+        let active = session_state
+            .lock()
+            .await
+            .format_active_for_prompt()
+            .unwrap();
+        assert!(
+            active.contains("Fresh role body."),
+            "newly added skill body should activate without restarting the agent: {active}"
+        );
+        assert!(
+            skills_index
+                .as_deref()
+                .is_some_and(|idx| idx.contains("- newly-added (agent, ")),
+            "rescanned index should include newly-added: {skills_index:?}"
+        );
+        assert!(
+            main_state
+                .lock()
+                .await
+                .index()
+                .find_by_name("newly-added")
+                .is_some(),
+            "main_skill_state should retain the rescanned index"
         );
     }
 
