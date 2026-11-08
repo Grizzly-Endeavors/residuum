@@ -27,15 +27,44 @@ use residuum_bus::{
     SessionAddress, SessionStartFailedEvent, SpawnRequestEvent, Subscriber, topics,
 };
 
+/// Live handle from which [`spawn_listener`] reads the current [`SpawnContext`]
+/// on each spawn request.
+///
+/// Production passes a [`tokio::sync::watch::Receiver`] updated on every
+/// config reload so forked sessions pick up reloaded providers, credentials,
+/// and observer settings without restarting the listener; unit tests can pass a
+/// fixed `Arc<SpawnContext>` directly.
+pub struct SpawnContextWatch(tokio::sync::watch::Receiver<Arc<SpawnContext>>);
+
+impl SpawnContextWatch {
+    fn current(&self) -> Arc<SpawnContext> {
+        Arc::clone(&*self.0.borrow())
+    }
+}
+
+impl From<tokio::sync::watch::Receiver<Arc<SpawnContext>>> for SpawnContextWatch {
+    fn from(rx: tokio::sync::watch::Receiver<Arc<SpawnContext>>) -> Self {
+        Self(rx)
+    }
+}
+
+impl From<Arc<SpawnContext>> for SpawnContextWatch {
+    fn from(ctx: Arc<SpawnContext>) -> Self {
+        let (_tx, rx) = tokio::sync::watch::channel(ctx);
+        Self(rx)
+    }
+}
+
 /// Subscribe to the `Background` topic and fork sessions on demand.
 ///
 /// Returns a `JoinHandle` for shutdown coordination. The task runs until the
 /// bus shuts down or the subscriber closes.
 #[tracing::instrument(skip_all)]
 pub async fn spawn_listener(
-    ctx: Arc<SpawnContext>,
+    ctx: impl Into<SpawnContextWatch>,
     bus_handle: &BusHandle,
 ) -> Option<JoinHandle<()>> {
+    let ctx = ctx.into();
     let subscriber: Subscriber<SpawnRequestEvent> = match bus_handle
         .subscribe(topics::Background)
         .await
@@ -62,11 +91,12 @@ pub async fn spawn_listener(
 /// a due action is kept and retried per `spawn_due_actions`), so a
 /// persistently broken one (e.g. naming a skill that doesn't exist) would
 /// otherwise warn-log and notice on every single retry forever.
-async fn listener_loop(ctx: Arc<SpawnContext>, mut subscriber: Subscriber<SpawnRequestEvent>) {
+async fn listener_loop(ctx: SpawnContextWatch, mut subscriber: Subscriber<SpawnRequestEvent>) {
     let mut spawn_failures: HashMap<String, String> = HashMap::new();
     loop {
         match subscriber.recv().await {
             Ok(Some(event)) => {
+                let ctx = ctx.current();
                 let source_label = event.source_label.clone();
                 let trigger = event.source.clone();
                 let pulse_address =
@@ -1979,5 +2009,101 @@ mod tests {
 
         bus_barrier(&bus).await;
         assert!(sub.drain().is_empty());
+    }
+
+    #[tokio::test]
+    async fn spawn_listener_uses_replaced_spawn_context_after_reload() {
+        let bus = residuum_bus::spawn_broker();
+        let mut failures: Subscriber<SessionStartFailedEvent> =
+            bus.subscribe(topics::Sessions).await.unwrap();
+        let initial_ctx = spawn_context_without_a_working_provider(&bus).await;
+        let (ctx_tx, ctx_rx) = tokio::sync::watch::channel(Arc::clone(&initial_ctx));
+        let _listener = spawn_listener(ctx_rx, &bus).await.unwrap();
+
+        // First spawn fails because the startup provider spec has no API key.
+        let first = owner_start();
+        let first_address = first.address.clone();
+        bus.publisher()
+            .publish(topics::Background, first)
+            .await
+            .unwrap();
+        let failure = next_event("the initial keyless start's failure", &mut failures).await;
+        assert_is_the_provider_failure(&failure, &first_address, FIRST_START);
+
+        // Simulate a config reload installing a new SpawnContext with a resolved
+        // API key and a different default-tier model.
+        let kind = residuum_config::ProviderKind::Anthropic;
+        let reloaded_spec = residuum_config::ProviderSpec {
+            name: kind.to_string(),
+            model: residuum_config::ModelSpec {
+                kind,
+                model: "claude-reloaded-model".to_string(),
+            },
+            provider_url: "http://127.0.0.1:9".to_string(),
+            api_key: Some("reloaded-secret-key".to_string()),
+            keep_alive: None,
+            session_affinity: None,
+            image_input: residuum_config::ImageInput::Undeclared,
+        };
+        let mut reloaded_bg = initial_ctx.background_config.clone();
+        reloaded_bg.models.medium = Some(vec![reloaded_spec.clone()]);
+        let reloaded_ctx = Arc::new(SpawnContext {
+            background_config: reloaded_bg,
+            main_provider_specs: vec![reloaded_spec],
+            model_catalog: Arc::clone(&initial_ctx.model_catalog),
+            http_client: initial_ctx.http_client.clone(),
+            max_tokens: initial_ctx.max_tokens,
+            retry_config: initial_ctx.retry_config.clone(),
+            options: initial_ctx.options.clone(),
+            max_tool_iterations: initial_ctx.max_tool_iterations,
+            repeat_call_guard: initial_ctx.repeat_call_guard,
+            intermediate_delivery: initial_ctx.intermediate_delivery,
+            layout: initial_ctx.layout.clone(),
+            role_overrides: initial_ctx.role_overrides.clone(),
+            session_tools: Arc::clone(&initial_ctx.session_tools),
+            session_runtime: Arc::clone(&initial_ctx.session_runtime),
+            session_registry: Arc::clone(&initial_ctx.session_registry),
+            publisher: initial_ctx.publisher.clone(),
+            skill_state: Arc::clone(&initial_ctx.skill_state),
+            mcp_registry: Arc::clone(&initial_ctx.mcp_registry),
+            observer: Arc::clone(&initial_ctx.observer),
+            merge_writer: Arc::clone(&initial_ctx.merge_writer),
+            messenger: Arc::clone(&initial_ctx.messenger),
+            bg_tier_active_index: crate::spawn_context::BackgroundTierActiveIndex::default(),
+        });
+        ctx_tx.send_replace(reloaded_ctx);
+
+        let second = owner_start();
+        let second_address = second.address.clone();
+        bus.publisher()
+            .publish(topics::Background, second)
+            .await
+            .unwrap();
+        // The listener handles requests in order: once a sentinel request
+        // published after `second` has produced its failure event, `second`
+        // has finished `fork_and_spawn` and registered in `session_runtime`.
+        let mut sentinel = owner_start();
+        sentinel.model = ModelSelector::Explicit("unconfigured/sentinel".to_string());
+        let sentinel_address = sentinel.address.clone();
+        bus.publisher()
+            .publish(topics::Background, sentinel)
+            .await
+            .unwrap();
+        let sentinel_failure =
+            next_event("sentinel failure after second spawn", &mut failures).await;
+        assert_eq!(
+            sentinel_failure.address, sentinel_address,
+            "second spawn must succeed without emitting a failure event"
+        );
+
+        let registered = initial_ctx
+            .session_runtime
+            .registry()
+            .get(&second_address)
+            .expect("session should be registered in session_runtime after reload");
+        assert_eq!(
+            registered.resolved_model.as_deref(),
+            Some("anthropic/claude-reloaded-model")
+        );
     }
 }
