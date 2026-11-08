@@ -12,12 +12,11 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use base64::Engine;
 use chrono::NaiveDateTime;
 use tokio::io::AsyncWriteExt;
 
 use residuum_bus::attachment::detect_mime_type;
-use residuum_inference::{ImageData, MessageAttachment};
+use residuum_inference::{ImageData, MessageAttachment, prepare_inline_image};
 
 use super::{ClaimedItem, dedupe_filename, sanitize_attachment_filename};
 
@@ -43,19 +42,29 @@ pub fn is_supported_image(content_type: &str) -> bool {
     SUPPORTED_IMAGE_TYPES.contains(&content_type)
 }
 
-/// Base64-encode an image file from disk.
+/// Base64-encode an image file from disk, downscaling it when its dimensions
+/// exceed the model API inline limit (`8000` pixels).
 ///
 /// # Errors
-/// Returns an error if the file cannot be read.
+/// Returns an error if the file cannot be read or if an oversized image cannot
+/// be decoded to downscale.
 pub async fn encode_image_from_file(path: &Path, media_type: &str) -> Result<ImageData, String> {
     let bytes = tokio::fs::read(path)
         .await
         .map_err(|e| format!("failed to read image {}: {e}", path.display()))?;
-    let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
-    Ok(ImageData {
-        media_type: media_type.to_string(),
-        data,
-    })
+    let (image, downscaled) = prepare_inline_image(&bytes, media_type)
+        .map_err(|e| format!("failed to prepare inline image {}: {e}", path.display()))?;
+    if let Some(((orig_w, orig_h), (new_w, new_h))) = downscaled {
+        tracing::info!(
+            path = %path.display(),
+            original_width = orig_w,
+            original_height = orig_h,
+            resized_width = new_w,
+            resized_height = new_h,
+            "downscaled oversized attachment image for inline delivery"
+        );
+    }
+    Ok(image)
 }
 
 /// Metadata about an attachment from an incoming message.
@@ -471,6 +480,7 @@ pub fn format_failed_attachment_line(info: &AttachmentInfo, reason: &str) -> Str
 mod tests {
     use super::*;
 
+    use base64::Engine as _;
     use residuum_config::WorkspaceLayout;
 
     /// Reserve a companion item under `root`'s agent inbox and save `bytes` into it.
@@ -1199,5 +1209,53 @@ mod tests {
             "an unknown content type should be detected from the saved file"
         );
         assert!(finalized.image.is_none(), "a markdown file is not inlined");
+    }
+
+    #[tokio::test]
+    async fn finalize_attachment_downscales_oversized_image_and_keeps_original_file_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            8448,
+            32,
+            image::Rgb([64, 128, 192]),
+        ));
+        let mut raw_bytes = Vec::new();
+        img.write_to(
+            &mut std::io::Cursor::new(&mut raw_bytes),
+            image::ImageFormat::Jpeg,
+        )
+        .unwrap();
+        let info = AttachmentInfo {
+            filename: "creek.jpg".to_string(),
+            size: u32::try_from(raw_bytes.len()).unwrap(),
+            content_type: Some("image/jpeg".to_string()),
+        };
+        let (item, saved) = reserve_and_save(dir.path(), &info, &raw_bytes).await;
+        let saved_path = saved.local_path.clone();
+        let mut content = String::new();
+
+        let finalized = item.finalize(&saved, &info, &mut content, "author").await;
+
+        let inline = finalized
+            .image
+            .expect("oversized attachment image should be downscaled and inlined");
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(&inline.data)
+            .unwrap();
+        let (w, h) = image::ImageReader::new(std::io::Cursor::new(&decoded))
+            .with_guessed_format()
+            .unwrap()
+            .into_dimensions()
+            .unwrap();
+        assert_eq!(
+            (w, h),
+            (8000, 30),
+            "inline attachment image should be downscaled to fit within 8000 px"
+        );
+        assert_eq!(
+            tokio::fs::read(&saved_path).await.unwrap(),
+            raw_bytes,
+            "the saved attachment on disk must keep its original bytes"
+        );
     }
 }

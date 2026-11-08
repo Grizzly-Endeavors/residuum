@@ -72,6 +72,7 @@ html-escape = "0.2"
 base64 = "0.22"
 # Decodes page bodies in the charset their Content-Type declares (already resolved by reqwest).
 encoding_rs = "0.8"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
 
 # Temp file management (used by bug-report editor mode)
 tempfile = "3"
