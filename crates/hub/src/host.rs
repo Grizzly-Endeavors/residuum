@@ -726,6 +726,11 @@ impl AgentHost {
             return Ok(());
         }
         self.set_state(slot, AgentState::Starting, None);
+        let mut reset_on_drop = StartingResetGuard {
+            host: self,
+            slot,
+            armed: true,
+        };
 
         let hub_cfg = self.hub_config();
         let preview = agent_span(&slot.name)
@@ -743,7 +748,7 @@ impl AgentHost {
                 slot.name
             );
             let reason = format!("Teams port {port} is already used by the agent '{other}'");
-            return Err(self
+            let failure = self
                 .record_failure(
                     slot,
                     AgentErrorKind::PortConflict,
@@ -751,7 +756,9 @@ impl AgentHost {
                     &reason,
                     preview.as_ref(),
                 )
-                .await);
+                .await;
+            reset_on_drop.armed = false;
+            return Err(failure);
         }
 
         let inputs = AgentStartInputs {
@@ -772,6 +779,7 @@ impl AgentHost {
             Ok(Ok(started)) => {
                 let watcher = self.attach_watcher(slot, &started.control).await;
                 self.attach(slot, started, watcher);
+                reset_on_drop.armed = false;
                 Ok(())
             }
             Ok(Err(err)) => {
@@ -785,9 +793,11 @@ impl AgentHost {
                         AgentErrorKind::Other
                     }
                 };
-                Err(self
+                let failure = self
                     .record_failure(slot, kind, message, &err.to_string(), preview.as_ref())
-                    .await)
+                    .await;
+                reset_on_drop.armed = false;
+                Err(failure)
             }
             Err(join_err) => {
                 let detail = describe_join_error(join_err);
@@ -795,7 +805,7 @@ impl AgentHost {
                     "{} hit an internal error while starting. Try starting it again; if it keeps happening, send a bug report.",
                     slot.name
                 );
-                Err(self
+                let failure = self
                     .record_failure(
                         slot,
                         AgentErrorKind::Crash,
@@ -803,7 +813,9 @@ impl AgentHost {
                         &detail,
                         preview.as_ref(),
                     )
-                    .await)
+                    .await;
+                reset_on_drop.armed = false;
+                Err(failure)
             }
         }
     }
@@ -1852,6 +1864,32 @@ impl AgentHost {
         };
         files.merge(crate::web::agent_usage_api_router(usage))
     }
+
+    /// Run a lifecycle transition (`start`, `stop`, `restart`, `create`,
+    /// `restore`, `delete`) inside a host-owned task so that if the caller's
+    /// future is dropped mid-flight (for example when an HTTP client times out
+    /// or disconnects), the transition still runs to completion while holding
+    /// `slot.op_lock` and never abandons a slot mid-transition.
+    async fn run_in_host_task<T, F, Fut>(&self, op: F) -> Result<T, LifecycleError>
+    where
+        T: Send + 'static,
+        F: FnOnce(Arc<Self>) -> Fut,
+        Fut: std::future::Future<Output = Result<T, LifecycleError>> + Send + 'static,
+    {
+        let host = self
+            .me
+            .upgrade()
+            .ok_or_else(|| LifecycleError::ShuttingDown(SHUTTING_DOWN.to_string()))?;
+        residuum_core::util::spawn_in_span(op(host))
+            .await
+            .map_err(|join_err| {
+                let detail = describe_join_error(join_err);
+                tracing::error!(error = %detail, "agent lifecycle task panicked");
+                LifecycleError::Failed(format!(
+                    "internal error during agent lifecycle operation: {detail}"
+                ))
+            })?
+    }
 }
 
 /// What the supervisor task needs to record an agent's exit.
@@ -1937,6 +1975,24 @@ fn describe_join_error(error: tokio::task::JoinError) -> String {
     }
 }
 
+/// Resets a slot's state from [`AgentState::Starting`] back to
+/// [`AgentState::Stopped`] if `start_locked` is dropped before `attach` or
+/// `record_failure` completes, so a cancelled start can never leave the slot
+/// wedged in `Starting` with `running = None`.
+struct StartingResetGuard<'a> {
+    host: &'a AgentHost,
+    slot: &'a Arc<AgentSlot>,
+    armed: bool,
+}
+
+impl Drop for StartingResetGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.host.set_state(self.slot, AgentState::Stopped, None);
+        }
+    }
+}
+
 /// Who a lifecycle action counts as writing the team files it touches.
 fn team_writer(by: &Actor) -> TeamWriter {
     match by {
@@ -1988,24 +2044,29 @@ impl TeamDirectory for AgentHost {
         request: CreateAgentRequest,
         by: Actor,
     ) -> Result<AgentSummary, LifecycleError> {
-        self.create_agent(request, by).await
+        self.run_in_host_task(move |host| async move { host.create_agent(request, by).await })
+            .await
     }
 
     async fn delete(&self, name: &str, by: Actor) -> Result<DeleteOutcome, LifecycleError> {
-        let result = self.delete_agent(name, by.clone()).await;
-        // An agent deleting itself is stopped by its own delete, so nothing is
-        // left to hear the error; the user has to.
-        if let (Err(e), Actor::Agent(actor)) = (&result, &by)
-            && actor == name
-        {
-            tracing::error!(agent = %name, error = %e, "an agent's request to delete itself failed");
-            self.notice(
-                NoticeLevel::Warn,
-                format!("{name} asked to be deleted, but that failed: {e}. It has been stopped; check its state on Home."),
-                Some(name.to_string()),
-            );
-        }
-        result
+        let name = name.to_string();
+        self.run_in_host_task(move |host| async move {
+            let result = host.delete_agent(&name, by.clone()).await;
+            // An agent deleting itself is stopped by its own delete, so nothing is
+            // left to hear the error; the user has to.
+            if let (Err(e), Actor::Agent(actor)) = (&result, &by)
+                && *actor == name
+            {
+                tracing::error!(agent = %name, error = %e, "an agent's request to delete itself failed");
+                host.notice(
+                    NoticeLevel::Warn,
+                    format!("{name} asked to be deleted, but that failed: {e}. It has been stopped; check its state on Home."),
+                    Some(name),
+                );
+            }
+            result
+        })
+        .await
     }
 }
 
@@ -2099,30 +2160,40 @@ impl AgentDirectory for AgentHost {
         request: RestoreAgentRequest,
         by: Actor,
     ) -> Result<AgentSummary, LifecycleError> {
-        self.restore_agent(request, by).await
+        self.run_in_host_task(move |host| async move { host.restore_agent(request, by).await })
+            .await
     }
 
     async fn start(&self, name: &str) -> Result<AgentSummary, LifecycleError> {
         let slot = self.slot(name)?;
-        let _op = slot.op_lock.lock().await;
-        self.start_locked(&slot).await?;
-        Ok(self.summary_of(&slot))
+        self.run_in_host_task(move |host| async move {
+            let _op = slot.op_lock.lock().await;
+            host.start_locked(&slot).await?;
+            Ok(host.summary_of(&slot))
+        })
+        .await
     }
 
     async fn stop(&self, name: &str) -> Result<AgentSummary, LifecycleError> {
         let slot = self.slot(name)?;
-        let _op = slot.op_lock.lock().await;
-        self.stop_locked(&slot).await?;
-        Ok(self.summary_of(&slot))
+        self.run_in_host_task(move |host| async move {
+            let _op = slot.op_lock.lock().await;
+            host.stop_locked(&slot).await?;
+            Ok(host.summary_of(&slot))
+        })
+        .await
     }
 
     async fn restart(&self, name: &str) -> Result<AgentSummary, LifecycleError> {
         self.ensure_not_stopping()?;
         let slot = self.slot(name)?;
-        let _op = slot.op_lock.lock().await;
-        self.stop_locked(&slot).await?;
-        self.start_locked(&slot).await?;
-        Ok(self.summary_of(&slot))
+        self.run_in_host_task(move |host| async move {
+            let _op = slot.op_lock.lock().await;
+            host.stop_locked(&slot).await?;
+            host.start_locked(&slot).await?;
+            Ok(host.summary_of(&slot))
+        })
+        .await
     }
 
     async fn patch(&self, name: &str, patch: AgentPatch) -> Result<AgentSummary, LifecycleError> {
