@@ -17,6 +17,7 @@ import { hub } from "../../lib/hub.svelte";
 import { notifications } from "../../lib/notifications.svelte";
 import type { AgentSummary } from "../../lib/hub-types";
 import { router } from "../../lib/router.svelte";
+import { HOME, locationAt } from "../../lib/routes";
 import type { SessionSummary } from "../../lib/types";
 import { toast } from "../../lib/toast.svelte";
 import { setViewedAgent } from "../../lib/viewed-agent";
@@ -107,6 +108,7 @@ beforeEach(() => {
 
 afterEach(() => {
   unregister();
+  router.location = locationAt(HOME);
   setViewedAgent(null);
 });
 
@@ -122,9 +124,9 @@ describe("the chat header", () => {
     expect(openSettings).toHaveBeenCalledWith({ scope: "atlas", section: null });
   });
 
-  it("counts the agent's running sessions, and opens Activity from them", async () => {
+  it("counts the agent's running sessions, and opens Activity in the side panel from them", async () => {
     setViewedAgent("atlas");
-    const openPlace = vi.spyOn(router, "openPlace").mockResolvedValue(true);
+    const openPanel = vi.spyOn(router, "openPanel").mockResolvedValue(true);
     render(ChatPlace, { agent: "atlas", actions: shell });
     expect(screen.queryByRole("button", { name: /running/ })).toBeNull();
 
@@ -132,7 +134,36 @@ describe("the chat header", () => {
     await settle();
     await userEvent.click(screen.getByRole("button", { name: "2 running, open Activity" }));
 
-    expect(openPlace).toHaveBeenCalledWith({ kind: "activity", agent: "atlas" });
+    expect(openPanel).toHaveBeenCalledWith({ kind: "activity", agent: "atlas" });
+  });
+
+  it("toggles the side panel from the header button, remembering the last-used panel kind", async () => {
+    setViewedAgent("atlas");
+    router.location = { place: { kind: "chat", agent: "atlas" }, panel: null, settings: null };
+    const openPanel = vi.spyOn(router, "openPanel").mockResolvedValue(true);
+    const closePanel = vi.spyOn(router, "closePanel").mockResolvedValue(true);
+    localStorage.removeItem("residuum-panel-kind");
+    render(ChatPlace, { agent: "atlas", actions: shell });
+
+    const openBtn = screen.getByRole("button", { name: "Open side panel" });
+    expect(openBtn).toHaveAttribute("aria-pressed", "false");
+    await userEvent.click(openBtn);
+    expect(openPanel).toHaveBeenLastCalledWith({ kind: "files", agent: "atlas" });
+
+    localStorage.setItem("residuum-panel-kind", "schedule");
+    await userEvent.click(openBtn);
+    expect(openPanel).toHaveBeenLastCalledWith({ kind: "schedule", agent: "atlas" });
+
+    router.location = {
+      place: { kind: "chat", agent: "atlas" },
+      panel: { kind: "schedule", agent: "atlas" },
+      settings: null,
+    };
+    await settle();
+    const closeBtn = screen.getByRole("button", { name: "Close side panel" });
+    expect(closeBtn).toHaveAttribute("aria-pressed", "true");
+    await userEvent.click(closeBtn);
+    expect(closePanel).toHaveBeenCalledOnce();
   });
 
   it("offers the conversation's size, Restart and Stop for a running agent", async () => {

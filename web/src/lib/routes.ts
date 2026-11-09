@@ -11,8 +11,9 @@
 //   /team/workbench[/:artifact]    the Workbench list, with an artifact's row selected
 //   /team/files                    Shared files
 //
-//   ?panel=session:<agent>:<runId> | new-session:<agent> | file:<path>
-//          | agent-file:<agent>:<path> | size               the context panel
+//   ?panel=session:<agent>:<runId> | new-session:<agent>
+//          | activity:<agent> | schedule:<agent> | files:<agent>
+//          | file:<path> | agent-file:<agent>:<path> | size  the context panel
 //   ?settings=<agent | _all>[/<section>]                    the Settings modal
 //
 // Paths that older versions used redirect to these, and any other path is the
@@ -66,6 +67,9 @@ export type InboxPlace = Extract<Place, { kind: "inbox" }>;
 export type Panel =
   | { kind: "session"; agent: string; runId: string }
   | { kind: "new-session"; agent: string }
+  | { kind: "activity"; agent: string }
+  | { kind: "schedule"; agent: string }
+  | { kind: "files"; agent: string }
   /**
    * A file. With no `agent` it is read from the tree the place shows (an
    * agent's workspace on its places, the team's folder on Shared files); with
@@ -135,15 +139,18 @@ export function isAgentName(name: string): boolean {
 
 /**
  * Whether a panel can show on a place: a session of the viewed agent (or on
- * the Workbench), a new session on the viewed agent, a file, or the
- * conversation size. A file that names its agent also shows on the Inbox, for
- * a mail attachment beside its thread.
+ * the Workbench), a new session or an agent place (Activity, Schedule, Files)
+ * of the viewed agent, a file, or the conversation size. A file that names its
+ * agent also shows on the Inbox, for a mail attachment beside its thread.
  */
 export function panelAllowed(place: Place, panel: Panel): boolean {
   switch (panel.kind) {
     case "session":
       return (isAgentPlace(place) && place.agent === panel.agent) || place.kind === "workbench";
     case "new-session":
+    case "activity":
+    case "schedule":
+    case "files":
       return isAgentPlace(place) && place.agent === panel.agent;
     case "file":
       return (
@@ -205,8 +212,8 @@ function parsePanel(value: string): Panel | null {
     const path = rest.slice(split + 1);
     return isAgentName(agent) && path !== "" ? { kind: "file", path, agent } : null;
   }
-  if (kind === "new-session")
-    return isAgentName(rest) ? { kind: "new-session", agent: rest } : null;
+  if (kind === "new-session" || kind === "activity" || kind === "schedule" || kind === "files")
+    return isAgentName(rest) ? { kind, agent: rest } : null;
   if (kind === "session") {
     const split = rest.indexOf(":");
     if (split < 0) return null;
@@ -508,7 +515,15 @@ export function correctForAgents(
     }
     place = { ...place, agent, compose, thread };
   }
-  const panelAgent = panel?.kind === "session" || panel?.kind === "file" ? panel.agent : null;
+  const panelAgent =
+    panel?.kind === "session" ||
+    panel?.kind === "new-session" ||
+    panel?.kind === "activity" ||
+    panel?.kind === "schedule" ||
+    panel?.kind === "files" ||
+    panel?.kind === "file"
+      ? panel.agent
+      : null;
   if (panelAgent !== null && !known.has(panelAgent)) {
     note(panelAgent);
     panel = null;
@@ -554,7 +569,10 @@ function formatPanel(panel: Panel): string {
     case "session":
       return `session:${panel.agent}:${panel.runId}`;
     case "new-session":
-      return `new-session:${panel.agent}`;
+    case "activity":
+    case "schedule":
+    case "files":
+      return `${panel.kind}:${panel.agent}`;
   }
 }
 

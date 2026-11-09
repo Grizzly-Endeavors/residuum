@@ -6,18 +6,29 @@
   import { runningCount } from "../../lib/running-count";
   import { IconButton, Menu, MenuItem } from "../../lib/ui";
   import PlaceHeader from "../../shell/PlaceHeader.svelte";
+  import { readLastPanelKind } from "../../shell/panel/panel-width";
 
   // The Chat's title bar: the agent with its role, how much it has running
-  // (the number the rail's Activity row shows, opening Activity, and only while
-  // the agent is up), its settings, and a menu with the conversation's size,
-  // Restart and Stop. The menu's items are the action registry's, so they carry
-  // the same reasons when they can't run.
+  // (the number the rail's Activity row shows, opening Activity in the side
+  // panel, and only while the agent is up), its settings, a menu with the
+  // conversation's size, Restart and Stop, and a toggle for the side panel.
+  // The menu's items are the action registry's, so they carry the same reasons
+  // when they can't run.
 
   let { agent }: { agent: string } = $props();
 
   const summary = $derived(hub.agent(agent));
   const label = $derived(hub.shownName(agent));
   const running = $derived(runningCount(agent));
+  const panelOpen = $derived(router.panel !== null);
+
+  function togglePanel(): void {
+    if (panelOpen) {
+      void router.closePanel();
+    } else {
+      void router.openPanel({ kind: readLastPanelKind(), agent });
+    }
+  }
 
   /** Why Restart or Stop isn't offered, when the registry doesn't list it. */
   const lifecycleReason = $derived.by(() => {
@@ -51,12 +62,18 @@
         type="button"
         class="running-pill"
         aria-label="{running} running, open Activity"
-        onclick={() => void router.openPlace({ kind: "activity", agent })}
+        onclick={() => void router.openPanel({ kind: "activity", agent })}
       >
         <span class="running-dot" aria-hidden="true"></span>
         {running} running
       </button>
     {/if}
+    <IconButton
+      icon="panel"
+      label={panelOpen ? "Close side panel" : "Open side panel"}
+      pressed={panelOpen}
+      onclick={togglePanel}
+    />
     <span class="chat-header-gear">
       <IconButton
         icon="settings"

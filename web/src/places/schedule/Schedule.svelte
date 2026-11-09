@@ -9,6 +9,7 @@
   import type { ScheduledCurrentRun } from "../../lib/types";
   import { Badge, Banner, Button, EmptyState, IconButton, Skeleton, Toggle } from "../../lib/ui";
   import { ws } from "../../lib/ws.svelte";
+  import PanelHeader from "../../shell/panel/PanelHeader.svelte";
   import PlaceHeader from "../../shell/PlaceHeader.svelte";
   import { agentPlaceLabel } from "../../shell/rail-model";
   import { followLink } from "../home/follow-link";
@@ -33,7 +34,7 @@
   // so changing one means asking it in chat. Only a running agent answers for
   // its schedule, so a stopped one offers Start.
 
-  let { agent }: { agent: string } = $props();
+  let { agent, inPanel = false }: { agent: string; inPanel?: boolean } = $props();
   const label = $derived(hub.shownName(agent));
 
   const uid = $props.id();
@@ -43,10 +44,10 @@
   const live = $derived(agentState === "running" || agentState === "stopping");
   const chat = $derived<Place>({ kind: "chat", agent });
 
-  /** A run's session in the context panel, over this place. */
+  /** A run's session in the context panel, over this place (or Chat when shown in the panel). */
   function sessionLocation(runId: string): AppLocation {
     return {
-      place: { kind: "schedule", agent },
+      place: inPanel ? router.place : { kind: "schedule", agent },
       panel: { kind: "session", agent, runId },
       settings: null,
     };
@@ -127,19 +128,48 @@
   {/if}
 {/snippet}
 
-<PlaceHeader title={label} {agent} sub={agentPlaceLabel("schedule")}>
-  {#if live}
-    <span class="reload">
+{#if inPanel}
+  <PanelHeader icon="clock" kind={label} title={agentPlaceLabel("schedule")}>
+    {#snippet actions()}
+      {#if live}
+        <IconButton
+          icon="reload"
+          label="Reload the schedule"
+          size="sm"
+          loading={scheduled.loading}
+          onclick={() => void scheduled.load()}
+        />
+      {/if}
       <IconButton
-        icon="reload"
-        label="Reload the schedule"
+        icon="expand"
+        label="Maximize Schedule"
         size="sm"
-        loading={scheduled.loading}
-        onclick={() => void scheduled.load()}
+        onclick={() => void router.openPlace({ kind: "schedule", agent })}
+      />
+    {/snippet}
+  </PanelHeader>
+{:else}
+  <PlaceHeader title={label} {agent} sub={agentPlaceLabel("schedule")}>
+    <span class="reload">
+      {#if live}
+        <IconButton
+          icon="reload"
+          label="Reload the schedule"
+          size="sm"
+          loading={scheduled.loading}
+          onclick={() => void scheduled.load()}
+        />
+      {/if}
+      <IconButton
+        icon="collapse"
+        label="Restore Schedule to side panel"
+        size="sm"
+        onclick={() =>
+          void router.openPlace({ kind: "chat", agent }, { panel: { kind: "schedule", agent } })}
       />
     </span>
-  {/if}
-</PlaceHeader>
+  </PlaceHeader>
+{/if}
 
 <div class="schedule-scroll">
   <div class="schedule">
@@ -327,7 +357,10 @@
 
 <style>
   .reload {
+    display: flex;
     align-self: center;
+    align-items: center;
+    gap: var(--space-4);
     margin-left: auto;
   }
 

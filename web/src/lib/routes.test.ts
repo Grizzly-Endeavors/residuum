@@ -296,16 +296,22 @@ describe("the panel parameter", () => {
     ["/agent/scout/files?panel=size", { kind: "size" }],
     ["/agent/scout/activity?panel=new-session:scout", { kind: "new-session", agent: "scout" }],
     ["/agent/scout?panel=new-session:scout", { kind: "new-session", agent: "scout" }],
+    ["/agent/scout?panel=activity:scout", { kind: "activity", agent: "scout" }],
+    ["/agent/scout?panel=schedule:scout", { kind: "schedule", agent: "scout" }],
+    ["/agent/scout?panel=files:scout", { kind: "files", agent: "scout" }],
   ] as [string, Panel][])("keeps %s", (url, panel) => {
     const parsed = read(url);
     expect(parsed.location.panel).toEqual(panel);
     expect(parsed.url).toBe(url);
   });
 
-  it("removes a session or new-session panel for another agent on an agent place", () => {
+  it("removes a session, new-session or agent-place panel for another agent on an agent place", () => {
     expect(where("/agent/scout?panel=session:atlas:run-1")).toBe("/agent/scout");
     expect(where("/agent/scout/activity?panel=new-session:atlas")).toBe("/agent/scout/activity");
     expect(where("/agent/scout/files?panel=session:atlas:run-1")).toBe("/agent/scout/files");
+    expect(where("/agent/scout?panel=activity:atlas")).toBe("/agent/scout");
+    expect(where("/agent/scout?panel=schedule:atlas")).toBe("/agent/scout");
+    expect(where("/agent/scout?panel=files:atlas")).toBe("/agent/scout");
   });
 
   it("removes the panel on places that can't show it", () => {
@@ -320,6 +326,12 @@ describe("the panel parameter", () => {
       "/team/files?panel=session:scout:run-1",
       "/team/workbench?panel=new-session:scout",
       "/home?panel=new-session:scout",
+      "/home?panel=activity:scout",
+      "/home?panel=schedule:scout",
+      "/home?panel=files:scout",
+      "/inbox?panel=files:scout",
+      "/team/workbench?panel=activity:scout",
+      "/team/files?panel=files:scout",
       "/home?panel=agent-file:atlas:a.md",
       "/team/workbench?panel=agent-file:atlas:a.md",
       "/inbox?panel=file:a.md",
@@ -351,6 +363,15 @@ describe("the panel parameter", () => {
       "new-session",
       "new-session:",
       "new-session:Bad_Name",
+      "activity",
+      "activity:",
+      "activity:Bad_Name",
+      "schedule",
+      "schedule:",
+      "schedule:Bad_Name",
+      "files",
+      "files:",
+      "files:Bad_Name",
     ]) {
       expect(where(`/agent/scout?panel=${value}`)).toBe("/agent/scout");
     }
@@ -376,6 +397,11 @@ describe("the panel parameter", () => {
     expect(panelAllowed({ kind: "workbench", artifact: null }, session("atlas", "r"))).toBe(true);
     expect(panelAllowed(chat, { kind: "new-session", agent: "scout" })).toBe(true);
     expect(panelAllowed(chat, { kind: "new-session", agent: "atlas" })).toBe(false);
+    expect(panelAllowed(chat, { kind: "activity", agent: "scout" })).toBe(true);
+    expect(panelAllowed(chat, { kind: "activity", agent: "atlas" })).toBe(false);
+    expect(panelAllowed(chat, { kind: "schedule", agent: "scout" })).toBe(true);
+    expect(panelAllowed(chat, { kind: "files", agent: "scout" })).toBe(true);
+    expect(panelAllowed(HOME, { kind: "files", agent: "scout" })).toBe(false);
     expect(
       panelAllowed({ kind: "workbench", artifact: null }, { kind: "new-session", agent: "atlas" }),
     ).toBe(false);
@@ -730,6 +756,21 @@ describe("formatting", () => {
       settings: null,
     },
     locationAt({ kind: "chat", agent: "scout" }),
+    {
+      place: { kind: "chat", agent: "scout" },
+      panel: { kind: "files", agent: "scout" },
+      settings: null,
+    },
+    {
+      place: { kind: "chat", agent: "scout" },
+      panel: { kind: "activity", agent: "scout" },
+      settings: null,
+    },
+    {
+      place: { kind: "chat", agent: "scout" },
+      panel: { kind: "schedule", agent: "scout" },
+      settings: null,
+    },
     {
       place: { kind: "files", agent: "scout" },
       panel: { kind: "file", path: "a b/c?d&e.md", agent: null },
