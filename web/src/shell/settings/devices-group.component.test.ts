@@ -169,8 +169,10 @@ describe("Paired browsers", () => {
     expect(screen.getByText("K7QX2M")).toBeInTheDocument();
     const revokeButtons = screen.getAllByRole("button", { name: "Revoke Pixelbook" });
     expect(revokeButtons).toHaveLength(2);
+    const secondRevoke = revokeButtons[1];
+    if (!secondRevoke) throw new Error("expected second revoke button");
 
-    await fireEvent.click(revokeButtons[1]!);
+    await fireEvent.click(secondRevoke);
     await settle();
     expect(calls).toContain("DELETE /api/hub/devices/d-pixelbook-2");
   });
