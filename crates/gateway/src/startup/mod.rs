@@ -454,7 +454,8 @@ fn build_startup_spawn_context(inputs: StartupSpawnContextInputs<'_>) -> Arc<Spa
 ///
 /// At startup, any run left in the store from a prior process exit goes
 /// through the full completion pipeline (skip check, final observation,
-/// merge) from its persisted transcript before normal operation begins.
+/// merge) from its persisted transcript on a background task so slow observer
+/// or reflector model calls never delay agent startup.
 ///
 /// The registry itself loads its resume points from
 /// `layout.resume_points_json()`, so a message to a session that completed
@@ -464,8 +465,8 @@ async fn init_session_registry_and_messenger(
     cfg: &Config,
     layout: &WorkspaceLayout,
     publisher: &residuum_bus::Publisher,
-    session_observer: &Observer,
-    merge_writer: &MemoryMergeWriter,
+    session_observer: &Arc<Observer>,
+    merge_writer: &Arc<MemoryMergeWriter>,
     team: TeamLink,
 ) -> (
     Arc<SessionRegistry>,
@@ -476,20 +477,28 @@ async fn init_session_registry_and_messenger(
     let registry = Arc::new(SessionRegistry::load(layout.resume_points_json()).await);
     let store = Arc::new(SessionStore::new(layout.sessions_dir()));
 
-    let recovery_env = residuum_background::SessionMemoryEnv {
-        observer: session_observer,
-        merge_writer,
-        layout,
-        episode_skip_token_floor: cfg.background.episode_skip_token_floor,
-        tz: cfg.timezone,
-    };
-    let recovered = store.recover_incomplete_runs(&recovery_env).await;
-    if recovered > 0 {
-        tracing::warn!(
-            recovered,
-            "recovered session runs left incomplete by a prior process exit"
-        );
-    }
+    let recovery_store = Arc::clone(&store);
+    let recovery_observer = Arc::clone(session_observer);
+    let recovery_merge_writer = Arc::clone(merge_writer);
+    let recovery_layout = layout.clone();
+    let episode_skip_token_floor = cfg.background.episode_skip_token_floor;
+    let tz = cfg.timezone;
+    residuum_core::util::spawn_in_span(async move {
+        let recovery_env = residuum_background::SessionMemoryEnv {
+            observer: &recovery_observer,
+            merge_writer: &recovery_merge_writer,
+            layout: &recovery_layout,
+            episode_skip_token_floor,
+            tz,
+        };
+        let recovered = recovery_store.recover_incomplete_runs(&recovery_env).await;
+        if recovered > 0 {
+            tracing::warn!(
+                recovered,
+                "recovered session runs left incomplete by a prior process exit"
+            );
+        }
+    });
 
     let messenger = Arc::new(
         AgentMessenger::new(
@@ -1638,5 +1647,130 @@ mod tests {
         );
         assert!(message.contains("skills couldn't be scanned"));
         assert!(message.contains("embedding provider is unavailable"));
+    }
+
+    struct GatedObserverProvider {
+        entered: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait::async_trait]
+    impl residuum_inference::InferenceProvider for GatedObserverProvider {
+        async fn complete(
+            &self,
+            _messages: &[residuum_inference::Message],
+            _tools: &[residuum_inference::ToolDefinition],
+            _options: &residuum_inference::CompletionOptions,
+        ) -> Result<residuum_inference::InferenceResponse, residuum_inference::InferenceError>
+        {
+            self.entered.notify_waiters();
+            self.release.notified().await;
+            Ok(residuum_inference::InferenceResponse::new(
+                r#"{"observations": [{"content": "recovered after startup", "timestamp": "2026-02-21T14:30", "visibility": "background"}]}"#
+                    .to_string(),
+                vec![],
+            ))
+        }
+
+        fn model_name(&self) -> &'static str {
+            "gated-observer"
+        }
+    }
+
+    #[tokio::test]
+    async fn session_recovery_does_not_block_startup_when_observer_is_slow() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = crate::testing::test_config();
+        cfg.workspace_dir = dir.path().to_path_buf();
+        let layout = WorkspaceLayout::new(&cfg.workspace_dir);
+        tokio::fs::create_dir_all(layout.memory_dir())
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(layout.episodes_dir())
+            .await
+            .unwrap();
+
+        let seed_store = SessionStore::new(layout.sessions_dir());
+        let info = residuum_bus::session::SessionInfo {
+            address: residuum_bus::SessionAddress::from("scheduled-presence-test"),
+            run_id: "run-startup-nonblocking".to_string(),
+            category: residuum_bus::session::SessionCategory::Scheduled,
+            trigger: residuum_bus::EventTrigger::Pulse,
+            source_label: "pulse:presence".to_string(),
+            state: residuum_bus::session::SessionState::Running,
+            spawner: None,
+            depth: 1,
+            purpose: "presence check".to_string(),
+            agent_skill: None,
+            model: residuum_config::ModelSelector::MEDIUM,
+            resolved_model: None,
+            conversation_target: None,
+            started_at: chrono::Utc::now(),
+            usage: residuum_bus::usage::SessionUsageTotals::default(),
+            overlap: None,
+        };
+        seed_store.begin_run(&info).await;
+        seed_store
+            .append_transcript(
+                &info.run_id,
+                info.started_at,
+                &[
+                    residuum_inference::Message::user("check presence"),
+                    residuum_inference::Message::assistant("a".repeat(9000), None),
+                ],
+            )
+            .await;
+
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let observer = Arc::new(Observer::new(
+            Box::new(GatedObserverProvider {
+                entered: Arc::clone(&entered),
+                release: Arc::clone(&release),
+            }),
+            residuum_memory::observer::ObserverConfig::default(),
+        ));
+        let search_index = Arc::new(
+            residuum_memory::search::MemoryIndex::open_or_create(&layout.search_index_dir())
+                .unwrap(),
+        );
+        let merge_writer = Arc::new(MemoryMergeWriter::new(
+            residuum_memory::reflector::Reflector::disabled(chrono_tz::UTC),
+            layout.clone(),
+            search_index,
+            None,
+            None,
+        ));
+        let bus = residuum_bus::spawn_broker();
+        let publisher = bus.publisher();
+
+        let (_registry, store, _messenger, _router) = residuum_core::testing::wait::guarded(
+            "init_session_registry_and_messenger to return without waiting for observer",
+            init_session_registry_and_messenger(
+                &cfg,
+                &layout,
+                &publisher,
+                &observer,
+                &merge_writer,
+                TeamLink::alone("test-agent"),
+            ),
+        )
+        .await;
+
+        residuum_core::testing::wait::guarded(
+            "background recovery task to reach the observer call",
+            entered.notified(),
+        )
+        .await;
+
+        release.notify_waiters();
+        residuum_core::testing::wait::until(
+            "the recovered run record to be marked completed",
+            || async {
+                let (record, _transcript) = store.read_run(&info.run_id).await.ok()??;
+                (record.state == "completed").then_some(())
+            },
+        )
+        .await;
     }
 }
