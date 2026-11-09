@@ -162,7 +162,7 @@ async fn supervise_until_exit(mut child: std::process::Child) -> Result<(), Fata
     let mut sigint = signal(SignalKind::interrupt())
         .map_err(|e| FatalError::Gateway(format!("failed to register SIGINT handler: {e}")))?;
 
-    let mut wait_task = tokio::task::spawn_blocking(move || child.wait());
+    let mut wait_task = residuum::util::spawn_blocking_in_span(move || child.wait());
 
     let status = loop {
         tokio::select! {
