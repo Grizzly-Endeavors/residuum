@@ -3,7 +3,9 @@
   import { agentLabel } from "../../lib/agent-name";
   import { hub } from "../../lib/hub.svelte";
   import { router } from "../../lib/router.svelte";
-  import { EmptyState, Skeleton } from "../../lib/ui";
+  import { EmptyState, IconButton, Skeleton } from "../../lib/ui";
+  import PanelHeader from "../../shell/panel/PanelHeader.svelte";
+  import { agentPlaceLabel } from "../../shell/rail-model";
   import FileHistoryDialog from "./FileHistoryDialog.svelte";
   import { parentDir, type FileSource } from "./file-source";
   import { FileTree } from "./file-tree.svelte";
@@ -12,7 +14,7 @@
   // Files (an agent's folder) and Shared files (the team's): the tree, kept
   // current from the disk. A file opens in the context panel's editor.
 
-  let { source }: { source: FileSource } = $props();
+  let { source, inPanel = false }: { source: FileSource; inPanel?: boolean } = $props();
 
   // The shell keys this place by its source, so the tree is made for one.
   const tree = untrack(() => new FileTree(source));
@@ -20,6 +22,7 @@
 
   const shown = $derived(router.panel?.kind === "file" ? router.panel.path : null);
   const agent = $derived(source.agent === null ? undefined : hub.agent(source.agent));
+  const label = $derived(source.agent === null ? "Shared files" : hub.shownName(source.agent));
   const root = $derived(tree.listings[""]);
 
   onMount(() => {
@@ -37,6 +40,22 @@
     if (shown === from) void router.replacePanel({ kind: "file", path: to, agent: null });
   }
 </script>
+
+{#if inPanel}
+  <PanelHeader icon="folder" kind={label} title={agentPlaceLabel("files")}>
+    {#snippet actions()}
+      {#if source.agent !== null}
+        {@const agentName = source.agent}
+        <IconButton
+          icon="expand"
+          label="Maximize Files"
+          size="sm"
+          onclick={() => void router.openPlace({ kind: "files", agent: agentName })}
+        />
+      {/if}
+    {/snippet}
+  </PanelHeader>
+{/if}
 
 <div class="files-scroll">
   <div class="files">

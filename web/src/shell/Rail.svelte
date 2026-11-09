@@ -7,7 +7,17 @@
   import { overview } from "../lib/overview.svelte";
   import { router } from "../lib/router.svelte";
   import { runningCount } from "../lib/running-count";
-  import { formatLocation, HOME, INBOX, locationAt, placesEqual, type Place } from "../lib/routes";
+  import {
+    formatLocation,
+    HOME,
+    INBOX,
+    locationAt,
+    placesEqual,
+    type AgentPlaceKind,
+    type AppLocation,
+    type Panel,
+    type Place,
+  } from "../lib/routes";
   import {
     Badge,
     Button,
@@ -53,6 +63,31 @@
     return placesEqual(place, target);
   }
 
+  /** Where an agent's sub-row leads: Chat as the main place, Activity/Schedule/Files in the side panel beside Chat. */
+  function agentPlaceLocation(agent: string, kind: AgentPlaceKind): AppLocation {
+    const chat: Place = { kind: "chat", agent };
+    if (kind === "chat") return locationAt(chat);
+    const panel: Panel = { kind, agent };
+    return { place: chat, panel, settings: null };
+  }
+
+  /** Whether an agent's sub-row is current: either open as the full place, or shown in the context panel for that agent. */
+  function isAgentPlaceCurrent(agent: string, kind: AgentPlaceKind): boolean {
+    if (kind === "chat") {
+      return (
+        place.kind === "chat" &&
+        place.agent === agent &&
+        router.panel?.kind !== "activity" &&
+        router.panel?.kind !== "schedule" &&
+        router.panel?.kind !== "files"
+      );
+    }
+    return (
+      (place.kind === kind && place.agent === agent) ||
+      (router.viewedAgent === agent && router.panel?.kind === kind && router.panel.agent === agent)
+    );
+  }
+
   function open(event: MouseEvent, target: Place): void {
     // A modified click opens the place in a new tab, as a link does.
     if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) {
@@ -60,6 +95,34 @@
     }
     event.preventDefault();
     void router.openPlace(target);
+    onclose?.();
+  }
+
+  function openAgent(event: MouseEvent, agent: string): void {
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) {
+      return;
+    }
+    event.preventDefault();
+    accordion.expand(agent);
+    void router.openPlace({ kind: "chat", agent });
+    onclose?.();
+  }
+
+  function openAgentPlace(event: MouseEvent, agent: string, kind: AgentPlaceKind): void {
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) {
+      return;
+    }
+    event.preventDefault();
+    if (kind === "chat") {
+      void router.openPlace({ kind: "chat", agent });
+    } else {
+      const panel: Panel = { kind, agent };
+      if (place.kind === "chat" && place.agent === agent) {
+        void router.openPanel(panel);
+      } else {
+        void router.openPlace({ kind: "chat", agent }, { panel });
+      }
+    }
     onclose?.();
   }
 
@@ -145,39 +208,47 @@
         })}
         {@const expanded = accordion.open === agent.name}
         <li>
-          <button
-            type="button"
-            class="rail-agent"
-            data-rail-row
-            data-rail-agent={agent.name}
-            data-viewed={viewed || undefined}
-            aria-expanded={expanded}
-            aria-controls="{uid}-places-{agent.name}"
-            onclick={() => accordion.toggle(agent.name)}
-          >
-            <StatusDot state={status.dot} working={status.working} />
-            <span class="rail-label">{agentLabel(agent)}</span>
-            <span class="rail-tail" aria-hidden="true">
-              {#if status.tail.kind === "unread"}
-                <Badge count={status.tail.count} solid />
-              {:else if status.tail.kind === "word"}
-                <span class="rail-word" data-tone={status.tail.tone}>{status.tail.word}</span>
-              {/if}
-            </span>
-            <span class="rail-chevron"><Icon name="chevron-down" size={14} /></span>
-            <VisuallyHidden>, {status.spoken}</VisuallyHidden>
-          </button>
+          <div class="rail-agent-head">
+            <a
+              class="rail-agent"
+              href={formatLocation(locationAt({ kind: "chat", agent: agent.name }))}
+              data-rail-row
+              data-rail-agent={agent.name}
+              data-viewed={viewed || undefined}
+              onclick={(event) => openAgent(event, agent.name)}
+            >
+              <StatusDot state={status.dot} working={status.working} />
+              <span class="rail-label">{agentLabel(agent)}</span>
+              <span class="rail-tail" aria-hidden="true">
+                {#if status.tail.kind === "unread"}
+                  <Badge count={status.tail.count} solid />
+                {:else if status.tail.kind === "word"}
+                  <span class="rail-word" data-tone={status.tail.tone}>{status.tail.word}</span>
+                {/if}
+              </span>
+              <VisuallyHidden>, {status.spoken}</VisuallyHidden>
+            </a>
+            <button
+              type="button"
+              class="rail-chevron"
+              aria-label="{expanded ? 'Collapse' : 'Expand'} {agentLabel(agent)}"
+              aria-expanded={expanded}
+              aria-controls="{uid}-places-{agent.name}"
+              onclick={() => accordion.toggle(agent.name)}
+            >
+              <Icon name="chevron-down" size={14} />
+            </button>
+          </div>
           <ul class="rail-places" id="{uid}-places-{agent.name}" hidden={!expanded}>
             {#each AGENT_PLACES as entry (entry.kind)}
-              {@const target = { kind: entry.kind, agent: agent.name } satisfies Place}
               {@const running = entry.kind === "activity" ? runningCount(agent.name) : 0}
               <li>
                 <a
                   class="rail-place"
-                  href={formatLocation(locationAt(target))}
+                  href={formatLocation(agentPlaceLocation(agent.name, entry.kind))}
                   data-rail-row
-                  aria-current={isCurrent(target) ? "page" : undefined}
-                  onclick={(event) => open(event, target)}
+                  aria-current={isAgentPlaceCurrent(agent.name, entry.kind) ? "page" : undefined}
+                  onclick={(event) => openAgentPlace(event, agent.name, entry.kind)}
                 >
                   <Icon name={entry.icon} size={15} />
                   <span class="rail-label">{entry.label}</span>
@@ -317,8 +388,30 @@
     }
   }
 
-  .rail-row,
+  .rail-agent-head {
+    display: flex;
+    align-items: center;
+    border-radius: var(--corner-sm);
+    transition: background-color var(--duration-fast) var(--ease-out);
+
+    &:hover {
+      background: var(--color-stone-3);
+    }
+  }
+
   .rail-agent {
+    flex: 1;
+    min-width: 0;
+    gap: var(--space-10);
+    height: 32px;
+    padding: 0 var(--space-4) 0 var(--space-8);
+
+    &:hover {
+      background: none;
+    }
+  }
+
+  .rail-row {
     gap: var(--space-10);
     height: 32px;
     padding: 0 var(--space-8);
@@ -357,11 +450,28 @@
 
   .rail-chevron {
     display: grid;
+    place-items: center;
+    flex: none;
+    width: 26px;
+    height: 26px;
+    margin-right: var(--space-4);
+    border-radius: var(--corner-sm);
     color: var(--color-text-3);
-    transform: rotate(-90deg);
-    transition: transform var(--duration-base) var(--ease-out);
+    transition:
+      background-color var(--duration-fast) var(--ease-out),
+      color var(--duration-fast) var(--ease-out);
 
-    [aria-expanded="true"] > & {
+    &:hover {
+      background: var(--color-stone-4);
+      color: var(--color-text);
+    }
+
+    & :global(svg) {
+      transform: rotate(-90deg);
+      transition: transform var(--duration-base) var(--ease-out);
+    }
+
+    &[aria-expanded="true"] :global(svg) {
       transform: none;
     }
   }

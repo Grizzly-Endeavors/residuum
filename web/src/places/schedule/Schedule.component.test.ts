@@ -13,6 +13,7 @@ import { within } from "@testing-library/svelte";
 import { hub } from "../../lib/hub.svelte";
 import type { AgentSummary } from "../../lib/hub-types";
 import { notifications } from "../../lib/notifications.svelte";
+import { router } from "../../lib/router.svelte";
 import { scheduled } from "../../lib/scheduled.svelte";
 import type { ActionInfo, PulseInfo, ScheduledCurrentRun, ServerMessage } from "../../lib/types";
 import { ws } from "../../lib/ws.svelte";
@@ -480,5 +481,20 @@ describe("Schedule", () => {
     expect(screen.getByRole("heading", { name: "brittle can't start" })).toBeTruthy();
     expect(screen.getByText(/Something went wrong while it was starting\./)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Start brittle" })).toBeTruthy();
+  });
+
+  it("restores Schedule to the side panel from its maximized header", async () => {
+    const user = userEvent.setup();
+    const openPlace = vi.spyOn(router, "openPlace").mockResolvedValue(true);
+    scheduled.reset("atlas");
+    serveSchedule([], []);
+    render(Schedule, { agent: "atlas" });
+    await settle();
+
+    await user.click(screen.getByRole("button", { name: "Restore Schedule to side panel" }));
+    expect(openPlace).toHaveBeenCalledWith(
+      { kind: "chat", agent: "atlas" },
+      { panel: { kind: "schedule", agent: "atlas" } },
+    );
   });
 });

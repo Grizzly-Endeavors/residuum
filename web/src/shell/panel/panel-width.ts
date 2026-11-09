@@ -15,6 +15,34 @@ export const PANEL_STEP = 16;
 export const PANEL_LARGE_STEP = 64;
 
 const STORAGE_KEY = "residuum-panel-width";
+const KIND_STORAGE_KEY = "residuum-panel-kind";
+
+export type SidePanelKind = "activity" | "schedule" | "files";
+
+const SIDE_PANEL_KINDS: readonly SidePanelKind[] = ["activity", "schedule", "files"];
+
+function isSidePanelKind(value: string | null): value is SidePanelKind {
+  return value !== null && (SIDE_PANEL_KINDS as readonly string[]).includes(value);
+}
+
+/** The agent panel kind last opened, or `"files"` when none was remembered. */
+export function readLastPanelKind(): SidePanelKind {
+  try {
+    const stored = localStorage.getItem(KIND_STORAGE_KEY);
+    return isSidePanelKind(stored) ? stored : "files";
+  } catch {
+    return "files";
+  }
+}
+
+/** Remember the agent panel kind just shown. */
+export function saveLastPanelKind(kind: SidePanelKind): void {
+  try {
+    localStorage.setItem(KIND_STORAGE_KEY, kind);
+  } catch {
+    // Storage is blocked or full: the default holds.
+  }
+}
 
 /** The widest the panel may be in a viewport this wide. */
 export function panelMaxWidth(viewportWidth: number): number {

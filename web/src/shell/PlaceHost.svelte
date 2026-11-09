@@ -1,5 +1,6 @@
 <script lang="ts">
   import { router } from "../lib/router.svelte";
+  import { IconButton } from "../lib/ui";
   import Activity from "../places/activity/Activity.svelte";
   import ChatPlace from "../places/chat/ChatPlace.svelte";
   import FilesPlace from "../places/files/FilesPlace.svelte";
@@ -40,7 +41,21 @@
   {/key}
 {:else if files !== null && (place.kind === "files" || place.kind === "shared-files")}
   {#if place.kind === "files"}
-    <PlaceHeader title={place.agent} agent={place.agent} sub={agentPlaceLabel("files")} />
+    {@const agentName = place.agent}
+    <PlaceHeader title={agentName} agent={agentName} sub={agentPlaceLabel("files")}>
+      <span class="place-header-end">
+        <IconButton
+          icon="collapse"
+          label="Restore Files to side panel"
+          size="sm"
+          onclick={() =>
+            void router.openPlace(
+              { kind: "chat", agent: agentName },
+              { panel: { kind: "files", agent: agentName } },
+            )}
+        />
+      </span>
+    </PlaceHeader>
   {:else}
     <PlaceHeader title="Shared files" />
   {/if}
@@ -52,3 +67,10 @@
 {:else if place.kind === "not-found"}
   <NotFound path={place.path} />
 {/if}
+
+<style>
+  .place-header-end {
+    align-self: center;
+    margin-left: auto;
+  }
+</style>
