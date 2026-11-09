@@ -204,4 +204,14 @@ describe("Activity", () => {
     expect(screen.getByRole("button", { name: "Start drifter" })).toBeVisible();
     expect(screen.queryByRole("heading", { name: /^Running now/ })).toBeNull();
   });
+
+  it("restores Activity to the side panel from its maximized header", async () => {
+    const openPlace = vi.spyOn(router, "openPlace").mockResolvedValue(true);
+    await showAtlas([]);
+    await userEvent.click(screen.getByRole("button", { name: "Restore Activity to side panel" }));
+    expect(openPlace).toHaveBeenCalledWith(
+      { kind: "chat", agent: "atlas" },
+      { panel: { kind: "activity", agent: "atlas" } },
+    );
+  });
 });

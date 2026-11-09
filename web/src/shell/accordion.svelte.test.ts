@@ -12,6 +12,16 @@ describe("RailAccordion", () => {
     expect(accordion.open).toBeNull();
   });
 
+  it("expands an agent without closing it on a second press", () => {
+    const accordion = new RailAccordion();
+    accordion.expand("atlas");
+    expect(accordion.open).toBe("atlas");
+    accordion.expand("atlas");
+    expect(accordion.open).toBe("atlas");
+    accordion.expand("scout");
+    expect(accordion.open).toBe("scout");
+  });
+
   it("opens the viewed agent on load", () => {
     const accordion = new RailAccordion();
     accordion.follow("atlas");

@@ -7,11 +7,15 @@
   import { Skeleton } from "../../lib/ui";
   import { ws } from "../../lib/ws.svelte";
   import ContextPanel from "./ContextPanel.svelte";
+  import { saveLastPanelKind } from "./panel-width";
+  import Activity from "../../places/activity/Activity.svelte";
   import ConversationSize from "../../places/chat/ConversationSize.svelte";
   import { NewSession } from "../../places/activity/new-session.svelte";
   import SessionPanel from "../../places/activity/SessionPanel.svelte";
+  import FilesPlace from "../../places/files/FilesPlace.svelte";
   import { FileBuffer } from "../../places/files/file-buffer.svelte";
   import { panelFileSource } from "../../places/files/file-source";
+  import Schedule from "../../places/schedule/Schedule.svelte";
 
   // The context panel, open while the URL names a `panel` its place can show
   // (the router removes any other). Each kind's content renders inside the
@@ -95,6 +99,13 @@
       }
     });
   });
+
+  $effect(() => {
+    const kind = panel?.kind;
+    if (kind === "activity" || kind === "schedule" || kind === "files") {
+      saveLastPanelKind(kind);
+    }
+  });
 </script>
 
 {#if panel !== null}
@@ -112,6 +123,18 @@
           <div class="panel-loading"><Skeleton lines={4} label="Loading the new session" /></div>
         {/if}
       {/if}
+    {:else if panel.kind === "activity"}
+      {#key panel.agent}
+        <Activity agent={panel.agent} inPanel />
+      {/key}
+    {:else if panel.kind === "schedule"}
+      {#key panel.agent}
+        <Schedule agent={panel.agent} inPanel />
+      {/key}
+    {:else if panel.kind === "files"}
+      {#key panel.agent}
+        <FilesPlace source={{ agent: panel.agent, scope: "agent" }} inPanel />
+      {/key}
     {:else if panel.kind === "file"}
       {#if fileBuffer !== null}
         {#if filePanel.component !== null}

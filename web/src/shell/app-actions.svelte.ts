@@ -97,7 +97,18 @@ function agentPlaces(): AppAction[] {
       hint: name,
       icon: entry.icon,
       searchOnly: name !== ws.agent,
-      run: open({ kind: entry.kind, agent: name }),
+      run: () => {
+        if (entry.kind === "chat") {
+          void router.openPlace({ kind: "chat", agent: name });
+        } else {
+          const panel = { kind: entry.kind, agent: name } as const;
+          if (router.place.kind === "chat" && router.place.agent === name) {
+            void router.openPanel(panel);
+          } else {
+            void router.openPlace({ kind: "chat", agent: name }, { panel });
+          }
+        }
+      },
     })),
   );
 }
@@ -116,7 +127,7 @@ function sessions(): AppAction[] {
     run: () => {
       const panel = { kind: "session", agent, runId: run.run_id } as const;
       if (router.viewedAgent === agent) void router.openPanel(panel);
-      else void router.openPlace({ kind: "activity", agent }, { panel });
+      else void router.openPlace({ kind: "chat", agent }, { panel });
     },
   }));
 }

@@ -67,6 +67,7 @@ const DRAWINGS = {
   "external-link": [{ path: "M14 5h5v5M19 5l-8 8M17 14v5H5V7h5" }],
   expand: [{ path: "M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5" }],
   collapse: [{ path: "M9 4v5H4M15 4v5h5M15 20v-5h5M9 20v-5H4" }],
+  panel: [{ rect: [3.5, 4.5, 17, 15, 2] }, { path: "M14.5 4.5v15" }],
 
   // ── Actions ───────────────────────────────────────────────────────
   plus: [{ path: "M12 5v14M5 12h14" }],

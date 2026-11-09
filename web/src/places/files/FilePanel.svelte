@@ -123,6 +123,9 @@
   }
 
   const problemCount = $derived(buffer.diagnostics.length);
+  const canReturnToTree = $derived(
+    source.agent !== null && router.place.kind === "chat" && router.place.agent === source.agent,
+  );
 </script>
 
 <PanelHeader
@@ -131,7 +134,7 @@
   title={buffer.name}
   code
   meta={inFolder ? folder : undefined}
-  actions={buffer.status === "ready" ? actions : undefined}
+  {actions}
 />
 
 {#snippet folder()}
@@ -139,19 +142,30 @@
 {/snippet}
 
 {#snippet actions()}
-  {#if renderMode !== null}
+  {#if canReturnToTree && source.agent !== null}
+    {@const agentName = source.agent}
     <Button
-      class="file-panel-edit"
       variant="quiet"
       size="sm"
-      icon="edit"
-      pressed={!rendered}
-      onclick={() => (buffer.editing = !buffer.editing)}>Edit</Button
+      icon="folder"
+      onclick={() => void router.openPanel({ kind: "files", agent: agentName })}>All files</Button
     >
   {/if}
-  <Button variant="quiet" size="sm" icon="restore" onclick={() => (historyOpen = true)}
-    >History</Button
-  >
+  {#if buffer.status === "ready"}
+    {#if renderMode !== null}
+      <Button
+        class="file-panel-edit"
+        variant="quiet"
+        size="sm"
+        icon="edit"
+        pressed={!rendered}
+        onclick={() => (buffer.editing = !buffer.editing)}>Edit</Button
+      >
+    {/if}
+    <Button variant="quiet" size="sm" icon="restore" onclick={() => (historyOpen = true)}
+      >History</Button
+    >
+  {/if}
 {/snippet}
 
 <svelte:window onkeydown={saveOnShortcut} />

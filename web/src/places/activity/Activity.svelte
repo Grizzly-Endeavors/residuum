@@ -18,9 +18,18 @@
   } from "../../lib/session-format";
   import type { FinishedKind } from "../../lib/sessions.svelte";
   import type { OutboundA2aTaskSummary, SessionSummary } from "../../lib/types";
-  import { Badge, Banner, Button, EmptyState, SelectField, Skeleton } from "../../lib/ui";
+  import {
+    Badge,
+    Banner,
+    Button,
+    EmptyState,
+    IconButton,
+    SelectField,
+    Skeleton,
+  } from "../../lib/ui";
   import type { Choice } from "../../lib/ui";
   import { ws } from "../../lib/ws.svelte";
+  import PanelHeader from "../../shell/panel/PanelHeader.svelte";
   import PlaceHeader from "../../shell/PlaceHeader.svelte";
   import { agentPlaceLabel } from "../../shell/rail-model";
   import { notRunningTitle } from "../schedule/schedule-model";
@@ -32,7 +41,7 @@
   // session the owner starts. The agent is the bound one, so the lists are
   // the coordinator's sessions store.
 
-  let { agent }: { agent: string } = $props();
+  let { agent, inPanel = false }: { agent: string; inPanel?: boolean } = $props();
   const label = $derived(hub.shownName(agent));
 
   const uid = $props.id();
@@ -105,7 +114,30 @@
   <span class="row-title">{run.purpose || run.address}</span>
 {/snippet}
 
-<PlaceHeader title={label} {agent} sub={agentPlaceLabel("activity")} />
+{#if inPanel}
+  <PanelHeader icon="activity" kind={label} title={agentPlaceLabel("activity")}>
+    {#snippet actions()}
+      <IconButton
+        icon="expand"
+        label="Maximize Activity"
+        size="sm"
+        onclick={() => void router.openPlace({ kind: "activity", agent })}
+      />
+    {/snippet}
+  </PanelHeader>
+{:else}
+  <PlaceHeader title={label} {agent} sub={agentPlaceLabel("activity")}>
+    <span class="header-end">
+      <IconButton
+        icon="collapse"
+        label="Restore Activity to side panel"
+        size="sm"
+        onclick={() =>
+          void router.openPlace({ kind: "chat", agent }, { panel: { kind: "activity", agent } })}
+      />
+    </span>
+  </PlaceHeader>
+{/if}
 
 <div class="activity-scroll">
   <div class="activity">
@@ -338,6 +370,11 @@
 </div>
 
 <style>
+  .header-end {
+    align-self: center;
+    margin-left: auto;
+  }
+
   .activity-scroll {
     flex: 1;
     min-height: 0;
