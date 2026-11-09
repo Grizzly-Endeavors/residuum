@@ -22,6 +22,8 @@ const MIN_RETRY_BACKOFF: Duration = Duration::from_secs(5);
 const MAX_RETRY_BACKOFF: Duration = Duration::from_secs(60);
 /// How often the background refresh loop checks for agents due a retry.
 const REFRESH_TICK: Duration = Duration::from_secs(5);
+/// How long a single agent-card HTTP fetch may take before timing out.
+const CARD_FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Where a tracked agent entry came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -217,9 +219,7 @@ impl A2aClientHub {
                 }
             }
         }
-        for name in to_refresh {
-            self.refresh_card(&name).await;
-        }
+        self.refresh_cards(to_refresh).await;
     }
 
     /// Register (or update) one externally-sourced agent — e.g. a relay
@@ -249,39 +249,66 @@ impl A2aClientHub {
         self.refresh_card(&name).await;
     }
 
+    /// Replace every `Sibling`-sourced agent with `siblings`, returning the
+    /// names of newly added or changed siblings whose cards need fetching.
+    ///
+    /// Entries missing from `siblings` are removed; unchanged entries keep
+    /// their cached card and backoff state. A name already claimed by a
+    /// `config/a2a.json` entry is skipped: config always wins a name
+    /// collision, logged once here per call.
+    pub(crate) async fn apply_siblings(
+        &self,
+        siblings: Vec<(String, String, HashMap<String, String>)>,
+    ) -> Vec<String> {
+        let mut to_refresh = Vec::new();
+        let names: HashSet<String> = siblings.iter().map(|(name, _, _)| name.clone()).collect();
+        let mut agents = self.agents.write().await;
+        agents.retain(|name, rec| rec.source != AgentSource::Sibling || names.contains(name));
+        for (name, url, headers) in siblings {
+            let shadowed_by_config =
+                matches!(agents.get(&name), Some(rec) if rec.source == AgentSource::Config);
+            if shadowed_by_config {
+                tracing::debug!(
+                    agent = %name,
+                    "relay sibling shadowed by a config/a2a.json entry of the same name"
+                );
+                continue;
+            }
+            let changed = match agents.get(&name) {
+                Some(existing) => existing.url != url || existing.headers != headers,
+                None => true,
+            };
+            if changed {
+                agents.insert(
+                    name.clone(),
+                    fresh_record(
+                        A2aAgentEntry {
+                            name: name.clone(),
+                            url,
+                            headers,
+                        },
+                        AgentSource::Sibling,
+                    ),
+                );
+                to_refresh.push(name);
+            }
+        }
+        to_refresh
+    }
+
+    /// Fetch cards concurrently for every agent name in `names`.
+    pub(crate) async fn refresh_cards(&self, names: Vec<String>) {
+        futures_util::future::join_all(names.iter().map(|name| self.refresh_card(name))).await;
+    }
+
     /// Replace every `Sibling`-sourced agent with exactly this set —
     /// entries missing from `siblings` are removed, present ones are
     /// registered (or refreshed if changed). A name already claimed by a
     /// `config/a2a.json` entry is skipped: config always wins a name
     /// collision, logged once here per call.
     pub async fn set_siblings(&self, siblings: Vec<(String, String, HashMap<String, String>)>) {
-        let accepted: Vec<(String, String, HashMap<String, String>)> = {
-            let agents = self.agents.read().await;
-            siblings
-                .into_iter()
-                .filter(|(name, _, _)| {
-                    let shadowed_by_config =
-                        matches!(agents.get(name), Some(rec) if rec.source == AgentSource::Config);
-                    if shadowed_by_config {
-                        tracing::debug!(
-                            agent = %name,
-                            "relay sibling shadowed by a config/a2a.json entry of the same name"
-                        );
-                    }
-                    !shadowed_by_config
-                })
-                .collect()
-        };
-
-        let names: HashSet<String> = accepted.iter().map(|(name, _, _)| name.clone()).collect();
-        {
-            let mut agents = self.agents.write().await;
-            agents.retain(|name, rec| rec.source != AgentSource::Sibling || names.contains(name));
-        }
-        for (name, url, headers) in accepted {
-            self.register_external(name, url, headers, AgentSource::Sibling)
-                .await;
-        }
+        let to_refresh = self.apply_siblings(siblings).await;
+        self.refresh_cards(to_refresh).await;
     }
 
     /// Drop a registered agent entirely (any source).
@@ -344,9 +371,7 @@ impl A2aClientHub {
                         .map(|(name, _)| name.clone())
                         .collect()
                 };
-                for name in due {
-                    hub.refresh_card(&name).await;
-                }
+                hub.refresh_cards(due).await;
             }
         });
     }
@@ -451,6 +476,7 @@ fn headers_client(
     reqwest::Client::builder()
         .default_headers(map)
         .redirect(redirects)
+        .timeout(CARD_FETCH_TIMEOUT)
         .build()
         .map_err(|e| format!("failed to build http client: {e}"))
 }
