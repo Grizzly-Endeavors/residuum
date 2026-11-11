@@ -1014,8 +1014,8 @@ pub(crate) async fn search_side(
 pub struct HybridSearcher {
     bm25: Arc<MemoryIndex>,
     vector: Option<Arc<VectorStore>>,
-    embedding: Option<Arc<dyn EmbeddingProvider>>,
-    cfg: SearchConfig,
+    embedding: std::sync::RwLock<Option<Arc<dyn EmbeddingProvider>>>,
+    cfg: std::sync::RwLock<SearchConfig>,
     team_wiki: Option<Arc<TeamWikiIndex>>,
 }
 
@@ -1031,8 +1031,8 @@ impl HybridSearcher {
         Self {
             bm25,
             vector,
-            embedding,
-            cfg,
+            embedding: std::sync::RwLock::new(embedding),
+            cfg: std::sync::RwLock::new(cfg),
             team_wiki: None,
         }
     }
@@ -1045,8 +1045,33 @@ impl HybridSearcher {
         self
     }
 
-    fn memory_vector(&self) -> Option<VectorPair<'_>> {
-        self.vector.as_ref().zip(self.embedding.as_ref())
+    /// Replace the embedding provider used for hybrid vector search (for
+    /// example after a `providers.toml` reload swaps, rotates credentials on,
+    /// or removes `[models] embedding`). Passing `None` drops memory search to
+    /// BM25 full-text only.
+    pub fn set_embedding_provider(&self, embedding: Option<Arc<dyn EmbeddingProvider>>) {
+        *self
+            .embedding
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = embedding;
+    }
+
+    /// Replace the hybrid search scoring and threshold configuration (for
+    /// example after a `config.toml` reload).
+    pub fn update_config(&self, cfg: SearchConfig) {
+        *self
+            .cfg
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = cfg;
+    }
+
+    fn memory_vector(&self) -> Option<(Arc<VectorStore>, Arc<dyn EmbeddingProvider>)> {
+        let embedding = self
+            .embedding
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        self.vector.clone().zip(embedding)
     }
 
     /// Search using hybrid BM25 + vector scoring, or BM25-only fallback.
@@ -1071,21 +1096,27 @@ impl HybridSearcher {
         filters: &SearchFilters,
         min_score_override: Option<f64>,
     ) -> anyhow::Result<SearchOutcome> {
+        let cfg = self
+            .cfg
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         #[expect(
             clippy::cast_possible_truncation,
             reason = "min_score is in [0.0, 1.0], safe to truncate to f32"
         )]
-        let min_score = min_score_override.unwrap_or(self.cfg.min_score) as f32;
+        let min_score = min_score_override.unwrap_or(cfg.min_score) as f32;
 
         let mut results = Vec::new();
         let mut below_threshold = 0_usize;
         let mut semantic = false;
 
         if filters.source != Some(DocSource::Wiki) {
+            let memory_vector = self.memory_vector();
             let side = search_side(
                 &self.bm25,
-                self.memory_vector(),
-                &self.cfg,
+                memory_vector.as_ref().map(|(vs, ep)| (vs, ep)),
+                &cfg,
                 query,
                 limit,
                 filters,
@@ -1103,7 +1134,7 @@ impl HybridSearcher {
             && filters.episode_ids.is_none()
         {
             let side = team_wiki
-                .search(query, limit, filters, &self.cfg, min_score)
+                .search(query, limit, filters, &cfg, min_score)
                 .await?;
             results.extend(side.results);
             below_threshold += side.below_threshold;
@@ -2579,5 +2610,90 @@ mod tests {
                 assert_eq!(hits.len(), n, "round {round}: search after write {n}");
             }
         }
+    }
+
+    #[tokio::test]
+    async fn set_embedding_provider_and_update_config_take_effect_live() {
+        use residuum_inference::{EmbeddingResponse, InferenceError};
+
+        struct FailingEmbedder;
+        #[async_trait::async_trait]
+        impl EmbeddingProvider for FailingEmbedder {
+            async fn embed(&self, _texts: &[&str]) -> Result<EmbeddingResponse, InferenceError> {
+                Err(InferenceError::Api(
+                    "stale startup embedding provider called".to_string(),
+                ))
+            }
+            fn model_name(&self) -> &'static str {
+                "stale-embedder"
+            }
+        }
+
+        struct WorkingEmbedder;
+        #[async_trait::async_trait]
+        impl EmbeddingProvider for WorkingEmbedder {
+            async fn embed(&self, texts: &[&str]) -> Result<EmbeddingResponse, InferenceError> {
+                Ok(EmbeddingResponse {
+                    embeddings: texts.iter().map(|_| vec![0.5, 0.5, 0.5, 0.5]).collect(),
+                    dimensions: 4,
+                })
+            }
+            fn model_name(&self) -> &'static str {
+                "working-embedder"
+            }
+        }
+
+        let (dir, index) = create_test_index();
+        let strong = sample_observation("rust ownership rust ownership rust ownership model");
+        let weak = sample_observation("a passing, incidental mention of rust");
+        index
+            .index_observations("ep-001", "2026-02-19", &[strong, weak])
+            .unwrap();
+        let vs = Arc::new(VectorStore::open_or_create(&dir.path().join("vectors.db"), 4).unwrap());
+
+        let searcher = Arc::new(HybridSearcher::new(
+            Arc::new(index),
+            Some(vs),
+            Some(Arc::new(FailingEmbedder)),
+            SearchConfig {
+                min_score: 0.0,
+                ..SearchConfig::default()
+            },
+        ));
+
+        assert!(
+            searcher
+                .search("rust ownership", 5, &no_filters(), None)
+                .await
+                .is_err(),
+            "failing startup embedding provider should error before reload"
+        );
+
+        // Removing the embedding provider on reload drops search to BM25-only
+        // without calling the old startup provider.
+        searcher.set_embedding_provider(None);
+        let bm25_only = searcher
+            .search("rust ownership", 5, &no_filters(), None)
+            .await
+            .unwrap();
+        assert!(!bm25_only.semantic);
+        assert_eq!(bm25_only.results.len(), 2);
+
+        // Swapping in a working embedding provider and updating SearchConfig
+        // both take effect on the existing Arc<HybridSearcher>.
+        searcher.set_embedding_provider(Some(Arc::new(WorkingEmbedder)));
+        searcher.update_config(SearchConfig {
+            min_score: 0.9,
+            text_weight: 1.0,
+            vector_weight: 0.0,
+            ..SearchConfig::default()
+        });
+        let hybrid = searcher
+            .search("rust ownership", 5, &no_filters(), None)
+            .await
+            .unwrap();
+        assert!(hybrid.semantic);
+        assert_eq!(hybrid.results.len(), 1);
+        assert_eq!(hybrid.below_threshold, 1);
     }
 }

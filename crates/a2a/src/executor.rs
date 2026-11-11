@@ -119,7 +119,16 @@ impl SessionExecutor {
             return (None, Some(format!("[Requested skill: {requested}]")));
         }
 
-        let skill_state = self.skill_state.lock().await;
+        let mut skill_state = self.skill_state.lock().await;
+        if skill_state.index().find_by_name(requested).is_none()
+            && let Err(err) = skill_state.rescan().await
+        {
+            tracing::warn!(
+                skill = %requested,
+                error = %err,
+                "failed to rescan skill directories while resolving A2A skill"
+            );
+        }
         if skill_state.index().find_by_name(requested).is_some() {
             (Some(residuum_bus::SkillName::from(requested)), None)
         } else {
@@ -635,14 +644,33 @@ async fn append_raw_part(
         size,
         content_type: content_type.clone(),
     };
-    let is_inline_image =
-        content_type.as_deref().is_some_and(is_supported_image) && size <= MAX_IMAGE_INLINE_SIZE;
-    if is_inline_image {
-        images.push(ImageData {
-            media_type: content_type.unwrap_or_default(),
-            data: base64_encode(bytes),
-        });
-        return;
+    if let Some(ct) = content_type.as_deref()
+        && is_supported_image(ct)
+        && size <= MAX_IMAGE_INLINE_SIZE
+    {
+        match residuum_inference::prepare_inline_image(bytes, ct) {
+            Ok((image, downscaled)) => {
+                if let Some(((orig_w, orig_h), (new_w, new_h))) = downscaled {
+                    tracing::info!(
+                        filename = %info.filename,
+                        original_width = orig_w,
+                        original_height = orig_h,
+                        resized_width = new_w,
+                        resized_height = new_h,
+                        "downscaled oversized a2a inline image"
+                    );
+                }
+                images.push(image);
+                return;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    filename = %info.filename,
+                    error = %e,
+                    "failed to prepare a2a inline image; saving to inbox instead"
+                );
+            }
+        }
     }
     let item = match attachment::reserve_attachment_item(
         agent_inbox_dir,
@@ -748,11 +776,6 @@ fn append_failed_attachment(content: &mut String, info: &AttachmentInfo, reason:
     );
     content.push('\n');
     content.push_str(&attachment::format_failed_attachment_line(info, reason));
-}
-
-fn base64_encode(bytes: &[u8]) -> String {
-    use base64::Engine as _;
-    base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
 #[cfg(test)]

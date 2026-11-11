@@ -201,7 +201,7 @@ impl MessageEvent {
     }
 
     /// The messages this adds to conversation history: its background
-    /// context (if any) as a system message marked as context, then the user
+    /// context (if any) as a user message marked as context, then the user
     /// message itself.
     #[must_use]
     pub fn into_history_messages(self) -> Vec<Message> {
@@ -212,7 +212,7 @@ impl MessageEvent {
         };
         user.attachments = self.attachments;
         self.context
-            .map(|context| Message::system(context).as_context())
+            .map(|context| Message::user(context).as_context())
             .into_iter()
             .chain(std::iter::once(
                 user.with_sender(self.origin.sender)
@@ -1561,7 +1561,7 @@ mod tests {
         let [context, user] = messages.as_slice() else {
             panic!("expected context then user message, got {messages:?}");
         };
-        assert_eq!(context.role, Role::System);
+        assert_eq!(context.role, Role::User);
         assert_eq!(context.content, "[14:05] Sam: build is red");
         assert!(
             context.context,

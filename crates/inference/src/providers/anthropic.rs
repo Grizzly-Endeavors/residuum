@@ -562,12 +562,7 @@ impl AnthropicClient {
             {
                 debug!(error = %error, "the API refused replayed reasoning bound to a different conversation");
             } else {
-                warn!(
-                    status = %status,
-                    response_body = %body,
-                    request_body = %crate::http::without_inline_media(&request_json),
-                    "anthropic API error — full request/response for diagnosis"
-                );
+                crate::http::log_api_error("anthropic", status, &body, &request_json);
             }
             return Err(error.into());
         }

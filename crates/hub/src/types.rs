@@ -75,6 +75,10 @@ pub struct AgentActivity {
     pub busy_since: Option<DateTime<Utc>>,
     /// Main-conversation messages no web client has shown yet.
     pub unread: u32,
+    /// A graceful restart is queued and will run as soon as the current main
+    /// turn finishes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub restart_pending: bool,
 }
 
 /// Hub-level events, published on the hub bus and sent over `/api/hub/ws`
@@ -344,6 +348,7 @@ mod tests {
                 busy: true,
                 busy_since: Some(since),
                 unread: 2,
+                restart_pending: false,
             },
         };
         assert_eq!(
@@ -354,6 +359,26 @@ mod tests {
                 "busy": true,
                 "busy_since": "2026-09-30T12:00:00Z",
                 "unread": 2,
+            })
+        );
+        let pending = HubEvent::AgentActivity {
+            name: "scout".to_string(),
+            activity: AgentActivity {
+                busy: true,
+                busy_since: Some(since),
+                unread: 0,
+                restart_pending: true,
+            },
+        };
+        assert_eq!(
+            serde_json::to_value(pending).unwrap(),
+            json!({
+                "type": "agent_activity",
+                "name": "scout",
+                "busy": true,
+                "busy_since": "2026-09-30T12:00:00Z",
+                "unread": 0,
+                "restart_pending": true,
             })
         );
         let idle = HubEvent::AgentActivity {

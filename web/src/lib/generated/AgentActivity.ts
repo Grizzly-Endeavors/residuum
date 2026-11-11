@@ -15,4 +15,9 @@ busy_since: string | null,
 /**
  * Main-conversation messages no web client has shown yet.
  */
-unread: number, };
+unread: number, 
+/**
+ * A graceful restart is queued and will run as soon as the current main
+ * turn finishes.
+ */
+restart_pending?: boolean, };

@@ -1364,8 +1364,11 @@ export async function stopAgent(name: string): Promise<AgentSummary> {
   return agentLifecycle(name, "stop");
 }
 
-export async function restartAgent(name: string): Promise<AgentSummary> {
-  return agentLifecycle(name, "restart");
+export async function restartAgent(name: string, force = false): Promise<AgentSummary> {
+  if (!force) return agentLifecycle(name, "restart");
+  return apiFetch<AgentSummary>(hubPath(`/agents/${encodeURIComponent(name)}/restart?force=true`), {
+    method: "POST",
+  });
 }
 
 /** Make an agent's A2A card public or private. */

@@ -974,4 +974,78 @@ describe("FeedStore catching up on a turn whose frames are still arriving", () =
 
     expect(shown(store, "A later turn.")).toBe(1);
   });
+
+  it("does not duplicate or drop a live file-attachment when reconcileRecent runs", () => {
+    const store = storeWithSettledHistory();
+    store.pushUserMessage("Send the chart", undefined, "web-1");
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "web-1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
+    store.handleMessage({
+      type: "tool_call",
+      reply_to: "web-1",
+      call: 0,
+      id: "call-1",
+      name: "send_message",
+      arguments: { endpoint: "ws", file_path: "/tmp/chart.png", message: "Q3 chart" },
+      server: null,
+    });
+    store.handleMessage({
+      type: "file_attachment",
+      reply_to: "",
+      filename: "chart.png",
+      mime_type: "image/png",
+      size: 1024,
+      url: "/api/agents/vex/files/token-1",
+      caption: "Q3 chart",
+    });
+    store.handleMessage({
+      type: "tool_result",
+      reply_to: "web-1",
+      tool_call_id: "call-1",
+      name: "send_message",
+      output: "Message and file 'chart.png' published to endpoint 'ws'",
+      is_error: false,
+    });
+    store.handleMessage({ type: "turn_ended", reply_to: "web-1" });
+
+    const withAttachment = segment([
+      historyMsg("user", "unrelated"),
+      historyMsg("assistant", "ack"),
+      historyMsg("user", "Send the chart", { turnId: "web-1" }),
+      {
+        ...historyMsg("assistant", "", { turnId: "web-1" }),
+        tool_calls: [
+          {
+            id: "call-1",
+            name: "send_message",
+            arguments: { endpoint: "ws", file_path: "/tmp/chart.png", message: "Q3 chart" },
+          },
+        ],
+      },
+      {
+        ...historyMsg("tool", "Message and file 'chart.png' published to endpoint 'ws'", {
+          turnId: "web-1",
+        }),
+        tool_call_id: "call-1",
+        sent_attachment: {
+          filename: "chart.png",
+          mime_type: "image/png",
+          size: 1024,
+          url: "/api/agents/vex/files/token-1",
+          caption: "Q3 chart",
+        },
+      },
+    ]);
+
+    expect(store.reconcileRecent(withAttachment)).toBe(true);
+    const attachments = store.feed.filter((item) => item.kind === "file-attachment");
+    expect(attachments).toHaveLength(1);
+    expect(attachments[0]).toMatchObject({
+      filename: "chart.png",
+      caption: "Q3 chart",
+    });
+  });
 });

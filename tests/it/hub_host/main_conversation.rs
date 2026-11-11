@@ -484,12 +484,19 @@ async fn next_refusal(ws: &mut AgentSocket) -> Value {
     }
 }
 
-/// The user messages a model request carried.
+/// The user messages a model request carried (excluding mid-turn `System: `
+/// notes converted to the `"user"` wire role).
 fn user_messages_sent(request: &wiremock::Request) -> Vec<Value> {
     let body: Value = serde_json::from_slice(&request.body).unwrap();
     array_at(&body, "messages")
         .iter()
-        .filter(|message| message.get("role") == Some(&json!("user")))
+        .filter(|message| {
+            message.get("role") == Some(&json!("user"))
+                && !message
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .is_some_and(|c| c.starts_with("System: "))
+        })
         .cloned()
         .collect()
 }

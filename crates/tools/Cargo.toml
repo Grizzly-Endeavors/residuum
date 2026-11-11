@@ -28,7 +28,6 @@ residuum-a2a = { workspace = true }
 a2a = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
-base64 = { workspace = true }
 chrono = { workspace = true }
 chrono-tz = { workspace = true }
 dom_smoothie = { workspace = true }
@@ -55,7 +54,9 @@ residuum-a2a = { workspace = true, features = ["test-support"] }
 residuum-proactivity = { workspace = true, features = ["test-support"] }
 a2a-server = { workspace = true }
 axum = { workspace = true }
+base64 = { workspace = true }
 futures-util = { workspace = true }
+image = { workspace = true }
 tempfile = { workspace = true }
 ctor = { workspace = true }
 rustls = { workspace = true }

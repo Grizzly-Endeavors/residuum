@@ -1,4 +1,4 @@
-<script lang="ts" generics="T extends { name: string }">
+<script lang="ts" generics="T extends { id?: string; name: string }">
   import type { Snippet } from "svelte";
 
   // The rows of a saved list in Saved keys and Agent-to-agent: each is a
@@ -21,7 +21,7 @@
 </script>
 
 <ul class="key-list" aria-label={label}>
-  {#each items as item (item.name)}
+  {#each items as item (item.id ?? item.name)}
     {@const line = note?.(item) ?? ""}
     <li class="key-row">
       <div class="key-text">

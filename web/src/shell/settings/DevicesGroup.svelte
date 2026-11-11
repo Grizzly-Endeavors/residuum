@@ -191,7 +191,7 @@
     {:else}
       <KeyList
         label="Paired browsers"
-        items={listing.devices.map((device) => ({ ...device, name: device.name }))}
+        items={listing.devices}
         mark={deviceMark}
         note={(device) =>
           `Paired ${relativeTime(device.created_at)}, last used ${relativeTime(device.last_seen)}`}

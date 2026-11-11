@@ -175,6 +175,7 @@ impl FakeDirectory {
                         busy: i % 2 == 0,
                         busy_since: None,
                         unread: i,
+                        restart_pending: false,
                     },
                 })
                 .unwrap();
@@ -781,6 +782,7 @@ async fn agent_list_carries_every_agents_activity_and_the_stopping_set() {
                 busy: true,
                 busy_since: Some(since),
                 unread: 1,
+                restart_pending: false,
             },
         ),
         ("quiet".to_string(), AgentActivity::default()),
@@ -2514,6 +2516,7 @@ async fn the_hub_socket_opens_with_a_snapshot_then_forwards_events() {
                 busy: true,
                 busy_since: Some(Utc::now()),
                 unread: 3,
+                restart_pending: false,
             },
         },
         HubEvent::AgentDeleted {
@@ -2638,6 +2641,7 @@ async fn the_snapshot_carries_every_agents_activity_and_the_stopping_set() {
                 busy: true,
                 busy_since: Some(since),
                 unread: 2,
+                restart_pending: false,
             },
         ),
         ("quiet".to_string(), AgentActivity::default()),

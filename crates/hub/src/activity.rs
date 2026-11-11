@@ -25,6 +25,9 @@ struct ActivityState {
     /// When the current main turn began, while one is running.
     busy_since: Option<DateTime<Utc>>,
     unread: u32,
+    /// A graceful restart was requested while `busy_since` was set, and is
+    /// waiting for the current main turn to end.
+    restart_pending: bool,
     /// Web clients currently connected to the agent's `/ws`.
     clients: usize,
     /// Whether a client was connected when the running turn's latest
@@ -40,6 +43,9 @@ pub struct ActivityTracker {
     name: String,
     state: Mutex<ActivityState>,
     events: broadcast::Sender<HubEvent>,
+    /// Tracks `(busy, restart_pending)` so a deferred restart task can wait
+    /// without polling or missing a state transition.
+    turn_state_tx: tokio::sync::watch::Sender<(bool, bool)>,
     /// Where the turn hook reports each main turn's end.
     changes: Arc<AgentChangeFeed>,
 }
@@ -53,10 +59,12 @@ impl ActivityTracker {
         events: broadcast::Sender<HubEvent>,
         changes: Arc<AgentChangeFeed>,
     ) -> Arc<Self> {
+        let (turn_state_tx, _) = tokio::sync::watch::channel((false, false));
         Arc::new(Self {
             name: name.into(),
             state: Mutex::new(ActivityState::default()),
             events,
+            turn_state_tx,
             changes,
         })
     }
@@ -82,6 +90,7 @@ impl ActivityTracker {
             busy: state.busy_since.is_some(),
             busy_since: state.busy_since,
             unread: state.unread,
+            restart_pending: state.restart_pending,
         }
     }
 
@@ -91,7 +100,10 @@ impl ActivityTracker {
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
             let before = Self::activity_of(&state);
             change(&mut state);
-            (before, Self::activity_of(&state))
+            let after = Self::activity_of(&state);
+            self.turn_state_tx
+                .send_replace((after.busy, after.restart_pending));
+            (before, after)
         };
         if before != after {
             // No subscribers is the normal state until a client opens the
@@ -103,6 +115,42 @@ impl ActivityTracker {
                 })
                 .ok();
         }
+    }
+
+    /// If a main turn is currently running (or a deferred restart is already
+    /// pending), mark `restart_pending = true` and return `(true, newly_scheduled)`.
+    /// If no main turn is running and none is pending, return `(false, false)`.
+    pub(crate) fn defer_restart_if_busy(&self) -> (bool, bool) {
+        let mut deferred = false;
+        let mut newly_scheduled = false;
+        self.update(|state| {
+            if state.restart_pending {
+                deferred = true;
+            } else if state.busy_since.is_some() {
+                state.restart_pending = true;
+                deferred = true;
+                newly_scheduled = true;
+            }
+        });
+        (deferred, newly_scheduled)
+    }
+
+    /// Clear `restart_pending` and return whether it was set.
+    pub(crate) fn take_restart_pending(&self) -> bool {
+        let mut was_pending = false;
+        self.update(|state| {
+            was_pending = std::mem::take(&mut state.restart_pending);
+        });
+        was_pending
+    }
+
+    /// Wait until no main turn is running (`!busy`) or the pending restart
+    /// has been cancelled (`!restart_pending`).
+    pub(crate) async fn wait_until_turn_ends_or_cancelled(&self) {
+        let mut rx = self.turn_state_tx.subscribe();
+        rx.wait_for(|&(busy, restart_pending)| !busy || !restart_pending)
+            .await
+            .ok();
     }
 
     /// Mark a main turn as running until the returned guard drops.
@@ -191,6 +239,7 @@ impl ActivityTracker {
     pub fn run_ended(&self) {
         self.update(|state| {
             state.busy_since = None;
+            state.restart_pending = false;
             state.clients = 0;
             state.last_reply_seen = false;
             state.run += 1;
@@ -275,7 +324,8 @@ mod tests {
             AgentActivity {
                 busy: false,
                 busy_since: None,
-                unread: 0
+                unread: 0,
+                restart_pending: false,
             }
         );
         assert_eq!(
@@ -284,15 +334,40 @@ mod tests {
                 AgentActivity {
                     busy: true,
                     busy_since: Some(since),
-                    unread: 0
+                    unread: 0,
+                    restart_pending: false,
                 },
                 AgentActivity {
                     busy: false,
                     busy_since: None,
-                    unread: 0
+                    unread: 0,
+                    restart_pending: false,
                 },
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn defer_restart_if_busy_coalesces_duplicates_and_notifies_on_turn_end() {
+        let (tracker, mut rx) = tracker();
+        assert_eq!(tracker.defer_restart_if_busy(), (false, false));
+        assert!(!tracker.snapshot().restart_pending);
+
+        let guard = tracker.main_turn();
+        assert_eq!(tracker.defer_restart_if_busy(), (true, true));
+        assert!(tracker.snapshot().restart_pending);
+        // A second request while already pending coalesces into the first.
+        assert_eq!(tracker.defer_restart_if_busy(), (true, false));
+        let events = drain(&mut rx);
+        let flags: Vec<(bool, bool)> = events.iter().map(|e| (e.busy, e.restart_pending)).collect();
+        assert_eq!(flags, [(true, false), (true, true)]);
+
+        drop(guard);
+        tracker.wait_until_turn_ends_or_cancelled().await;
+        assert!(!tracker.snapshot().busy);
+        assert!(tracker.snapshot().restart_pending);
+        assert!(tracker.take_restart_pending());
+        assert!(!tracker.snapshot().restart_pending);
     }
 
     #[test]

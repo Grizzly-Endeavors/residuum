@@ -20,7 +20,12 @@ busy_since: string | null,
 /**
  * Main-conversation messages no web client has shown yet.
  */
-unread: number, } | { "type": "notice", level: NoticeLevel, message: string, agent?: string, 
+unread: number, 
+/**
+ * A graceful restart is queued and will run as soon as the current main
+ * turn finishes.
+ */
+restart_pending?: boolean, } | { "type": "notice", level: NoticeLevel, message: string, agent?: string, 
 /**
  * What the notice reports, when the web words it itself; `message`
  * is then the detail behind that wording.
