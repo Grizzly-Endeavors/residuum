@@ -508,6 +508,7 @@
   }
 
   .mail-rows {
+    position: relative;
     flex: 1;
     min-height: 0;
     padding: var(--space-2) var(--space-8) var(--space-24);
@@ -545,6 +546,7 @@
   }
 
   .mail-pane {
+    position: relative;
     flex: 1;
     min-width: var(--layout-mail-thread-min-width);
     min-height: 0;
