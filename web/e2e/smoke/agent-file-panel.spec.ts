@@ -84,3 +84,37 @@ test("a stopped agent's text file loads as written and saves", async ({ page, is
   );
   expect(await saved.text()).toMatch(/more$/);
 });
+
+test("a tall rendered Markdown file scrolls inside the panel without growing the document", async ({
+  page,
+  isMobile,
+  mock,
+}) => {
+  const longMarkdown =
+    "# Long spec\n\n" +
+    Array.from({ length: 120 }, (_, i) => `Paragraph ${i + 1} with \`code\` and text.`).join(
+      "\n\n",
+    ) +
+    "\n";
+  await mock.post("/api/mock/agent-file", {
+    params: { agent: "scout" },
+    data: { path: "notes/long.md", content: longMarkdown },
+  });
+
+  await page.goto("/agent/scout?panel=file:notes/long.md");
+  const panel = filePanel(page, isMobile, "long.md");
+  await expect(panel.getByRole("heading", { name: "Long spec", exact: true })).toBeVisible();
+
+  const metrics = await page.evaluate(() => {
+    const scroller = document.querySelector<HTMLElement>(".file-panel-rendered");
+    return {
+      docScrollHeight: document.documentElement.scrollHeight,
+      viewportHeight: window.innerHeight,
+      panelScrollHeight: scroller?.scrollHeight ?? 0,
+      panelClientHeight: scroller?.clientHeight ?? 0,
+    };
+  });
+
+  expect(metrics.panelScrollHeight).toBeGreaterThan(metrics.panelClientHeight);
+  expect(metrics.docScrollHeight).toBeLessThanOrEqual(metrics.viewportHeight);
+});

@@ -135,8 +135,11 @@
 </div>
 
 <style>
-  /* The color comes from where the text sits: a feed's, or a quieter one. */
+  /* The color comes from where the text sits: a feed's, or a quieter one.
+     Positioned, so the visually hidden copy status stays anchored inside `.prose`
+     instead of escaping scroll containers and making the whole page scroll. */
   .prose {
+    position: relative;
     min-width: 0;
     font-size: var(--font-size-message);
     --leading: var(--line-height-message);
