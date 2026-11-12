@@ -16,7 +16,7 @@ use crate::fork_failure::{owner_start_failure_message, pulse_start_failure_messa
 use crate::messaging::ConversationSpawn;
 use crate::registry::{DeliverOutcome, SessionRegistry};
 use crate::runtime::SessionSpawnRequest;
-use crate::spawn_context::{SpawnContext, build_spawn_resources};
+use crate::spawn_context::{ActionSpawnOutcome, SpawnContext, build_spawn_resources};
 use crate::store::SessionStore;
 use crate::types::SubAgentConfig;
 use residuum_bus::MessageEvent;
@@ -114,6 +114,22 @@ async fn listener_loop(ctx: SpawnContextWatch, mut subscriber: Subscriber<SpawnR
                 let outcome = handle_spawn_request(&ctx, event).await;
                 if let (Err(e), Some(address)) = (&outcome, pulse_address) {
                     publish_pulse_start_failed(&ctx.publisher, address, &source_label, e).await;
+                }
+                // A scheduled action's store kept the action alive across
+                // this fork attempt (see `spawn_due_actions`): report how the
+                // fork turned out, so a started action is dropped and a
+                // failed one is restored to retry on the next tick. Reported
+                // before the failure notice, so the store holds the action
+                // even if the notice publish itself fails.
+                if matches!(trigger, EventTrigger::Action)
+                    && let Some(report) = &ctx.action_outcome
+                {
+                    let verdict = if outcome.is_ok() {
+                        ActionSpawnOutcome::Started
+                    } else {
+                        ActionSpawnOutcome::Failed
+                    };
+                    report(&source_label, verdict).await;
                 }
                 match outcome {
                     Ok(SpawnOutcome::Accepted) => {
@@ -1623,6 +1639,14 @@ mod tests {
     /// A spawn context on `bus` whose every tier falls back to one Anthropic
     /// model with no API key, so every fork fails building its provider chain.
     async fn spawn_context_without_a_working_provider(bus: &BusHandle) -> Arc<SpawnContext> {
+        spawn_context_without_a_working_provider_and(bus, None).await
+    }
+
+    /// The same context, with a scheduled-action fork-outcome sink wired in.
+    async fn spawn_context_without_a_working_provider_and(
+        bus: &BusHandle,
+        action_outcome: Option<crate::spawn_context::ActionOutcomeSink>,
+    ) -> Arc<SpawnContext> {
         let (session_runtime, _results, _runtime_bus) =
             crate::testing::test_runtime_held_idle().await;
         let (layout, observer, merge_writer) = crate::testing::test_memory_extras();
@@ -1683,7 +1707,65 @@ mod tests {
             messenger,
             bg_tier_active_index: crate::spawn_context::BackgroundTierActiveIndex::default(),
             room_roster: None,
+            action_outcome,
         })
+    }
+
+    #[tokio::test]
+    async fn an_action_whose_fork_fails_reports_the_outcome_and_notices_the_owner() {
+        let bus = residuum_bus::spawn_broker();
+        let calls: Arc<tokio::sync::Mutex<Vec<(String, ActionSpawnOutcome)>>> = Arc::default();
+        let sink: crate::spawn_context::ActionOutcomeSink = {
+            let calls = Arc::clone(&calls);
+            Arc::new(move |label, outcome| {
+                let calls = Arc::clone(&calls);
+                let label = label.to_string();
+                Box::pin(async move {
+                    calls.lock().await.push((label, outcome));
+                })
+            })
+        };
+        let ctx = spawn_context_without_a_working_provider_and(&bus, Some(sink)).await;
+        let mut notices: Subscriber<NoticeEvent> = bus
+            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+        let _listener = spawn_listener(Arc::clone(&ctx), &bus).await.unwrap();
+
+        // A due action asking for its session. The fork fails — the context
+        // has no working provider — which must reach the sink as `Failed` so
+        // the store restores the action, and the owner as a notice.
+        bus.publisher()
+            .publish(
+                topics::Background,
+                SpawnRequestEvent {
+                    address: SessionAddress::from("scheduled-demo-0a1b"),
+                    source_label: "action:morning digest".to_string(),
+                    source: EventTrigger::Action,
+                    fire_id: None,
+                    ..owner_start()
+                },
+            )
+            .await
+            .unwrap();
+
+        let notice = next_event("the action's fork-failure notice", &mut notices).await;
+        assert!(
+            notice
+                .message
+                .contains("scheduled action \"morning digest\" couldn't start")
+                && notice.message.contains("provider chain for model medium"),
+            "the owner learns the action name and why, in plain words: {}",
+            notice.message
+        );
+        assert_eq!(
+            calls.lock().await.as_slice(),
+            [(
+                "action:morning digest".to_string(),
+                ActionSpawnOutcome::Failed
+            )],
+            "the store hears the fork failed, so the action is restored to retry"
+        );
     }
 
     fn owner_start() -> SpawnRequestEvent {
@@ -2226,6 +2308,7 @@ mod tests {
             messenger: Arc::clone(&initial_ctx.messenger),
             room_roster: initial_ctx.room_roster.clone(),
             bg_tier_active_index: crate::spawn_context::BackgroundTierActiveIndex::default(),
+            action_outcome: None,
         });
         ctx_tx.send_replace(reloaded_ctx);
 

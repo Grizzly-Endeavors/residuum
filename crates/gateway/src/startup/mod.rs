@@ -445,6 +445,7 @@ fn build_startup_spawn_context(inputs: StartupSpawnContextInputs<'_>) -> Arc<Spa
         messenger: Arc::clone(inputs.messenger),
         bg_tier_active_index: residuum_background::BackgroundTierActiveIndex::default(),
         room_roster: Some(Arc::new(inputs.rooms.agent_view(&inputs.cfg.agent_name))),
+        action_outcome: Some(crate::actions::action_outcome_sink(inputs.action_store)),
     })
 }
 

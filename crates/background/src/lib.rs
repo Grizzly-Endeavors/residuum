@@ -36,7 +36,9 @@ pub use runtime::{
     SessionRuntime, SessionRuntimeHandles, SessionSpawnRequest, TranscriptOnlyRunRequest,
 };
 pub use session_memory::SessionMemoryEnv;
-pub use spawn_context::{BackgroundTierActiveIndex, SpawnContext};
+pub use spawn_context::{
+    ActionOutcomeSink, ActionSpawnOutcome, BackgroundTierActiveIndex, SpawnContext,
+};
 pub use store::SessionStore;
 pub use subagent::{SubAgentResources, build_subagent_resources};
 pub use types::{SubAgentBuildConfig, SubAgentConfig};

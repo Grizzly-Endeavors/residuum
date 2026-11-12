@@ -742,6 +742,7 @@ fn build_spawn_context(
         messenger: Arc::clone(&rt.agent_messenger),
         bg_tier_active_index: residuum_background::BackgroundTierActiveIndex::default(),
         room_roster: Some(Arc::new(rt.services.rooms.agent_view(&new_cfg.agent_name))),
+        action_outcome: Some(crate::actions::action_outcome_sink(&rt.action_store)),
     })
 }
 
