@@ -96,9 +96,15 @@ impl Tool for ScheduleActionTool {
             ));
         }
 
+        // Normalized, not rejected: an empty or whitespace agent_name is a
+        // client bug whose intent was a plain session ("omit agent_name"),
+        // and an empty string here used to reach the fork and die there as
+        // `skill '' not found` — after the action had already been consumed.
         let agent_name = arguments
             .get("agent_name")
             .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
             .map(String::from);
 
         if agent_name
@@ -482,6 +488,44 @@ mod tests {
             }))
             .await;
         assert!(result.is_err(), "agent_name: MAIN should also be rejected");
+    }
+
+    #[tokio::test]
+    async fn an_empty_agent_name_schedules_a_plain_session() {
+        // The quill cutover bug: a client passed `agent_name: ""` — a plain
+        // session's intent — which used to reach the fork and die there as
+        // `skill '' not found`, after the action was already consumed.
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Mutex::new(ActionStore::new_empty(
+            dir.path().join("test-empty-agent.json"),
+        )));
+        let notify = Arc::new(Notify::new());
+        let tool = ScheduleActionTool::new(
+            Arc::clone(&store),
+            notify,
+            chrono_tz::UTC,
+            residuum_config::ModelCatalog::default().into_shared(),
+        );
+        for agent_name in ["", "   "] {
+            let result = tool
+                .execute(serde_json::json!({
+                    "name": "plain session",
+                    "prompt": "do the thing",
+                    "run_at": "2099-01-01T00:00:00Z",
+                    "agent_name": agent_name
+                }))
+                .await;
+            assert!(
+                !result.unwrap().is_error,
+                "an empty agent_name normalizes to a plain session, not an error"
+            );
+        }
+        let stored = store.lock().await.list().to_vec();
+        assert_eq!(stored.len(), 2);
+        assert!(
+            stored.iter().all(|a| a.agent.is_none()),
+            "empty and whitespace agent_names are None, never Some(\"\")"
+        );
     }
 
     async fn schedule_with_model(

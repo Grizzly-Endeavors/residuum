@@ -1,6 +1,8 @@
 //! Spawn context: parameters needed to construct providers and `SubAgentResources`
 //! for a new session run (pulse, action, webhook, or on-demand spawn).
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 
@@ -109,7 +111,31 @@ pub struct SpawnContext {
     /// Shared failover-transition counters for the background model tiers —
     /// see [`BackgroundTierActiveIndex`].
     pub bg_tier_active_index: BackgroundTierActiveIndex,
+    /// Told how a scheduled action's fork turned out, so the action's store
+    /// can keep it alive across the fork: dropped once it started, restored
+    /// for a retry when the fork failed. `None` where there is no scheduled
+    /// action store (tests, other embedders). See [`ActionOutcomeSink`].
+    pub action_outcome: Option<ActionOutcomeSink>,
 }
+
+/// How a scheduled action's fork attempt turned out, as the spawn listener
+/// reports it back to the action's store.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActionSpawnOutcome {
+    /// The fork started, or was deliberately stopped before it could: the
+    /// action ran its course and can be dropped.
+    Started,
+    /// The fork failed: the action must survive, restored to the pending set
+    /// so the next tick retries it.
+    Failed,
+}
+
+/// Reports a scheduled action's fork outcome. `source_label` is the spawn
+/// request's `action:<name>` label. Returns a boxed future because the store
+/// side persists the outcome; the listener awaits it so a store save isn't
+/// racing the next tick.
+pub type ActionOutcomeSink =
+    Arc<dyn Fn(&str, ActionSpawnOutcome) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
 /// Identity and origin of the session [`build_spawn_resources`] is forking,
 /// grouped into one struct to keep that function's argument count down.
