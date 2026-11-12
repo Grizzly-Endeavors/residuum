@@ -373,7 +373,7 @@ async fn api_scheduled_actions(State(state): State<ScheduledApiState>) -> Respon
     };
     let mut infos = Vec::with_capacity(actions.len());
     for (action, problem) in actions {
-        let source_label = format!("action:{}", action.name);
+        let source_label = format!("action:{}#{}", action.name, action.id);
         infos.push(ActionInfo {
             id: action.id,
             name: action.name,
