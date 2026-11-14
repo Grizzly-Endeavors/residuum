@@ -20,7 +20,7 @@ use residuum_background::registry::SessionRegistry;
 use residuum_bus::origin::{ConversationContext, ConversationKind, MessageOrigin, ROOM_ENDPOINT};
 use residuum_bus::{
     AgentResultStatus, BusHandle, MessageEvent, Publisher, SessionAddress, SessionEvent,
-    SessionEventKind, Subscriber, UserInboxAddedEvent, topics,
+    SessionEventKind, SessionStartFailedEvent, Subscriber, UserInboxAddedEvent, topics,
 };
 use residuum_config::ModelSelector;
 use residuum_inference::{
@@ -196,6 +196,11 @@ impl LocalRoomParticipant for GatewayRoomParticipant {
                 .subscribe(topics::Sessions)
                 .await
                 .map_err(|e| format!("failed to subscribe to session events: {e}"))?;
+        let mut start_failed_sub: Subscriber<SessionStartFailedEvent> = self
+            .bus_handle
+            .subscribe(topics::Sessions)
+            .await
+            .map_err(|e| format!("failed to subscribe to session start-failure events: {e}"))?;
 
         let (att_note, images) = self
             .prepare_attachments(&req.room_id, &req.attachments)
@@ -237,20 +242,34 @@ impl LocalRoomParticipant for GatewayRoomParticipant {
 
         let mut tracker =
             TurnTracker::new(matches!(outcome, ConversationDeliveryOutcome::Queued(_)));
-        while let Ok(Some(ev)) = sub.recv().await {
-            if ev.address != address {
-                continue;
-            }
-            if let Some(res) = tracker.on_event(ev.kind, &req.tool_status_tx) {
-                return res;
+        loop {
+            tokio::select! {
+                ev = sub.recv() => {
+                    let Ok(Some(ev)) = ev else {
+                        return Err("session event stream closed before turn finished".to_owned());
+                    };
+                    if ev.address != address {
+                        continue;
+                    }
+                    if let Some(res) = tracker.on_event(ev.kind, &req.tool_status_tx) {
+                        return res;
+                    }
+                }
+                failed = start_failed_sub.recv() => {
+                    if let Ok(Some(failed)) = failed
+                        && failed.address == address
+                    {
+                        req.tool_status_tx.send(None).ok();
+                        return Err(failed.error);
+                    }
+                }
             }
         }
-        Err("session event stream closed before turn finished".to_owned())
     }
 
     async fn cancel_room_turn(&self, room_id: &str) -> Result<(), String> {
         let address = room_session_address(room_id);
-        self.session_registry.stop_if_running(&address);
+        self.session_registry.stop(&address);
         Ok(())
     }
 
@@ -471,6 +490,12 @@ mod tests {
     }
 
     async fn build_room_harness(model_url: &str) -> RoomTestHarness {
+        build_room_harness_with_specs(vec![mock_provider_spec(model_url)]).await
+    }
+
+    async fn build_room_harness_with_specs(
+        main_provider_specs: Vec<residuum_config::ProviderSpec>,
+    ) -> RoomTestHarness {
         let (dir, layout) = init_test_layout().await;
 
         let bus = residuum_bus::spawn_broker();
@@ -533,7 +558,7 @@ mod tests {
         .await;
 
         let spawn_context = build_test_spawn_context(
-            model_url,
+            main_provider_specs,
             &layout,
             tool_factory,
             session_runtime,
@@ -565,7 +590,7 @@ mod tests {
 
     #[expect(clippy::too_many_arguments, reason = "test harness helper")]
     fn build_test_spawn_context(
-        model_url: &str,
+        main_provider_specs: Vec<residuum_config::ProviderSpec>,
         layout: &WorkspaceLayout,
         tool_factory: Arc<residuum_tools::SessionTools>,
         session_runtime: Arc<SessionRuntime>,
@@ -576,7 +601,7 @@ mod tests {
     ) -> Arc<SpawnContext> {
         Arc::new(SpawnContext {
             background_config: BackgroundConfig::default(),
-            main_provider_specs: vec![mock_provider_spec(model_url)],
+            main_provider_specs,
             model_catalog: Arc::new(tokio::sync::RwLock::new(ModelCatalog::default())),
             http_client: SharedHttpClient::new(&HttpClientConfig::default()).expect("http client"),
             max_tokens: 1024,
@@ -755,6 +780,32 @@ mod tests {
         );
         reached_gate.open_all();
         srv.abort();
+        h.listener_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn room_turn_returns_error_promptly_when_fork_fails() {
+        // Empty main_provider_specs causes spawn_listener's fork_and_spawn to fail
+        // building the provider chain. run_room_turn must observe SessionStartFailedEvent
+        // and return Err instead of hanging on SessionEvent.
+        let h = build_room_harness_with_specs(Vec::new()).await;
+        let (tool_tx, _tool_rx) = mpsc::unbounded_channel();
+        let res = wait::guarded(
+            "run_room_turn returns fork failure",
+            h.participant.run_room_turn(LocalRoomTurnRequest {
+                room_id: "room_01jcv8k9m2p4q7".to_owned(),
+                room_name: "Broken Provider".to_owned(),
+                room_topic: None,
+                prompt: "[Owner]: Hello?".to_owned(),
+                attachments: Vec::new(),
+                tool_status_tx: tool_tx,
+            }),
+        )
+        .await;
+        assert!(
+            res.is_err(),
+            "run_room_turn must return Err when session fork fails: {res:?}"
+        );
         h.listener_handle.abort();
     }
 }
