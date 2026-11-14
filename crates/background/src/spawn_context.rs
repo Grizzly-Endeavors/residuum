@@ -186,6 +186,12 @@ fn resolve_model_chain(
     model: &ModelSelector,
 ) -> Result<SessionModelChain, anyhow::Error> {
     match model {
+        ModelSelector::Main => Ok(SessionModelChain {
+            specs: main.to_vec(),
+            label: "background sessions (main)".to_string(),
+            active_index: Arc::new(AtomicUsize::new(0)),
+            overrides_key: Some("main"),
+        }),
         ModelSelector::Tier(tier) => Ok(SessionModelChain {
             specs: tiers.resolve_tier(tier, main),
             label: format!("background sessions ({tier} tier)"),
@@ -435,6 +441,29 @@ mod tests {
         };
         assert_eq!(only.model.model, "gpt-4o");
         assert_eq!(chain.overrides_key, None);
+    }
+
+    #[test]
+    fn main_selector_runs_main_provider_chain_with_main_overrides() {
+        let tiers = residuum_config::BackgroundModelsConfig {
+            small: Some(vec![spec("anthropic", "claude-haiku-4-5")]),
+            medium: Some(vec![spec("openai", "gpt-4o-mini")]),
+            large: Some(vec![spec("openai", "gpt-4o")]),
+        };
+        let main_chain = vec![
+            spec("anthropic", "claude-sonnet-4-6"),
+            spec("openai", "gpt-4o"),
+        ];
+        let chain = resolve_model_chain(
+            &tiers,
+            &main_chain,
+            &BackgroundTierActiveIndex::default(),
+            &ModelCatalog::default(),
+            &ModelSelector::MAIN,
+        )
+        .unwrap();
+        assert_eq!(chain.specs, main_chain);
+        assert_eq!(chain.overrides_key, Some("main"));
     }
 
     #[test]

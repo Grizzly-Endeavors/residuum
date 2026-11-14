@@ -183,15 +183,15 @@ impl ModelCatalog {
         std::sync::Arc::new(tokio::sync::RwLock::new(self))
     }
 
-    /// Check that `selector` can run: a tier always can, an explicit model
-    /// only when [`Self::resolve`] resolves it.
+    /// Check that `selector` can run: `main` or a tier always can, an explicit
+    /// model only when [`Self::resolve`] resolves it.
     ///
     /// # Errors
     /// Returns a plain-language message naming the model and why it doesn't
     /// resolve.
     pub fn check(&self, selector: &ModelSelector) -> Result<(), String> {
         match selector {
-            ModelSelector::Tier(_) => Ok(()),
+            ModelSelector::Main | ModelSelector::Tier(_) => Ok(()),
             ModelSelector::Explicit(id) => self
                 .resolve(id)
                 .map(drop)
@@ -328,5 +328,11 @@ mod tests {
         let shown = format!("{:?}", catalog(&[("local", "ollama")]));
         assert!(shown.contains("local"), "{shown}");
         assert!(!shown.contains("sk-literal"), "{shown}");
+    }
+
+    #[test]
+    fn check_allows_main_selector() {
+        let cat = catalog(&[]);
+        assert!(cat.check(&ModelSelector::MAIN).is_ok());
     }
 }

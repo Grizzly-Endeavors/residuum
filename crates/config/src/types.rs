@@ -823,16 +823,19 @@ impl std::str::FromStr for BackgroundModelTier {
     }
 }
 
-/// Which model a background session runs on: one of the `[background.models]`
-/// tiers, or one explicit `provider/model` id.
+/// Which model a background session runs on: the agent's primary `main`
+/// persona chain, one of the `[background.models]` tiers, or one explicit
+/// `provider/model` id.
 ///
-/// Written and stored as a plain string: `small`, `medium`, or `large` names
-/// a tier, and anything of the form `provider/model` (the format
+/// Written and stored as a plain string: `main`, `small`, `medium`, or `large`
+/// names a chain, and anything of the form `provider/model` (the format
 /// `providers.toml`'s `[models]` uses, where `provider` is a `[providers]`
-/// entry or a provider type) names a model. A tier resolves to its failover
-/// chain; an explicit model runs that one model with no failover.
+/// entry or a provider type) names a model. A tier or `main` resolves to its
+/// failover chain; an explicit model runs that one model with no failover.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModelSelector {
+    /// The agent's primary `main` persona model chain.
+    Main,
     /// A configured background tier.
     Tier(BackgroundModelTier),
     /// An explicit `provider/model` id.
@@ -840,6 +843,8 @@ pub enum ModelSelector {
 }
 
 impl ModelSelector {
+    /// The `main` persona model chain.
+    pub const MAIN: Self = Self::Main;
     /// The `small` tier.
     pub const SMALL: Self = Self::Tier(BackgroundModelTier::Small);
     /// The `medium` tier.
@@ -863,6 +868,7 @@ impl From<BackgroundModelTier> for ModelSelector {
 impl fmt::Display for ModelSelector {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Main => f.write_str("main"),
             Self::Tier(tier) => tier.fmt(f),
             Self::Explicit(id) => f.write_str(id),
         }
@@ -873,6 +879,9 @@ impl std::str::FromStr for ModelSelector {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s == "main" {
+            return Ok(Self::Main);
+        }
         if let Ok(tier) = s.parse::<BackgroundModelTier>() {
             return Ok(Self::Tier(tier));
         }
@@ -883,7 +892,7 @@ impl std::str::FromStr for ModelSelector {
             Ok(Self::Explicit(s.to_string()))
         } else {
             Err(format!(
-                "invalid model '{s}': use a tier (small, medium, or large) or a model id in \
+                "invalid model '{s}': use a tier (main, small, medium, or large) or a model id in \
                  provider/model form, such as anthropic/claude-haiku-4-5"
             ))
         }
@@ -1193,9 +1202,11 @@ mod tests {
 
     #[test]
     fn model_selector_parses_tiers() {
+        assert_eq!("main".parse(), Ok(ModelSelector::MAIN));
         assert_eq!("small".parse(), Ok(ModelSelector::SMALL));
         assert_eq!("medium".parse(), Ok(ModelSelector::MEDIUM));
         assert_eq!("large".parse(), Ok(ModelSelector::LARGE));
+        assert_eq!(ModelSelector::MAIN.to_string(), "main");
     }
 
     #[test]
@@ -1225,6 +1236,7 @@ mod tests {
     #[test]
     fn model_selector_round_trips_as_a_plain_string() {
         for selector in [
+            ModelSelector::MAIN,
             ModelSelector::LARGE,
             ModelSelector::Explicit("local/qwen3:8b".to_string()),
         ] {
@@ -1233,6 +1245,10 @@ mod tests {
             let back: ModelSelector = serde_json::from_str(&json).unwrap();
             assert_eq!(back, selector);
         }
+        assert_eq!(
+            serde_json::to_string(&ModelSelector::MAIN).unwrap(),
+            "\"main\""
+        );
         assert!(serde_json::from_str::<ModelSelector>("\"huge\"").is_err());
     }
 

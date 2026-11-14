@@ -2,7 +2,7 @@
 //! an `a2a` conversation session and maps that session's lifecycle back onto
 //! A2A task states. See `docs/systems-usage/a2a.md`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -286,6 +286,24 @@ fn caller_display(caller: &str) -> (String, Option<&'static str>) {
     }
 }
 
+/// Choose the model selector for an inbound A2A turn: trusted sibling rooms
+/// run on the agent's primary `main` persona chain, while all other inbound
+/// A2A traffic stays on `medium`.
+fn inbound_room_model(
+    caller: &str,
+    metadata: Option<&HashMap<String, serde_json::Value>>,
+) -> ModelSelector {
+    let is_room = metadata
+        .and_then(|m| m.get("residuum.room"))
+        .and_then(serde_json::Value::as_bool)
+        == Some(true);
+    if caller.starts_with("sibling:") && is_room {
+        ModelSelector::MAIN
+    } else {
+        ModelSelector::MEDIUM
+    }
+}
+
 /// Build the session's inbound content from the A2A message and deliver it
 /// into the conversation session, per the skill-mapping and part-handling
 /// rules in `docs/systems-usage/a2a.md`.
@@ -329,7 +347,7 @@ async fn deliver_inbound(
     };
     let spawn = ConversationSpawn {
         source_label: format!("a2a:{display_name}"),
-        model: ModelSelector::MEDIUM,
+        model: inbound_room_model(caller, message.metadata.as_ref()),
         skill,
     };
 
@@ -778,5 +796,38 @@ mod tests {
         let (name, location) = caller_display("unexpected");
         assert_eq!(name, "unexpected");
         assert_eq!(location, None);
+    }
+
+    #[test]
+    fn inbound_room_model_escalates_only_for_trusted_sibling_rooms() {
+        let mut room_meta = HashMap::new();
+        room_meta.insert("residuum.room".to_string(), serde_json::json!(true));
+
+        assert_eq!(
+            inbound_room_model("sibling:team-b", Some(&room_meta)),
+            ModelSelector::MAIN
+        );
+        assert_eq!(
+            inbound_room_model("key:partner", Some(&room_meta)),
+            ModelSelector::MEDIUM
+        );
+        assert_eq!(
+            inbound_room_model("sibling:team-b", None),
+            ModelSelector::MEDIUM
+        );
+
+        let mut false_meta = HashMap::new();
+        false_meta.insert("residuum.room".to_string(), serde_json::json!(false));
+        assert_eq!(
+            inbound_room_model("sibling:team-b", Some(&false_meta)),
+            ModelSelector::MEDIUM
+        );
+
+        let mut string_meta = HashMap::new();
+        string_meta.insert("residuum.room".to_string(), serde_json::json!("true"));
+        assert_eq!(
+            inbound_room_model("sibling:team-b", Some(&string_meta)),
+            ModelSelector::MEDIUM
+        );
     }
 }
