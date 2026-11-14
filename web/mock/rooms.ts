@@ -171,8 +171,31 @@ async function patchRoom(ctx: RouteContext): Promise<void> {
   const body = (await readJsonObject(ctx.req)) as unknown as PatchRoomRequest | null;
   if (body !== null) {
     if (body.name !== undefined) entry.detail.name = body.name;
-    if (body.topic !== undefined) entry.detail.topic = body.topic;
+    if (body.topic !== undefined) {
+      entry.detail.topic = body.topic.trim() === "" ? null : body.topic;
+    }
     if (body.pinned !== undefined) entry.detail.pinned = body.pinned;
+    if (Array.isArray(body.remove_seats)) {
+      const removed = new Set(body.remove_seats);
+      const next = entry.detail.roster.filter((s) => !removed.has(s.seat_id));
+      if (next.length === 0) {
+        json(ctx.res, 400, { error: "an active room must keep at least 1 participant" });
+        return;
+      }
+      entry.detail.roster = next;
+    }
+    if (Array.isArray(body.add_seats)) {
+      const existing = new Set(entry.detail.roster.map((s) => s.seat_id));
+      for (const seatId of body.add_seats) {
+        if (!existing.has(seatId)) {
+          entry.detail.roster.push(seatFromId(ctx.hub, seatId));
+          existing.add(seatId);
+          if (!entry.detail.historical_participants.includes(seatId)) {
+            entry.detail.historical_participants.push(seatId);
+          }
+        }
+      }
+    }
     entry.detail.updated_at = ctx.hub.env.clock.iso();
   }
   json(ctx.res, 200, entry.detail);
@@ -256,8 +279,23 @@ function archiveRoom(ctx: RouteContext): void {
     json(ctx.res, 404, { error: `room '${id}' not found` });
     return;
   }
+  const now = ctx.hub.env.clock.iso();
   entry.detail.status = "archived";
-  entry.detail.archived_at = ctx.hub.env.clock.iso();
+  entry.detail.archived_at = now;
+  if (entry.detail.last_seq > 0 && entry.detail.last_seq > entry.detail.minutes.archived_at_seq) {
+    const slug = entry.detail.name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "");
+    const sharedPath = `team/minutes/${now.slice(0, 10)}-${slug || id}.md`;
+    entry.minutesMarkdown = `# Meeting Minutes: ${entry.detail.name}\n\n## Summary\n\nMock minutes generated from ${String(entry.messages.length)} messages.\n\n## Decisions\n\n- None recorded.\n\n## Action Items\n\n- Follow up on open items.\n`;
+    entry.detail.minutes = {
+      shared_path: sharedPath,
+      archived_at_seq: entry.detail.last_seq,
+      inbox_ref: null,
+      updated_at: now,
+    };
+  }
   json(ctx.res, 200, {
     room: entry.detail,
     messages: entry.messages,

@@ -1,0 +1,608 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { tick } from "svelte";
+import userEvent from "@testing-library/user-event";
+import {
+  jsonResponse,
+  mockFetch,
+  render,
+  screen,
+  settle,
+  stubPointer,
+  stubWebSocket,
+} from "../../test/component";
+import { waitFor } from "../../test/wait";
+import { hub } from "../../lib/hub.svelte";
+import { roomsStore } from "../../lib/rooms.svelte";
+import { router } from "../../lib/router.svelte";
+import type {
+  AgentSummary,
+  RoomDetail,
+  RoomDetailResponse,
+  RoomMessage,
+  RoomRosterCandidate,
+  RoomSeat,
+  RoomSummary,
+} from "../../lib/hub-types";
+import { snapshot } from "../../test/hub-frames";
+import RoomsPlace from "./RoomsPlace.svelte";
+
+const ROOM_ID = "room_01jcv8k9m2p4q7";
+
+const LOCAL_SEAT: RoomSeat = {
+  seat_id: "agent:scout",
+  kind: "local",
+  display_name: "Scout",
+  role: "Research specialist",
+  instance: null,
+};
+
+const SIBLING_SEAT: RoomSeat = {
+  seat_id: "a2a:ops/planner",
+  kind: "sibling_a2a",
+  display_name: "Planner",
+  role: "Operations planner",
+  instance: "ops",
+};
+
+const EXT_SEAT: RoomSeat = {
+  seat_id: "a2a:partner-bot",
+  kind: "external_a2a",
+  display_name: "Partner Bot",
+  role: "External advisor",
+  instance: null,
+};
+
+const CANDIDATES: RoomRosterCandidate[] = [
+  {
+    seat_id: "agent:scout",
+    kind: "local",
+    display_name: "Scout",
+    role: "Research specialist",
+    instance: null,
+    online: true,
+  },
+  {
+    seat_id: "a2a:ops/planner",
+    kind: "sibling_a2a",
+    display_name: "Planner",
+    role: "Operations planner",
+    instance: "ops",
+    online: true,
+  },
+  {
+    seat_id: "a2a:partner-bot",
+    kind: "external_a2a",
+    display_name: "Partner Bot",
+    role: "External advisor",
+    instance: null,
+    online: true,
+  },
+];
+
+function agentSummary(name: string): AgentSummary {
+  return {
+    name,
+    display_name: name,
+    state: "running",
+    last_error: null,
+    autostart: true,
+    role: null,
+    a2a_visibility: "private",
+    teams_configured: false,
+  };
+}
+
+function makeSummary(id: string, overrides: Partial<RoomSummary> = {}): RoomSummary {
+  return {
+    id,
+    name: "Architecture Sync",
+    topic: "API review",
+    status: "active",
+    pinned: false,
+    created_at: "2026-11-14T10:00:00Z",
+    updated_at: "2026-11-14T10:05:00Z",
+    archived_at: null,
+    roster: [LOCAL_SEAT, EXT_SEAT],
+    last_seq: 2,
+    unread_count: 0,
+    paused_at_cap: false,
+    minutes_shared_path: null,
+    ...overrides,
+  };
+}
+
+function makeDetail(id: string, overrides: Partial<RoomDetail> = {}): RoomDetail {
+  return {
+    id,
+    name: "Architecture Sync",
+    topic: "API review",
+    status: "active",
+    pinned: false,
+    created_at: "2026-11-14T10:00:00Z",
+    updated_at: "2026-11-14T10:05:00Z",
+    archived_at: null,
+    roster: [LOCAL_SEAT, EXT_SEAT],
+    historical_participants: ["agent:scout", "a2a:partner-bot"],
+    last_seq: 2,
+    last_read_seq: 2,
+    unread_count: 0,
+    window: {
+      roster_size_at_start: 2,
+      window_cap: 3,
+      window_used: 1,
+      per_seat_used: { "agent:scout": 1 },
+      queued_seats: [],
+      paused_at_cap: false,
+      decision_model_fallback: false,
+    },
+    minutes: {
+      shared_path: null,
+      archived_at_seq: 0,
+      inbox_ref: null,
+      updated_at: null,
+    },
+    active_turn: null,
+    ...overrides,
+  };
+}
+
+function makeMessage(seq: number, overrides: Partial<RoomMessage> = {}): RoomMessage {
+  return {
+    seq,
+    id: `rmsg_01jcv8m100000${String(seq)}`,
+    room_id: ROOM_ID,
+    kind: "agent",
+    seat_id: "agent:scout",
+    author_name: "Scout",
+    seat_kind: "local",
+    content: `Message ${String(seq)}`,
+    attachments: [],
+    timestamp: `2026-11-14T10:0${String(seq)}:00Z`,
+    ...overrides,
+  };
+}
+
+function resetRoomsStore(): void {
+  roomsStore.setViewingRoom(null);
+  roomsStore.rooms = [];
+  roomsStore.candidates = [];
+  roomsStore.decisionModelActive = true;
+  roomsStore.currentRoom = null;
+  roomsStore.messages = [];
+  roomsStore.minutesMarkdown = null;
+  roomsStore.loaded = false;
+  roomsStore.loading = false;
+  roomsStore.loadingOlder = false;
+  roomsStore.error = null;
+  roomsStore.hasMoreMessages = false;
+  roomsStore.turnStates = {};
+}
+
+beforeEach(() => {
+  stubPointer();
+  stubWebSocket();
+  Element.prototype.scrollIntoView = vi.fn();
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  resetRoomsStore();
+  hub.handleFrame(snapshot([agentSummary("scout")]));
+  mockFetch((url) => {
+    if (url === "/api/hub/rooms") {
+      return jsonResponse({ rooms: [], decision_model_active: true });
+    }
+    if (url === "/api/hub/rooms/candidates") {
+      return jsonResponse({ candidates: CANDIDATES });
+    }
+    return jsonResponse({}, 404);
+  });
+});
+
+afterEach(() => {
+  resetRoomsStore();
+  vi.restoreAllMocks();
+});
+
+describe("RoomsPlace", () => {
+  it("shows empty state and creates a room via NewRoomDialog with EXT A2A badge visibility", async () => {
+    const user = userEvent.setup();
+    const createdRoom: RoomDetailResponse = {
+      room: makeDetail(ROOM_ID, { name: "Release Review", topic: "Check readiness", pinned: true }),
+      messages: [],
+      minutes_markdown: null,
+      decision_model_active: true,
+    };
+
+    mockFetch((url, init) => {
+      if (url === "/api/hub/rooms" && (!init?.method || init.method === "GET")) {
+        return jsonResponse({ rooms: [], decision_model_active: true });
+      }
+      if (url === "/api/hub/rooms/candidates") {
+        return jsonResponse({ candidates: CANDIDATES });
+      }
+      if (url === "/api/hub/rooms" && init?.method === "POST") {
+        return jsonResponse(createdRoom, 201);
+      }
+      return jsonResponse({}, 404);
+    });
+
+    const openPlace = vi.spyOn(router, "openPlace").mockResolvedValue(true);
+
+    render(RoomsPlace, { room: null, tab: "active" });
+
+    expect(await screen.findByText("No active meeting rooms")).toBeInTheDocument();
+    const newButtons = screen.getAllByRole("button", { name: "New room" });
+    await user.click(newButtons[0] as HTMLElement);
+
+    const dialog = await screen.findByRole("dialog", { name: "New room" });
+    expect(dialog).toHaveTextContent("EXT A2A");
+
+    await user.type(screen.getByLabelText("Room name"), "Release Review");
+    await user.type(screen.getByLabelText("Topic (optional)"), "Check readiness");
+    await user.click(screen.getByRole("checkbox", { name: /Scout/ }));
+    await user.click(screen.getByRole("checkbox", { name: /Partner Bot/ }));
+    await user.click(screen.getByRole("switch", { name: /Pin to sidebar/ }));
+
+    await user.click(screen.getByRole("button", { name: "Create room" }));
+
+    await waitFor(() => {
+      expect(openPlace).toHaveBeenCalledWith({
+        kind: "rooms",
+        room: ROOM_ID,
+        tab: "active",
+      });
+    });
+  });
+
+  it("shows @mention-only banner when decisionModelActive is false and opens ?settings=_all/system_one", async () => {
+    const user = userEvent.setup();
+    const detail = makeDetail(ROOM_ID);
+    mockFetch((url) => {
+      if (url.startsWith(`/api/hub/rooms/${ROOM_ID}`)) {
+        return jsonResponse({
+          room: detail,
+          messages: [makeMessage(1)],
+          minutes_markdown: null,
+          decision_model_active: false,
+        } satisfies RoomDetailResponse);
+      }
+      return jsonResponse({}, 404);
+    });
+
+    const openSettings = vi.spyOn(router, "openSettings").mockResolvedValue(true);
+    render(RoomsPlace, { room: ROOM_ID, tab: "active" });
+
+    expect(await screen.findByText(/@mention-only mode/i)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Configure Decision model/i }));
+    expect(openSettings).toHaveBeenCalledWith({ scope: "_all", section: "system_one" });
+  });
+
+  it("displays EXT A2A badges in header, messages, and RoomRosterDrawer while enforcing >=1 active seat", async () => {
+    const user = userEvent.setup();
+    let detail = makeDetail(ROOM_ID, { roster: [LOCAL_SEAT, EXT_SEAT] });
+    const extMessage = makeMessage(2, {
+      seat_id: EXT_SEAT.seat_id,
+      author_name: "Partner Bot",
+      seat_kind: "external_a2a",
+      content: "External note",
+    });
+
+    mockFetch((url, init) => {
+      if (url.startsWith(`/api/hub/rooms/${ROOM_ID}`) && (!init?.method || init.method === "GET")) {
+        return jsonResponse({
+          room: detail,
+          messages: [makeMessage(1), extMessage],
+          minutes_markdown: null,
+          decision_model_active: true,
+        } satisfies RoomDetailResponse);
+      }
+      if (url === "/api/hub/rooms/candidates") {
+        return jsonResponse({ candidates: CANDIDATES });
+      }
+      if (url === `/api/hub/rooms/${ROOM_ID}` && init?.method === "PATCH") {
+        const raw = typeof init.body === "string" ? init.body : "{}";
+        const body = JSON.parse(raw) as {
+          add_seats?: string[];
+          remove_seats?: string[];
+        };
+        if (body.remove_seats?.includes(EXT_SEAT.seat_id)) {
+          detail = { ...detail, roster: [LOCAL_SEAT] };
+        }
+        if (body.add_seats?.includes(SIBLING_SEAT.seat_id)) {
+          detail = { ...detail, roster: [...detail.roster, SIBLING_SEAT] };
+        }
+        return jsonResponse(detail);
+      }
+      return jsonResponse({}, 404);
+    });
+
+    render(RoomsPlace, { room: ROOM_ID, tab: "active" });
+
+    await screen.findByText("External note");
+    const extBadges = screen.getAllByText("EXT A2A");
+    expect(extBadges.length).toBeGreaterThanOrEqual(2);
+
+    await user.click(screen.getByRole("button", { name: /Roster/i }));
+    const drawer = await screen.findByRole("dialog", { name: /Room roster/i });
+    expect(drawer).toHaveTextContent("EXT A2A");
+
+    // Add Planner from available candidates
+    await user.click(screen.getByRole("button", { name: "Add Planner" }));
+    await waitFor(() => {
+      expect(drawer).toHaveTextContent("ops");
+    });
+
+    // Remove Partner Bot, leaving 2 seats
+    await user.click(screen.getByRole("button", { name: "Remove Partner Bot" }));
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "Remove Partner Bot" })).toBeNull();
+    });
+
+    // When only 1 seat remains, Remove must be disabled with >=1 explanation
+    detail = { ...detail, roster: [LOCAL_SEAT] };
+    roomsStore.currentRoom = detail;
+    await tick();
+
+    const removeScout = screen.getByRole("button", { name: "Remove Scout" });
+    expect(removeScout).toBeDisabled();
+    expect(drawer).toHaveTextContent(/at least 1 active participant/i);
+  });
+
+  it("supports @ autocomplete, file upload, live typing + Stop, and paused + Continue controls", async () => {
+    const user = userEvent.setup();
+    const detail = makeDetail(ROOM_ID, {
+      roster: [LOCAL_SEAT, SIBLING_SEAT],
+    });
+    mockFetch((url) => {
+      if (url.startsWith(`/api/hub/rooms/${ROOM_ID}`)) {
+        return jsonResponse({
+          room: detail,
+          messages: [
+            makeMessage(1),
+            makeMessage(2, {
+              kind: "system",
+              seat_id: null,
+              author_name: "System",
+              seat_kind: null,
+              content: "Planner went offline.",
+            }),
+          ],
+          minutes_markdown: null,
+          decision_model_active: true,
+        } satisfies RoomDetailResponse);
+      }
+      return jsonResponse({}, 404);
+    });
+
+    const uploadSpy = vi.spyOn(roomsStore, "uploadAttachment").mockResolvedValue({
+      id: "0123456789abcdef0123456789abcdef",
+      filename: "notes.txt",
+      size: 12,
+    });
+    const postSpy = vi.spyOn(roomsStore, "postMessage").mockResolvedValue(
+      makeMessage(3, {
+        kind: "owner",
+        seat_id: null,
+        author_name: "Owner",
+        seat_kind: null,
+        content: "@everyone Check notes",
+      }),
+    );
+    const stopSpy = vi.spyOn(roomsStore, "stopRoom").mockResolvedValue(detail);
+    const continueSpy = vi.spyOn(roomsStore, "continueRoom").mockResolvedValue(detail);
+
+    render(RoomsPlace, { room: ROOM_ID, tab: "active" });
+
+    await screen.findByText("Planner went offline.");
+
+    const box = screen.getByRole("combobox", { name: /Message/i });
+    await user.type(box, "@");
+    const listbox = await screen.findByRole("listbox", { name: /Mention participant/i });
+    expect(listbox).toHaveTextContent("everyone");
+    expect(listbox).toHaveTextContent("Scout");
+    expect(listbox).toHaveTextContent("Planner");
+
+    // Enter selects @everyone
+    await user.keyboard("{Enter}");
+    expect(box).toHaveValue("@everyone ");
+
+    // Also test selecting @scout by typing @sc + Arrow/Enter
+    await user.type(box, "@sc");
+    expect(screen.getByRole("listbox")).toHaveTextContent("Scout");
+    await user.keyboard("{Enter}");
+    expect(box).toHaveValue("@everyone @scout ");
+
+    // Upload a file attachment
+    const input = document.querySelector<HTMLInputElement>('input[type="file"]');
+    expect(input).not.toBeNull();
+    const file = new File(["hello world!"], "notes.txt", { type: "text/plain" });
+    await user.upload(input as HTMLInputElement, file);
+    await waitFor(() => {
+      expect(uploadSpy).toHaveBeenCalledOnce();
+      expect(screen.queryByRole("progressbar")).toBeNull();
+    });
+
+    // Shift+Enter adds newline, Enter submits
+    await user.type(box, "line1{Shift>}{Enter}{/Shift}line2{Enter}");
+    await waitFor(() => {
+      expect(postSpy).toHaveBeenCalledWith(ROOM_ID, "@everyone @scout line1\nline2", [
+        "0123456789abcdef0123456789abcdef",
+      ]);
+    });
+
+    // Live typing state + Stop button
+    roomsStore.handleFrame({
+      type: "room_turn_state",
+      room_id: ROOM_ID,
+      active_turn: {
+        seat_id: "agent:scout",
+        display_name: "Scout",
+        seat_kind: "local",
+        started_at: "2026-11-14T10:10:00Z",
+        tool_status: "Searching notes",
+      },
+      queued_seat_ids: ["a2a:ops/planner"],
+      paused_at_cap: false,
+      window_used: 1,
+      window_cap: 3,
+    });
+    await tick();
+
+    expect(screen.getByText(/Scout is typing…/)).toBeInTheDocument();
+    expect(screen.getByText("Searching notes")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Stop" }));
+    expect(stopSpy).toHaveBeenCalledWith(ROOM_ID);
+
+    // Paused at cap + Continue button
+    roomsStore.handleFrame({
+      type: "room_turn_state",
+      room_id: ROOM_ID,
+      active_turn: null,
+      queued_seat_ids: [],
+      paused_at_cap: true,
+      window_used: 3,
+      window_cap: 3,
+    });
+    await tick();
+
+    expect(screen.getByText("Paused after 3 agent replies")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    expect(continueSpy).toHaveBeenCalledWith(ROOM_ID);
+  });
+
+  it("renders archived minutes, strips team/ prefix when opening in panel, and exposes Reopen room CTA", async () => {
+    const user = userEvent.setup();
+    const archivedDetail = makeDetail(ROOM_ID, {
+      status: "archived",
+      archived_at: "2026-11-14T11:00:00Z",
+      minutes: {
+        shared_path: "team/minutes/2026-11-14-architecture-sync.md",
+        archived_at_seq: 2,
+        inbox_ref: "scout/user/min-1",
+        updated_at: "2026-11-14T11:00:00Z",
+      },
+    });
+
+    mockFetch((url) => {
+      if (url.startsWith(`/api/hub/rooms/${ROOM_ID}`)) {
+        return jsonResponse({
+          room: archivedDetail,
+          messages: [makeMessage(1)],
+          minutes_markdown: "# Meeting Minutes: Architecture Sync\n\n## Summary\n\nAligned on API.",
+          decision_model_active: true,
+        } satisfies RoomDetailResponse);
+      }
+      return jsonResponse({}, 404);
+    });
+
+    const openPanel = vi.spyOn(router, "openPanel").mockResolvedValue(true);
+    const reopenSpy = vi.spyOn(roomsStore, "reopenRoom").mockResolvedValue({
+      ...archivedDetail,
+      status: "active",
+      archived_at: null,
+    });
+
+    render(RoomsPlace, { room: ROOM_ID, tab: "archived" });
+    await settle();
+
+    expect(await screen.findByText(/Aligned on API\./)).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: /Message/i })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: /Open minutes file/i }));
+    expect(openPanel).toHaveBeenCalledWith({
+      kind: "file",
+      path: "minutes/2026-11-14-architecture-sync.md",
+      agent: null,
+    });
+
+    const reopenButtons = screen.getAllByRole("button", { name: "Reopen room" });
+    await user.click(reopenButtons[0] as HTMLElement);
+    expect(reopenSpy).toHaveBeenCalledWith(ROOM_ID);
+  });
+
+  it("renders room list tabs, toggles pin, renders attachments, and confirms delete", async () => {
+    const user = userEvent.setup();
+    const activeSummary = makeSummary(ROOM_ID, {
+      name: "Active Sync",
+      pinned: true,
+      unread_count: 3,
+    });
+    const archivedSummary = makeSummary("room_01jcv8k9m2p4q8", {
+      name: "Old Retro",
+      status: "archived",
+      archived_at: "2026-11-14T08:00:00Z",
+    });
+
+    mockFetch((url) => {
+      if (url === "/api/hub/rooms") {
+        return jsonResponse({
+          rooms: [activeSummary, archivedSummary],
+          decision_model_active: true,
+        });
+      }
+      return jsonResponse({}, 404);
+    });
+
+    const replacePlace = vi.spyOn(router, "replacePlace").mockResolvedValue(true);
+    const { rerender } = render(RoomsPlace, { room: null, tab: "active" });
+
+    expect(await screen.findByRole("link", { name: /Active Sync/ })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Old Retro/ })).toBeNull();
+
+    await user.click(screen.getByRole("tab", { name: /Archived/ }));
+    expect(replacePlace).toHaveBeenCalledWith({
+      kind: "rooms",
+      room: null,
+      tab: "archived",
+    });
+
+    const detail = makeDetail(ROOM_ID, { pinned: false });
+    const msgWithAtt = makeMessage(1, {
+      attachments: [
+        {
+          id: "0123456789abcdef0123456789abcdef",
+          filename: "diagram.png",
+          mime_type: "image/png",
+          size: 2048,
+          url: `/api/hub/rooms/${ROOM_ID}/attachments/0123456789abcdef0123456789abcdef`,
+        },
+      ],
+    });
+    mockFetch((url) => {
+      if (url.startsWith(`/api/hub/rooms/${ROOM_ID}`)) {
+        return jsonResponse({
+          room: detail,
+          messages: [msgWithAtt],
+          minutes_markdown: null,
+          decision_model_active: true,
+        } satisfies RoomDetailResponse);
+      }
+      return jsonResponse({}, 404);
+    });
+
+    const patchSpy = vi.spyOn(roomsStore, "patchRoom").mockResolvedValue({
+      ...detail,
+      pinned: true,
+    });
+    const deleteSpy = vi.spyOn(roomsStore, "deleteRoom").mockResolvedValue(true);
+    const openPlace = vi.spyOn(router, "openPlace").mockResolvedValue(true);
+
+    await rerender({ room: ROOM_ID, tab: "active" });
+    const img = await screen.findByRole("img", { name: "diagram.png" });
+    expect(img).toHaveAttribute(
+      "src",
+      `/api/hub/rooms/${ROOM_ID}/attachments/0123456789abcdef0123456789abcdef`,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Pin" }));
+    expect(patchSpy).toHaveBeenCalledWith(ROOM_ID, { pinned: true });
+
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+    const confirmDialog = await screen.findByRole("alertdialog");
+    expect(confirmDialog).toHaveTextContent("Architecture Sync");
+    await user.click(screen.getByRole("button", { name: "Delete room" }));
+
+    await waitFor(() => {
+      expect(deleteSpy).toHaveBeenCalledWith(ROOM_ID);
+      expect(openPlace).toHaveBeenCalledWith({ kind: "rooms", room: null, tab: "active" });
+    });
+  });
+});
