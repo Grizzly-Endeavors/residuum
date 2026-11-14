@@ -598,6 +598,15 @@ impl RoomService {
             ));
         }
 
+        // Fast pre-lock check so posts fail immediately with 409 while a slow
+        // archive_room minutes generation holds the per-room lock.
+        let pre = self.store.get_record(room_id).await?;
+        if pre.status == RoomStatus::Archived {
+            return Err(RoomServiceError::Conflict(
+                "cannot post to an archived room; reopen it first".to_owned(),
+            ));
+        }
+
         let room_mutex = self.room_lock(room_id).await;
         let _room_guard = room_mutex.lock().await;
 
@@ -666,6 +675,15 @@ impl RoomService {
         room_id: &str,
     ) -> Result<RoomDetail, RoomServiceError> {
         validate_room_id(room_id)?;
+        // Fast pre-lock check so continues fail immediately with 409 while
+        // archive_room holds the per-room lock during minutes generation.
+        let pre = self.store.get_record(room_id).await?;
+        if pre.status != RoomStatus::Active {
+            return Err(RoomServiceError::Conflict(
+                "cannot continue an archived room".to_owned(),
+            ));
+        }
+
         let room_mutex = self.room_lock(room_id).await;
         let _room_guard = room_mutex.lock().await;
 
@@ -807,7 +825,7 @@ impl RoomService {
     ) -> Result<RoomDetailResponse, RoomServiceError> {
         validate_room_id(room_id)?;
         let room_mutex = self.room_lock(room_id).await;
-        let room_guard = room_mutex.lock().await;
+        let _room_guard = room_mutex.lock().await;
 
         let _ = self.store.get_record(room_id).await?;
         let stopped = self.stop_room_internal(room_id).await?;
@@ -829,7 +847,6 @@ impl RoomService {
             .await?;
         self.sync_snapshot(&archived);
         self.emit_record_updated(&archived);
-        drop(room_guard);
 
         self.close_participating_sessions(&archived).await;
 
@@ -846,20 +863,17 @@ impl RoomService {
             });
         }
 
-        self.finalize_archive_minutes(&room_mutex, &archived, now)
-            .await
+        self.finalize_archive_minutes(&archived, now).await
     }
 
     async fn finalize_archive_minutes(
         &self,
-        room_mutex: &Mutex<()>,
         archived: &RoomRecord,
         started_at: chrono::DateTime<Utc>,
     ) -> Result<RoomDetailResponse, RoomServiceError> {
         let room_id = archived.id.as_str();
         let messages = self.store.read_all_messages(room_id).await?;
         let (markdown, writer) = self.build_minutes_markdown(archived, &messages).await;
-        let _ = self.store.get_record(room_id).await?;
         self.store.write_minutes(room_id, &markdown).await?;
 
         let shared_path = self.resolve_shared_minutes_path(archived, started_at);
@@ -869,7 +883,6 @@ impl RoomService {
             .deliver_minutes_inbox(archived, &shared_path, &markdown)
             .await;
 
-        let _room_guard = room_mutex.lock().await;
         let finished_at = Utc::now();
         let (mut updated, ()) = self
             .store
@@ -3007,6 +3020,145 @@ mod tests {
         assert!(
             !recovered.room.window.decision_model_fallback,
             "enabling System 1 must clear decision_model_fallback on existing room"
+        );
+    }
+
+    #[tokio::test]
+    async fn reopen_room_serializes_behind_in_flight_archive_room() {
+        let minutes_gate = Gate::closed("slow-minutes-reopen");
+        let scout = MockLocalParticipant::with_slow_minutes(
+            "scout",
+            vec![Ok("Notes.".to_owned())],
+            minutes_gate,
+        );
+        let selector = Arc::new(MockSelector::new(true, vec![SelectorOutcome::NoSpeaker]));
+        let (_hub, service) =
+            setup_service(&[("scout", "Scout", Arc::clone(&scout))], selector).await;
+
+        let created = service
+            .create_room(CreateRoomRequest {
+                name: "Reopen Serialize".to_owned(),
+                topic: None,
+                seat_ids: vec!["agent:scout".to_owned()],
+                pinned: false,
+            })
+            .await
+            .unwrap();
+        let room_id = created.room.id.to_string();
+        let mut rx = service.subscribe_events();
+        service
+            .post_owner_message(&room_id, "@Scout note".to_owned(), Vec::new())
+            .await
+            .unwrap();
+        wait_until_idle(&mut rx, &room_id, &service).await;
+
+        let svc_archive = Arc::clone(&service);
+        let room_archive = room_id.clone();
+        let archive_handle =
+            tokio::spawn(async move { svc_archive.archive_room(&room_archive).await });
+        scout.minutes_gate.as_ref().unwrap().until_held(1).await;
+
+        let svc_reopen = Arc::clone(&service);
+        let room_reopen = room_id.clone();
+        let reopen_handle = tokio::spawn(async move { svc_reopen.reopen_room(&room_reopen).await });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            !reopen_handle.is_finished(),
+            "reopen_room must wait for in-flight archive_room to finish"
+        );
+
+        scout.minutes_gate.as_ref().unwrap().open_all();
+        let archived = archive_handle.await.unwrap().unwrap();
+        assert!(
+            archived.minutes_markdown.is_some(),
+            "archive_room must finish generating minutes before reopen runs"
+        );
+        let reopened = reopen_handle.await.unwrap().unwrap();
+        assert_eq!(
+            reopened.status,
+            RoomStatus::Active,
+            "final status must be Active after serialized reopen_room"
+        );
+        assert_eq!(
+            service
+                .get_room(&room_id, 10, None)
+                .await
+                .unwrap()
+                .room
+                .status,
+            RoomStatus::Active,
+            "stored status must remain Active and not be overwritten by archive_room"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_room_serializes_behind_in_flight_archive_room() {
+        let minutes_gate = Gate::closed("slow-minutes-delete");
+        let scout = MockLocalParticipant::with_slow_minutes(
+            "scout",
+            vec![Ok("Notes.".to_owned())],
+            minutes_gate,
+        );
+        let selector = Arc::new(MockSelector::new(true, vec![SelectorOutcome::NoSpeaker]));
+        let (hub, service) =
+            setup_service(&[("scout", "Scout", Arc::clone(&scout))], selector).await;
+
+        let created = service
+            .create_room(CreateRoomRequest {
+                name: "Delete Serialize".to_owned(),
+                topic: None,
+                seat_ids: vec!["agent:scout".to_owned()],
+                pinned: false,
+            })
+            .await
+            .unwrap();
+        let room_id = created.room.id.to_string();
+        let mut rx = service.subscribe_events();
+        service
+            .post_owner_message(&room_id, "@Scout note".to_owned(), Vec::new())
+            .await
+            .unwrap();
+        wait_until_idle(&mut rx, &room_id, &service).await;
+
+        let svc_archive = Arc::clone(&service);
+        let room_archive = room_id.clone();
+        let archive_handle =
+            tokio::spawn(async move { svc_archive.archive_room(&room_archive).await });
+        scout.minutes_gate.as_ref().unwrap().until_held(1).await;
+
+        let svc_delete = Arc::clone(&service);
+        let room_delete = room_id.clone();
+        let delete_handle = tokio::spawn(async move { svc_delete.delete_room(&room_delete).await });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            !delete_handle.is_finished(),
+            "delete_room must wait for in-flight archive_room to finish"
+        );
+
+        scout.minutes_gate.as_ref().unwrap().open_all();
+        let archived = archive_handle.await.unwrap().unwrap();
+        assert!(
+            archived.minutes_markdown.is_some(),
+            "archive_room must complete before delete_room executes"
+        );
+        delete_handle.await.unwrap().unwrap();
+
+        assert!(
+            matches!(
+                service.get_room(&room_id, 10, None).await,
+                Err(RoomServiceError::NotFound(_))
+            ),
+            "deleted room must return NotFound"
+        );
+        let room_dir = hub.dir.path().join("hub").join("rooms").join(&room_id);
+        assert!(
+            !room_dir.exists(),
+            "delete_room after serialized archive_room must leave no orphan directory at {}",
+            room_dir.display()
+        );
+        assert!(
+            !service.room_locks.lock().await.contains_key(&room_id),
+            "delete_room must clean up room_locks entry"
         );
     }
 }
