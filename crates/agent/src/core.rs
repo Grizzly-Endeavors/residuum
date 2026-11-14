@@ -67,6 +67,9 @@ pub struct Agent {
     /// The team roster read for the `TEAM` block at each turn entry. `None`
     /// leaves the prompt without a roster.
     team: Option<std::sync::Arc<dyn super::TeamRoster>>,
+    /// The room roster read for the `ROOMS` block at each turn entry. `None`
+    /// leaves the prompt without a room roster.
+    rooms: Option<std::sync::Arc<dyn super::RoomRoster>>,
     /// Told as each endpoint reply of a turn reaches the main conversation,
     /// so the hub counts it read or unread at that moment. `None` counts
     /// nothing.
@@ -170,6 +173,7 @@ impl Agent {
             status_clock: StatusClock::new(config.tz),
             layout: config.layout,
             team: None,
+            rooms: None,
             reply_audience: None,
             hop_counter,
             usage_totals: std::sync::Arc::new(tokio::sync::Mutex::new(
@@ -192,17 +196,25 @@ impl Agent {
         *self.usage_totals.lock().await
     }
 
+    /// Apply the team and room rosters to `identity`.
+    fn apply_rosters(&self, mut identity: IdentityFiles) -> IdentityFiles {
+        if let Some(team) = &self.team {
+            identity = identity.with_team_roster(team.prompt_block());
+        }
+        if let Some(rooms) = &self.rooms {
+            identity = identity.with_room_roster(rooms.prompt_block());
+        }
+        identity
+    }
+
     /// Load a fresh identity snapshot from disk. On read failure, logs an
     /// error and falls back to the last-known-good snapshot.
     async fn load_identity_snapshot(&self) -> IdentityFiles {
         let Some(layout) = &self.layout else {
-            return self.identity.clone();
+            return self.apply_rosters(self.identity.clone());
         };
         match IdentityFiles::load(layout).await {
-            Ok(identity) => match &self.team {
-                Some(team) => identity.with_team_roster(team.prompt_block()),
-                None => identity,
-            },
+            Ok(identity) => self.apply_rosters(identity),
             Err(e) => {
                 tracing::error!(error = %e, "identity reload failed; using last-known-good snapshot from previous turn");
                 self.identity.clone()
@@ -214,6 +226,12 @@ impl Agent {
     /// from `team` at every turn entry.
     pub fn set_team(&mut self, team: std::sync::Arc<dyn super::TeamRoster>) {
         self.team = Some(team);
+    }
+
+    /// Show the meeting rooms this agent participates in in its prompt: the
+    /// `ROOMS` block is rebuilt from `rooms` at every turn entry.
+    pub fn set_rooms(&mut self, rooms: std::sync::Arc<dyn super::RoomRoster>) {
+        self.rooms = Some(rooms);
     }
 
     /// Tell `audience` as each of a turn's endpoint replies reaches the main
@@ -2952,6 +2970,132 @@ mod tests {
         assert!(
             second.text.contains("cause=\"system_changed\""),
             "the repeat has the same cause: {second:?}"
+        );
+    }
+
+    struct StubTeamRoster(Option<String>);
+
+    impl crate::TeamRoster for StubTeamRoster {
+        fn prompt_block(&self) -> Option<String> {
+            self.0.clone()
+        }
+    }
+
+    struct DynamicRoomRoster(std::sync::Mutex<Option<String>>);
+
+    impl crate::RoomRoster for DynamicRoomRoster {
+        fn prompt_block(&self) -> Option<String> {
+            self.0.lock().unwrap().clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn room_roster_is_omitted_when_unset_or_none_and_injected_after_team_on_turn_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = residuum_config::WorkspaceLayout::new(dir.path());
+        tokio::fs::write(layout.soul_md(), "SOUL_MARKER")
+            .await
+            .unwrap();
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let provider = CapturingProvider::new(
+            vec![
+                InferenceResponse::new("t1".to_string(), vec![]),
+                InferenceResponse::new("t2".to_string(), vec![]),
+                InferenceResponse::new("t3".to_string(), vec![]),
+            ],
+            tx,
+        );
+        let captured = Arc::clone(&provider.captured);
+
+        let mut agent = Agent::new(
+            Box::new(provider),
+            ToolRegistry::new(),
+            empty_mcp(),
+            IdentityFiles::default(),
+            AgentConfig {
+                options: CompletionOptions::default(),
+                tz: chrono_tz::UTC,
+                layout: Some(layout),
+            },
+            crate::HopCounter::new(0),
+        );
+        agent.set_team(Arc::new(StubTeamRoster(Some(
+            "You are \"scout\".".to_string(),
+        ))));
+
+        let (publisher, ep) = test_bus();
+
+        // Turn 1: no RoomRoster set.
+        agent
+            .process_message(
+                "turn 1",
+                &publisher,
+                Some(&ep),
+                "",
+                None,
+                &PromptContext::default(),
+                &mut rx,
+                &[],
+                None,
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        // Turn 2: RoomRoster set, returning None.
+        let rooms = Arc::new(DynamicRoomRoster(std::sync::Mutex::new(None)));
+        agent.set_rooms(Arc::clone(&rooms) as Arc<dyn crate::RoomRoster>);
+        agent
+            .process_message(
+                "turn 2",
+                &publisher,
+                Some(&ep),
+                "",
+                None,
+                &PromptContext::default(),
+                &mut rx,
+                &[],
+                None,
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        // Turn 3: RoomRoster returns Some block.
+        *rooms.0.lock().unwrap() =
+            Some("Rooms you participate in:\n- \"Design Review\" (active, just now)".to_string());
+        agent
+            .process_message(
+                "turn 3",
+                &publisher,
+                Some(&ep),
+                "",
+                None,
+                &PromptContext::default(),
+                &mut rx,
+                &[],
+                None,
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        let calls = captured.lock().await;
+        assert!(
+            !calls[0][0].content.contains("<ROOMS>"),
+            "unset room roster must omit <ROOMS>"
+        );
+        assert!(
+            !calls[1][0].content.contains("<ROOMS>"),
+            "None room roster must omit <ROOMS>"
+        );
+        let sys3 = &calls[2][0].content;
+        assert!(
+            sys3.contains(
+                "<TEAM>\nYou are \"scout\".\n</TEAM>\n\n<ROOMS>\nRooms you participate in:\n- \"Design Review\" (active, just now)\n</ROOMS>"
+            ),
+            "turn 3 must render <ROOMS> directly after <TEAM>: {sys3}"
         );
     }
 }
