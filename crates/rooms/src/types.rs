@@ -387,6 +387,13 @@ impl RoomRecord {
     pub fn unread_count(&self) -> u64 {
         self.last_seq.saturating_sub(self.last_read_seq)
     }
+
+    /// Whether `seat_id` is currently on the active roster or was ever a participant.
+    #[must_use]
+    pub fn is_participant(&self, seat_id: &str) -> bool {
+        self.roster.iter().any(|seat| seat.seat_id == seat_id)
+            || self.historical_participants.iter().any(|id| id == seat_id)
+    }
 }
 
 /// Compact room entry returned in `GET /api/hub/rooms` and `HubEvent::RoomUpdated`.

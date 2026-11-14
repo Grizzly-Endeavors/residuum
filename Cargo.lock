@@ -5563,16 +5563,28 @@ dependencies = [
 name = "residuum-rooms"
 version = "0.1.0"
 dependencies = [
+ "a2a-lf",
+ "async-trait",
  "chrono",
+ "ctor",
+ "futures-util",
  "rand 0.8.6",
+ "residuum-a2a",
+ "residuum-agent",
+ "residuum-config",
  "residuum-core",
+ "residuum-inference",
+ "residuum-workspace",
+ "rustls 0.23.46",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-util",
  "tracing",
  "ts-rs",
+ "wiremock",
 ]
 
 [[package]]
