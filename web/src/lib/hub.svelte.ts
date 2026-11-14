@@ -42,6 +42,7 @@ import { normalizeTeamWatchPrefix } from "./workspace-watch";
 import { WatchRegistry } from "./watch-registry";
 import { hubNoticeText } from "./hub-notices";
 import { hubReloadNotice } from "./reload-notices";
+import { roomsStore } from "./rooms.svelte";
 
 /** How many notices the store keeps for recall. */
 const MAX_NOTICES = 50;
@@ -139,6 +140,7 @@ export class HubStore {
     this.transport.onConnected = () => {
       // A new connection watches nothing until told.
       this.teamWatches.connected();
+      void roomsStore.refreshList();
     };
     this.transport.onDisconnected = () => {
       this.teamWatches.disconnected();
@@ -389,6 +391,13 @@ export class HubStore {
         break;
       case "system_one_status":
         this.systemOne = msg.status;
+        roomsStore.handleFrame(msg);
+        break;
+      case "room_updated":
+      case "room_message":
+      case "room_turn_state":
+      case "room_deleted":
+        roomsStore.handleFrame(msg);
         break;
       case "pong":
         // The answer to a `ping`, which the app itself never sends.

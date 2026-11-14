@@ -20,7 +20,8 @@ type FilePanelSpec = Extract<Panel, { kind: "file" }>;
 /** Where a file panel's path is read on `place`, or null on a place that can't show one. */
 export function fileSourceFor(place: Place): FileSource | null {
   if (isAgentPlace(place)) return { agent: place.agent, scope: "agent" };
-  if (place.kind === "shared-files") return { agent: null, scope: "team" };
+  if (place.kind === "shared-files" || place.kind === "rooms")
+    return { agent: null, scope: "team" };
   return null;
 }
 

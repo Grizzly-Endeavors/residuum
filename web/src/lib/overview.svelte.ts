@@ -153,6 +153,10 @@ export class OverviewStore {
       case "notice":
       case "hub_config_reloaded":
       case "system_one_status":
+      case "room_updated":
+      case "room_message":
+      case "room_turn_state":
+      case "room_deleted":
       case "workspace_changed":
       case "workspace_resync":
       case "workspace_watch_unavailable":

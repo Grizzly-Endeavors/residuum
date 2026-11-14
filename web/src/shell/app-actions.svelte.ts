@@ -68,6 +68,7 @@ function places(): AppAction[] {
   return [
     go("home", "Home", "Your team", "home", HOME),
     go("inbox", "Inbox", "Every agent", "inbox", INBOX),
+    go("rooms", "Rooms", "Team", "users", { kind: "rooms", room: null, tab: "active" }),
     go("workbench", "Workbench", "Team", "grid", { kind: "workbench", artifact: null }),
     go("shared-files", "Shared files", "Team", "folder", { kind: "shared-files" }),
   ];

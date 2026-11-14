@@ -52,6 +52,8 @@ export function placeSubject(place: Place, agentName: (agent: string) => string)
       return null;
     case "inbox":
       return "Inbox";
+    case "rooms":
+      return "Rooms";
     case "workbench":
       return "Workbench";
     case "shared-files":
