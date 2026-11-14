@@ -166,7 +166,7 @@ impl RoomStore {
     }
 
     /// Mutate an existing room record under the store write lock and persist it
-    /// atomically when `mutate` returns `Ok`.
+    /// atomically.
     ///
     /// # Errors
     /// Returns [`RoomStoreError::InvalidRoomId`], [`RoomStoreError::NotFound`], or write errors.
@@ -178,13 +178,32 @@ impl RoomStore {
     where
         F: FnOnce(&mut RoomRecord) -> R,
     {
-        validate_room_id(room_id)?;
+        self.try_update_record(room_id, |record| Ok::<R, RoomStoreError>(mutate(record)))
+            .await
+    }
+
+    /// Fallibly mutate an existing room record under the store write lock and
+    /// persist it atomically only when `mutate` returns `Ok`.
+    ///
+    /// # Errors
+    /// Returns `E` when `mutate` fails, or a [`RoomStoreError`] converted into
+    /// `E` on invalid room ID, missing room, or persistence failure.
+    pub async fn try_update_record<F, R, E>(
+        &self,
+        room_id: &str,
+        mutate: F,
+    ) -> Result<(RoomRecord, R), E>
+    where
+        E: From<RoomStoreError>,
+        F: FnOnce(&mut RoomRecord) -> Result<R, E>,
+    {
+        validate_room_id(room_id).map_err(RoomStoreError::from)?;
         let mut guard = self.rooms.write().await;
         let existing = guard
             .get(room_id)
             .ok_or_else(|| RoomStoreError::NotFound(room_id.to_owned()))?;
         let mut updated = existing.clone();
-        let outcome = mutate(&mut updated);
+        let outcome = mutate(&mut updated)?;
         let dir = self.room_dir(room_id);
         write_room_json(&dir, &updated).await?;
         guard.insert(room_id.to_owned(), updated.clone());
@@ -275,11 +294,9 @@ impl RoomStore {
         before_seq: Option<u64>,
     ) -> Result<Vec<RoomMessage>, RoomStoreError> {
         validate_room_id(room_id)?;
-        {
-            let guard = self.rooms.read().await;
-            if !guard.contains_key(room_id) {
-                return Err(RoomStoreError::NotFound(room_id.to_owned()));
-            }
+        let guard = self.rooms.read().await;
+        if !guard.contains_key(room_id) {
+            return Err(RoomStoreError::NotFound(room_id.to_owned()));
         }
         if limit == 0 {
             return Ok(Vec::new());
@@ -290,6 +307,7 @@ impl RoomStore {
             Err(err) if err.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
             Err(err) => return Err(RoomStoreError::Io(err)),
         };
+        drop(guard);
 
         let mut filtered = Vec::new();
         for line in raw.lines() {
@@ -327,11 +345,9 @@ impl RoomStore {
     /// Returns [`RoomStoreError::InvalidRoomId`], [`RoomStoreError::NotFound`], or write errors.
     pub async fn write_minutes(&self, room_id: &str, markdown: &str) -> Result<(), RoomStoreError> {
         validate_room_id(room_id)?;
-        {
-            let guard = self.rooms.read().await;
-            if !guard.contains_key(room_id) {
-                return Err(RoomStoreError::NotFound(room_id.to_owned()));
-            }
+        let guard = self.rooms.write().await;
+        if !guard.contains_key(room_id) {
+            return Err(RoomStoreError::NotFound(room_id.to_owned()));
         }
         let path = self.room_dir(room_id).join("minutes.md");
         atomic_write(&path, markdown.as_bytes())
@@ -345,11 +361,9 @@ impl RoomStore {
     /// Returns [`RoomStoreError::InvalidRoomId`], [`RoomStoreError::NotFound`], or I/O errors.
     pub async fn read_minutes(&self, room_id: &str) -> Result<Option<String>, RoomStoreError> {
         validate_room_id(room_id)?;
-        {
-            let guard = self.rooms.read().await;
-            if !guard.contains_key(room_id) {
-                return Err(RoomStoreError::NotFound(room_id.to_owned()));
-            }
+        let guard = self.rooms.read().await;
+        if !guard.contains_key(room_id) {
+            return Err(RoomStoreError::NotFound(room_id.to_owned()));
         }
         let path = self.room_dir(room_id).join("minutes.md");
         match tokio::fs::read_to_string(&path).await {
@@ -685,6 +699,147 @@ mod tests {
                 Err(RoomStoreError::InvalidRoomId(_))
             ),
             "traversal room id must fail validation"
+        );
+    }
+
+    #[tokio::test]
+    async fn try_update_record_rolls_back_on_error_and_persists_on_ok() {
+        #[derive(Debug)]
+        enum CustomErr {
+            Store(RoomStoreError),
+            Rejected(&'static str),
+        }
+        impl From<RoomStoreError> for CustomErr {
+            fn from(err: RoomStoreError) -> Self {
+                Self::Store(err)
+            }
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let rooms_root = temp.path().join("rooms");
+        let now = Utc::now();
+        let store = RoomStore::open(rooms_root.clone()).await.unwrap();
+        let record = sample_record(now);
+        let room_id = record.id.to_string();
+        store.create_room(record).await.unwrap();
+
+        let err_res: Result<(RoomRecord, ()), CustomErr> = store
+            .try_update_record(&room_id, |rec| {
+                rec.name = "Mutated Before Error".to_owned();
+                rec.pinned = false;
+                Err(CustomErr::Rejected("archived room cannot edit"))
+            })
+            .await;
+        assert!(
+            matches!(
+                err_res,
+                Err(CustomErr::Rejected("archived room cannot edit"))
+            ),
+            "custom error must propagate from try_update_record"
+        );
+
+        let in_mem = store.get_record(&room_id).await.unwrap();
+        assert_eq!(
+            in_mem.name, "Design Sync",
+            "in-memory record must remain untouched after Err"
+        );
+        assert!(in_mem.pinned, "in-memory pinned flag must remain untouched");
+
+        let disk_raw = tokio::fs::read_to_string(rooms_root.join(&room_id).join("room.json"))
+            .await
+            .unwrap();
+        let disk_rec: RoomRecord = serde_json::from_str(&disk_raw).unwrap();
+        assert_eq!(
+            disk_rec.name, "Design Sync",
+            "on-disk room.json must remain untouched after Err"
+        );
+        assert!(disk_rec.pinned, "on-disk pinned flag must remain untouched");
+
+        let (updated, tag) = store
+            .try_update_record(&room_id, |rec| {
+                rec.name = "Renamed Sync".to_owned();
+                Ok::<_, CustomErr>("ok-tag")
+            })
+            .await
+            .unwrap();
+        assert_eq!(tag, "ok-tag", "Ok outcome must be returned");
+        assert_eq!(
+            updated.name, "Renamed Sync",
+            "returned record must reflect Ok mutation"
+        );
+
+        let reloaded = RoomStore::open(rooms_root).await.unwrap();
+        assert_eq!(
+            reloaded.get_record(&room_id).await.unwrap().name,
+            "Renamed Sync",
+            "on-disk room.json must reflect Ok mutation"
+        );
+
+        let missing_res: Result<(RoomRecord, ()), CustomErr> = store
+            .try_update_record("room_missing1234", |_| Ok(()))
+            .await;
+        assert!(
+            matches!(
+                missing_res,
+                Err(CustomErr::Store(RoomStoreError::NotFound(_)))
+            ),
+            "store NotFound error must convert into custom error type"
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_and_deleted_rooms_return_not_found_on_reads_and_minutes() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = RoomStore::open(temp.path().join("rooms")).await.unwrap();
+        let missing_id = "room_missing1234";
+
+        assert!(
+            matches!(
+                store.read_messages(missing_id, 10, None).await,
+                Err(RoomStoreError::NotFound(_))
+            ),
+            "read_messages on missing room must return NotFound"
+        );
+        assert!(
+            matches!(
+                store.write_minutes(missing_id, "# Minutes").await,
+                Err(RoomStoreError::NotFound(_))
+            ),
+            "write_minutes on missing room must return NotFound"
+        );
+        assert!(
+            matches!(
+                store.read_minutes(missing_id).await,
+                Err(RoomStoreError::NotFound(_))
+            ),
+            "read_minutes on missing room must return NotFound"
+        );
+
+        let record = sample_record(Utc::now());
+        let room_id = record.id.to_string();
+        store.create_room(record).await.unwrap();
+        store.delete_room(&room_id).await.unwrap();
+
+        assert!(
+            matches!(
+                store.read_messages(&room_id, 10, None).await,
+                Err(RoomStoreError::NotFound(_))
+            ),
+            "read_messages on deleted room must return NotFound"
+        );
+        assert!(
+            matches!(
+                store.write_minutes(&room_id, "# Minutes").await,
+                Err(RoomStoreError::NotFound(_))
+            ),
+            "write_minutes on deleted room must return NotFound"
+        );
+        assert!(
+            matches!(
+                store.read_minutes(&room_id).await,
+                Err(RoomStoreError::NotFound(_))
+            ),
+            "read_minutes on deleted room must return NotFound"
         );
     }
 }
