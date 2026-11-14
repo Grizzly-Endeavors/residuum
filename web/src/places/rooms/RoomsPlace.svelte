@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { tick, untrack } from "svelte";
+  import { onDestroy, tick, untrack } from "svelte";
   import Prose from "../../feed/Prose.svelte";
   import { displayState } from "../../lib/agent-display-state";
   import { hub } from "../../lib/hub.svelte";
@@ -55,25 +55,31 @@
   let lastTailSeq = 0;
   let wasNearBottom = true;
 
+  let prevRoomProp: string | null | undefined = undefined;
+
   $effect(() => {
     const id = room;
     untrack(() => {
       const prevViewing = roomsStore.viewingRoomId;
-      if (prevViewing !== id) {
-        rosterOpen = false;
-        confirmDeleteOpen = false;
-        roomsStore.error = null;
+      if (prevRoomProp !== id) {
+        if (prevRoomProp !== undefined) {
+          rosterOpen = false;
+          confirmDeleteOpen = false;
+          roomsStore.error = null;
+        }
+        prevRoomProp = id;
       }
       roomsStore.setViewingRoom(id);
       if (id !== null && (prevViewing !== id || roomsStore.currentRoom?.id !== id)) {
         void roomsStore.openRoom(id);
       }
     });
-    return () => {
-      untrack(() => {
-        if (roomsStore.viewingRoomId === id) roomsStore.setViewingRoom(null);
-      });
-    };
+  });
+
+  onDestroy(() => {
+    if (prevRoomProp !== undefined && roomsStore.viewingRoomId === prevRoomProp) {
+      roomsStore.setViewingRoom(null);
+    }
   });
 
   $effect(() => {
@@ -108,7 +114,7 @@
     void roomsStore.messages;
     void openRoom?.id;
     wasNearBottom =
-      scrollEl === undefined
+      scrollEl == null
         ? true
         : scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight < 120;
   });
@@ -129,7 +135,7 @@
     lastTailSeq = tailSeq;
     if (isInitialOpen || (hasNewTail && wasNearBottom)) {
       void tick().then(() => {
-        if (scrollEl !== undefined) {
+        if (scrollEl != null) {
           scrollEl.scrollTop = scrollEl.scrollHeight;
         }
       });

@@ -25,7 +25,12 @@
     untrack(() => {
       busySeatId = null;
       actionError = null;
-      void roomsStore.refreshCandidates();
+      void roomsStore.refreshCandidates().then(() => {
+        if (open && roomsStore.error !== null) {
+          actionError ??= roomsStore.error;
+          roomsStore.error = null;
+        }
+      });
     });
   });
 

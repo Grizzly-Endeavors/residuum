@@ -30,7 +30,12 @@
       pinned = false;
       formError = null;
       submitting = false;
-      void roomsStore.refreshCandidates();
+      void roomsStore.refreshCandidates().then(() => {
+        if (open && roomsStore.error !== null) {
+          formError ??= roomsStore.error;
+          roomsStore.error = null;
+        }
+      });
     });
   });
 

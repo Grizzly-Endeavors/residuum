@@ -649,6 +649,13 @@ describe("RoomsPlace", () => {
     await rerender({ room: ROOM_ID, tab: "active" });
     expect(await screen.findByText("Room not found")).toBeInTheDocument();
     expect(screen.queryByRole("alert")).toBeNull();
+    expect(roomsStore.error).not.toBeNull();
+
+    // Navigating back from 404 (<id> -> null) clears stale roomsStore.error
+    roomsStore.loaded = true;
+    await rerender({ room: null, tab: "active" });
+    expect(roomsStore.error).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("resets open modals on room switch, keeps historical sibling badge, aborts in-flight uploads on unmount, and toggles minutes", async () => {
