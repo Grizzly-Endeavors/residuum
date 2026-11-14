@@ -158,6 +158,7 @@ pub struct RoomService {
     remote: Arc<dyn RemoteRoomDriver>,
     local_agents: StdRwLock<BTreeMap<String, LocalRoomAgentInfo>>,
     active_runs: Mutex<HashMap<String, ActiveRun>>,
+    room_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     next_run_id: AtomicU64,
     team: TeamWriteCoordinator,
     mailboxes: Arc<dyn MailboxDirectory>,
@@ -203,6 +204,7 @@ impl RoomService {
             remote,
             local_agents: StdRwLock::new(BTreeMap::new()),
             active_runs: Mutex::new(HashMap::new()),
+            room_locks: Mutex::new(HashMap::new()),
             next_run_id: AtomicU64::new(1),
             team,
             mailboxes,
@@ -214,6 +216,15 @@ impl RoomService {
     #[must_use]
     pub fn store(&self) -> &RoomStore {
         &self.store
+    }
+
+    async fn room_lock(&self, room_id: &str) -> Arc<Mutex<()>> {
+        let mut locks = self.room_locks.lock().await;
+        Arc::clone(
+            locks
+                .entry(room_id.to_owned())
+                .or_insert_with(|| Arc::new(Mutex::new(()))),
+        )
     }
 
     pub(crate) fn snapshot_records(&self) -> Vec<RoomRecord> {
@@ -402,8 +413,7 @@ impl RoomService {
         let topic = normalize_optional_topic(req.topic);
         let now = Utc::now();
         let historical_participants = roster.iter().map(|s| s.seat_id.clone()).collect();
-        let mut window = RoomWindowState::fresh(roster.len());
-        window.decision_model_fallback = !self.selector.is_available();
+        let window = RoomWindowState::fresh(roster.len());
 
         let record = RoomRecord {
             id: generate_room_id(),
@@ -448,6 +458,21 @@ impl RoomService {
         self.selector.is_available() && !record.window.decision_model_fallback
     }
 
+    async fn clear_fallback_if_available(&self, room_id: &str, record: &mut RoomRecord) {
+        if self.selector.is_available()
+            && record.window.decision_model_fallback
+            && let Ok((updated, ())) = self
+                .store
+                .update_record(room_id, |rec| {
+                    rec.window.decision_model_fallback = false;
+                })
+                .await
+        {
+            self.sync_snapshot(&updated);
+            *record = updated;
+        }
+    }
+
     /// Fetch room metadata, transcript slice, and attached minutes.
     ///
     /// # Errors
@@ -458,7 +483,8 @@ impl RoomService {
         limit: usize,
         before_seq: Option<u64>,
     ) -> Result<RoomDetailResponse, RoomServiceError> {
-        let record = self.store.get_record(room_id).await?;
+        let mut record = self.store.get_record(room_id).await?;
+        self.clear_fallback_if_available(room_id, &mut record).await;
         let messages = self
             .store
             .read_messages(room_id, limit.min(200), before_seq)
@@ -484,11 +510,14 @@ impl RoomService {
         room_id: &str,
         req: PatchRoomRequest,
     ) -> Result<RoomDetail, RoomServiceError> {
+        validate_room_id(room_id)?;
         let added = match &req.add_seats {
             Some(ids) => self.resolve_unique_seats(ids).await?,
             None => Vec::new(),
         };
         let validated_name = req.name.as_deref().map(validate_room_name).transpose()?;
+        let room_mutex = self.room_lock(room_id).await;
+        let _room_guard = room_mutex.lock().await;
 
         let (updated, ()) = self
             .store
@@ -569,8 +598,10 @@ impl RoomService {
             ));
         }
 
-        let mut runs = self.active_runs.lock().await;
-        if runs.contains_key(room_id) {
+        let room_mutex = self.room_lock(room_id).await;
+        let _room_guard = room_mutex.lock().await;
+
+        if self.active_runs.lock().await.contains_key(room_id) {
             return Err(RoomServiceError::Conflict(
                 "a turn is currently in progress; stop the room or wait for it to finish"
                     .to_owned(),
@@ -600,13 +631,11 @@ impl RoomService {
             )
             .await?;
 
-        let fallback = !self.selector.is_available();
         let (updated, ()) = self
             .store
             .update_record(room_id, |rec| {
                 let mut window = RoomWindowState::fresh(rec.roster.len());
                 window.queued_seats = parse_owner_mentions(&message.content, &rec.roster);
-                window.decision_model_fallback = fallback;
                 rec.window = window;
             })
             .await?;
@@ -620,8 +649,10 @@ impl RoomService {
         self.emit_record_updated(&updated);
         self.emit_turn_state(&updated, None);
 
-        self.spawn_turn_loop_locked(&mut runs, room_id.to_owned(), None);
-        drop(runs);
+        {
+            let mut runs = self.active_runs.lock().await;
+            self.spawn_turn_loop_locked(&mut runs, room_id.to_owned(), None);
+        }
         Ok(message)
     }
 
@@ -635,8 +666,10 @@ impl RoomService {
         room_id: &str,
     ) -> Result<RoomDetail, RoomServiceError> {
         validate_room_id(room_id)?;
-        let mut runs = self.active_runs.lock().await;
-        if runs.contains_key(room_id) {
+        let room_mutex = self.room_lock(room_id).await;
+        let _room_guard = room_mutex.lock().await;
+
+        if self.active_runs.lock().await.contains_key(room_id) {
             return Err(RoomServiceError::Conflict(
                 "a turn is already running in this room".to_owned(),
             ));
@@ -668,8 +701,10 @@ impl RoomService {
         self.sync_snapshot(&updated);
         self.emit_record_updated(&updated);
         self.emit_turn_state(&updated, None);
-        self.spawn_turn_loop_locked(&mut runs, room_id.to_owned(), last_speaker);
-        drop(runs);
+        {
+            let mut runs = self.active_runs.lock().await;
+            self.spawn_turn_loop_locked(&mut runs, room_id.to_owned(), last_speaker);
+        }
         Ok(RoomDetail::from_record(&updated, None))
     }
 
@@ -686,6 +721,9 @@ impl RoomService {
     /// # Errors
     /// Returns [`RoomServiceError::Validation`] or [`RoomServiceError::NotFound`].
     pub async fn stop_room(&self, room_id: &str) -> Result<RoomDetail, RoomServiceError> {
+        validate_room_id(room_id)?;
+        let room_mutex = self.room_lock(room_id).await;
+        let _room_guard = room_mutex.lock().await;
         let _ = self.store.get_record(room_id).await?;
         let updated = self.stop_room_internal(room_id).await?;
         Ok(RoomDetail::from_record(&updated, None))
@@ -767,67 +805,93 @@ impl RoomService {
         &self,
         room_id: &str,
     ) -> Result<RoomDetailResponse, RoomServiceError> {
-        let _ = self.store.get_record(room_id).await?;
-        let record = self.stop_room_internal(room_id).await?;
-        self.close_participating_sessions(&record).await;
+        validate_room_id(room_id)?;
+        let room_mutex = self.room_lock(room_id).await;
+        let room_guard = room_mutex.lock().await;
 
+        let _ = self.store.get_record(room_id).await?;
+        let stopped = self.stop_room_internal(room_id).await?;
         let now = Utc::now();
         let should_generate =
-            record.last_seq > 0 && record.last_seq > record.minutes.archived_at_seq;
+            stopped.last_seq > 0 && stopped.last_seq > stopped.minutes.archived_at_seq;
+
+        let (mut archived, ()) = self
+            .store
+            .update_record(room_id, |rec| {
+                rec.status = RoomStatus::Archived;
+                if rec.archived_at.is_none() {
+                    rec.archived_at = Some(now);
+                }
+                rec.updated_at = now;
+                rec.window.queued_seats.clear();
+                rec.window.paused_at_cap = false;
+            })
+            .await?;
+        self.sync_snapshot(&archived);
+        self.emit_record_updated(&archived);
+        drop(room_guard);
+
+        self.close_participating_sessions(&archived).await;
 
         if !should_generate {
-            let (updated, ()) = self
-                .store
-                .update_record(room_id, |rec| {
-                    rec.status = RoomStatus::Archived;
-                    if rec.archived_at.is_none() {
-                        rec.archived_at = Some(now);
-                    }
-                    rec.updated_at = now;
-                    rec.window.queued_seats.clear();
-                    rec.window.paused_at_cap = false;
-                })
-                .await?;
-            self.sync_snapshot(&updated);
-            self.emit_record_updated(&updated);
+            self.clear_fallback_if_available(room_id, &mut archived)
+                .await;
             let minutes_markdown = self.store.read_minutes(room_id).await?;
-            let decision_model_active = self.detail_decision_active(&updated);
+            let decision_model_active = self.detail_decision_active(&archived);
             return Ok(RoomDetailResponse {
-                room: RoomDetail::from_record(&updated, None),
+                room: RoomDetail::from_record(&archived, None),
                 messages: self.store.read_all_messages(room_id).await?,
                 minutes_markdown,
                 decision_model_active,
             });
         }
 
+        self.finalize_archive_minutes(&room_mutex, &archived, now)
+            .await
+    }
+
+    async fn finalize_archive_minutes(
+        &self,
+        room_mutex: &Mutex<()>,
+        archived: &RoomRecord,
+        started_at: chrono::DateTime<Utc>,
+    ) -> Result<RoomDetailResponse, RoomServiceError> {
+        let room_id = archived.id.as_str();
         let messages = self.store.read_all_messages(room_id).await?;
-        let (markdown, writer) = self.build_minutes_markdown(&record, &messages).await;
+        let (markdown, writer) = self.build_minutes_markdown(archived, &messages).await;
+        let _ = self.store.get_record(room_id).await?;
         self.store.write_minutes(room_id, &markdown).await?;
 
-        let shared_path = self.resolve_shared_minutes_path(&record, now);
+        let shared_path = self.resolve_shared_minutes_path(archived, started_at);
         self.commit_shared_minutes(&shared_path, &writer, &markdown)
             .await?;
         let inbox_ref = self
-            .deliver_minutes_inbox(&record, &shared_path, &markdown)
+            .deliver_minutes_inbox(archived, &shared_path, &markdown)
             .await;
 
-        let (updated, ()) = self
+        let _room_guard = room_mutex.lock().await;
+        let finished_at = Utc::now();
+        let (mut updated, ()) = self
             .store
             .update_record(room_id, |rec| {
-                rec.status = RoomStatus::Archived;
-                rec.archived_at = Some(now);
-                rec.updated_at = now;
-                rec.window.queued_seats.clear();
-                rec.window.paused_at_cap = false;
+                rec.updated_at = finished_at;
                 rec.minutes = RoomMinutesMeta {
                     shared_path: Some(shared_path),
-                    archived_at_seq: rec.last_seq,
+                    archived_at_seq: archived.last_seq,
                     inbox_ref: inbox_ref.or_else(|| rec.minutes.inbox_ref.clone()),
-                    updated_at: Some(now),
+                    updated_at: Some(finished_at),
                 };
             })
             .await?;
-
+        if self.selector.is_available() && updated.window.decision_model_fallback {
+            let (cleared, ()) = self
+                .store
+                .update_record(room_id, |rec| {
+                    rec.window.decision_model_fallback = false;
+                })
+                .await?;
+            updated = cleared;
+        }
         self.sync_snapshot(&updated);
         self.emit_record_updated(&updated);
         let decision_model_active = self.detail_decision_active(&updated);
@@ -848,13 +912,24 @@ impl RoomService {
                 {
                     tracing::warn!(room_id, seat_id = %seat_id, error = %err, "failed to close local room session");
                 }
-            } else if let Some(seat) = record.roster.iter().find(|s| s.seat_id == *seat_id)
-                && seat.kind == RoomSeatKind::SiblingA2a
+            } else if self.is_sibling_seat(record, seat_id).await
                 && let Err(err) = self.remote.close_remote_session(room_id, seat_id).await
             {
                 tracing::warn!(room_id, seat_id = %seat_id, error = %err, "failed to close sibling room session");
             }
         }
+    }
+
+    async fn is_sibling_seat(&self, record: &RoomRecord, seat_id: &str) -> bool {
+        if let Some(seat) = record.roster.iter().find(|s| s.seat_id == seat_id) {
+            return seat.kind == RoomSeatKind::SiblingA2a;
+        }
+        if let Some(cand) = self.remote.resolve_seat(seat_id).await {
+            return cand.kind == RoomSeatKind::SiblingA2a;
+        }
+        seat_id
+            .strip_prefix("a2a:")
+            .is_some_and(|rest| rest.contains('/'))
     }
 
     async fn build_minutes_markdown(
@@ -986,6 +1061,9 @@ impl RoomService {
     /// # Errors
     /// Returns [`RoomServiceError::Validation`] or [`RoomServiceError::NotFound`].
     pub async fn reopen_room(&self, room_id: &str) -> Result<RoomDetail, RoomServiceError> {
+        validate_room_id(room_id)?;
+        let room_mutex = self.room_lock(room_id).await;
+        let _room_guard = room_mutex.lock().await;
         let now = Utc::now();
         let (updated, ()) = self
             .store
@@ -1007,11 +1085,15 @@ impl RoomService {
     /// # Errors
     /// Returns [`RoomServiceError::Validation`] or [`RoomServiceError::NotFound`].
     pub async fn delete_room(&self, room_id: &str) -> Result<(), RoomServiceError> {
+        validate_room_id(room_id)?;
+        let room_mutex = self.room_lock(room_id).await;
+        let _room_guard = room_mutex.lock().await;
         let record = self.store.get_record(room_id).await?;
         let _ = self.stop_room_internal(room_id).await?;
         self.close_participating_sessions(&record).await;
         self.store.delete_room(room_id).await?;
         self.remove_snapshot(room_id);
+        self.room_locks.lock().await.remove(room_id);
         self.emit(RoomEvent::Deleted { room_id: record.id });
         Ok(())
     }
@@ -1137,9 +1219,13 @@ impl RoomService {
         room_id: &str,
         last_speaker_seat: Option<&str>,
     ) -> Result<StepAction, RoomServiceError> {
+        let selector_available = self.selector.is_available();
         let (_, action) = self
             .store
             .try_update_record(room_id, |rec| {
+                if selector_available {
+                    rec.window.decision_model_fallback = false;
+                }
                 if rec.status != RoomStatus::Active {
                     rec.window.queued_seats.clear();
                     rec.window.paused_at_cap = false;
@@ -1357,7 +1443,12 @@ impl RoomService {
                 };
                 tokio::select! {
                     biased;
-                    () = cancel_token.cancelled() => return TurnStepOutcome::Cancelled,
+                    () = cancel_token.cancelled() => {
+                        *active_turn_slot
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner) = None;
+                        return TurnStepOutcome::Cancelled;
+                    }
                     res = self.remote.run_remote_turn(req) => res,
                 }
             }
@@ -1709,6 +1800,8 @@ mod tests {
         canceled_rooms: Mutex<Vec<String>>,
         minutes_text: Mutex<Option<String>>,
         hold_gate: Option<Gate>,
+        minutes_gate: Option<Gate>,
+        cancel_delay: Option<Duration>,
     }
 
     impl MockLocalParticipant {
@@ -1720,6 +1813,8 @@ mod tests {
                 canceled_rooms: Mutex::new(Vec::new()),
                 minutes_text: Mutex::new(None),
                 hold_gate: None,
+                minutes_gate: None,
+                cancel_delay: None,
             })
         }
 
@@ -1731,6 +1826,25 @@ mod tests {
                 canceled_rooms: Mutex::new(Vec::new()),
                 minutes_text: Mutex::new(None),
                 hold_gate: Some(gate),
+                minutes_gate: None,
+                cancel_delay: None,
+            })
+        }
+
+        fn with_slow_minutes(
+            name: &str,
+            replies: Vec<Result<String, String>>,
+            minutes_gate: Gate,
+        ) -> Arc<Self> {
+            Arc::new(Self {
+                name: name.to_owned(),
+                replies: Mutex::new(VecDeque::from(replies)),
+                closed_rooms: Mutex::new(Vec::new()),
+                canceled_rooms: Mutex::new(Vec::new()),
+                minutes_text: Mutex::new(None),
+                hold_gate: None,
+                minutes_gate: Some(minutes_gate),
+                cancel_delay: None,
             })
         }
     }
@@ -1755,6 +1869,9 @@ mod tests {
         }
 
         async fn cancel_room_turn(&self, room_id: &str) -> Result<(), String> {
+            if let Some(delay) = self.cancel_delay {
+                tokio::time::sleep(delay).await;
+            }
             self.canceled_rooms.lock().unwrap().push(room_id.to_owned());
             Ok(())
         }
@@ -1765,6 +1882,9 @@ mod tests {
         }
 
         async fn generate_minutes(&self, prompt: String) -> Result<String, String> {
+            if let Some(gate) = &self.minutes_gate {
+                gate.entry().pass().await;
+            }
             let guard = self.minutes_text.lock().unwrap();
             if let Some(custom) = guard.as_ref() {
                 return Ok(custom.clone());
@@ -1778,12 +1898,21 @@ mod tests {
 
     struct MockRemoteDriver {
         candidates: Mutex<Vec<RoomRosterCandidate>>,
+        closed_sessions: Mutex<Vec<(String, String)>>,
     }
 
     impl MockRemoteDriver {
         fn empty() -> Arc<Self> {
             Arc::new(Self {
                 candidates: Mutex::new(Vec::new()),
+                closed_sessions: Mutex::new(Vec::new()),
+            })
+        }
+
+        fn with_candidates(candidates: Vec<RoomRosterCandidate>) -> Arc<Self> {
+            Arc::new(Self {
+                candidates: Mutex::new(candidates),
+                closed_sessions: Mutex::new(Vec::new()),
             })
         }
     }
@@ -1817,7 +1946,11 @@ mod tests {
             Ok(())
         }
 
-        async fn close_remote_session(&self, _room_id: &str, _seat_id: &str) -> Result<(), String> {
+        async fn close_remote_session(&self, room_id: &str, seat_id: &str) -> Result<(), String> {
+            self.closed_sessions
+                .lock()
+                .unwrap()
+                .push((room_id.to_owned(), seat_id.to_owned()));
             Ok(())
         }
     }
@@ -2603,6 +2736,277 @@ mod tests {
         assert!(
             service.agent_view("scout").prompt_block().is_none(),
             "deleted room must disappear from RoomAgentView"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_owner_message_returns_conflict_while_archive_room_generates_minutes() {
+        let minutes_gate = Gate::closed("slow-minutes");
+        let scout = MockLocalParticipant::with_slow_minutes(
+            "scout",
+            vec![Ok("Summary input.".to_owned())],
+            minutes_gate,
+        );
+        let selector = Arc::new(MockSelector::new(true, vec![SelectorOutcome::NoSpeaker]));
+        let (_hub, service) =
+            setup_service(&[("scout", "Scout", Arc::clone(&scout))], selector).await;
+
+        let created = service
+            .create_room(CreateRoomRequest {
+                name: "Archive Race".to_owned(),
+                topic: None,
+                seat_ids: vec!["agent:scout".to_owned()],
+                pinned: false,
+            })
+            .await
+            .unwrap();
+        let room_id = created.room.id.to_string();
+        let mut rx = service.subscribe_events();
+        service
+            .post_owner_message(&room_id, "@Scout log this".to_owned(), Vec::new())
+            .await
+            .unwrap();
+        wait_until_idle(&mut rx, &room_id, &service).await;
+
+        let svc_archive = Arc::clone(&service);
+        let room_for_archive = room_id.clone();
+        let archive_handle =
+            tokio::spawn(async move { svc_archive.archive_room(&room_for_archive).await });
+
+        scout.minutes_gate.as_ref().unwrap().until_held(1).await;
+
+        let mid_archive_post = service
+            .post_owner_message(&room_id, "late post".to_owned(), Vec::new())
+            .await;
+        assert!(
+            matches!(mid_archive_post, Err(RoomServiceError::Conflict(_))),
+            "post_owner_message during generate_minutes must return Conflict, got {mid_archive_post:?}"
+        );
+        assert_eq!(
+            service
+                .get_room(&room_id, 10, None)
+                .await
+                .unwrap()
+                .room
+                .status,
+            RoomStatus::Archived,
+            "room status must already be Archived before minutes generation finishes"
+        );
+
+        scout.minutes_gate.as_ref().unwrap().open_all();
+        let archived = archive_handle.await.unwrap().unwrap();
+        assert_eq!(
+            archived.room.status,
+            RoomStatus::Archived,
+            "archive_room must finish Archived"
+        );
+        assert!(
+            archived.minutes_markdown.is_some(),
+            "archive_room must attach generated minutes"
+        );
+    }
+
+    #[tokio::test]
+    async fn stop_room_and_immediate_post_owner_message_preserves_new_mentions() {
+        let gate = Gate::closed("slow-turn-for-stop-race");
+        let slow = Arc::new(MockLocalParticipant {
+            name: "slow".to_owned(),
+            replies: Mutex::new(VecDeque::new()),
+            closed_rooms: Mutex::new(Vec::new()),
+            canceled_rooms: Mutex::new(Vec::new()),
+            minutes_text: Mutex::new(None),
+            hold_gate: Some(gate),
+            minutes_gate: None,
+            cancel_delay: Some(Duration::from_millis(60)),
+        });
+        let next = MockLocalParticipant::with_replies(
+            "next",
+            vec![Ok("Fresh mention handled.".to_owned())],
+        );
+        let selector = Arc::new(MockSelector::new(true, vec![SelectorOutcome::NoSpeaker]));
+        let (_hub, service) = setup_service(
+            &[("slow", "Slow", Arc::clone(&slow)), ("next", "Next", next)],
+            selector,
+        )
+        .await;
+
+        let created = service
+            .create_room(CreateRoomRequest {
+                name: "Stop Race".to_owned(),
+                topic: None,
+                seat_ids: vec!["agent:slow".to_owned(), "agent:next".to_owned()],
+                pinned: false,
+            })
+            .await
+            .unwrap();
+        let room_id = created.room.id.to_string();
+        let mut rx = service.subscribe_events();
+
+        service
+            .post_owner_message(&room_id, "@Slow @Next first".to_owned(), Vec::new())
+            .await
+            .unwrap();
+        slow.hold_gate.as_ref().unwrap().until_held(1).await;
+
+        let svc_stop = Arc::clone(&service);
+        let room_stop = room_id.clone();
+        let stop_handle = tokio::spawn(async move { svc_stop.stop_room(&room_stop).await });
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        let post_res = service
+            .post_owner_message(&room_id, "@Next second".to_owned(), Vec::new())
+            .await;
+        assert!(
+            post_res.is_ok(),
+            "post_owner_message serialized behind stop_room must succeed: {post_res:?}"
+        );
+        stop_handle.await.unwrap().unwrap();
+        wait_until_idle(&mut rx, &room_id, &service).await;
+
+        let detail = service.get_room(&room_id, 50, None).await.unwrap();
+        let last = detail.messages.last().unwrap();
+        assert_eq!(
+            last.seat_id.as_deref(),
+            Some("agent:next"),
+            "new @Next mention after stop must run and not be wiped by stop_room"
+        );
+        assert_eq!(
+            last.content, "Fresh mention handled.",
+            "new message's queued mention must produce its reply"
+        );
+    }
+
+    #[tokio::test]
+    async fn archive_room_closes_removed_historical_sibling_seat() {
+        let hub = TeamHub::new();
+        let mailboxes = Arc::new(StaticMailboxDirectory::for_team_hub(&hub, &["scout"]));
+        let store = RoomStore::open(hub.dir.path().join("hub").join("rooms"))
+            .await
+            .unwrap();
+        let remote = MockRemoteDriver::with_candidates(vec![
+            RoomRosterCandidate {
+                seat_id: "a2a:ops/planner".to_owned(),
+                kind: RoomSeatKind::SiblingA2a,
+                display_name: "Planner".to_owned(),
+                role: Some("Ops".to_owned()),
+                instance: Some("ops".to_owned()),
+                online: true,
+            },
+            RoomRosterCandidate {
+                seat_id: "a2a:partner".to_owned(),
+                kind: RoomSeatKind::ExternalA2a,
+                display_name: "Partner".to_owned(),
+                role: Some("External".to_owned()),
+                instance: None,
+                online: true,
+            },
+        ]);
+        let selector = Arc::new(MockSelector::new(true, vec![SelectorOutcome::NoSpeaker]));
+        let service = RoomService::with_drivers(
+            store,
+            selector,
+            Arc::clone(&remote) as Arc<dyn RemoteRoomDriver>,
+            hub.coordinator.clone(),
+            mailboxes,
+        )
+        .await;
+        let scout = MockLocalParticipant::with_replies("scout", vec![Ok("Done.".to_owned())]);
+        service.register_local_agent(LocalRoomAgentInfo {
+            name: "scout".to_owned(),
+            display_name: "Scout".to_owned(),
+            role: Some("Scout role".to_owned()),
+            participant: scout,
+        });
+
+        let created = service
+            .create_room(CreateRoomRequest {
+                name: "Sibling Close".to_owned(),
+                topic: None,
+                seat_ids: vec![
+                    "agent:scout".to_owned(),
+                    "a2a:ops/planner".to_owned(),
+                    "a2a:partner".to_owned(),
+                ],
+                pinned: false,
+            })
+            .await
+            .unwrap();
+        let room_id = created.room.id.to_string();
+
+        // Remove the sibling seat mid-meeting before archive.
+        service
+            .patch_room(
+                &room_id,
+                PatchRoomRequest {
+                    remove_seats: Some(vec!["a2a:ops/planner".to_owned()]),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        service.archive_room(&room_id).await.unwrap();
+
+        let closed = remote.closed_sessions.lock().unwrap().clone();
+        assert_eq!(
+            closed,
+            vec![(room_id, "a2a:ops/planner".to_owned())],
+            "removed historical sibling A2A seat must still be closed on archive, and external A2A must not"
+        );
+    }
+
+    #[tokio::test]
+    async fn enabling_decision_model_clears_fallback_on_existing_room() {
+        let scout = MockLocalParticipant::with_replies("scout", Vec::new());
+        let selector = Arc::new(MockSelector::new(false, vec![SelectorOutcome::Unavailable]));
+        let (_hub, service) =
+            setup_service(&[("scout", "Scout", scout)], Arc::clone(&selector)).await;
+
+        let created = service
+            .create_room(CreateRoomRequest {
+                name: "Settings Toggle".to_owned(),
+                topic: None,
+                seat_ids: vec!["agent:scout".to_owned()],
+                pinned: false,
+            })
+            .await
+            .unwrap();
+        assert!(
+            !created.decision_model_active,
+            "decision_model_active must be false when selector is unavailable"
+        );
+        assert!(
+            !created.room.window.decision_model_fallback,
+            "create_room must not pre-latch decision_model_fallback"
+        );
+
+        let room_id = created.room.id.to_string();
+        let mut rx = service.subscribe_events();
+        service
+            .post_owner_message(&room_id, "Anyone there?".to_owned(), Vec::new())
+            .await
+            .unwrap();
+        wait_until_idle(&mut rx, &room_id, &service).await;
+
+        let in_fallback = service.get_room(&room_id, 10, None).await.unwrap();
+        assert!(
+            in_fallback.room.window.decision_model_fallback,
+            "Unavailable selector outcome must latch fallback"
+        );
+        assert!(
+            !in_fallback.decision_model_active,
+            "decision_model_active must remain false while unavailable"
+        );
+
+        *selector.available.lock().unwrap() = true;
+        let recovered = service.get_room(&room_id, 10, None).await.unwrap();
+        assert!(
+            recovered.decision_model_active,
+            "enabling System 1 must immediately make existing room decision_model_active"
+        );
+        assert!(
+            !recovered.room.window.decision_model_fallback,
+            "enabling System 1 must clear decision_model_fallback on existing room"
         );
     }
 }

@@ -32,6 +32,8 @@ pub const ROOM_METADATA_CLOSE: &str = "residuum.room_close";
 const MAX_NON_STREAMING_POLLS: usize = 120;
 const POLL_BASE_MS: u64 = 250;
 const POLL_MAX_MS: u64 = 2_000;
+/// Bounded timeout for best-effort sibling room session close notifications.
+const CLOSE_SESSION_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Input passed to a local agent's isolated `external-room-<room_id>` session.
 #[derive(Debug, Clone)]
@@ -365,8 +367,57 @@ impl RemoteRoomDriver for A2aRoomDriver {
     }
 
     async fn close_remote_session(&self, room_id: &str, seat_id: &str) -> Result<(), String> {
-        let meta = HashMap::from([(ROOM_METADATA_CLOSE.to_owned(), json!(true))]);
-        self.send_cancel(room_id, seat_id, Some(meta)).await
+        let cancel_meta = HashMap::from([(ROOM_METADATA_CLOSE.to_owned(), json!(true))]);
+        if let Err(err) = tokio::time::timeout(
+            CLOSE_SESSION_TIMEOUT,
+            self.send_cancel(room_id, seat_id, Some(cancel_meta)),
+        )
+        .await
+        .unwrap_or_else(|_| Err(format!("timed out canceling remote task for '{seat_id}'")))
+        {
+            tracing::debug!(
+                room_id,
+                seat_id,
+                error = %err,
+                "best-effort CancelTask during room archive close failed; proceeding with room_close message"
+            );
+        }
+
+        let agent_name = seat_id.strip_prefix("a2a:").unwrap_or(seat_id);
+        let (client, _) =
+            tokio::time::timeout(CLOSE_SESSION_TIMEOUT, self.a2a_hub.client_for(agent_name))
+                .await
+                .map_err(|elapsed| {
+                    format!("timed out resolving remote A2A client '{seat_id}': {elapsed}")
+                })?
+                .map_err(|e| e.to_string())?;
+
+        let mut msg = A2aMessage::new(Role::User, vec![Part::text("[room closed]")]);
+        msg.context_id = Some(format!("room-{room_id}"));
+        msg.metadata = Some(HashMap::from([
+            (ROOM_METADATA_FLAG.to_owned(), json!(true)),
+            (ROOM_METADATA_ID.to_owned(), json!(room_id)),
+            (ROOM_METADATA_CLOSE.to_owned(), json!(true)),
+        ]));
+        let send_req = SendMessageRequest {
+            message: msg,
+            configuration: Some(SendMessageConfiguration {
+                accepted_output_modes: None,
+                task_push_notification_config: None,
+                history_length: None,
+                return_immediately: Some(false),
+            }),
+            metadata: None,
+            tenant: None,
+        };
+
+        tokio::time::timeout(CLOSE_SESSION_TIMEOUT, client.send_message(&send_req))
+            .await
+            .map_err(|elapsed| {
+                format!("timed out closing remote room session '{seat_id}': {elapsed}")
+            })?
+            .map_err(|e| e.to_string())?;
+        Ok(())
     }
 }
 
@@ -605,11 +656,126 @@ mod tests {
         );
     }
 
+    #[derive(Clone, Copy)]
+    enum MockReplyMode {
+        CompletedTask,
+        InputRequiredTask,
+        WorkingUntilCanceled,
+    }
+
+    fn build_mock_rpc_response(
+        parsed: &serde_json::Value,
+        mode: MockReplyMode,
+        canceled: &std::sync::atomic::AtomicBool,
+    ) -> serde_json::Value {
+        let rpc_id = parsed.get("id").cloned().unwrap_or(json!(1));
+        let rpc_method = parsed.get("method").and_then(|v| v.as_str()).unwrap_or("");
+        let is_room_close = parsed
+            .get("params")
+            .and_then(|p| p.get("message"))
+            .and_then(|m| m.get("metadata"))
+            .and_then(|meta| meta.get(ROOM_METADATA_CLOSE))
+            .and_then(serde_json::Value::as_bool)
+            == Some(true);
+        let context_id = parsed
+            .get("params")
+            .and_then(|p| p.get("message"))
+            .and_then(|m| m.get("contextId"))
+            .and_then(|c| c.as_str())
+            .unwrap_or("room-room_01jcv8k9m2p4q7")
+            .to_owned();
+
+        let result_value = match rpc_method {
+            "CancelTask" => {
+                canceled.store(true, std::sync::atomic::Ordering::SeqCst);
+                serde_json::to_value(Task {
+                    id: "task-1".to_owned(),
+                    context_id,
+                    status: a2a::TaskStatus {
+                        state: TaskState::Canceled,
+                        message: None,
+                        timestamp: None,
+                    },
+                    artifacts: None,
+                    history: None,
+                    metadata: None,
+                })
+                .unwrap()
+            }
+            "GetTask" => {
+                let state = if canceled.load(std::sync::atomic::Ordering::SeqCst) {
+                    TaskState::Canceled
+                } else {
+                    TaskState::Working
+                };
+                serde_json::to_value(Task {
+                    id: "task-1".to_owned(),
+                    context_id,
+                    status: a2a::TaskStatus {
+                        state,
+                        message: None,
+                        timestamp: None,
+                    },
+                    artifacts: None,
+                    history: None,
+                    metadata: None,
+                })
+                .unwrap()
+            }
+            _ if is_room_close => serde_json::to_value(SendMessageResponse::Task(Task {
+                id: "task-close".to_owned(),
+                context_id,
+                status: a2a::TaskStatus {
+                    state: TaskState::Completed,
+                    message: None,
+                    timestamp: None,
+                },
+                artifacts: None,
+                history: None,
+                metadata: None,
+            }))
+            .unwrap(),
+            _ => {
+                let state = match mode {
+                    MockReplyMode::CompletedTask => TaskState::Completed,
+                    MockReplyMode::InputRequiredTask => TaskState::InputRequired,
+                    MockReplyMode::WorkingUntilCanceled => TaskState::Working,
+                };
+                let reply_msg = match mode {
+                    MockReplyMode::CompletedTask | MockReplyMode::InputRequiredTask => Some(
+                        A2aMessage::new(Role::Agent, vec![Part::text("Ops reply ready")]),
+                    ),
+                    MockReplyMode::WorkingUntilCanceled => None,
+                };
+                serde_json::to_value(SendMessageResponse::Task(Task {
+                    id: "task-1".to_owned(),
+                    context_id,
+                    status: a2a::TaskStatus {
+                        state,
+                        message: reply_msg,
+                        timestamp: None,
+                    },
+                    artifacts: None,
+                    history: None,
+                    metadata: None,
+                }))
+                .unwrap()
+            }
+        };
+        json!({
+            "jsonrpc": "2.0",
+            "id": rpc_id,
+            "result": result_value,
+        })
+    }
+
     async fn spawn_mock_a2a_server(
         captured: Arc<Mutex<Vec<serde_json::Value>>>,
+        mode: MockReplyMode,
     ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
+        let canceled = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let srv_task = tokio::spawn(async move {
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
             loop {
@@ -617,6 +783,7 @@ mod tests {
                     return;
                 };
                 let captured_conn = Arc::clone(&captured);
+                let canceled_conn = Arc::clone(&canceled);
                 tokio::spawn(async move {
                     let mut buf = vec![0_u8; 16_384];
                     let n = sock.read(&mut buf).await.unwrap_or(0);
@@ -636,19 +803,8 @@ mod tests {
                         let raw_json = req.get(body_start..).unwrap_or("");
                         let parsed: serde_json::Value =
                             serde_json::from_str(raw_json).unwrap_or_default();
-                        let rpc_id = parsed.get("id").cloned().unwrap_or(json!(1));
+                        let rpc_resp = build_mock_rpc_response(&parsed, mode, &canceled_conn);
                         captured_conn.lock().await.push(parsed);
-                        let rpc_resp = json!({
-                            "jsonrpc": "2.0",
-                            "id": rpc_id,
-                            "result": {
-                                "message": {
-                                    "messageId": "msg-1",
-                                    "role": "ROLE_AGENT",
-                                    "parts": [{"text": "Ops reply ready"}]
-                                }
-                            }
-                        });
                         ("200 OK", rpc_resp.to_string())
                     };
                     let resp = format!(
@@ -662,10 +818,39 @@ mod tests {
         (addr, srv_task)
     }
 
+    fn assert_room_turn_metadata(req: &serde_json::Value, room_id: &str, room_name: &str) {
+        let sent_msg = req.get("params").and_then(|p| p.get("message")).unwrap();
+        assert_eq!(
+            sent_msg.get("contextId").and_then(|v| v.as_str()),
+            Some(format!("room-{room_id}").as_str()),
+            "contextId must be room-<room_id>"
+        );
+        let meta = sent_msg.get("metadata").unwrap();
+        assert_eq!(
+            meta.get(ROOM_METADATA_FLAG)
+                .and_then(serde_json::Value::as_bool),
+            Some(true),
+            "residuum.room metadata must be true"
+        );
+        assert_eq!(
+            meta.get(ROOM_METADATA_ID)
+                .and_then(serde_json::Value::as_str),
+            Some(room_id),
+            "residuum.room_id metadata must match"
+        );
+        assert_eq!(
+            meta.get(ROOM_METADATA_NAME)
+                .and_then(serde_json::Value::as_str),
+            Some(room_name),
+            "residuum.room_name metadata must match"
+        );
+    }
+
     #[tokio::test]
-    async fn a2a_driver_delivers_context_id_room_metadata_and_handles_cancel() {
+    async fn a2a_driver_delivers_context_id_room_metadata_and_closes_completed_session() {
         let captured = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
-        let (addr, srv_task) = spawn_mock_a2a_server(Arc::clone(&captured)).await;
+        let (addr, srv_task) =
+            spawn_mock_a2a_server(Arc::clone(&captured), MockReplyMode::CompletedTask).await;
 
         let hub = A2aClientHub::new_shared();
         hub.register_external(
@@ -702,36 +887,162 @@ mod tests {
             "remote reply text must match"
         );
 
+        driver
+            .close_remote_session("room_01jcv8k9m2p4q7", "a2a:ops/planner")
+            .await
+            .unwrap();
+
         let reqs = captured.lock().await;
-        let sent_msg = reqs
-            .first()
-            .and_then(|v| v.get("params"))
+        assert_eq!(
+            reqs.len(),
+            2,
+            "expected turn SendMessage + close_remote_session SendMessage"
+        );
+        assert_room_turn_metadata(reqs.first().unwrap(), "room_01jcv8k9m2p4q7", "Ops Review");
+
+        let close_req = reqs.get(1).unwrap();
+        assert_eq!(
+            close_req.get("method").and_then(|v| v.as_str()),
+            Some("SendMessage"),
+            "close_remote_session after Completed turn must use SendMessage"
+        );
+        let close_msg = close_req
+            .get("params")
             .and_then(|p| p.get("message"))
             .unwrap();
         assert_eq!(
-            sent_msg.get("contextId").and_then(|v| v.as_str()),
+            close_msg.get("contextId").and_then(|v| v.as_str()),
             Some("room-room_01jcv8k9m2p4q7"),
-            "contextId must be room-<room_id>"
+            "close SendMessage must target the room contextId"
         );
-        let meta = sent_msg.get("metadata").unwrap();
+        let close_meta = close_msg.get("metadata").unwrap();
         assert_eq!(
-            meta.get(ROOM_METADATA_FLAG)
+            close_meta
+                .get(ROOM_METADATA_FLAG)
                 .and_then(serde_json::Value::as_bool),
             Some(true),
-            "residuum.room metadata must be true"
+            "close SendMessage must set residuum.room = true"
         );
         assert_eq!(
-            meta.get(ROOM_METADATA_ID)
+            close_meta
+                .get(ROOM_METADATA_ID)
                 .and_then(serde_json::Value::as_str),
             Some("room_01jcv8k9m2p4q7"),
-            "residuum.room_id metadata must match"
+            "close SendMessage must set residuum.room_id"
         );
         assert_eq!(
-            meta.get(ROOM_METADATA_NAME)
-                .and_then(serde_json::Value::as_str),
-            Some("Ops Review"),
-            "residuum.room_name metadata must match"
+            close_meta
+                .get(ROOM_METADATA_CLOSE)
+                .and_then(serde_json::Value::as_bool),
+            Some(true),
+            "close SendMessage must set residuum.room_close = true"
         );
         srv_task.abort();
+    }
+
+    #[tokio::test]
+    async fn a2a_driver_cancels_in_flight_and_input_required_tasks() {
+        // 1. InputRequired task: cancel_remote_turn sends CancelTask.
+        let captured_input = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let (addr_input, srv_input) = spawn_mock_a2a_server(
+            Arc::clone(&captured_input),
+            MockReplyMode::InputRequiredTask,
+        )
+        .await;
+        let hub_input = A2aClientHub::new_shared();
+        hub_input
+            .register_external(
+                "ops/planner".to_owned(),
+                format!("http://{addr_input}"),
+                HashMap::new(),
+                AgentSource::Sibling,
+            )
+            .await;
+        let driver_input = A2aRoomDriver::new(hub_input);
+        driver_input
+            .run_remote_turn(RemoteRoomTurnRequest {
+                seat_id: "a2a:ops/planner".to_owned(),
+                room_id: "room_01jcv8k9m2p4q7".to_owned(),
+                room_name: "Ops Review".to_owned(),
+                prompt: "Need input?".to_owned(),
+            })
+            .await
+            .unwrap();
+        driver_input
+            .cancel_remote_turn("room_01jcv8k9m2p4q7", "a2a:ops/planner")
+            .await
+            .unwrap();
+        {
+            let reqs = captured_input.lock().await;
+            let cancel_req = reqs
+                .iter()
+                .find(|r| r.get("method").and_then(|v| v.as_str()) == Some("CancelTask"))
+                .expect("CancelTask must be sent for InputRequired task");
+            assert_eq!(
+                cancel_req
+                    .get("params")
+                    .and_then(|p| p.get("id"))
+                    .and_then(|v| v.as_str()),
+                Some("task-1"),
+                "CancelTask must target the open task id"
+            );
+        }
+        srv_input.abort();
+
+        // 2. In-flight Working task: cancel_remote_turn sends CancelTask while polling.
+        let captured_work = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let (addr_work, srv_work) = spawn_mock_a2a_server(
+            Arc::clone(&captured_work),
+            MockReplyMode::WorkingUntilCanceled,
+        )
+        .await;
+        let hub_work = A2aClientHub::new_shared();
+        hub_work
+            .register_external(
+                "ops/planner".to_owned(),
+                format!("http://{addr_work}"),
+                HashMap::new(),
+                AgentSource::Sibling,
+            )
+            .await;
+        let driver_work = Arc::new(A2aRoomDriver::new(hub_work));
+        let driver_bg = Arc::clone(&driver_work);
+        let turn_handle = tokio::spawn(async move {
+            driver_bg
+                .run_remote_turn(RemoteRoomTurnRequest {
+                    seat_id: "a2a:ops/planner".to_owned(),
+                    room_id: "room_01jcv8k9m2p4q7".to_owned(),
+                    room_name: "Ops Review".to_owned(),
+                    prompt: "Long job".to_owned(),
+                })
+                .await
+        });
+
+        residuum_core::testing::wait::guarded("in_flight task recorded", async {
+            loop {
+                if !driver_work.in_flight.lock().await.is_empty() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+
+        driver_work
+            .cancel_remote_turn("room_01jcv8k9m2p4q7", "a2a:ops/planner")
+            .await
+            .unwrap();
+        let turn_res = turn_handle.await.unwrap();
+        assert!(
+            turn_res.is_err(),
+            "canceled remote turn must resolve with turn canceled error"
+        );
+        let reqs = captured_work.lock().await;
+        assert!(
+            reqs.iter()
+                .any(|r| r.get("method").and_then(|v| v.as_str()) == Some("CancelTask")),
+            "CancelTask must hit mock server for in-flight Working task"
+        );
+        srv_work.abort();
     }
 }

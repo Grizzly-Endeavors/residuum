@@ -243,6 +243,20 @@ async fn run_execution(executor: SessionExecutor, ctx: ExecutorContext, tx: Exec
     };
     let address = SessionExecutor::address_for(&caller, &context_id);
 
+    let Some(message) = ctx.message.clone() else {
+        tx.send(Err(A2AError::internal("execute() called with no message")))
+            .await
+            .ok();
+        return;
+    };
+
+    if is_sibling_room_close(&caller, &message) {
+        executor.session_registry.stop(&address);
+        let update = status_update(&task_id, &context_id, TaskState::Completed, None);
+        tx.send(Ok(update)).await.ok();
+        return;
+    }
+
     // Subscribe BEFORE delivering the message, so nothing the session does
     // in response can be published and missed before we start listening.
     let mut subs = match subscribe_before_delivery(&executor).await {
@@ -253,19 +267,24 @@ async fn run_execution(executor: SessionExecutor, ctx: ExecutorContext, tx: Exec
         }
     };
 
-    let Some(message) = ctx.message.clone() else {
-        tx.send(Err(A2AError::internal("execute() called with no message")))
-            .await
-            .ok();
-        return;
-    };
-
     if let Err(e) = deliver_inbound(&executor, &address, &caller, &context_id, &message).await {
         tx.send(Err(e)).await.ok();
         return;
     }
 
     stream_until_terminal(&executor, &address, &task_id, &context_id, &mut subs, &tx).await;
+}
+
+/// Whether an inbound A2A message is a sibling room-close notification that
+/// should stop the room session directly without running an LLM turn.
+fn is_sibling_room_close(caller: &str, message: &A2aMessage) -> bool {
+    caller.starts_with("sibling:")
+        && message
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("residuum.room_close"))
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
 }
 
 /// A caller's bare name for display (`laptop` for `sibling:laptop`,
@@ -828,6 +847,146 @@ mod tests {
         assert_eq!(
             inbound_room_model("sibling:team-b", Some(&string_meta)),
             ModelSelector::MEDIUM
+        );
+    }
+
+    async fn test_executor_setup() -> (
+        SessionExecutor,
+        Arc<SessionRegistry>,
+        residuum_bus::Subscriber<residuum_bus::SpawnRequestEvent>,
+    ) {
+        use residuum_agent::hop::HopLimits;
+        use residuum_config::A2aConfig;
+        use residuum_skills::{SkillIndex, SkillState};
+
+        use crate::card::{CardRuntime, CardState};
+
+        let bus_handle = residuum_bus::spawn_broker();
+        let spawn_sub: residuum_bus::Subscriber<residuum_bus::SpawnRequestEvent> =
+            bus_handle.subscribe(topics::Background).await.unwrap();
+        let registry = Arc::new(SessionRegistry::new());
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            residuum_background::store::SessionStore::new(dir.path().to_path_buf())
+                .with_tempdir_guard(dir),
+        );
+        let messenger = Arc::new(AgentMessenger::new(
+            Arc::clone(&registry),
+            bus_handle.publisher(),
+            Arc::clone(&store),
+            HopLimits { soft: 8, hard: 32 },
+        ));
+        let skill_state = SkillState::new_shared(SkillIndex::default(), vec![]);
+        let card_runtime =
+            CardRuntime::from_config(&A2aConfig::default(), "127.0.0.1:0", "planner", None);
+        let inbox_dir = tempfile::tempdir().unwrap();
+        let card_state =
+            CardState::load_or_default(&inbox_dir.path().join("card.json"), &card_runtime);
+        let executor = SessionExecutor::new(
+            messenger,
+            Arc::clone(&registry),
+            bus_handle,
+            skill_state,
+            card_state,
+            inbox_dir.path().to_path_buf(),
+            chrono_tz::UTC,
+        );
+        (executor, registry, spawn_sub)
+    }
+
+    #[tokio::test]
+    async fn sibling_room_close_stops_session_without_delivering_turn() {
+        use futures_util::StreamExt as _;
+        use residuum_bus::EventTrigger;
+        use residuum_bus::session::{SessionCategory, SessionInfo};
+        use tokio_util::sync::CancellationToken;
+
+        let (executor, registry, mut spawn_sub) = test_executor_setup().await;
+
+        let caller = "sibling:aether";
+        let context_id = "room-room_01jcv8k9m2p4q7";
+        let address = SessionExecutor::address_for(caller, context_id);
+        let stop_token = CancellationToken::new();
+        let mut interrupt_rx = registry
+            .register(
+                SessionInfo {
+                    address: address.clone(),
+                    run_id: "run-room-1".to_string(),
+                    category: SessionCategory::External,
+                    trigger: EventTrigger::Conversation,
+                    source_label: "a2a:aether".to_string(),
+                    state: SessionState::Idle,
+                    spawner: None,
+                    depth: 0,
+                    purpose: "room session".to_string(),
+                    agent_skill: None,
+                    model: ModelSelector::MAIN,
+                    resolved_model: None,
+                    conversation_target: None,
+                    started_at: chrono::Utc::now(),
+                    usage: residuum_bus::usage::SessionUsageTotals::default(),
+                    overlap: None,
+                },
+                stop_token.clone(),
+            )
+            .unwrap();
+
+        let mut msg = A2aMessage::new(a2a::Role::User, vec![Part::text("[room closed]")]);
+        msg.metadata = Some(HashMap::from([
+            ("residuum.room".to_string(), serde_json::json!(true)),
+            ("residuum.room_close".to_string(), serde_json::json!(true)),
+        ]));
+
+        let mut service_params = a2a_server::ServiceParams::new();
+        service_params.insert(CALLER_HEADER.to_string(), vec![caller.to_string()]);
+
+        let ctx = ExecutorContext {
+            message: Some(msg.clone()),
+            task_id: "task-close-1".to_string(),
+            stored_task: None,
+            context_id: context_id.to_string(),
+            metadata: None,
+            user: None,
+            service_params,
+            tenant: None,
+        };
+
+        let events: Vec<_> = executor.execute(ctx).collect().await;
+        assert_eq!(
+            events.len(),
+            1,
+            "sibling room close must emit exactly one status update"
+        );
+        match events.first() {
+            Some(Ok(StreamResponse::StatusUpdate(ev))) => {
+                assert_eq!(
+                    ev.status.state,
+                    TaskState::Completed,
+                    "sibling room close must complete immediately"
+                );
+                assert!(
+                    ev.status.message.is_none(),
+                    "sibling room close must not emit an agent reply message"
+                );
+            }
+            other => panic!("expected Completed status update, got {other:?}"),
+        }
+
+        assert!(
+            stop_token.is_cancelled(),
+            "sibling room close must cancel the registered session's stop token"
+        );
+        assert!(
+            interrupt_rx.try_recv().is_err(),
+            "sibling room close must not deliver an inbound conversation message"
+        );
+        assert!(
+            futures_util::FutureExt::now_or_never(spawn_sub.recv()).is_none(),
+            "sibling room close must not publish a spawn request"
+        );
+        assert!(
+            !is_sibling_room_close("key:partner", &msg),
+            "non-sibling key callers must not trigger the sibling room-close shortcut"
         );
     }
 }
