@@ -5629,6 +5629,7 @@ dependencies = [
  "residuum-inference",
  "residuum-memory",
  "residuum-proactivity",
+ "residuum-rooms",
  "residuum-skills",
  "residuum-tracing-service",
  "residuum-workspace",

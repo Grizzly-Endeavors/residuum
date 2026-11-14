@@ -25,6 +25,7 @@ residuum-proactivity = { workspace = true }
 residuum-agent = { workspace = true }
 residuum-background = { workspace = true }
 residuum-a2a = { workspace = true }
+residuum-rooms = { workspace = true }
 a2a = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }

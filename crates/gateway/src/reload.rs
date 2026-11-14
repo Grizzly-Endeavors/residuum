@@ -684,6 +684,7 @@ fn build_spawn_context(
         auto_mode: Some(Arc::clone(&rt.auto_mode)),
         // The same mailboxes main's tools were given at startup.
         mailboxes: rt.tool_injections.mailboxes.clone(),
+        room_view: None,
     });
 
     Arc::new(SpawnContext {

@@ -410,6 +410,7 @@ fn build_startup_spawn_context(inputs: StartupSpawnContextInputs<'_>) -> Arc<Spa
         depth_cap: inputs.cfg.background.subagent_depth_cap,
         auto_mode: Some(Arc::clone(inputs.auto_mode)),
         mailboxes: Some(Arc::clone(inputs.mailboxes)),
+        room_view: None,
     });
     Arc::new(SpawnContext {
         background_config: inputs.cfg.background.clone(),
@@ -1004,6 +1005,7 @@ async fn build_main_agent(
             lifecycle: inputs.lifecycle,
             model_catalog: inputs.model_catalog,
             mailboxes: Some(Arc::clone(inputs.mailboxes)),
+            room_view: None,
         },
         mcp_registry: &inputs.net.mcp_registry,
         provider: inputs.provider,

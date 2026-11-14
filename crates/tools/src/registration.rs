@@ -426,6 +426,21 @@ pub fn register_web_fetch_tool(tools: &mut ToolRegistry) {
     tools.register(Box::new(web_fetch::WebFetchTool::new()));
 }
 
+/// Register the `room_read` tool when `room_view` is provided.
+///
+/// Standalone tool registries and tests without a hub `RoomService` pass
+/// `None` and omit `room_read`; hub-hosted main and session registries pass
+/// `Some(view)` so both the main agent and forked sessions of a participating
+/// agent can list and read their rooms.
+pub fn register_room_tools(
+    tools: &mut ToolRegistry,
+    room_view: Option<residuum_rooms::RoomAgentView>,
+) {
+    if let Some(view) = room_view {
+        tools.register(Box::new(super::rooms::RoomReadTool::new(view)));
+    }
+}
+
 /// Register the `workspace_history` and `workspace_restore` tools, covering
 /// the workspace and team checkpoint repositories.
 pub fn register_workspace_checkpoint_tools(
