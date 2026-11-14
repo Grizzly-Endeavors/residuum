@@ -39,6 +39,7 @@ residuum-memory = { path = "crates/memory", version = "0.1.0" }
 residuum-net = { path = "crates/net", version = "0.1.0" }
 residuum-mcp = { path = "crates/mcp", version = "0.1.0" }
 residuum-a2a = { path = "crates/a2a", version = "0.1.0" }
+residuum-rooms = { path = "crates/rooms", version = "0.1.0" }
 residuum-tools = { path = "crates/tools", version = "0.1.0" }
 residuum-hub = { path = "crates/hub", version = "0.1.0" }
 residuum-gateway = { path = "crates/gateway", version = "0.1.0" }
