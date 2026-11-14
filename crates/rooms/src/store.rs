@@ -112,6 +112,19 @@ impl RoomStore {
         &self.rooms_root
     }
 
+    /// Create an empty [`RoomStore`] synchronously on a fresh directory (test-support helper).
+    ///
+    /// # Errors
+    /// Returns [`std::io::Error`] if `rooms_root` cannot be created.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn open_empty_sync(rooms_root: PathBuf) -> std::io::Result<Self> {
+        std::fs::create_dir_all(&rooms_root)?;
+        Ok(Self {
+            rooms_root,
+            rooms: RwLock::new(BTreeMap::new()),
+        })
+    }
+
     /// List all room records sorted by `updated_at` descending.
     pub async fn list_records(&self) -> Vec<RoomRecord> {
         let guard = self.rooms.read().await;

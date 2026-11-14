@@ -57,6 +57,12 @@ use residuum::remote_access::status::{
     CertificateInfo, InstanceInfo, JoinProgress, JoinState, PendingJoinInfo, PinInfo,
     RemoteAccessState, RemoteAccessStatus, RemoteHosts, SiblingInfo,
 };
+use residuum::rooms::{
+    CreateRoomRequest, MarkRoomReadRequest, PatchRoomRequest, PostRoomMessageRequest,
+    RoomActiveTurn, RoomAttachment, RoomCandidatesResponse, RoomDetail, RoomDetailResponse, RoomId,
+    RoomListResponse, RoomMessage, RoomMessageKind, RoomMinutesMeta, RoomRecord,
+    RoomRosterCandidate, RoomSeat, RoomSeatKind, RoomStatus, RoomSummary, RoomWindowState,
+};
 use residuum_net::workbench::ArtifactSummary;
 
 #[test]
@@ -263,6 +269,29 @@ fn export_protocol_types() {
     CleanupFailure::export_all(&cfg).unwrap();
     CleanupResult::export_all(&cfg).unwrap();
 
+    // Meeting Rooms (`#860`).
+    RoomId::export_all(&cfg).unwrap();
+    RoomStatus::export_all(&cfg).unwrap();
+    RoomSeatKind::export_all(&cfg).unwrap();
+    RoomSeat::export_all(&cfg).unwrap();
+    RoomWindowState::export_all(&cfg).unwrap();
+    RoomMinutesMeta::export_all(&cfg).unwrap();
+    RoomRecord::export_all(&cfg).unwrap();
+    RoomSummary::export_all(&cfg).unwrap();
+    RoomActiveTurn::export_all(&cfg).unwrap();
+    RoomDetail::export_all(&cfg).unwrap();
+    RoomMessageKind::export_all(&cfg).unwrap();
+    RoomAttachment::export_all(&cfg).unwrap();
+    RoomMessage::export_all(&cfg).unwrap();
+    RoomRosterCandidate::export_all(&cfg).unwrap();
+    RoomListResponse::export_all(&cfg).unwrap();
+    RoomCandidatesResponse::export_all(&cfg).unwrap();
+    CreateRoomRequest::export_all(&cfg).unwrap();
+    PatchRoomRequest::export_all(&cfg).unwrap();
+    MarkRoomReadRequest::export_all(&cfg).unwrap();
+    PostRoomMessageRequest::export_all(&cfg).unwrap();
+    RoomDetailResponse::export_all(&cfg).unwrap();
+
     // Verify the generated files exist
     assert!(
         std::path::Path::new(&out_dir)
@@ -293,5 +322,11 @@ fn export_protocol_types() {
             .join("TeamsSetupPrereqs.ts")
             .exists(),
         "TeamsSetupPrereqs.ts should be generated"
+    );
+    assert!(
+        std::path::Path::new(&out_dir)
+            .join("RoomDetailResponse.ts")
+            .exists(),
+        "RoomDetailResponse.ts should be generated"
     );
 }

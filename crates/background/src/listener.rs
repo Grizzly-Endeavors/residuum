@@ -1537,6 +1537,7 @@ mod tests {
             merge_writer,
             messenger,
             bg_tier_active_index: crate::spawn_context::BackgroundTierActiveIndex::default(),
+            room_roster: None,
         })
     }
 

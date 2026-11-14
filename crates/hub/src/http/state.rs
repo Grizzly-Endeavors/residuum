@@ -112,6 +112,8 @@ pub struct HubHttpState {
     /// The staged uploads `POST /api/hub/uploads` writes, which sends later
     /// consume.
     pub uploads: UploadStore,
+    /// Shared meeting-room coordinator, backing `/api/hub/rooms/*` and `/api/hub/ws`.
+    pub rooms: Arc<residuum_rooms::RoomService>,
     /// The embedded web app, which the static routes serve.
     pub assets: WebAssetSource,
 }

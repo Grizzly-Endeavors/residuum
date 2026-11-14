@@ -36,6 +36,7 @@ mod pairing;
 mod process;
 mod push;
 mod remote_access;
+mod rooms;
 mod session_relay;
 mod state;
 #[cfg(test)]
@@ -79,6 +80,7 @@ pub fn hub_router(directory: Arc<dyn AgentDirectory>, hub: HubHttpState) -> Rout
         agent_changes: Arc::clone(&hub.agent_changes),
         presence: Arc::clone(hub.push.presence()),
         system_one: Arc::clone(&hub.system_one),
+        rooms: Arc::clone(&hub.rooms),
     };
 
     let app = Router::new()
@@ -98,6 +100,10 @@ pub fn hub_router(directory: Arc<dyn AgentDirectory>, hub: HubHttpState) -> Rout
         .merge(overview::routes(Arc::clone(&hub.overview)))
         .merge(pairing::routes(hub.pairing.clone()))
         .merge(remote_access::routes(hub.remote_access.clone()))
+        .merge(rooms::routes(rooms::RoomsHttpState {
+            rooms: Arc::clone(&hub.rooms),
+            uploads: hub.uploads.clone(),
+        }))
         .merge(process::hub_config_routes(&hub))
         .merge(process::cloud_routes(&hub))
         .merge(process::update_routes(&hub))

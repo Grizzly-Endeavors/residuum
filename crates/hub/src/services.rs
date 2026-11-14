@@ -213,6 +213,11 @@ pub struct HubServices {
     /// The staged uploads, shared by the hub routes and every send that
     /// consumes one.
     pub uploads: UploadStore,
+    /// Remote A2A client hub shared by Meeting Rooms, subscribed to
+    /// `sibling_fanout` and synced with configured `a2a.json` agents.
+    pub rooms_a2a: Arc<residuum_a2a::A2aClientHub>,
+    /// Multi-agent meeting room coordinator and store (`<hub_dir>/rooms`).
+    pub rooms: Arc<residuum_rooms::RoomService>,
 }
 
 impl HubServices {
@@ -272,11 +277,34 @@ impl HubServices {
             Arc::clone(&sibling_fanout),
             remote_access.discovery_receiver(),
         );
-        Ok(Self {
+        let system_one = SystemOneService::new(hub.system_one.as_ref());
+        let mailboxes = residuum_workspace::inbox::mail::MailboxDirectoryHandle::unbound();
+        let rooms_a2a = residuum_a2a::A2aClientHub::new_shared();
+        sibling_fanout
+            .register("__hub_rooms__", Arc::clone(&rooms_a2a))
+            .await;
+        rooms_a2a.spawn_background_refresh();
+        let room_store = residuum_rooms::RoomStore::open(hub_dir.join("rooms"))
+            .await
+            .map_err(|e| {
+                FatalError::Config(format!(
+                    "failed to open the room store under {}: {e}",
+                    hub_dir.display()
+                ))
+            })?;
+        let rooms = residuum_rooms::RoomService::new(
+            room_store,
+            Arc::clone(&system_one),
+            Arc::clone(&rooms_a2a),
+            team.clone(),
+            Arc::new(mailboxes.clone()),
+        )
+        .await;
+        let services = Self {
             root: root.to_path_buf(),
             a2a_keys: residuum_a2a::A2aKeys::new_shared(&hub_dir),
             push: PushService::new(&hub_dir, hub.push.contact.as_deref()),
-            system_one: SystemOneService::new(hub.system_one.as_ref()),
+            system_one,
             hub_dir,
             team,
             team_wiki,
@@ -292,11 +320,53 @@ impl HubServices {
             sibling_fanout,
             team_router: residuum_background::team::TeamRouter::new_shared(directory.clone()),
             directory,
-            mailboxes: residuum_workspace::inbox::mail::MailboxDirectoryHandle::unbound(),
+            mailboxes,
             pairing,
             remote_access,
             uploads,
-        })
+            rooms_a2a,
+            rooms,
+        };
+        services.sync_rooms_a2a().await;
+        Ok(services)
+    }
+
+    /// Reconcile [`Self::rooms_a2a`]'s `Config`-sourced external A2A agents
+    /// from `<hub_dir>/a2a.json` and each local agent's `<agent_dir>/config/a2a.json`.
+    pub async fn sync_rooms_a2a(&self) {
+        let snapshot = match self.agent_keys.snapshot().await {
+            Ok(s) => s,
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "skipping rooms A2A config sync: agent key store unavailable"
+                );
+                return;
+            }
+        };
+        let mut desired = std::collections::HashMap::new();
+        let hub_a2a = self.hub_dir.join("a2a.json");
+        match residuum_a2a::client::load_a2a_agents_map(&hub_a2a, &snapshot.store) {
+            Ok(map) => desired.extend(map),
+            Err(err) => {
+                tracing::warn!(error = %err, path = %hub_a2a.display(), "failed to read hub a2a.json");
+            }
+        }
+        if let Ok(agent_names) = residuum_config::discover_agents(&self.root) {
+            for name in agent_names {
+                let path = residuum_config::WorkspaceLayout::new(
+                    residuum_config::paths::agent_dir(&self.root, &name),
+                )
+                .a2a_agents_json();
+                match residuum_a2a::client::load_a2a_agents_map(&path, &snapshot.store) {
+                    Ok(map) => desired.extend(map),
+                    Err(err) => {
+                        tracing::warn!(agent = %name, error = %err, path = %path.display(), "failed to read agent a2a.json for rooms");
+                    }
+                }
+            }
+        }
+        self.rooms_a2a.set_config_agents(desired).await;
     }
 
     /// Shared services over a throwaway hub rooted at `root`, with a

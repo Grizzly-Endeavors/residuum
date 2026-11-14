@@ -59,6 +59,7 @@ mod overview;
 mod overview_schedule;
 mod pairing;
 mod push;
+mod rooms;
 mod session_relay;
 mod uploads;
 mod usage;
@@ -476,6 +477,8 @@ struct Harness {
     root: tempfile::TempDir,
     /// The upload store the hub serves, for a test to resolve what it staged.
     uploads: crate::uploads::UploadStore,
+    /// Meeting rooms coordinator used by `/api/hub/rooms/*` and `/api/hub/ws`.
+    rooms: Arc<residuum_rooms::RoomService>,
     reload_rx: mpsc::UnboundedReceiver<ReloadSignal>,
     shutdown_rx: mpsc::Receiver<()>,
     team_bus: residuum_bus::BusHandle,
@@ -489,6 +492,32 @@ struct Harness {
     _tunnel_tx: watch::Sender<TunnelStatus>,
     health_tx: watch::Sender<WatchHealth>,
     _restart_rx: mpsc::Receiver<()>,
+}
+
+fn test_room_service(
+    hub_dir: &Path,
+    root: &Path,
+    shared: &Arc<dyn AgentDirectory>,
+    system_one: Arc<residuum_inference::system_one::SystemOneService>,
+) -> Arc<residuum_rooms::RoomService> {
+    struct DirMailboxes(Arc<dyn AgentDirectory>);
+    impl residuum_workspace::inbox::mail::MailboxDirectory for DirMailboxes {
+        fn mailboxes(&self) -> Vec<residuum_workspace::inbox::mail::Mailbox> {
+            crate::mail::AgentMailboxes(self.0.as_ref()).mailboxes()
+        }
+        fn mailbox(&self, agent: &str) -> Option<residuum_workspace::inbox::mail::Mailbox> {
+            crate::mail::AgentMailboxes(self.0.as_ref()).mailbox(agent)
+        }
+    }
+    let room_store = residuum_rooms::RoomStore::open_empty_sync(hub_dir.join("rooms")).unwrap();
+    let rooms_a2a = residuum_a2a::A2aClientHub::new_shared();
+    residuum_rooms::RoomService::new_empty_sync(
+        room_store,
+        system_one,
+        rooms_a2a,
+        TeamWriteCoordinator::new(&TeamPaths::new(root.join("team"))),
+        Arc::new(DirMailboxes(Arc::clone(shared))),
+    )
 }
 
 impl Harness {
@@ -527,6 +556,8 @@ impl Harness {
         let push = crate::push::PushService::new(&hub_dir, None);
         let pairing = residuum_net::pairing::DevicePairing::open(&hub_dir);
         let uploads = crate::uploads::UploadStore::open(&hub_dir).unwrap();
+        let system_one = residuum_inference::system_one::SystemOneService::new(None);
+        let rooms = test_room_service(&hub_dir, root.path(), &shared, Arc::clone(&system_one));
         let hub = HubHttpState {
             assets: crate::testing::fixture_assets,
             hub_dir: hub_dir.clone(),
@@ -566,10 +597,11 @@ impl Harness {
             team_events: Arc::clone(&team_events),
             overview: Arc::clone(&overview),
             agent_changes: Arc::clone(&changes),
-            system_one: residuum_inference::system_one::SystemOneService::new(None),
+            system_one,
             pairing: pairing.clone(),
             remote_access: residuum_net::remote_access::slot::RemoteAccessSlot::new(root.path()),
             uploads: uploads.clone(),
+            rooms: Arc::clone(&rooms),
         };
         let app = hub_router(shared, hub);
         Self {
@@ -579,6 +611,7 @@ impl Harness {
             pairing,
             root,
             uploads,
+            rooms,
             reload_rx,
             shutdown_rx,
             team_bus,

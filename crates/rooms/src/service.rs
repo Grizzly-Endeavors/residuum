@@ -184,6 +184,32 @@ impl RoomService {
         .await
     }
 
+    /// Create an empty [`RoomService`] synchronously for test harnesses.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn new_empty_sync(
+        store: RoomStore,
+        system_one: Arc<SystemOneService>,
+        a2a_hub: Arc<A2aClientHub>,
+        team: TeamWriteCoordinator,
+        mailboxes: Arc<dyn MailboxDirectory>,
+    ) -> Arc<Self> {
+        let (events_tx, _) = broadcast::channel(256);
+        Arc::new(Self {
+            store,
+            snapshots: StdRwLock::new(BTreeMap::new()),
+            selector: Arc::new(SystemOneSpeakerSelector::new(system_one)),
+            remote: Arc::new(A2aRoomDriver::new(a2a_hub)),
+            local_agents: StdRwLock::new(BTreeMap::new()),
+            active_runs: Mutex::new(HashMap::new()),
+            room_locks: Mutex::new(HashMap::new()),
+            next_run_id: AtomicU64::new(1),
+            team,
+            mailboxes,
+            events_tx,
+        })
+    }
+
     /// Create a [`RoomService`] with custom [`SpeakerSelector`] and
     /// [`RemoteRoomDriver`] implementations (primarily for testing).
     pub async fn with_drivers(
@@ -1814,7 +1840,7 @@ mod tests {
         minutes_text: Mutex<Option<String>>,
         hold_gate: Option<Gate>,
         minutes_gate: Option<Gate>,
-        cancel_delay: Option<Duration>,
+        cancel_gate: Option<Gate>,
     }
 
     impl MockLocalParticipant {
@@ -1827,7 +1853,7 @@ mod tests {
                 minutes_text: Mutex::new(None),
                 hold_gate: None,
                 minutes_gate: None,
-                cancel_delay: None,
+                cancel_gate: None,
             })
         }
 
@@ -1840,7 +1866,7 @@ mod tests {
                 minutes_text: Mutex::new(None),
                 hold_gate: Some(gate),
                 minutes_gate: None,
-                cancel_delay: None,
+                cancel_gate: None,
             })
         }
 
@@ -1857,7 +1883,7 @@ mod tests {
                 minutes_text: Mutex::new(None),
                 hold_gate: None,
                 minutes_gate: Some(minutes_gate),
-                cancel_delay: None,
+                cancel_gate: None,
             })
         }
     }
@@ -1882,8 +1908,8 @@ mod tests {
         }
 
         async fn cancel_room_turn(&self, room_id: &str) -> Result<(), String> {
-            if let Some(delay) = self.cancel_delay {
-                tokio::time::sleep(delay).await;
+            if let Some(gate) = &self.cancel_gate {
+                gate.entry().pass().await;
             }
             self.canceled_rooms.lock().unwrap().push(room_id.to_owned());
             Ok(())
@@ -2822,6 +2848,7 @@ mod tests {
     #[tokio::test]
     async fn stop_room_and_immediate_post_owner_message_preserves_new_mentions() {
         let gate = Gate::closed("slow-turn-for-stop-race");
+        let cancel_gate = Gate::closed("slow-cancel-gate");
         let slow = Arc::new(MockLocalParticipant {
             name: "slow".to_owned(),
             replies: Mutex::new(VecDeque::new()),
@@ -2830,7 +2857,7 @@ mod tests {
             minutes_text: Mutex::new(None),
             hold_gate: Some(gate),
             minutes_gate: None,
-            cancel_delay: Some(Duration::from_millis(60)),
+            cancel_gate: Some(cancel_gate),
         });
         let next = MockLocalParticipant::with_replies(
             "next",
@@ -2864,16 +2891,30 @@ mod tests {
         let svc_stop = Arc::clone(&service);
         let room_stop = room_id.clone();
         let stop_handle = tokio::spawn(async move { svc_stop.stop_room(&room_stop).await });
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        slow.cancel_gate.as_ref().unwrap().until_held(1).await;
 
-        let post_res = service
-            .post_owner_message(&room_id, "@Next second".to_owned(), Vec::new())
-            .await;
+        let svc_post = Arc::clone(&service);
+        let room_post = room_id.clone();
+        let post_handle = tokio::spawn(async move {
+            svc_post
+                .post_owner_message(&room_post, "@Next second".to_owned(), Vec::new())
+                .await
+        });
+        for _ in 0..4 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !post_handle.is_finished(),
+            "post_owner_message must serialize behind stop_room"
+        );
+
+        slow.cancel_gate.as_ref().unwrap().open_all();
+        stop_handle.await.unwrap().unwrap();
+        let post_res = post_handle.await.unwrap();
         assert!(
             post_res.is_ok(),
             "post_owner_message serialized behind stop_room must succeed: {post_res:?}"
         );
-        stop_handle.await.unwrap().unwrap();
         wait_until_idle(&mut rx, &room_id, &service).await;
 
         let detail = service.get_room(&room_id, 50, None).await.unwrap();
@@ -3061,7 +3102,9 @@ mod tests {
         let svc_reopen = Arc::clone(&service);
         let room_reopen = room_id.clone();
         let reopen_handle = tokio::spawn(async move { svc_reopen.reopen_room(&room_reopen).await });
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        for _ in 0..4 {
+            tokio::task::yield_now().await;
+        }
         assert!(
             !reopen_handle.is_finished(),
             "reopen_room must wait for in-flight archive_room to finish"
@@ -3129,7 +3172,9 @@ mod tests {
         let svc_delete = Arc::clone(&service);
         let room_delete = room_id.clone();
         let delete_handle = tokio::spawn(async move { svc_delete.delete_room(&room_delete).await });
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        for _ in 0..4 {
+            tokio::task::yield_now().await;
+        }
         assert!(
             !delete_handle.is_finished(),
             "delete_room must wait for in-flight archive_room to finish"

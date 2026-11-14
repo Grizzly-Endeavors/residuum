@@ -176,3 +176,32 @@ async fn everything_else_is_allowed_through_the_artifacts_origin() {
         assert_eq!(status, StatusCode::OK, "{method} {uri}");
     }
 }
+
+#[tokio::test]
+async fn room_routes_are_refused_through_the_artifacts_origin() {
+    let h = Harness::new();
+    for (method, uri) in [
+        (Method::GET, "/api/hub/rooms"),
+        (Method::GET, "/api/hub/rooms/candidates"),
+        (Method::POST, "/api/hub/rooms"),
+        (Method::GET, "/api/hub/rooms/room_01jcv8k9m2p4q7"),
+        (Method::POST, "/api/hub/rooms/room_01jcv8k9m2p4q7/messages"),
+        (Method::DELETE, "/api/hub/rooms/room_01jcv8k9m2p4q7"),
+    ] {
+        let mut req = Request::builder().method(method.clone()).uri(uri);
+        if method == Method::POST {
+            req = req.header("content-type", "application/json");
+        }
+        let body = if method == Method::POST {
+            Body::from("{}")
+        } else {
+            Body::empty()
+        };
+        let (status, resp_body) = h
+            .send_body(through_the_artifacts_origin(req.body(body).unwrap()))
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}");
+        let parsed: Value = serde_json::from_slice(&resp_body).unwrap();
+        assert!(parsed["error"].is_string(), "{method} {uri}: {parsed}");
+    }
+}

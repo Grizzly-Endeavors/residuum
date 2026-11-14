@@ -1018,13 +1018,8 @@ mod tests {
                 .await
         });
 
-        residuum_core::testing::wait::guarded("in_flight task recorded", async {
-            loop {
-                if !driver_work.in_flight.lock().await.is_empty() {
-                    return;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
+        residuum_core::testing::wait::until("in_flight task recorded", || async {
+            (!driver_work.in_flight.lock().await.is_empty()).then_some(())
         })
         .await;
 

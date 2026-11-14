@@ -45,6 +45,7 @@ use residuum_bus::{BusHandle, Subscriber, WorkspaceEvent, topics};
 use residuum_inference::system_one::{SystemOneService, SystemOneStatus};
 use residuum_protocol::ServerMessage;
 use residuum_protocol::frames::workspace_frame;
+use residuum_rooms::{RoomEvent, RoomService};
 use residuum_workspace::watch::{LIVE_UPDATES_OFF_MESSAGE, WatchHealth, WatchSet};
 
 /// The namespace prefix of team paths in the change feed.
@@ -64,6 +65,8 @@ pub(super) struct HubWsState {
     /// The System 1 service. Each connection subscribes to its status, sends
     /// the current value after `hub_boot`, and every change after.
     pub system_one: Arc<SystemOneService>,
+    /// Meeting rooms service. Each connection subscribes to live room events.
+    pub rooms: Arc<RoomService>,
 }
 
 /// The route that upgrades to the hub WebSocket.
@@ -89,6 +92,7 @@ async fn serve(socket: WebSocket, state: HubWsState) {
     let mut events = state.directory.subscribe();
     let mut log_entries = state.team_events.subscribe();
     let mut overviews = state.overview.subscribe();
+    let mut room_events = state.rooms.subscribe_events();
     let mut team_feed = subscribe_team_feed(&state.team_bus).await;
     let mut artifacts = ArtifactEvents::subscribe(&state.team_bus).await;
     let mut sessions = SessionRelay::new(&state.agent_changes);
@@ -126,6 +130,9 @@ async fn serve(socket: WebSocket, state: HubWsState) {
             }
             overview = overviews.recv() => {
                 forward_overview(&mut outbound, state.directory.as_ref(), overview).await
+            }
+            room_event = room_events.recv() => {
+                forward_room_event(&mut outbound, room_event).await
             }
             event = next_team_event(&mut team_feed) => {
                 forward_team_event(&mut outbound, &watch_set, &mut team_feed, event).await
@@ -272,6 +279,51 @@ async fn forward_overview(
                 "hub websocket fell behind the team overview; resending the agent snapshot"
             );
             send_snapshot(outbound, directory).await
+        }
+        Err(broadcast::error::RecvError::Closed) => false,
+    }
+}
+
+/// Forward one meeting-room event onto the hub WebSocket.
+async fn forward_room_event(
+    outbound: &mut Outbound,
+    event: Result<RoomEvent, broadcast::error::RecvError>,
+) -> bool {
+    match event {
+        Ok(room_event) => {
+            let frame = match room_event {
+                RoomEvent::Updated(room) => HubSocketFrame::RoomUpdated { room },
+                RoomEvent::Message {
+                    room_id,
+                    message,
+                    unread_count,
+                } => HubSocketFrame::RoomMessage {
+                    room_id,
+                    message,
+                    unread_count,
+                },
+                RoomEvent::TurnState {
+                    room_id,
+                    active_turn,
+                    queued_seat_ids,
+                    paused_at_cap,
+                    window_used,
+                    window_cap,
+                } => HubSocketFrame::RoomTurnState {
+                    room_id,
+                    active_turn,
+                    queued_seat_ids,
+                    paused_at_cap,
+                    window_used,
+                    window_cap,
+                },
+                RoomEvent::Deleted { room_id } => HubSocketFrame::RoomDeleted { room_id },
+            };
+            send_frame(outbound, &frame).await
+        }
+        Err(broadcast::error::RecvError::Lagged(missed)) => {
+            tracing::warn!(missed, "hub websocket fell behind room events");
+            true
         }
         Err(broadcast::error::RecvError::Closed) => false,
     }

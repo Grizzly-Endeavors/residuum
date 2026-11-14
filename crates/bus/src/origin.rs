@@ -14,6 +14,10 @@ pub const BACKGROUND_ENDPOINT: &str = "background";
 /// reach the caller through the session's turn responses, not a chat.
 pub const A2A_ENDPOINT: &str = "a2a";
 
+/// The endpoint name of a meeting-room participant's isolated conversation.
+/// Its replies reach the room through the session's turn responses, not a chat.
+pub const ROOM_ENDPOINT: &str = "room";
+
 /// The endpoint whose topic carries a turn's events for the chat interface
 /// behind it: `delivered_to` itself, unless it is the web UI, which takes a
 /// turn's lifecycle, intermediate text, reply and failure from the main

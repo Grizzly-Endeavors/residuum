@@ -10,7 +10,7 @@ use crate::fork_failure::ForkFailure;
 use crate::registry::SessionRegistry;
 use crate::runtime::SessionRuntime;
 use residuum_agent::context::loading::{load_observations, load_recent_context_narrative};
-use residuum_agent::{HopCounter, TeamRoster};
+use residuum_agent::{HopCounter, RoomRoster, TeamRoster};
 use residuum_bus::session::SessionCategory;
 use residuum_bus::{Publisher, SessionAddress};
 use residuum_config::ProviderSpec;
@@ -109,6 +109,9 @@ pub struct SpawnContext {
     /// Shared failover-transition counters for the background model tiers —
     /// see [`BackgroundTierActiveIndex`].
     pub bg_tier_active_index: BackgroundTierActiveIndex,
+    /// Optional view of the meeting rooms this agent participates in, giving
+    /// forked sessions their `<ROOMS>` prompt block.
+    pub room_roster: Option<Arc<dyn RoomRoster>>,
 }
 
 /// Identity and origin of the session [`build_spawn_resources`] is forking,
@@ -236,11 +239,15 @@ pub(crate) struct SpawnResources {
 async fn load_fork_identity_and_memory(
     layout: &WorkspaceLayout,
     team: &crate::team::TeamLink,
+    room_roster: Option<&dyn RoomRoster>,
 ) -> Result<(IdentityFiles, Option<String>, Option<String>), anyhow::Error> {
-    let identity = IdentityFiles::load(layout)
+    let mut identity = IdentityFiles::load(layout)
         .await
         .context(ForkFailure::IdentityFiles)?
         .with_team_roster(team.prompt_block());
+    if let Some(rooms) = room_roster {
+        identity = identity.with_room_roster(rooms.prompt_block());
+    }
 
     let observations = match load_observations(&layout.observations_json()).await {
         Ok(obs) => obs,
@@ -335,8 +342,12 @@ pub(crate) async fn build_spawn_resources(
         ..CompletionOptions::default()
     };
 
-    let (identity, observations, recent_context) =
-        load_fork_identity_and_memory(&ctx.layout, ctx.messenger.team()).await?;
+    let (identity, observations, recent_context) = load_fork_identity_and_memory(
+        &ctx.layout,
+        ctx.messenger.team(),
+        ctx.room_roster.as_deref(),
+    )
+    .await?;
 
     let build_config = SubAgentBuildConfig {
         workspace_layout: ctx.layout.clone(),
@@ -490,6 +501,13 @@ mod tests {
 
     #[tokio::test]
     async fn fork_identity_reads_team_files() {
+        struct StubRoomRoster;
+        impl RoomRoster for StubRoomRoster {
+            fn prompt_block(&self) -> Option<String> {
+                Some("Rooms you participate in:\n- \"Sync\" (id: room_01234567)".to_owned())
+            }
+        }
+
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("scout"));
         let team = layout.team();
@@ -504,13 +522,22 @@ mod tests {
             .await
             .unwrap();
 
-        let (identity, _, _) =
-            load_fork_identity_and_memory(&layout, &crate::team::TeamLink::alone("agent"))
-                .await
-                .unwrap();
+        let (identity, _, _) = load_fork_identity_and_memory(
+            &layout,
+            &crate::team::TeamLink::alone("agent"),
+            Some(&StubRoomRoster),
+        )
+        .await
+        .unwrap();
         assert_eq!(identity.soul.as_deref(), Some("soul"));
         assert_eq!(identity.agents.as_deref(), Some("team rules"));
         assert_eq!(identity.user.as_deref(), Some("team user"));
         assert_eq!(identity.wiki_index.as_deref(), Some("team index"));
+        assert!(
+            identity
+                .rooms
+                .as_deref()
+                .is_some_and(|r| r.contains("room_01234567"))
+        );
     }
 }

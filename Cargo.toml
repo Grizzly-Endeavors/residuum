@@ -198,6 +198,7 @@ residuum-memory = { workspace = true }
 residuum-net = { workspace = true }
 residuum-mcp = { workspace = true }
 residuum-a2a = { workspace = true }
+residuum-rooms = { workspace = true }
 residuum-tools = { workspace = true }
 residuum-skills = { workspace = true }
 residuum-tracing-service = { workspace = true }
@@ -252,6 +253,7 @@ residuum-agent = { workspace = true, features = ["test-support"] }
 residuum-background = { workspace = true, features = ["test-support"] }
 residuum-workspace = { workspace = true, features = ["test-support"] }
 residuum-a2a = { workspace = true, features = ["test-support"] }
+residuum-rooms = { workspace = true, features = ["test-support"] }
 residuum-tools = { workspace = true, features = ["test-support"] }
 residuum-proactivity = { workspace = true, features = ["test-support"] }
 residuum-checkpoints = { workspace = true, features = ["test-support"] }
