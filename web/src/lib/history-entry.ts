@@ -52,7 +52,7 @@ export function readEntry(state: unknown): EntryState | null {
  */
 function sameList(a: Place, b: Place): boolean {
   if (a.kind === "workbench") return b.kind === "workbench";
-  if (a.kind === "rooms") return b.kind === "rooms" && a.tab === b.tab;
+  if (a.kind === "rooms") return b.kind === "rooms";
   return a.kind === "inbox" && b.kind === "inbox" && a.agent === b.agent && a.folder === b.folder;
 }
 

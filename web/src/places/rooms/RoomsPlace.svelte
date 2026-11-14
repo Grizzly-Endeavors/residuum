@@ -14,8 +14,9 @@
   $effect(() => {
     const id = room;
     untrack(() => {
+      const prevViewing = roomsStore.viewingRoomId;
       roomsStore.setViewingRoom(id);
-      if (id !== null && roomsStore.currentRoom?.id !== id) {
+      if (id !== null && (prevViewing !== id || roomsStore.currentRoom?.id !== id)) {
         void roomsStore.openRoom(id);
       }
     });

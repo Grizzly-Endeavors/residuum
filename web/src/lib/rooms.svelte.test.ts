@@ -357,6 +357,9 @@ describe("RoomsStore", () => {
     };
 
     const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      if (url === `/api/hub/rooms/${id}?limit=200` && (!init?.method || init.method === "GET")) {
+        return Promise.resolve(jsonResponse(detailResp));
+      }
       if (url === "/api/hub/rooms" && init?.method === "POST") {
         return Promise.resolve(jsonResponse(detailResp, 201));
       }
@@ -401,6 +404,11 @@ describe("RoomsStore", () => {
       pinned: false,
     });
     expect(created?.room.id).toBe(id);
+    expect(store.currentRoom).toBeNull();
+    expect(store.rooms.map((r) => r.id)).toEqual([id]);
+
+    await store.openRoom(id);
+    expect(store.currentRoom?.id).toBe(id);
 
     const patched = await store.patchRoom(id, { pinned: true });
     expect(patched?.pinned).toBe(true);
@@ -422,5 +430,295 @@ describe("RoomsStore", () => {
     expect(await store.deleteRoom(id)).toBe(true);
     expect(store.rooms).toEqual([]);
     expect(store.currentRoom).toBeNull();
+  });
+
+  it("keeps currentRoom null on list-view patchRoom/archiveRoom so subsequent openRoom loads messages", async () => {
+    const id = "room_01jcv8k9m2p4q7";
+    const detail = makeDetail(id);
+    const detailResp: RoomDetailResponse = {
+      room: detail,
+      messages: [makeMessage(1), makeMessage(2)],
+      minutes_markdown: null,
+      decision_model_active: true,
+    };
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string, init?: RequestInit) => {
+        if (url === `/api/hub/rooms/${id}` && init?.method === "PATCH") {
+          return Promise.resolve(jsonResponse({ ...detail, pinned: true }));
+        }
+        if (url === `/api/hub/rooms/${id}/archive` && init?.method === "POST") {
+          return Promise.resolve(
+            jsonResponse({
+              ...detailResp,
+              room: { ...detail, status: "archived", pinned: true },
+              minutes_markdown: "# Minutes",
+            }),
+          );
+        }
+        if (url === `/api/hub/rooms/${id}?limit=200`) {
+          return Promise.resolve(
+            jsonResponse({
+              ...detailResp,
+              room: { ...detail, status: "archived", pinned: true },
+              minutes_markdown: "# Minutes",
+            }),
+          );
+        }
+        return Promise.resolve(new Response("unexpected", { status: 500 }));
+      }),
+    );
+
+    const store = new RoomsStore();
+    store.rooms = [makeSummary(id)];
+
+    await store.patchRoom(id, { pinned: true });
+    expect(store.currentRoom).toBeNull();
+    expect(store.rooms[0]?.pinned).toBe(true);
+
+    await store.archiveRoom(id);
+    expect(store.currentRoom).toBeNull();
+    expect(store.messages).toEqual([]);
+    expect(store.minutesMarkdown).toBeNull();
+    expect(store.rooms[0]?.status).toBe("archived");
+
+    await store.openRoom(id);
+    expect(store.currentRoom?.id).toBe(id);
+    expect(store.messages.map((m) => m.seq)).toEqual([1, 2]);
+    expect(store.minutesMarkdown).toBe("# Minutes");
+  });
+
+  it("discards stale B response on rapid openRoom(A) -> openRoom(B) -> openRoom(A)", async () => {
+    const roomA = "room_01jcv8k9m2p4q7";
+    const roomB = "room_01jcv8k9m2p4q8";
+    const deferred: Record<string, Array<(res: Response) => void>> = {
+      [roomA]: [],
+      [roomB]: [],
+    };
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        (url: string) =>
+          new Promise<Response>((resolve) => {
+            if (url === `/api/hub/rooms/${roomA}?limit=200`) deferred[roomA]?.push(resolve);
+            else if (url === `/api/hub/rooms/${roomB}?limit=200`) deferred[roomB]?.push(resolve);
+            else resolve(new Response(null, { status: 204 }));
+          }),
+      ),
+    );
+
+    const store = new RoomsStore();
+    const firstA = store.openRoom(roomA);
+    const secondB = store.openRoom(roomB);
+    const thirdA = store.openRoom(roomA);
+
+    deferred[roomA]?.[1]?.(
+      jsonResponse({
+        room: makeDetail(roomA, { name: "Room A" }),
+        messages: [makeMessage(1, { room_id: roomA, content: "A1" })],
+        minutes_markdown: null,
+        decision_model_active: true,
+      }),
+    );
+    await thirdA;
+
+    deferred[roomB]?.[0]?.(
+      jsonResponse({
+        room: makeDetail(roomB, { name: "Room B" }),
+        messages: [makeMessage(1, { room_id: roomB, content: "B1" })],
+        minutes_markdown: "# B Minutes",
+        decision_model_active: true,
+      }),
+    );
+    deferred[roomA]?.[0]?.(
+      jsonResponse({
+        room: makeDetail(roomA, { name: "Stale A" }),
+        messages: [],
+        minutes_markdown: null,
+        decision_model_active: true,
+      }),
+    );
+    expect(await secondB).toBeNull();
+    expect(await firstA).toBeNull();
+
+    expect(store.viewingRoomId).toBe(roomA);
+    expect(store.currentRoom?.id).toBe(roomA);
+    expect(store.currentRoom?.name).toBe("Room A");
+    expect(store.messages.map((m) => m.content)).toEqual(["A1"]);
+    expect(store.minutesMarkdown).toBeNull();
+  });
+
+  it("preserves a live WS room_message arriving while openRoom is in flight", async () => {
+    const id = "room_01jcv8k9m2p4q7";
+    let resolveFetch!: (res: Response) => void;
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string, init?: RequestInit) => {
+        if (url === `/api/hub/rooms/${id}?limit=200`) {
+          return new Promise<Response>((resolve) => {
+            resolveFetch = resolve;
+          });
+        }
+        if (url === `/api/hub/rooms/${id}/read` && init?.method === "POST") {
+          return Promise.resolve(new Response(null, { status: 204 }));
+        }
+        return Promise.resolve(new Response("unexpected", { status: 500 }));
+      }),
+    );
+
+    const store = new RoomsStore();
+    store.rooms = [makeSummary(id, { last_seq: 2, unread_count: 1 })];
+
+    const opening = store.openRoom(id);
+    expect(store.viewingRoomId).toBe(id);
+    expect(store.messages).toEqual([]);
+
+    // Live WS message seq=3 arrives before fetchRoom (seq 1..2) resolves.
+    store.handleFrame({
+      type: "room_message",
+      room_id: id,
+      message: makeMessage(3, { room_id: id, content: "Live msg" }),
+      unread_count: 1,
+    });
+    expect(store.messages.map((m) => m.seq)).toEqual([3]);
+
+    resolveFetch(
+      jsonResponse({
+        room: makeDetail(id, { last_seq: 2, last_read_seq: 1, unread_count: 1 }),
+        messages: [makeMessage(1, { room_id: id }), makeMessage(2, { room_id: id })],
+        minutes_markdown: null,
+        decision_model_active: true,
+      }),
+    );
+    await opening;
+
+    expect(store.messages.map((m) => m.seq)).toEqual([1, 2, 3]);
+    expect(store.currentRoom?.last_seq).toBe(3);
+    expect(store.currentRoom?.unread_count).toBe(0);
+    expect(store.rooms[0]?.unread_count).toBe(0);
+  });
+
+  it("keeps unread_count monotonic when out-of-order markRead arrives after a newer message", async () => {
+    const id = "room_01jcv8k9m2p4q7";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(new Response(null, { status: 204 }))),
+    );
+
+    const store = new RoomsStore();
+    store.rooms = [makeSummary(id, { last_seq: 5, unread_count: 1 })];
+    store.currentRoom = makeDetail(id, { last_seq: 5, last_read_seq: 4, unread_count: 1 });
+    store.setViewingRoom(id);
+
+    // Newer WS message seq=6 arrives while viewing, keeping unread_count=0 and advancing last_seq=6.
+    store.handleFrame({
+      type: "room_message",
+      room_id: id,
+      message: makeMessage(6, { room_id: id }),
+      unread_count: 1,
+    });
+    expect(store.rooms[0]?.unread_count).toBe(0);
+    expect(store.currentRoom.last_read_seq).toBe(6);
+
+    // Out-of-order markRead for older seq=5 must never bump unread_count back to 1.
+    await store.markRead(id, 5);
+    expect(store.rooms[0]?.unread_count).toBe(0);
+    expect(store.currentRoom.unread_count).toBe(0);
+    expect(store.currentRoom.last_read_seq).toBe(6);
+  });
+
+  it("updates decisionModelActive on system_one_status frames and resyncs open room on refreshList", async () => {
+    const id = "room_01jcv8k9m2p4q7";
+    const fetchMock = vi.fn((url: string) => {
+      if (url === "/api/hub/rooms") {
+        return Promise.resolve(
+          jsonResponse({
+            rooms: [makeSummary(id, { unread_count: 2 })],
+            decision_model_active: false,
+          }),
+        );
+      }
+      if (url === `/api/hub/rooms/${id}?limit=200`) {
+        return Promise.resolve(
+          jsonResponse({
+            room: makeDetail(id, { last_seq: 3, last_read_seq: 3, unread_count: 0 }),
+            messages: [makeMessage(1), makeMessage(2), makeMessage(3)],
+            minutes_markdown: null,
+            decision_model_active: false,
+          }),
+        );
+      }
+      return Promise.resolve(new Response("unexpected", { status: 500 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const store = new RoomsStore();
+    store.handleFrame({
+      type: "system_one_status",
+      status: { configured: true, provider: "System One", model: "fast-model", outage: null },
+    });
+    expect(store.decisionModelActive).toBe(true);
+
+    store.handleFrame({
+      type: "system_one_status",
+      status: {
+        configured: true,
+        provider: "System One",
+        model: "fast-model",
+        outage: {
+          kind: "unreachable",
+          message: "System 1 timed out",
+          since: "2026-11-14T10:00:00Z",
+        },
+      },
+    });
+    expect(store.decisionModelActive).toBe(false);
+
+    store.setViewingRoom(id);
+    await store.refreshList();
+    await Promise.resolve();
+    expect(fetchMock).toHaveBeenCalledWith(`/api/hub/rooms/${id}?limit=200`, undefined);
+    expect(store.messages.map((m) => m.seq)).toEqual([1, 2, 3]);
+    expect(store.rooms[0]?.unread_count).toBe(0);
+  });
+
+  it("clears room state and discards in-flight openRoom when setViewingRoom(null) is called", async () => {
+    const id = "room_01jcv8k9m2p4q7";
+    let resolveFetch!: (res: Response) => void;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        () =>
+          new Promise<Response>((resolve) => {
+            resolveFetch = resolve;
+          }),
+      ),
+    );
+
+    const store = new RoomsStore();
+    const opening = store.openRoom(id);
+    expect(store.loading).toBe(true);
+
+    store.setViewingRoom(null);
+    expect(store.viewingRoomId).toBeNull();
+    expect(store.currentRoom).toBeNull();
+    expect(store.messages).toEqual([]);
+    expect(store.minutesMarkdown).toBeNull();
+    expect(store.loading).toBe(false);
+
+    resolveFetch(
+      jsonResponse({
+        room: makeDetail(id),
+        messages: [makeMessage(1, { room_id: id })],
+        minutes_markdown: "# Minutes",
+        decision_model_active: true,
+      }),
+    );
+    expect(await opening).toBeNull();
+    expect(store.currentRoom).toBeNull();
+    expect(store.messages).toEqual([]);
   });
 });

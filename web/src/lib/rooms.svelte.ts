@@ -130,10 +130,15 @@ export class RoomsStore {
   /** Fetch all rooms and System 1 availability. Never rejects so background connect callers stay safe. */
   async refreshList(): Promise<void> {
     const request = ++this.listRequest;
+    if (this.viewingRoomId !== null) {
+      void this.openRoom(this.viewingRoomId);
+    }
     try {
       const response = await fetchRooms();
       if (request !== this.listRequest) return;
-      this.rooms = [...response.rooms].sort(byUpdatedDesc);
+      this.rooms = response.rooms
+        .map((room) => (room.id === this.viewingRoomId ? { ...room, unread_count: 0 } : room))
+        .sort(byUpdatedDesc);
       this.decisionModelActive = response.decision_model_active;
       this.loaded = true;
       this.error = null;
@@ -156,20 +161,27 @@ export class RoomsStore {
 
   /** Load a room's detail, latest transcript slice, and any attached minutes. */
   async openRoom(id: string, limit = DEFAULT_PAGE_SIZE): Promise<RoomDetailResponse | null> {
+    if (this.viewingRoomId !== id) {
+      this.setViewingRoom(id);
+    }
     const request = ++this.openRequest;
     this.loading = true;
     this.error = null;
     try {
+      const prevSummary = this.rooms.find((room) => room.id === id);
       const response = await fetchRoom(id, { limit });
       if (request !== this.openRequest) return null;
       this.applyDetailResponse(response);
-      this.hasMoreMessages = response.messages.length > 0 && (response.messages[0]?.seq ?? 1) > 1;
+      this.hasMoreMessages = this.messages.length > 0 && (this.messages[0]?.seq ?? 1) > 1;
+      const maxSeq = this.currentRoom?.last_seq ?? response.room.last_seq;
       if (
         this.viewingRoomId === id &&
-        response.room.unread_count > 0 &&
-        response.room.last_seq > 0
+        maxSeq > 0 &&
+        (maxSeq > response.room.last_read_seq ||
+          response.room.unread_count > 0 ||
+          (prevSummary?.unread_count ?? 0) > 0)
       ) {
-        void this.markRead(id, response.room.last_seq);
+        void this.markRead(id, maxSeq);
       }
       return response;
     } catch (err) {
@@ -218,7 +230,9 @@ export class RoomsStore {
     try {
       const response = await apiCreateRoom(request);
       this.applyDetailResponse(response);
-      this.hasMoreMessages = false;
+      if (this.viewingRoomId === response.room.id) {
+        this.hasMoreMessages = false;
+      }
       return response;
     } catch (err) {
       this.error = userErrorMessage(err, { action: "Couldn't create the meeting room." });
@@ -331,16 +345,25 @@ export class RoomsStore {
     }
   }
 
-  /** Track which room is open in the viewport so incoming messages auto-mark read. */
+  /** Track which room is open in the viewport and discard stale fetches on room switch. */
   setViewingRoom(id: string | null): void {
+    if (this.viewingRoomId === id) {
+      if (id === null && this.currentRoom !== null) {
+        this.currentRoom = null;
+        this.messages = [];
+        this.minutesMarkdown = null;
+        this.hasMoreMessages = false;
+      }
+      return;
+    }
     this.viewingRoomId = id;
-    if (id === null) return;
-    const summary = this.rooms.find((room) => room.id === id);
-    const detail = this.currentRoom?.id === id ? this.currentRoom : null;
-    const unread = detail?.unread_count ?? summary?.unread_count ?? 0;
-    const lastSeq = detail?.last_seq ?? summary?.last_seq ?? 0;
-    if (unread > 0 && lastSeq > 0) {
-      void this.markRead(id, lastSeq);
+    this.openRequest += 1;
+    this.loading = false;
+    if (id === null || this.currentRoom?.id !== id) {
+      this.currentRoom = null;
+      this.messages = [];
+      this.minutesMarkdown = null;
+      this.hasMoreMessages = false;
     }
   }
 
@@ -439,19 +462,35 @@ export class RoomsStore {
   }
 
   private applyDetailResponse(response: RoomDetailResponse): void {
-    this.currentRoom = response.room;
-    this.messages = mergeSortedMessages([], response.messages);
-    this.minutesMarkdown = response.minutes_markdown;
     this.decisionModelActive = response.decision_model_active;
     this.turnStates = {
       ...this.turnStates,
       [response.room.id]: turnStateFromDetail(response.room),
     };
-    this.upsertSummary(summaryFromDetail(response.room));
+    if (this.viewingRoomId !== response.room.id) {
+      this.upsertSummary(summaryFromDetail(response.room));
+      return;
+    }
+    const mergedMessages = mergeSortedMessages(this.messages, response.messages);
+    const newestMsg = mergedMessages.at(-1);
+    const maxSeq = Math.max(response.room.last_seq, newestMsg?.seq ?? 0);
+    const updatedAt =
+      newestMsg !== undefined && newestMsg.timestamp > response.room.updated_at
+        ? newestMsg.timestamp
+        : response.room.updated_at;
+    const detail: RoomDetail = {
+      ...response.room,
+      last_seq: maxSeq,
+      updated_at: updatedAt,
+    };
+    this.currentRoom = detail;
+    this.messages = mergedMessages;
+    this.minutesMarkdown = response.minutes_markdown;
+    this.upsertSummary(summaryFromDetail(detail));
   }
 
   private applyDetail(detail: RoomDetail): void {
-    if (this.currentRoom === null || this.currentRoom.id === detail.id) {
+    if (this.viewingRoomId === detail.id && this.currentRoom?.id === detail.id) {
       this.currentRoom = detail;
     }
     this.turnStates = {
@@ -471,8 +510,10 @@ export class RoomsStore {
     const viewing = this.viewingRoomId === roomId;
     const effectiveUnread = viewing ? 0 : serverUnreadCount;
 
-    if (this.currentRoom?.id === roomId) {
+    if (viewing || this.currentRoom?.id === roomId) {
       this.messages = mergeSortedMessages(this.messages, [message]);
+    }
+    if (this.currentRoom?.id === roomId) {
       const nextLastSeq = Math.max(this.currentRoom.last_seq, message.seq);
       const nextReadSeq = viewing
         ? Math.max(this.currentRoom.last_read_seq, message.seq)
@@ -507,7 +548,10 @@ export class RoomsStore {
     this.rooms = this.rooms.map((room) => {
       if (room.id !== roomId) return room;
       const clamped = Math.min(seq, room.last_seq);
-      return { ...room, unread_count: Math.max(0, room.last_seq - clamped) };
+      return {
+        ...room,
+        unread_count: Math.min(room.unread_count, Math.max(0, room.last_seq - clamped)),
+      };
     });
     if (this.currentRoom?.id === roomId) {
       const clamped = Math.min(seq, this.currentRoom.last_seq);
@@ -515,7 +559,10 @@ export class RoomsStore {
       this.currentRoom = {
         ...this.currentRoom,
         last_read_seq: nextRead,
-        unread_count: Math.max(0, this.currentRoom.last_seq - nextRead),
+        unread_count: Math.min(
+          this.currentRoom.unread_count,
+          Math.max(0, this.currentRoom.last_seq - nextRead),
+        ),
       };
     }
   }
@@ -535,6 +582,11 @@ export class RoomsStore {
     }
     if (this.viewingRoomId === roomId) {
       this.viewingRoomId = null;
+      this.openRequest += 1;
+      this.loading = false;
+      this.messages = [];
+      this.minutesMarkdown = null;
+      this.hasMoreMessages = false;
     }
   }
 }
