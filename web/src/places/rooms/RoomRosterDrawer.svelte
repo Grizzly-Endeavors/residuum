@@ -66,6 +66,7 @@
     busySeatId = null;
     if (updated === null) {
       actionError = roomsStore.error ?? `Couldn't add ${candidate.display_name}.`;
+      roomsStore.error = null;
     }
   }
 
@@ -77,6 +78,7 @@
     busySeatId = null;
     if (updated === null) {
       actionError = roomsStore.error ?? `Couldn't remove ${seat.display_name}.`;
+      roomsStore.error = null;
     }
   }
 </script>
@@ -93,7 +95,7 @@
 >
   <div class="roster-drawer">
     {#if actionError !== null}
-      <Banner tone="error">{actionError}</Banner>
+      <Banner tone="error" ondismiss={() => (actionError = null)}>{actionError}</Banner>
     {/if}
 
     {#if archived}

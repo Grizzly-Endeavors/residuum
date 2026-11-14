@@ -605,4 +605,132 @@ describe("RoomsPlace", () => {
       expect(openPlace).toHaveBeenCalledWith({ kind: "rooms", room: null, tab: "active" });
     });
   });
+
+  it("avoids duplicate error banners, supports dismissing list errors, and suppresses error banner on 404", async () => {
+    const user = userEvent.setup();
+    mockFetch((url, init) => {
+      if (url === "/api/hub/rooms" && (!init?.method || init.method === "GET")) {
+        return jsonResponse({ error: "hub unreachable" }, 503);
+      }
+      if (url === "/api/hub/rooms/candidates") {
+        return jsonResponse({ candidates: CANDIDATES });
+      }
+      if (url === "/api/hub/rooms" && init?.method === "POST") {
+        return jsonResponse({ error: "room quota reached" }, 400);
+      }
+      if (url.startsWith(`/api/hub/rooms/${ROOM_ID}`)) {
+        return jsonResponse({ error: "room not found" }, 404);
+      }
+      return jsonResponse({}, 404);
+    });
+
+    const { rerender } = render(RoomsPlace, { room: null, tab: "active" });
+
+    // List error banner is dismissable
+    expect(await screen.findByRole("alert")).toHaveTextContent(/Couldn't load meeting rooms/i);
+    await user.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    // Failed createRoom shows error once inside NewRoomDialog (not duplicated on list page)
+    await user.click(screen.getAllByRole("button", { name: "New room" })[0] as HTMLElement);
+    await screen.findByRole("dialog", { name: "New room" });
+    await user.type(screen.getByLabelText("Room name"), "Quota Test");
+    await user.click(screen.getByRole("checkbox", { name: /Scout/ }));
+    await user.click(screen.getByRole("button", { name: "Create room" }));
+
+    await waitFor(() => {
+      expect(screen.getAllByRole("alert")).toHaveLength(1);
+    });
+    expect(roomsStore.error).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    // 404 openRoom shows Room not found EmptyState without duplicate top error banner
+    await rerender({ room: ROOM_ID, tab: "active" });
+    expect(await screen.findByText("Room not found")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("resets open modals on room switch, keeps historical sibling badge, aborts in-flight uploads on unmount, and toggles minutes", async () => {
+    const user = userEvent.setup();
+    const roomB = "room_01jcv8k9m2p4q8";
+    const historicalSiblingMsg = makeMessage(1, {
+      seat_id: "a2a:ops/planner",
+      author_name: "Planner",
+      seat_kind: "sibling_a2a",
+      content: "Historical sibling message",
+    });
+
+    let uploadSignal: AbortSignal | undefined;
+    vi.spyOn(roomsStore, "uploadAttachment").mockImplementation((_file, _name, options) => {
+      uploadSignal = options?.signal;
+      return new Promise(() => {});
+    });
+
+    mockFetch((url) => {
+      if (url.startsWith(`/api/hub/rooms/${ROOM_ID}`)) {
+        return jsonResponse({
+          room: makeDetail(ROOM_ID, {
+            status: "archived",
+            roster: [LOCAL_SEAT],
+            historical_participants: [LOCAL_SEAT.seat_id, "a2a:ops/planner"],
+            minutes: {
+              shared_path: "team/minutes/2026-11-14-sync.md",
+              archived_at_seq: 1,
+              inbox_ref: null,
+              updated_at: "2026-11-14T11:00:00Z",
+            },
+          }),
+          messages: [historicalSiblingMsg],
+          minutes_markdown: "## Summary\n\nDetailed minutes body.",
+          decision_model_active: true,
+        } satisfies RoomDetailResponse);
+      }
+      if (url.startsWith(`/api/hub/rooms/${roomB}`)) {
+        return jsonResponse({
+          room: makeDetail(roomB, { name: "Room B", roster: [LOCAL_SEAT] }),
+          messages: [makeMessage(1, { room_id: roomB })],
+          minutes_markdown: null,
+          decision_model_active: true,
+        } satisfies RoomDetailResponse);
+      }
+      if (url === "/api/hub/rooms/candidates") {
+        return jsonResponse({ candidates: CANDIDATES });
+      }
+      return jsonResponse({}, 404);
+    });
+
+    const { rerender, unmount } = render(RoomsPlace, { room: ROOM_ID, tab: "archived" });
+
+    // Historical sibling badge still renders even though a2a:ops/planner was removed from roster
+    await screen.findByText("Historical sibling message");
+    expect(screen.getByText("ops")).toBeInTheDocument();
+
+    // Minutes header keeps Open minutes file button visible even when collapsed
+    const minutesToggle = screen.getByRole("button", { name: "Meeting minutes" });
+    expect(minutesToggle).toHaveAttribute("aria-expanded", "true");
+    await user.click(minutesToggle);
+    expect(minutesToggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("button", { name: "Open minutes file" })).toBeVisible();
+
+    // Open roster drawer, then switch rooms: drawer must close on room change
+    await user.click(screen.getByRole("button", { name: /Roster/i }));
+    expect(await screen.findByRole("dialog", { name: /Room roster/i })).toBeInTheDocument();
+
+    await rerender({ room: roomB, tab: "active" });
+    await screen.findByRole("heading", { level: 1, name: "Room B" });
+    expect(screen.queryByRole("dialog", { name: /Room roster/i })).toBeNull();
+
+    // Start an upload in Room B, then unmount: in-flight upload must be aborted
+    const fileInput = document.querySelector<HTMLInputElement>('input[type="file"]');
+    expect(fileInput).not.toBeNull();
+    await user.upload(
+      fileInput as HTMLInputElement,
+      new File(["data"], "pending.txt", { type: "text/plain" }),
+    );
+    expect(uploadSignal?.aborted).toBe(false);
+
+    unmount();
+    expect(uploadSignal?.aborted).toBe(true);
+  });
 });

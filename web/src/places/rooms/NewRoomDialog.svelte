@@ -90,6 +90,7 @@
     submitting = false;
     if (response === null) {
       formError = roomsStore.error ?? "Couldn't create the meeting room.";
+      roomsStore.error = null;
       return;
     }
     open = false;
@@ -117,7 +118,7 @@
 >
   <form id="{uid}-form" class="new-room-form" {onsubmit}>
     {#if formError !== null}
-      <Banner tone="error">{formError}</Banner>
+      <Banner tone="error" ondismiss={() => (formError = null)}>{formError}</Banner>
     {/if}
 
     <TextField

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { untrack } from "svelte";
+  import { tick, untrack } from "svelte";
   import Prose from "../../feed/Prose.svelte";
   import { displayState } from "../../lib/agent-display-state";
   import { hub } from "../../lib/hub.svelte";
@@ -16,7 +16,6 @@
     Banner,
     Button,
     ConfirmDialog,
-    Disclosure,
     EmptyState,
     IconButton,
     Skeleton,
@@ -37,10 +36,34 @@
 
   let { room, tab }: Props = $props();
 
+  const uid = $props.id();
+  const minutesBodyId = `${uid}-minutes-body`;
+
+  let newRoomOpen = $state(false);
+  let rosterOpen = $state(false);
+  let confirmDeleteOpen = $state(false);
+  let pinning = $state(false);
+  let archiving = $state(false);
+  let reopening = $state(false);
+  let stopping = $state(false);
+  let continuing = $state(false);
+  let deleting = $state(false);
+  let minutesExpanded = $state(false);
+  let lastMinutesKey = "";
+  let scrollEl = $state<HTMLDivElement>();
+  let scrolledRoomId = "";
+  let lastTailSeq = 0;
+  let wasNearBottom = true;
+
   $effect(() => {
     const id = room;
     untrack(() => {
       const prevViewing = roomsStore.viewingRoomId;
+      if (prevViewing !== id) {
+        rosterOpen = false;
+        confirmDeleteOpen = false;
+        roomsStore.error = null;
+      }
       roomsStore.setViewingRoom(id);
       if (id !== null && (prevViewing !== id || roomsStore.currentRoom?.id !== id)) {
         void roomsStore.openRoom(id);
@@ -68,19 +91,50 @@
     return () => window.clearInterval(timer);
   });
 
-  let newRoomOpen = $state(false);
-  let rosterOpen = $state(false);
-  let confirmDeleteOpen = $state(false);
-  let pinning = $state(false);
-  let archiving = $state(false);
-  let reopening = $state(false);
-  let stopping = $state(false);
-  let continuing = $state(false);
-  let deleting = $state(false);
-
   const openRoom = $derived<RoomDetail | null>(
     room !== null && roomsStore.currentRoom?.id === room ? roomsStore.currentRoom : null,
   );
+
+  $effect(() => {
+    const key = openRoom === null ? "" : `${openRoom.id}:${openRoom.status}`;
+    if (key === lastMinutesKey) return;
+    lastMinutesKey = key;
+    if (openRoom !== null) {
+      minutesExpanded = openRoom.status === "archived";
+    }
+  });
+
+  $effect.pre(() => {
+    void roomsStore.messages;
+    void openRoom?.id;
+    wasNearBottom =
+      scrollEl === undefined
+        ? true
+        : scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight < 120;
+  });
+
+  $effect(() => {
+    const roomId = openRoom?.id ?? null;
+    const messages = roomsStore.messages;
+    const tailSeq = messages.at(-1)?.seq ?? 0;
+    if (roomId === null) {
+      scrolledRoomId = "";
+      lastTailSeq = 0;
+      return;
+    }
+    if (messages.length === 0) return;
+    const isInitialOpen = scrolledRoomId !== roomId;
+    const hasNewTail = tailSeq > lastTailSeq;
+    scrolledRoomId = roomId;
+    lastTailSeq = tailSeq;
+    if (isInitialOpen || (hasNewTail && wasNearBottom)) {
+      void tick().then(() => {
+        if (scrollEl !== undefined) {
+          scrollEl.scrollTop = scrollEl.scrollHeight;
+        }
+      });
+    }
+  });
 
   const title = $derived(openRoom !== null ? openRoom.name : "Rooms");
   const sub = $derived.by(() => {
@@ -176,7 +230,12 @@
 
   function seatInstanceFor(detail: RoomDetail, seatId: string | null): string | null {
     if (seatId === null) return null;
-    return detail.roster.find((s) => s.seat_id === seatId)?.instance ?? null;
+    const inRoster = detail.roster.find((s) => s.seat_id === seatId)?.instance ?? null;
+    if (inRoster !== null) return inRoster;
+    if (!seatId.startsWith("a2a:")) return null;
+    const rest = seatId.slice("a2a:".length);
+    const slash = rest.indexOf("/");
+    return slash > 0 ? rest.slice(0, slash) : null;
   }
 
   function hasExternalSeat(summary: RoomSummary): boolean {
@@ -241,7 +300,7 @@
   <div class="rooms-index-scroll">
     <section class="rooms-index" aria-label="Meeting rooms">
       {#if roomsStore.error !== null}
-        <Banner tone="error">
+        <Banner tone="error" ondismiss={() => (roomsStore.error = null)}>
           {roomsStore.error}
           {#snippet actions()}
             <Button variant="quiet" size="sm" onclick={() => void roomsStore.refreshList()}>
@@ -420,11 +479,13 @@
     {/if}
   {/if}
 
-  {#if roomsStore.error !== null}
-    <Banner tone="error" edge>{roomsStore.error}</Banner>
+  {#if roomsStore.error !== null && (openRoom !== null || roomsStore.loading)}
+    <Banner tone="error" edge ondismiss={() => (roomsStore.error = null)}>
+      {roomsStore.error}
+    </Banner>
   {/if}
 
-  <div class="room-scroll" aria-label="Room transcript">
+  <div class="room-scroll" aria-label="Room transcript" bind:this={scrollEl}>
     <div class="room-column">
       {#if roomsStore.loading && openRoom === null}
         <div class="rooms-loading">
@@ -441,19 +502,19 @@
       {:else}
         {#if roomsStore.minutesMarkdown !== null || minutesPanelPath !== null}
           <section class="room-minutes-card" aria-label="Meeting minutes">
-            <div class="room-minutes-head">
-              <Disclosure summary="Meeting minutes" open={openRoom.status === "archived"}>
-                {#if roomsStore.minutesMarkdown !== null}
-                  <div class="room-minutes-body">
-                    <Prose
-                      content={roomsStore.minutesMarkdown}
-                      agent={null}
-                      teamFolder
-                      filePath={minutesPanelPath ?? undefined}
-                    />
-                  </div>
-                {/if}
-              </Disclosure>
+            <div class="room-minutes-bar">
+              <button
+                type="button"
+                class="room-minutes-toggle"
+                aria-expanded={minutesExpanded}
+                aria-controls={minutesBodyId}
+                onclick={() => (minutesExpanded = !minutesExpanded)}
+              >
+                <span class="room-minutes-chevron" data-open={minutesExpanded || undefined}>
+                  <Icon name="chevron-right" size={15} />
+                </span>
+                <span>Meeting minutes</span>
+              </button>
               {#if minutesPanelPath !== null}
                 <Button
                   size="sm"
@@ -465,6 +526,16 @@
                 </Button>
               {/if}
             </div>
+            {#if roomsStore.minutesMarkdown !== null}
+              <div id={minutesBodyId} class="room-minutes-body" hidden={!minutesExpanded}>
+                <Prose
+                  content={roomsStore.minutesMarkdown}
+                  agent={null}
+                  teamFolder
+                  filePath={minutesPanelPath ?? undefined}
+                />
+              </div>
+            {/if}
           </section>
         {/if}
 
@@ -836,22 +907,56 @@
   }
 
   .room-minutes-card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-10);
     padding: var(--space-12) var(--space-16);
     border: 1px solid var(--color-line);
     border-radius: var(--corner-md);
     background: var(--color-stone-1);
   }
 
-  .room-minutes-head {
+  .room-minutes-bar {
     display: flex;
     flex-wrap: wrap;
-    align-items: flex-start;
+    align-items: center;
     justify-content: space-between;
     gap: var(--space-10);
   }
 
+  .room-minutes-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-8);
+    min-height: 32px;
+    padding: 0 var(--space-8) 0 var(--space-4);
+    border-radius: var(--corner-sm);
+    color: var(--color-text);
+    font-size: var(--font-size-sm);
+    font-weight: var(--font-weight-semibold);
+    transition: color var(--duration-fast) var(--ease-out);
+
+    &:hover {
+      color: var(--color-vein-bright);
+    }
+  }
+
+  .room-minutes-chevron {
+    display: grid;
+    transition: transform var(--duration-base) var(--ease-out);
+
+    &[data-open] {
+      transform: rotate(90deg);
+    }
+  }
+
   .room-minutes-body {
-    padding-top: var(--space-8);
+    width: 100%;
+    padding-top: var(--space-4);
+
+    &[hidden] {
+      display: none;
+    }
   }
 
   .room-load-older {

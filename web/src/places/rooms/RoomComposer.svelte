@@ -86,8 +86,18 @@
     if (fileProblem === null) sendHeld = false;
   });
 
+  let activeControllers: AbortController[] = [];
+
+  $effect(() => () => {
+    for (const controller of activeControllers) {
+      controller.abort();
+    }
+    activeControllers = [];
+  });
+
   function startUpload(entry: StagedRoomFile): void {
     const controller = new AbortController();
+    activeControllers.push(controller);
     entry.status = "uploading";
     entry.error = null;
     entry.controller = controller;
@@ -102,6 +112,9 @@
         if (entry.controller !== controller) return;
         entry.error = userErrorMessage(err, { action: `Couldn't upload ${entry.filename}.` });
         entry.status = "failed";
+      })
+      .finally(() => {
+        activeControllers = activeControllers.filter((c) => c !== controller);
       });
   }
 
@@ -242,6 +255,9 @@
   });
 
   const showMentionMenu = $derived(!archived && mentionOpen && filteredMentions.length > 0);
+  const activeMentionIndex = $derived(
+    filteredMentions.length === 0 ? 0 : Math.min(mentionIndex, filteredMentions.length - 1),
+  );
 
   function detectMention(): void {
     if (archived || field === undefined) {
@@ -303,14 +319,14 @@
     if (count === 0) return false;
     switch (event.key) {
       case "ArrowDown":
-        mentionIndex = (mentionIndex + 1) % count;
+        mentionIndex = (activeMentionIndex + 1) % count;
         return true;
       case "ArrowUp":
-        mentionIndex = (mentionIndex - 1 + count) % count;
+        mentionIndex = (activeMentionIndex - 1 + count) % count;
         return true;
       case "Tab":
       case "Enter": {
-        const option = filteredMentions[mentionIndex];
+        const option = filteredMentions[activeMentionIndex];
         if (option !== undefined) void pickMention(option);
         return true;
       }
@@ -340,6 +356,7 @@
     sending = false;
     if (posted === null) {
       sendError = roomsStore.error ?? "Couldn't send the message.";
+      roomsStore.error = null;
       return;
     }
     text = "";
@@ -398,7 +415,7 @@
     {#if showMentionMenu}
       <div id={menuId} class="mention-menu" role="listbox" aria-label="Mention participant">
         {#each filteredMentions as option, index (option.id)}
-          {@const active = index === mentionIndex}
+          {@const active = index === activeMentionIndex}
           <button
             type="button"
             id={optionId(index)}
@@ -478,7 +495,7 @@
         aria-autocomplete={archived ? undefined : "list"}
         aria-expanded={archived ? undefined : showMentionMenu}
         aria-controls={showMentionMenu ? menuId : undefined}
-        aria-activedescendant={showMentionMenu ? optionId(mentionIndex) : undefined}
+        aria-activedescendant={showMentionMenu ? optionId(activeMentionIndex) : undefined}
         enterkeyhint={touch.current ? "enter" : undefined}
         {onkeydown}
         oninput={detectMention}
