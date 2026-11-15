@@ -126,6 +126,7 @@ async function createRoom(ctx: RouteContext): Promise<void> {
       queued_seats: [],
       paused_at_cap: false,
       decision_model_fallback: false,
+      selector_error: null,
     },
     minutes: { shared_path: null, archived_at_seq: 0, inbox_ref: null, updated_at: null },
     active_turn: null,

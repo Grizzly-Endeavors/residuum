@@ -165,6 +165,7 @@
         pausedAtCap: false,
         windowUsed: 0,
         windowCap: 0,
+        selectorError: null,
       };
     }
     return (
@@ -174,6 +175,7 @@
         pausedAtCap: openRoom.window.paused_at_cap,
         windowUsed: openRoom.window.window_used,
         windowCap: openRoom.window.window_cap,
+        selectorError: openRoom.window.selector_error,
       }
     );
   });
@@ -482,6 +484,21 @@
         {#snippet actions()}
           <Button size="sm" variant="secondary" icon="settings" onclick={openDecisionModelSettings}>
             Configure Decision model
+          </Button>
+        {/snippet}
+      </Banner>
+    {:else if openRoom.status === "active" && turnState.selectorError !== null}
+      <Banner
+        tone="error"
+        title="Speaker selection failed — @mention-only for this message"
+        edge
+        ondismiss={() => roomsStore.dismissSelectorError(openRoom.id)}
+      >
+        {turnState.selectorError} Use <code>@agent</code> or <code>@everyone</code> to direct
+        participants.
+        {#snippet actions()}
+          <Button size="sm" variant="secondary" icon="settings" onclick={openDecisionModelSettings}>
+            Decision model settings
           </Button>
         {/snippet}
       </Banner>

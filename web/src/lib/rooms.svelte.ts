@@ -42,6 +42,7 @@ export interface RoomTurnStateSnapshot {
   pausedAtCap: boolean;
   windowUsed: number;
   windowCap: number;
+  selectorError: string | null;
 }
 
 function byUpdatedDesc(a: RoomSummary, b: RoomSummary): number {
@@ -87,6 +88,7 @@ function turnStateFromDetail(detail: RoomDetail): RoomTurnStateSnapshot {
     pausedAtCap: detail.window.paused_at_cap,
     windowUsed: detail.window.window_used,
     windowCap: detail.window.window_cap,
+    selectorError: detail.window.selector_error,
   };
 }
 
@@ -367,6 +369,23 @@ export class RoomsStore {
     }
   }
 
+  /** Clear a room's displayed speaker-selection error banner locally. */
+  dismissSelectorError(id: string): void {
+    const prev = this.turnStates[id];
+    if (prev !== undefined) {
+      this.turnStates = {
+        ...this.turnStates,
+        [id]: { ...prev, selectorError: null },
+      };
+    }
+    if (this.currentRoom?.id === id) {
+      this.currentRoom = {
+        ...this.currentRoom,
+        window: { ...this.currentRoom.window, selector_error: null },
+      };
+    }
+  }
+
   /** Fold live hub WebSocket frames touching meeting rooms or System 1 status. */
   handleFrame(msg: HubServerMessage): void {
     switch (msg.type) {
@@ -411,6 +430,7 @@ export class RoomsStore {
             pausedAtCap: msg.paused_at_cap,
             windowUsed: msg.window_used,
             windowCap: msg.window_cap,
+            selectorError: msg.selector_error,
           },
         };
         this.rooms = this.rooms.map((room) =>
@@ -426,6 +446,11 @@ export class RoomsStore {
               paused_at_cap: msg.paused_at_cap,
               window_used: msg.window_used,
               window_cap: msg.window_cap,
+              decision_model_fallback:
+                msg.selector_error !== null
+                  ? true
+                  : this.currentRoom.window.decision_model_fallback,
+              selector_error: msg.selector_error,
             },
           };
         }

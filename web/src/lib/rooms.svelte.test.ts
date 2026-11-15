@@ -74,6 +74,7 @@ function makeDetail(id: string, overrides: Partial<RoomDetail> = {}): RoomDetail
       queued_seats: [],
       paused_at_cap: false,
       decision_model_fallback: false,
+      selector_error: null,
     },
     minutes: {
       shared_path: null,
@@ -318,6 +319,7 @@ describe("RoomsStore", () => {
       paused_at_cap: true,
       window_used: 3,
       window_cap: 3,
+      selector_error: "provider rejected speaker selection: Input blocked.",
     });
 
     expect(store.currentRoom.active_turn?.display_name).toBe("Analyst");
@@ -325,7 +327,17 @@ describe("RoomsStore", () => {
     expect(store.currentRoom.window.queued_seats).toEqual(["agent:scout"]);
     expect(store.currentRoom.window.paused_at_cap).toBe(true);
     expect(store.currentRoom.window.window_used).toBe(3);
+    expect(store.currentRoom.window.selector_error).toBe(
+      "provider rejected speaker selection: Input blocked.",
+    );
+    expect(store.turnStates[id]?.selectorError).toBe(
+      "provider rejected speaker selection: Input blocked.",
+    );
     expect(store.rooms[0]?.paused_at_cap).toBe(true);
+
+    store.dismissSelectorError(id);
+    expect(store.currentRoom.window.selector_error).toBeNull();
+    expect(store.turnStates[id]?.selectorError).toBeNull();
   });
 
   it("handles room_deleted frame by removing from list and clearing currentRoom", () => {
