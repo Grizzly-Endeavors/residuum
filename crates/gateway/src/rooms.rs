@@ -274,7 +274,7 @@ impl LocalRoomParticipant for GatewayRoomParticipant {
 
     async fn cancel_room_turn(&self, room_id: &str) -> Result<(), String> {
         let address = room_session_address(room_id);
-        self.session_registry.stop(&address);
+        self.session_registry.cancel_current_turn(&address);
         Ok(())
     }
 
@@ -722,30 +722,44 @@ mod tests {
         h.listener_handle.abort();
     }
 
-    #[tokio::test]
-    async fn cancel_room_turn_stops_in_flight_turn_without_touching_recent_messages() {
+    async fn spawn_gated_then_reply_server(
+        gate: Arc<residuum_core::testing::gate::Gate>,
+    ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+        use residuum_core::util::spawn_in_span;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind mock server");
         let addr = listener.local_addr().expect("local addr");
-        let reached_gate = Arc::new(residuum_core::testing::gate::Gate::closed("room-cancel"));
-        let gate_for_srv = Arc::clone(&reached_gate);
-        let srv = tokio::spawn(async move {
-            if let Ok((mut stream, _)) = listener.accept().await {
-                let mut buf = [0_u8; 4096];
-                if stream.read(&mut buf).await.unwrap_or(0) > 0 {
-                    gate_for_srv.entry().pass().await;
-                    let body = r#"{"choices":[{"message":{"role":"assistant","content":"late"}}]}"#;
-                    let resp = format!(
-                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-                        body.len()
-                    );
-                    stream.write_all(resp.as_bytes()).await.ok();
-                }
+        let srv = spawn_in_span(async move {
+            for gated in [true, false] {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let gate = Arc::clone(&gate);
+                drop(spawn_in_span(async move {
+                    let mut buf = [0_u8; 4096];
+                    if stream.read(&mut buf).await.unwrap_or(0) > 0 {
+                        if gated {
+                            gate.entry().pass().await;
+                        }
+                        let sse = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Immediate follow-up reply.\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{sse}",
+                            sse.len()
+                        );
+                        stream.write_all(resp.as_bytes()).await.ok();
+                    }
+                }));
             }
         });
+        (addr, srv)
+    }
+
+    #[tokio::test]
+    async fn cancel_room_turn_stops_in_flight_turn_without_touching_recent_messages() {
+        let reached_gate = Arc::new(residuum_core::testing::gate::Gate::closed("room-cancel"));
+        let (addr, srv) = spawn_gated_then_reply_server(Arc::clone(&reached_gate)).await;
 
         let h = build_room_harness(&format!("http://{addr}")).await;
         tokio::fs::write(h.layout.recent_messages_json(), b"[{\"sentinel\":1}]")
@@ -777,6 +791,31 @@ mod tests {
             .await
             .expect("join turn");
         assert!(res.is_err(), "canceled room turn must return Err: {res:?}");
+        wait::until_true(
+            "canceled room turn returns session to Idle without entering Completing",
+            || {
+                participant
+                    .session_registry
+                    .get(&room_session_address("room_01jcv8k9m2p4q7"))
+                    .is_some_and(|info| info.state == residuum_bus::session::SessionState::Idle)
+            },
+        )
+        .await;
+
+        let (tool_tx2, _tool_rx2) = mpsc::unbounded_channel();
+        let follow_up = participant
+            .run_room_turn(LocalRoomTurnRequest {
+                room_id: "room_01jcv8k9m2p4q7".to_owned(),
+                room_name: "Cancel Sync".to_owned(),
+                room_topic: None,
+                prompt: "[Owner]: Next question".to_owned(),
+                attachments: Vec::new(),
+                tool_status_tx: tool_tx2,
+            })
+            .await
+            .expect("follow-up room turn runs immediately on the kept-idle session");
+        assert_eq!(follow_up.content, "Immediate follow-up reply.");
+
         assert_eq!(
             tokio::fs::read_to_string(h.layout.recent_messages_json())
                 .await
