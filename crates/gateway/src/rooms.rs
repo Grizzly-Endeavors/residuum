@@ -242,6 +242,7 @@ impl LocalRoomParticipant for GatewayRoomParticipant {
 
         let mut tracker =
             TurnTracker::new(matches!(outcome, ConversationDeliveryOutcome::Queued(_)));
+        let mut start_failed_open = true;
         loop {
             tokio::select! {
                 ev = sub.recv() => {
@@ -255,12 +256,16 @@ impl LocalRoomParticipant for GatewayRoomParticipant {
                         return res;
                     }
                 }
-                failed = start_failed_sub.recv() => {
-                    if let Ok(Some(failed)) = failed
-                        && failed.address == address
-                    {
-                        req.tool_status_tx.send(None).ok();
-                        return Err(failed.error);
+                failed = start_failed_sub.recv(), if start_failed_open => {
+                    match failed {
+                        Ok(Some(failed)) if failed.address == address => {
+                            req.tool_status_tx.send(None).ok();
+                            return Err(failed.error);
+                        }
+                        Ok(Some(_)) => {}
+                        Ok(None) | Err(_) => {
+                            start_failed_open = false;
+                        }
                     }
                 }
             }

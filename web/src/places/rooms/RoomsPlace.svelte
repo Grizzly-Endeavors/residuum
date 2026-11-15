@@ -178,6 +178,9 @@
     );
   });
 
+  const hasQueuedTurns = $derived(!turnState.pausedAtCap && turnState.queuedSeatIds.length > 0);
+  const turnBusy = $derived(turnState.activeTurn !== null || hasQueuedTurns);
+
   const minutesPanelPath = $derived.by<string | null>(() => {
     const raw = openRoom?.minutes.shared_path ?? null;
     return raw === null ? null : raw.replace(/^team\//, "");
@@ -672,12 +675,16 @@
 
   {#if openRoom !== null}
     <footer class="room-footer">
-      {#if openRoom.status === "active" && turnState.activeTurn !== null}
+      {#if openRoom.status === "active" && turnBusy}
         <div class="room-turn-bar" role="status">
           <Spinner size={14} />
-          <span class="room-turn-label">{turnState.activeTurn.display_name} is typing…</span>
-          {#if turnState.activeTurn.tool_status !== null && turnState.activeTurn.tool_status !== ""}
-            <Badge tone="accent">{turnState.activeTurn.tool_status}</Badge>
+          {#if turnState.activeTurn !== null}
+            <span class="room-turn-label">{turnState.activeTurn.display_name} is typing…</span>
+            {#if turnState.activeTurn.tool_status !== null && turnState.activeTurn.tool_status !== ""}
+              <Badge tone="accent">{turnState.activeTurn.tool_status}</Badge>
+            {/if}
+          {:else}
+            <span class="room-turn-label">Next participant starting…</span>
           {/if}
           {#if turnState.queuedSeatIds.length > 0}
             <span class="room-turn-queued">({turnState.queuedSeatIds.length} queued)</span>
@@ -717,7 +724,7 @@
 
       <RoomComposer
         room={openRoom}
-        turnActive={turnState.activeTurn !== null}
+        turnActive={turnBusy}
         {reopening}
         onreopen={() => void handleReopen()}
       />

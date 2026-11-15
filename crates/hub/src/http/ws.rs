@@ -23,8 +23,8 @@
 use std::sync::Arc;
 
 use axum::Router;
-use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::{Extension, State};
 use axum::response::Response;
 use axum::routing::get;
 use futures_util::stream::SplitSink;
@@ -76,15 +76,20 @@ pub(super) fn routes(state: HubWsState) -> Router {
         .with_state(state)
 }
 
-async fn upgrade(ws: WebSocketUpgrade, State(state): State<HubWsState>) -> Response {
-    ws.on_upgrade(move |socket| serve(socket, state))
+async fn upgrade(
+    ws: WebSocketUpgrade,
+    State(state): State<HubWsState>,
+    through_artifacts_origin: Option<Extension<residuum_net::workbench::ArtifactsOrigin>>,
+) -> Response {
+    let allow_room_events = through_artifacts_origin.is_none();
+    ws.on_upgrade(move |socket| serve(socket, state, allow_room_events))
 }
 
 pub(super) type Outbound = SplitSink<WebSocket, Message>;
 
 /// Serve one connection until the client leaves or the hub's event stream
 /// closes.
-async fn serve(socket: WebSocket, state: HubWsState) {
+async fn serve(socket: WebSocket, state: HubWsState, allow_room_events: bool) {
     let (mut outbound, mut inbound) = socket.split();
 
     // Subscribe before reading the list, so a change between the two reaches
@@ -92,7 +97,7 @@ async fn serve(socket: WebSocket, state: HubWsState) {
     let mut events = state.directory.subscribe();
     let mut log_entries = state.team_events.subscribe();
     let mut overviews = state.overview.subscribe();
-    let mut room_events = state.rooms.subscribe_events();
+    let mut room_events = allow_room_events.then(|| state.rooms.subscribe_events());
     let mut team_feed = subscribe_team_feed(&state.team_bus).await;
     let mut artifacts = ArtifactEvents::subscribe(&state.team_bus).await;
     let mut sessions = SessionRelay::new(&state.agent_changes);
@@ -131,7 +136,7 @@ async fn serve(socket: WebSocket, state: HubWsState) {
             overview = overviews.recv() => {
                 forward_overview(&mut outbound, state.directory.as_ref(), overview).await
             }
-            room_event = room_events.recv() => {
+            room_event = next_room_event(&mut room_events) => {
                 forward_room_event(&mut outbound, room_event).await
             }
             event = next_team_event(&mut team_feed) => {
@@ -177,6 +182,17 @@ async fn next_team_event(
 ) -> Result<Option<WorkspaceEvent>, residuum_bus::BusError> {
     match feed {
         Some(feed) => feed.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// The next meeting-room event, or never when room events are suppressed on
+/// this origin.
+async fn next_room_event(
+    events: &mut Option<broadcast::Receiver<RoomEvent>>,
+) -> Result<RoomEvent, broadcast::error::RecvError> {
+    match events {
+        Some(events) => events.recv().await,
         None => std::future::pending().await,
     }
 }

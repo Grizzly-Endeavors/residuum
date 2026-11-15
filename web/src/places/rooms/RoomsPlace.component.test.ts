@@ -451,6 +451,25 @@ describe("RoomsPlace", () => {
     await user.click(screen.getByRole("button", { name: "Stop" }));
     expect(stopSpy).toHaveBeenCalledWith(ROOM_ID);
 
+    // Between speakers (active_turn null, queued_seat_ids non-empty): Stop stays visible and composer stays held
+    roomsStore.handleFrame({
+      type: "room_turn_state",
+      room_id: ROOM_ID,
+      active_turn: null,
+      queued_seat_ids: ["agent:scout"],
+      paused_at_cap: false,
+      window_used: 1,
+      window_cap: 3,
+    });
+    await tick();
+
+    await user.type(box, "follow-up");
+    expect(screen.getByText("Next participant starting…")).toBeInTheDocument();
+    expect(screen.getByText("(1 queued)")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    expect(screen.getByText("Wait for the current reply or press Stop")).toBeInTheDocument();
+
     // Paused at cap + Continue button
     roomsStore.handleFrame({
       type: "room_turn_state",

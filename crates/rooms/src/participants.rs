@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -32,6 +33,8 @@ pub const ROOM_METADATA_CLOSE: &str = "residuum.room_close";
 const MAX_NON_STREAMING_POLLS: usize = 120;
 const POLL_BASE_MS: u64 = 250;
 const POLL_MAX_MS: u64 = 2_000;
+/// Maximum persisted inbound A2A attachment size (50 MiB).
+const MAX_ROOM_ATTACHMENT_BYTES: usize = 50 * 1024 * 1024;
 /// Bounded timeout for best-effort sibling room session close notifications.
 const CLOSE_SESSION_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -46,7 +49,7 @@ pub struct LocalRoomTurnRequest {
     pub room_topic: Option<String>,
     /// Catch-up delta prompt containing messages since this seat's last turn.
     pub prompt: String,
-    /// Attachments carried on the latest owner message (if any).
+    /// Attachments carried on unseen messages since this seat's last turn.
     pub attachments: Vec<RoomAttachment>,
     /// Channel for streaming live tool-call status strings (`Some("tool")` / `None`).
     pub tool_status_tx: mpsc::UnboundedSender<Option<String>>,
@@ -121,16 +124,19 @@ pub trait RemoteRoomDriver: Send + Sync {
 /// Remote room participant driver backed by [`A2aClientHub`].
 pub struct A2aRoomDriver {
     a2a_hub: Arc<A2aClientHub>,
+    rooms_root: PathBuf,
     in_flight: Arc<Mutex<HashMap<(String, String), String>>>,
     open_input_tasks: Mutex<HashMap<(String, String), String>>,
 }
 
 impl A2aRoomDriver {
-    /// Construct a new [`A2aRoomDriver`] backed by `a2a_hub`.
+    /// Construct a new [`A2aRoomDriver`] backed by `a2a_hub` and persisting
+    /// inbound attachments under `rooms_root`.
     #[must_use]
-    pub fn new(a2a_hub: Arc<A2aClientHub>) -> Self {
+    pub fn new(a2a_hub: Arc<A2aClientHub>, rooms_root: PathBuf) -> Self {
         Self {
             a2a_hub,
+            rooms_root,
             in_flight: Arc::new(Mutex::new(HashMap::new())),
             open_input_tasks: Mutex::new(HashMap::new()),
         }
@@ -173,14 +179,12 @@ impl A2aRoomDriver {
             .map_err(|e| e.to_string())?;
         let mut pending_artifacts: Vec<Artifact> = Vec::new();
         let mut observed_task_id: Option<String> = None;
+        let mut latest_working_text: Option<String> = None;
 
         while let Some(item) = stream.next().await {
             match item.map_err(|e| e.to_string())? {
                 StreamResponse::Message(msg) => {
-                    return Ok(RoomTurnOutput {
-                        content: extract_message_text(&msg),
-                        attachments: Vec::new(),
-                    });
+                    return Ok(self.message_to_output(&key.0, &msg).await);
                 }
                 StreamResponse::ArtifactUpdate(ev) => {
                     observed_task_id = Some(ev.task_id);
@@ -197,7 +201,21 @@ impl A2aRoomDriver {
                     if is_turn_done(&task.status.state) {
                         self.update_open_input_task(key, &task.id, &task.status.state)
                             .await;
-                        return task_to_output(&task);
+                        let mut out = self.task_to_output(&key.0, &task).await?;
+                        if out.content.is_empty()
+                            && let Some(working) = latest_working_text
+                        {
+                            out.content = working;
+                        }
+                        return Ok(out);
+                    }
+                    if task.status.state == TaskState::Working
+                        && let Some(msg) = &task.status.message
+                    {
+                        let text = extract_message_text(msg);
+                        if !text.is_empty() {
+                            latest_working_text = Some(text);
+                        }
                     }
                 }
                 StreamResponse::StatusUpdate(ev) => {
@@ -206,14 +224,36 @@ impl A2aRoomDriver {
                     if is_turn_done(&ev.status.state) {
                         self.update_open_input_task(key, &ev.task_id, &ev.status.state)
                             .await;
-                        return status_to_output(&ev.status, &pending_artifacts);
+                        let mut out = self
+                            .status_to_output(&key.0, &ev.status, &pending_artifacts)
+                            .await?;
+                        if out.content.is_empty()
+                            && let Some(working) = latest_working_text
+                        {
+                            out.content = working;
+                        }
+                        return Ok(out);
+                    }
+                    if ev.status.state == TaskState::Working
+                        && let Some(msg) = &ev.status.message
+                    {
+                        let text = extract_message_text(msg);
+                        if !text.is_empty() {
+                            latest_working_text = Some(text);
+                        }
                     }
                 }
             }
         }
 
         if let Some(task_id) = observed_task_id {
-            return self.poll_task_until_done(client, key, &task_id).await;
+            let mut out = self.poll_task_until_done(client, key, &task_id).await?;
+            if out.content.is_empty()
+                && let Some(working) = latest_working_text
+            {
+                out.content = working;
+            }
+            return Ok(out);
         }
         Err("remote A2A stream ended without a reply".to_owned())
     }
@@ -237,12 +277,96 @@ impl A2aRoomDriver {
             if is_turn_done(&task.status.state) {
                 self.update_open_input_task(key, &task.id, &task.status.state)
                     .await;
-                return task_to_output(&task);
+                return self.task_to_output(&key.0, &task).await;
             }
             tokio::time::sleep(Duration::from_millis(delay_ms)).await;
             delay_ms = (delay_ms * 2).min(POLL_MAX_MS);
         }
         Err(format!("remote A2A task '{task_id}' timed out"))
+    }
+
+    async fn message_to_output(&self, room_id: &str, msg: &A2aMessage) -> RoomTurnOutput {
+        let mut attachments = Vec::new();
+        collect_raw_attachments(
+            &self.rooms_root,
+            room_id,
+            &msg.parts,
+            None,
+            &mut attachments,
+        )
+        .await;
+        RoomTurnOutput {
+            content: extract_message_text(msg),
+            attachments,
+        }
+    }
+
+    async fn task_to_output(&self, room_id: &str, task: &Task) -> Result<RoomTurnOutput, String> {
+        let artifacts = task.artifacts.as_deref().unwrap_or(&[]);
+        self.status_to_output(room_id, &task.status, artifacts)
+            .await
+    }
+
+    async fn status_to_output(
+        &self,
+        room_id: &str,
+        status: &a2a::TaskStatus,
+        artifacts: &[Artifact],
+    ) -> Result<RoomTurnOutput, String> {
+        let status_text = status
+            .message
+            .as_ref()
+            .map(extract_message_text)
+            .unwrap_or_default();
+        match status.state {
+            TaskState::Completed | TaskState::InputRequired | TaskState::AuthRequired => {
+                let mut combined = status_text;
+                let mut attachments = Vec::new();
+                if let Some(msg) = &status.message {
+                    collect_raw_attachments(
+                        &self.rooms_root,
+                        room_id,
+                        &msg.parts,
+                        None,
+                        &mut attachments,
+                    )
+                    .await;
+                }
+                for artifact in artifacts {
+                    let art_text = extract_parts_text(&artifact.parts);
+                    if !art_text.is_empty() {
+                        if !combined.is_empty() {
+                            combined.push_str("\n\n");
+                        }
+                        combined.push_str(&art_text);
+                    }
+                    collect_raw_attachments(
+                        &self.rooms_root,
+                        room_id,
+                        &artifact.parts,
+                        artifact.name.as_deref(),
+                        &mut attachments,
+                    )
+                    .await;
+                }
+                Ok(RoomTurnOutput {
+                    content: combined,
+                    attachments,
+                })
+            }
+            TaskState::Failed | TaskState::Rejected => {
+                let detail = if status_text.is_empty() {
+                    "remote agent failed to complete the turn".to_owned()
+                } else {
+                    status_text
+                };
+                Err(detail)
+            }
+            TaskState::Canceled => Err("turn canceled".to_owned()),
+            TaskState::Unspecified | TaskState::Submitted | TaskState::Working => {
+                Err("remote agent returned an incomplete task state".to_owned())
+            }
+        }
     }
 
     async fn send_cancel(
@@ -342,16 +466,15 @@ impl RemoteRoomDriver for A2aRoomDriver {
                 .await
                 .map_err(|e| e.to_string())?
             {
-                SendMessageResponse::Message(reply) => Ok(RoomTurnOutput {
-                    content: extract_message_text(&reply),
-                    attachments: Vec::new(),
-                }),
+                SendMessageResponse::Message(reply) => {
+                    Ok(self.message_to_output(&key.0, &reply).await)
+                }
                 SendMessageResponse::Task(task) => {
                     self.record_in_flight(&key, &task.id).await;
                     if is_turn_done(&task.status.state) {
                         self.update_open_input_task(&key, &task.id, &task.status.state)
                             .await;
-                        task_to_output(&task)
+                        self.task_to_output(&key.0, &task).await
                     } else {
                         self.poll_task_until_done(&client, &key, &task.id).await
                     }
@@ -459,49 +582,90 @@ fn is_turn_done(state: &TaskState) -> bool {
     state.is_terminal() || matches!(state, TaskState::InputRequired | TaskState::AuthRequired)
 }
 
-fn task_to_output(task: &Task) -> Result<RoomTurnOutput, String> {
-    let artifacts = task.artifacts.as_deref().unwrap_or(&[]);
-    status_to_output(&task.status, artifacts)
+fn sanitize_attachment_filename(
+    part_filename: Option<&str>,
+    artifact_name: Option<&str>,
+) -> String {
+    let raw = part_filename
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| artifact_name.filter(|s| !s.trim().is_empty()))
+        .unwrap_or("artifact.bin");
+    let tail = raw.rsplit(['/', '\\']).next().unwrap_or("");
+    let cleaned: String = tail
+        .chars()
+        .map(|c| if c.is_control() { '_' } else { c })
+        .collect();
+    let trimmed = cleaned.trim();
+    if trimmed.is_empty() || trimmed == "." || trimmed == ".." {
+        return "artifact.bin".to_owned();
+    }
+    let safe = trimmed.replace("..", "_");
+    if safe.is_empty() || safe == "." {
+        "artifact.bin".to_owned()
+    } else {
+        safe
+    }
 }
 
-fn status_to_output(
-    status: &a2a::TaskStatus,
-    artifacts: &[Artifact],
-) -> Result<RoomTurnOutput, String> {
-    let status_text = status
-        .message
-        .as_ref()
-        .map(extract_message_text)
-        .unwrap_or_default();
-    match status.state {
-        TaskState::Completed | TaskState::InputRequired | TaskState::AuthRequired => {
-            let mut combined = status_text;
-            for artifact in artifacts {
-                let art_text = extract_parts_text(&artifact.parts);
-                if !art_text.is_empty() {
-                    if !combined.is_empty() {
-                        combined.push_str("\n\n");
-                    }
-                    combined.push_str(&art_text);
-                }
-            }
-            Ok(RoomTurnOutput {
-                content: combined,
-                attachments: Vec::new(),
-            })
+async fn collect_raw_attachments(
+    rooms_root: &Path,
+    room_id: &str,
+    parts: &[Part],
+    artifact_name: Option<&str>,
+    out: &mut Vec<RoomAttachment>,
+) {
+    if crate::types::validate_room_id(room_id).is_err() {
+        tracing::warn!(
+            room_id,
+            "skipping A2A room attachment persistence for invalid room id"
+        );
+        return;
+    }
+    for part in parts {
+        let PartContent::Raw(bytes) = &part.content else {
+            continue;
+        };
+        if bytes.len() > MAX_ROOM_ATTACHMENT_BYTES {
+            tracing::warn!(
+                room_id,
+                size = bytes.len(),
+                max = MAX_ROOM_ATTACHMENT_BYTES,
+                "skipping oversized A2A room attachment"
+            );
+            continue;
         }
-        TaskState::Failed | TaskState::Rejected => {
-            let detail = if status_text.is_empty() {
-                "remote agent failed to complete the turn".to_owned()
-            } else {
-                status_text
-            };
-            Err(detail)
+        let att_id = format!("{:032x}", rand::random::<u128>());
+        let filename = sanitize_attachment_filename(part.filename.as_deref(), artifact_name);
+        let dir = rooms_root.join(room_id).join("attachments").join(&att_id);
+        if let Err(err) = tokio::fs::create_dir_all(&dir).await {
+            tracing::warn!(
+                room_id,
+                path = %dir.display(),
+                error = %err,
+                "failed to create A2A room attachment directory"
+            );
+            continue;
         }
-        TaskState::Canceled => Err("turn canceled".to_owned()),
-        TaskState::Unspecified | TaskState::Submitted | TaskState::Working => {
-            Err("remote agent returned an incomplete task state".to_owned())
+        let path = dir.join(&filename);
+        if let Err(err) = tokio::fs::write(&path, bytes).await {
+            tracing::warn!(
+                room_id,
+                path = %path.display(),
+                error = %err,
+                "failed to write A2A room attachment"
+            );
+            continue;
         }
+        out.push(RoomAttachment {
+            id: att_id.clone(),
+            filename,
+            mime_type: part
+                .media_type
+                .clone()
+                .unwrap_or_else(|| "application/octet-stream".to_owned()),
+            size: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+            url: format!("/api/hub/rooms/{room_id}/attachments/{att_id}"),
+        });
     }
 }
 
@@ -861,7 +1025,8 @@ mod tests {
         )
         .await;
 
-        let driver = A2aRoomDriver::new(Arc::clone(&hub));
+        let dir = tempfile::tempdir().unwrap();
+        let driver = A2aRoomDriver::new(Arc::clone(&hub), dir.path().to_path_buf());
         let cands = driver.candidates().await;
         assert_eq!(cands.len(), 1, "expected 1 remote candidate");
         let first_cand = cands.first().unwrap();
@@ -958,7 +1123,8 @@ mod tests {
                 AgentSource::Sibling,
             )
             .await;
-        let driver_input = A2aRoomDriver::new(hub_input);
+        let dir_input = tempfile::tempdir().unwrap();
+        let driver_input = A2aRoomDriver::new(hub_input, dir_input.path().to_path_buf());
         driver_input
             .run_remote_turn(RemoteRoomTurnRequest {
                 seat_id: "a2a:ops/planner".to_owned(),
@@ -1005,7 +1171,8 @@ mod tests {
                 AgentSource::Sibling,
             )
             .await;
-        let driver_work = Arc::new(A2aRoomDriver::new(hub_work));
+        let dir_work = tempfile::tempdir().unwrap();
+        let driver_work = Arc::new(A2aRoomDriver::new(hub_work, dir_work.path().to_path_buf()));
         let driver_bg = Arc::clone(&driver_work);
         let turn_handle = tokio::spawn(async move {
             driver_bg
@@ -1039,5 +1206,150 @@ mod tests {
             "CancelTask must hit mock server for in-flight Working task"
         );
         srv_work.abort();
+    }
+
+    async fn spawn_streaming_artifact_mock_server()
+    -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let srv_task = tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
+                tokio::spawn(async move {
+                    let mut buf = vec![0_u8; 16_384];
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    let req = String::from_utf8_lossy(buf.get(..n).unwrap_or(&[]));
+                    if req.starts_with("GET ") {
+                        let body = format!(
+                            r#"{{"name":"Planner","description":"Streaming planner","version":"1.0",
+                            "supportedInterfaces":[{{"url":"http://{addr}/","protocolBinding":"JSONRPC","protocolVersion":"1.0"}}],
+                            "capabilities":{{"streaming":true}},"defaultInputModes":["text/plain"],
+                            "defaultOutputModes":["text/plain"],"skills":[]}}"#
+                        );
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                            body.len()
+                        );
+                        sock.write_all(resp.as_bytes()).await.ok();
+                        return;
+                    }
+                    let mut raw_part = Part::raw(b"artifact-bytes".to_vec());
+                    raw_part.filename = Some("../nested/summary.txt".to_owned());
+                    raw_part.media_type = Some("text/plain".to_owned());
+                    let ev1 = json!({
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": StreamResponse::StatusUpdate(a2a::TaskStatusUpdateEvent {
+                            task_id: "task-stream-1".to_owned(),
+                            context_id: "room-room_01jcv8k9m2p4q7".to_owned(),
+                            status: a2a::TaskStatus {
+                                state: TaskState::Working,
+                                message: Some(A2aMessage::new(
+                                    Role::Agent,
+                                    vec![Part::text("Streamed working reply")],
+                                )),
+                                timestamp: None,
+                            },
+                            metadata: None,
+                        })
+                    });
+                    let ev2 = json!({
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": StreamResponse::ArtifactUpdate(a2a::TaskArtifactUpdateEvent {
+                            task_id: "task-stream-1".to_owned(),
+                            context_id: "room-room_01jcv8k9m2p4q7".to_owned(),
+                            artifact: Artifact {
+                                artifact_id: "art-1".to_owned(),
+                                name: Some("report.bin".to_owned()),
+                                description: None,
+                                parts: vec![raw_part],
+                                metadata: None,
+                                extensions: None,
+                            },
+                            append: None,
+                            last_chunk: Some(true),
+                            metadata: None,
+                        })
+                    });
+                    let ev3 = json!({
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": StreamResponse::StatusUpdate(a2a::TaskStatusUpdateEvent {
+                            task_id: "task-stream-1".to_owned(),
+                            context_id: "room-room_01jcv8k9m2p4q7".to_owned(),
+                            status: a2a::TaskStatus {
+                                state: TaskState::Completed,
+                                message: None,
+                                timestamp: None,
+                            },
+                            metadata: None,
+                        })
+                    });
+                    let sse = format!("data: {ev1}\n\ndata: {ev2}\n\ndata: {ev3}\n\n");
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{sse}",
+                        sse.len()
+                    );
+                    sock.write_all(resp.as_bytes()).await.ok();
+                });
+            }
+        });
+        (addr, srv_task)
+    }
+
+    #[tokio::test]
+    async fn a2a_driver_persists_raw_artifact_and_uses_working_fallback_when_streaming() {
+        let (addr, srv_task) = spawn_streaming_artifact_mock_server().await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let hub = A2aClientHub::new_shared();
+        hub.register_external(
+            "ops/planner".to_owned(),
+            format!("http://{addr}"),
+            HashMap::new(),
+            AgentSource::Sibling,
+        )
+        .await;
+
+        let driver = A2aRoomDriver::new(hub, dir.path().to_path_buf());
+        let out = driver
+            .run_remote_turn(RemoteRoomTurnRequest {
+                seat_id: "a2a:ops/planner".to_owned(),
+                room_id: "room_01jcv8k9m2p4q7".to_owned(),
+                room_name: "Stream Sync".to_owned(),
+                prompt: "Deliver summary".to_owned(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(out.content, "Streamed working reply");
+        assert_eq!(out.attachments.len(), 1);
+        let att = out.attachments.first().unwrap();
+        assert_eq!(att.filename, "summary.txt");
+        assert_eq!(att.mime_type, "text/plain");
+        assert_eq!(att.size, 14);
+        assert_eq!(att.id.len(), 32);
+        assert!(
+            att.id
+                .bytes()
+                .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        );
+        assert_eq!(
+            att.url,
+            format!("/api/hub/rooms/room_01jcv8k9m2p4q7/attachments/{}", att.id)
+        );
+        let saved_path = dir
+            .path()
+            .join("room_01jcv8k9m2p4q7")
+            .join("attachments")
+            .join(&att.id)
+            .join("summary.txt");
+        assert_eq!(std::fs::read(&saved_path).unwrap(), b"artifact-bytes");
+
+        srv_task.abort();
     }
 }

@@ -291,8 +291,10 @@ impl RoomStore {
             updated.last_seen_seq.insert(seat_id.clone(), seq);
         }
 
-        write_room_json(&dir, &updated).await?;
+        // Record `seq` in memory as soon as `transcript.jsonl` has it, so a
+        // later `room.json` write failure cannot let the next append reuse it.
         guard.insert(room_id.to_owned(), updated.clone());
+        write_room_json(&dir, &updated).await?;
         Ok((updated, message))
     }
 

@@ -174,10 +174,11 @@ impl RoomService {
         team: TeamWriteCoordinator,
         mailboxes: Arc<dyn MailboxDirectory>,
     ) -> Arc<Self> {
+        let rooms_root = store.rooms_root().to_path_buf();
         Self::with_drivers(
             store,
             Arc::new(SystemOneSpeakerSelector::new(system_one)),
-            Arc::new(A2aRoomDriver::new(a2a_hub)),
+            Arc::new(A2aRoomDriver::new(a2a_hub, rooms_root)),
             team,
             mailboxes,
         )
@@ -194,12 +195,13 @@ impl RoomService {
         team: TeamWriteCoordinator,
         mailboxes: Arc<dyn MailboxDirectory>,
     ) -> Arc<Self> {
+        let rooms_root = store.rooms_root().to_path_buf();
         let (events_tx, _) = broadcast::channel(256);
         Arc::new(Self {
             store,
             snapshots: StdRwLock::new(BTreeMap::new()),
             selector: Arc::new(SystemOneSpeakerSelector::new(system_one)),
-            remote: Arc::new(A2aRoomDriver::new(a2a_hub)),
+            remote: Arc::new(A2aRoomDriver::new(a2a_hub, rooms_root)),
             local_agents: StdRwLock::new(BTreeMap::new()),
             active_runs: Mutex::new(HashMap::new()),
             room_locks: Mutex::new(HashMap::new()),
@@ -1442,11 +1444,10 @@ impl RoomService {
             .await
             .unwrap_or_default();
         let missed: Vec<RoomMessage> = all_msgs.into_iter().filter(|m| m.seq > last_seen).collect();
-        let latest_attachments = missed
-            .last()
-            .filter(|m| m.kind == RoomMessageKind::Owner)
-            .map(|m| m.attachments.clone())
-            .unwrap_or_default();
+        let missed_attachments: Vec<RoomAttachment> = missed
+            .iter()
+            .flat_map(|m| m.attachments.iter().cloned())
+            .collect();
         let prompt = format_catchup_prompt(&record, &missed);
 
         let turn = RoomActiveTurn {
@@ -1467,7 +1468,7 @@ impl RoomService {
                     &record,
                     seat,
                     prompt,
-                    latest_attachments,
+                    missed_attachments,
                     cancel_token,
                     active_turn_slot,
                 )
@@ -1835,6 +1836,7 @@ mod tests {
     struct MockLocalParticipant {
         name: String,
         replies: Mutex<VecDeque<Result<String, String>>>,
+        recorded_attachments: Mutex<Vec<Vec<RoomAttachment>>>,
         closed_rooms: Mutex<Vec<String>>,
         canceled_rooms: Mutex<Vec<String>>,
         minutes_text: Mutex<Option<String>>,
@@ -1848,6 +1850,7 @@ mod tests {
             Arc::new(Self {
                 name: name.to_owned(),
                 replies: Mutex::new(VecDeque::from(replies)),
+                recorded_attachments: Mutex::new(Vec::new()),
                 closed_rooms: Mutex::new(Vec::new()),
                 canceled_rooms: Mutex::new(Vec::new()),
                 minutes_text: Mutex::new(None),
@@ -1861,6 +1864,7 @@ mod tests {
             Arc::new(Self {
                 name: name.to_owned(),
                 replies: Mutex::new(VecDeque::new()),
+                recorded_attachments: Mutex::new(Vec::new()),
                 closed_rooms: Mutex::new(Vec::new()),
                 canceled_rooms: Mutex::new(Vec::new()),
                 minutes_text: Mutex::new(None),
@@ -1878,6 +1882,7 @@ mod tests {
             Arc::new(Self {
                 name: name.to_owned(),
                 replies: Mutex::new(VecDeque::from(replies)),
+                recorded_attachments: Mutex::new(Vec::new()),
                 closed_rooms: Mutex::new(Vec::new()),
                 canceled_rooms: Mutex::new(Vec::new()),
                 minutes_text: Mutex::new(None),
@@ -1891,6 +1896,10 @@ mod tests {
     #[async_trait]
     impl LocalRoomParticipant for MockLocalParticipant {
         async fn run_room_turn(&self, req: LocalRoomTurnRequest) -> Result<RoomTurnOutput, String> {
+            self.recorded_attachments
+                .lock()
+                .unwrap()
+                .push(req.attachments);
             req.tool_status_tx.send(Some("reading".to_owned())).ok();
             if let Some(gate) = &self.hold_gate {
                 gate.entry().pass().await;
@@ -2852,6 +2861,7 @@ mod tests {
         let slow = Arc::new(MockLocalParticipant {
             name: "slow".to_owned(),
             replies: Mutex::new(VecDeque::new()),
+            recorded_attachments: Mutex::new(Vec::new()),
             closed_rooms: Mutex::new(Vec::new()),
             canceled_rooms: Mutex::new(Vec::new()),
             minutes_text: Mutex::new(None),
@@ -3205,5 +3215,59 @@ mod tests {
             !service.room_locks.lock().await.contains_key(&room_id),
             "delete_room must clean up room_locks entry"
         );
+    }
+
+    #[tokio::test]
+    async fn unseen_owner_attachments_reach_all_queued_local_speakers() {
+        let scout =
+            MockLocalParticipant::with_replies("scout", vec![Ok("Scout saw file.".to_owned())]);
+        let analyst =
+            MockLocalParticipant::with_replies("analyst", vec![Ok("Analyst saw file.".to_owned())]);
+        let selector = Arc::new(MockSelector::new(true, vec![SelectorOutcome::NoSpeaker]));
+        let (_hub, service) = setup_service(
+            &[
+                ("scout", "Scout", Arc::clone(&scout)),
+                ("analyst", "Analyst", Arc::clone(&analyst)),
+            ],
+            selector,
+        )
+        .await;
+
+        let created = service
+            .create_room(CreateRoomRequest {
+                name: "Attachment Relay".to_owned(),
+                topic: None,
+                seat_ids: vec!["agent:scout".to_owned(), "agent:analyst".to_owned()],
+                pinned: false,
+            })
+            .await
+            .unwrap();
+        let room_id = created.room.id.to_string();
+        let mut rx = service.subscribe_events();
+
+        let att = RoomAttachment {
+            id: "0123456789abcdef0123456789abcdef".to_owned(),
+            filename: "spec.pdf".to_owned(),
+            mime_type: "application/pdf".to_owned(),
+            size: 1024,
+            url: format!("/api/hub/rooms/{room_id}/attachments/0123456789abcdef0123456789abcdef"),
+        };
+
+        service
+            .post_owner_message(
+                &room_id,
+                "@Scout @Analyst check this".to_owned(),
+                vec![att.clone()],
+            )
+            .await
+            .unwrap();
+        wait_until_idle(&mut rx, &room_id, &service).await;
+
+        let scout_atts = scout.recorded_attachments.lock().unwrap();
+        let analyst_atts = analyst.recorded_attachments.lock().unwrap();
+        assert_eq!(scout_atts.len(), 1);
+        assert_eq!(analyst_atts.len(), 1);
+        assert_eq!(scout_atts.first().unwrap(), &vec![att.clone()]);
+        assert_eq!(analyst_atts.first().unwrap(), &vec![att]);
     }
 }

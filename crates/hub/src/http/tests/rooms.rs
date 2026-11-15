@@ -309,3 +309,87 @@ async fn room_stop_endpoint_cancels_in_flight_turn() {
         .await;
     assert!(stopped["active_turn"].is_null());
 }
+
+#[tokio::test]
+async fn hub_ws_suppresses_room_events_through_artifacts_origin() {
+    let h = Harness::new();
+    h.rooms.register_local_agent(LocalRoomAgentInfo {
+        name: "scout".to_owned(),
+        display_name: "Scout".to_owned(),
+        role: None,
+        participant: Arc::new(FakeRoomParticipant {
+            reply: "Quiet room reply.".to_owned(),
+            hold_gate: None,
+        }),
+    });
+
+    let normal_addr = h.serve().await;
+    let mut normal_socket = connect_hub(normal_addr).await;
+    assert_eq!(
+        next_frame(&mut normal_socket).await["type"],
+        "agents_snapshot"
+    );
+
+    let artifacts_app = h.app.clone().layer(axum::middleware::from_fn(
+        |mut req: Request<Body>, next: axum::middleware::Next| async move {
+            req.extensions_mut()
+                .insert(residuum_net::workbench::ArtifactsOrigin);
+            next.run(req).await
+        },
+    ));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let artifacts_addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, artifacts_app).await.ok();
+    });
+
+    let mut artifacts_socket = connect_hub(artifacts_addr).await;
+    assert_eq!(
+        next_frame(&mut artifacts_socket).await["type"],
+        "agents_snapshot"
+    );
+
+    let room_id = create_test_room(&h, "Private Sync", None, false).await;
+    let ws_created = next_room_frame(&mut normal_socket, "room_updated").await;
+    assert_eq!(ws_created["room"]["id"], room_id);
+
+    h.expect(
+        Method::POST,
+        &format!("/api/hub/rooms/{room_id}/messages"),
+        Some(json!({ "content": "@Scout report", "upload_ids": [] })),
+        StatusCode::ACCEPTED,
+    )
+    .await;
+    let ws_msg = next_room_frame(&mut normal_socket, "room_message").await;
+    assert_eq!(ws_msg["room_id"], room_id);
+    wait_for_room_idle(&mut normal_socket, &room_id).await;
+
+    h.directory
+        .events
+        .send(HubEvent::notice(
+            crate::types::NoticeLevel::Info,
+            "hub-level notice".to_owned(),
+            None,
+        ))
+        .unwrap();
+    send_client(&mut artifacts_socket, &json!({ "type": "ping" })).await;
+
+    let mut saw_notice = false;
+    let mut saw_pong = false;
+    wait::guarded("non-room notice and pong on artifacts socket", async {
+        while !(saw_notice && saw_pong) {
+            let frame = next_frame(&mut artifacts_socket).await;
+            let frame_type = frame["type"].as_str().unwrap_or("");
+            assert!(
+                !frame_type.starts_with("room_"),
+                "artifacts-origin ws must not receive room frames, got: {frame}"
+            );
+            if frame_type == "notice" && frame["message"] == "hub-level notice" {
+                saw_notice = true;
+            } else if frame_type == "pong" {
+                saw_pong = true;
+            }
+        }
+    })
+    .await;
+}
