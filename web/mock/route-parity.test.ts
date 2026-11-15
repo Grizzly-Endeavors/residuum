@@ -286,6 +286,31 @@ const SAMPLES: Record<RequestFunction, Sample[]> = {
         signal: new AbortController().signal,
       }),
   ],
+  fetchRooms: [(a) => a.fetchRooms()],
+  fetchRoomCandidates: [(a) => a.fetchRoomCandidates()],
+  fetchRoom: [
+    (a) => a.fetchRoom("room_01jcv8k9m2p4q7"),
+    (a) => a.fetchRoom("room_01jcv8k9m2p4q7", { limit: 50, before_seq: 10 }),
+  ],
+  createRoom: [
+    (a) =>
+      a.createRoom({
+        name: "Architecture Sync",
+        topic: "API review",
+        seat_ids: ["agent:atlas"],
+        pinned: false,
+      }),
+  ],
+  patchRoom: [(a) => a.patchRoom("room_01jcv8k9m2p4q7", { pinned: true })],
+  markRoomRead: [(a) => a.markRoomRead("room_01jcv8k9m2p4q7", 3)],
+  postRoomMessage: [
+    (a) => a.postRoomMessage("room_01jcv8k9m2p4q7", { content: "Hello", upload_ids: [] }),
+  ],
+  continueRoom: [(a) => a.continueRoom("room_01jcv8k9m2p4q7")],
+  stopRoom: [(a) => a.stopRoom("room_01jcv8k9m2p4q7")],
+  archiveRoom: [(a) => a.archiveRoom("room_01jcv8k9m2p4q7")],
+  reopenRoom: [(a) => a.reopenRoom("room_01jcv8k9m2p4q7")],
+  deleteRoom: [(a) => a.deleteRoom("room_01jcv8k9m2p4q7")],
   fetchTeamsSetupPrereqs: [(a) => a.fetchTeamsSetupPrereqs(AGENT)],
   fetchTeamsSetupJob: [(a) => a.fetchTeamsSetupJob(AGENT), (a) => a.fetchTeamsSetupJob(AGENT, 10)],
   startTeamsSetupJob: [

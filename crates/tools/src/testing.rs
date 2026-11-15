@@ -107,6 +107,7 @@ pub struct RegistryHarness {
     pub config_reload_tracker: crate::SharedConfigReloadTracker,
     pub hub_dir: std::path::PathBuf,
     pub lifecycle: crate::LifecycleAccess,
+    pub room_view: Option<residuum_rooms::RoomAgentView>,
 }
 
 impl RegistryHarness {
@@ -210,6 +211,7 @@ impl RegistryHarness {
                 residuum_background::team::DirectoryHandle::unbound(),
                 "test",
             ),
+            room_view: None,
         }
     }
 
@@ -259,6 +261,7 @@ impl RegistryHarness {
             depth_cap: self.cfg.background.subagent_depth_cap,
             auto_mode: None,
             mailboxes: None,
+            room_view: self.room_view.clone(),
         };
         session_tools.build(SessionToolScope {
             own_address: SessionAddress::from(address),
@@ -309,6 +312,7 @@ impl RegistryHarness {
             lifecycle: &self.lifecycle,
             model_catalog: &model_catalog,
             mailboxes: None,
+            room_view: self.room_view.clone(),
         };
         let (tools, _, _) = crate::main_tools::init_tool_registry(
             &self.cfg,

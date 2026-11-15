@@ -140,6 +140,8 @@ export function scopeRequest(
     path.startsWith("/api/hub/agents/") ||
     path === "/api/hub/events" ||
     path === "/api/hub/overview" ||
+    path === "/api/hub/rooms" ||
+    path.startsWith("/api/hub/rooms/") ||
     path.startsWith("/api/hub/mail/") ||
     path === "/api/hub/uploads"
   ) {

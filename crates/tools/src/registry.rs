@@ -95,6 +95,9 @@ pub struct SessionTools {
     /// Every agent's mailbox, shared with main, for the mail-aware inbox
     /// tools. `None` limits them to this agent's own inboxes.
     pub mailboxes: Option<Arc<dyn residuum_workspace::inbox::mail::MailboxDirectory>>,
+    /// Per-agent meeting room view for `room_read`, shared with main. `None`
+    /// omits `room_read` in standalone registries without a hub room service.
+    pub room_view: Option<residuum_rooms::RoomAgentView>,
 }
 
 impl SessionToolFactory for SessionTools {
@@ -172,6 +175,7 @@ fn register_session_workspace_tools(
         shared.layout.sessions_dir(),
     );
     registration::register_inbox_tools(tools, injections, &shared.layout, shared.tz);
+    registration::register_room_tools(tools, shared.room_view.clone());
     // Checkpoint history and restore for the workspace and team repositories
     registration::register_workspace_checkpoint_tools(
         tools,

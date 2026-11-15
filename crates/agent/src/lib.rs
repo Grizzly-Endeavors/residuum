@@ -10,6 +10,7 @@ mod core;
 pub mod hop;
 mod prefix_watch;
 pub mod recent_messages;
+mod room_roster;
 mod stream;
 pub mod subconscious;
 mod team_roster;
@@ -27,6 +28,7 @@ mod wire_prefix_tests;
 
 pub use core::{Agent, AgentConfig, FailedTurn, TurnWiring};
 pub use hop::HopCounter;
+pub use room_roster::RoomRoster;
 pub use team_roster::TeamRoster;
 pub use tool::{Tool, ToolRegistry};
 pub use tool_result_store::{HISTORY_RESULT_MAX_CHARS, ToolResultStore};

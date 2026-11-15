@@ -25,6 +25,7 @@ residuum-proactivity = { workspace = true }
 residuum-agent = { workspace = true }
 residuum-background = { workspace = true }
 residuum-a2a = { workspace = true }
+residuum-rooms = { workspace = true }
 a2a = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
@@ -51,6 +52,7 @@ residuum-checkpoints = { workspace = true, features = ["test-support"] }
 residuum-background = { workspace = true, features = ["test-support"] }
 residuum-agent = { workspace = true, features = ["test-support"] }
 residuum-a2a = { workspace = true, features = ["test-support"] }
+residuum-rooms = { workspace = true, features = ["test-support"] }
 residuum-proactivity = { workspace = true, features = ["test-support"] }
 a2a-server = { workspace = true }
 axum = { workspace = true }

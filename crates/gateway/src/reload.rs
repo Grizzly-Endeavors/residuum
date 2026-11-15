@@ -609,10 +609,10 @@ async fn rebuild_cheap_components(rt: &mut AgentRuntime, new_cfg: &Config) {
     reload_providers(rt, new_cfg, http_client.clone()).await;
     reload_model_catalog(rt, new_cfg).await;
     rt.spawn_context = build_spawn_context(rt, new_cfg, http_client.clone());
-    // Push the rebuilt `SpawnContext` to the background spawn listener so
-    // sessions forked after this reload (`subagent_spawn`, pulses, scheduled
-    // actions, A2A turns, resumed conversations) use the reloaded provider
-    // chains, credentials, and session tools instead of the startup snapshot.
+    // Push the rebuilt `SpawnContext` to the background spawn listener and
+    // local room participant handles so sessions forked or minutes generated
+    // after this reload use the reloaded provider chains, credentials, and
+    // session tools instead of the startup snapshot.
     rt.spawn_context_tx
         .send_replace(Arc::clone(&rt.spawn_context));
     // Pushes to the model-call HTTP endpoint's watch receiver, so `POST
@@ -708,6 +708,7 @@ fn build_spawn_context(
         auto_mode: Some(Arc::clone(&rt.auto_mode)),
         // The same mailboxes main's tools were given at startup.
         mailboxes: rt.tool_injections.mailboxes.clone(),
+        room_view: Some(rt.services.rooms.agent_view(&new_cfg.agent_name)),
     });
 
     Arc::new(SpawnContext {
@@ -740,6 +741,7 @@ fn build_spawn_context(
         merge_writer: Arc::clone(&rt.merge_writer),
         messenger: Arc::clone(&rt.agent_messenger),
         bg_tier_active_index: residuum_background::BackgroundTierActiveIndex::default(),
+        room_roster: Some(Arc::new(rt.services.rooms.agent_view(&new_cfg.agent_name))),
     })
 }
 

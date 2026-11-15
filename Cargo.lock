@@ -5109,6 +5109,7 @@ dependencies = [
  "residuum-notify",
  "residuum-proactivity",
  "residuum-protocol",
+ "residuum-rooms",
  "residuum-skills",
  "residuum-tools",
  "residuum-tracing-service",
@@ -5354,6 +5355,7 @@ dependencies = [
  "residuum-notify",
  "residuum-proactivity",
  "residuum-protocol",
+ "residuum-rooms",
  "residuum-skills",
  "residuum-tools",
  "residuum-tracing-service",
@@ -5405,6 +5407,7 @@ dependencies = [
  "residuum-net",
  "residuum-proactivity",
  "residuum-protocol",
+ "residuum-rooms",
  "residuum-tracing-service",
  "residuum-workspace",
  "ring",
@@ -5655,6 +5658,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "residuum-rooms"
+version = "0.1.0"
+dependencies = [
+ "a2a-lf",
+ "async-trait",
+ "chrono",
+ "ctor",
+ "futures-util",
+ "rand 0.8.6",
+ "residuum-a2a",
+ "residuum-agent",
+ "residuum-config",
+ "residuum-core",
+ "residuum-inference",
+ "residuum-workspace",
+ "rustls 0.23.46",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "ts-rs",
+ "wiremock",
+]
+
+[[package]]
 name = "residuum-skills"
 version = "0.1.0"
 dependencies = [
@@ -5697,6 +5728,7 @@ dependencies = [
  "residuum-inference",
  "residuum-memory",
  "residuum-proactivity",
+ "residuum-rooms",
  "residuum-skills",
  "residuum-tracing-service",
  "residuum-workspace",

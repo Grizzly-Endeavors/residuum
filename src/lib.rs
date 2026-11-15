@@ -17,6 +17,7 @@ pub use residuum_net::{pairing, remote_access};
 pub use residuum_notify as notify;
 pub use residuum_proactivity::{actions, pulse};
 pub use residuum_protocol as protocol;
+pub use residuum_rooms as rooms;
 pub use residuum_skills as skills;
 pub use residuum_tools as tools;
 pub use residuum_tracing_service as tracing_service;

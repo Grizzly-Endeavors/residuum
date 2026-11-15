@@ -248,8 +248,8 @@ pub(crate) struct AgentRuntime {
     pub http_client: SharedHttpClient,
     pub spawn_context: Arc<SpawnContext>,
     /// Pushes a fresh `Arc<SpawnContext>` to `residuum_background::spawn_listener`
-    /// on every config reload so sessions forked after a reload use the
-    /// current providers, credentials, and session observer.
+    /// and local room participant handles on every config reload so sessions
+    /// forked after a reload use the current providers, credentials, and observer.
     pub spawn_context_tx: tokio::sync::watch::Sender<Arc<SpawnContext>>,
     /// Pushes a fresh `ModelCallResources` to the model-call HTTP endpoint on
     /// every config reload, alongside `spawn_context`, so `POST

@@ -65,6 +65,8 @@ pub(crate) async fn start_agent(inputs: AgentStartInputs) -> Result<StartedAgent
     let (model_call_resources_tx, model_call_resources_rx) = tokio::sync::watch::channel(Arc::new(
         web::model::ModelCallResources::from_spawn_context(&parts.spawn_context),
     ));
+    let (spawn_context_tx, spawn_context_rx) =
+        tokio::sync::watch::channel(Arc::clone(&parts.spawn_context));
     let (a2a_router_tx, a2a_router_rx) = tokio::sync::watch::channel(None);
     let (reload_done_tx, reload_done_rx) = tokio::sync::watch::channel(0_u64);
 
@@ -112,9 +114,16 @@ pub(crate) async fn start_agent(inputs: AgentStartInputs) -> Result<StartedAgent
             Arc::clone(&parts.agent_messenger),
         ),
     };
-    let sibling_fanout = Arc::clone(&services.sibling_fanout);
-    let team_router = Arc::clone(&services.team_router);
-    let team_messenger = Arc::clone(&parts.agent_messenger);
+    let rooms = Arc::clone(&services.rooms);
+    let room_participant = Arc::new(crate::rooms::GatewayRoomParticipant {
+        agent_messenger: Arc::clone(&parts.agent_messenger),
+        session_registry: Arc::clone(&parts.session_registry),
+        bus_handle: core.bus_handle.clone(),
+        publisher: core.publisher.clone(),
+        spawn_context_rx: spawn_context_rx.clone(),
+        rooms_root: rooms.store().rooms_root().to_path_buf(),
+        tz: parts.tz,
+    });
     let runtime = build_runtime(
         parts,
         core,
@@ -128,18 +137,14 @@ pub(crate) async fn start_agent(inputs: AgentStartInputs) -> Result<StartedAgent
             activity,
             agent_stop_rx,
             model_call_resources_tx,
+            spawn_context_tx,
+            spawn_context_rx,
             a2a_router_tx,
             reload_done_tx,
         },
     )
     .await?;
-    // The hub's one discovery task feeds every registered agent's client hub;
-    // this agent joins it until it stops.
-    sibling_fanout
-        .register(&runtime.name, Arc::clone(&runtime.a2a_hub))
-        .await;
-    // From here teammates can message this agent, until it stops.
-    team_router.register(&runtime.name, team_messenger);
+    register_agent_with_hub(&runtime, room_participant).await;
     Ok(StartedAgent {
         control,
         // `run_agent_loop`'s state (the accumulated select! branches' locals)
@@ -147,6 +152,42 @@ pub(crate) async fn start_agent(inputs: AgentStartInputs) -> Result<StartedAgent
         // the heap, so the task the host runs it in stays small.
         event_loop: Box::pin(run_agent_loop(runtime)),
     })
+}
+
+/// Register a newly initialized agent with the hub's sibling A2A fanout,
+/// teammate router, and meeting-room participant registry.
+async fn register_agent_with_hub(
+    runtime: &AgentRuntime,
+    room_participant: Arc<crate::rooms::GatewayRoomParticipant>,
+) {
+    runtime
+        .services
+        .sibling_fanout
+        .register(&runtime.name, Arc::clone(&runtime.a2a_hub))
+        .await;
+    runtime
+        .services
+        .team_router
+        .register(&runtime.name, Arc::clone(&runtime.agent_messenger));
+    let summary = runtime
+        .services
+        .directory
+        .get()
+        .and_then(|dir| dir.summary(&runtime.name).ok());
+    let display_name = summary
+        .as_ref()
+        .map_or_else(|| runtime.name.clone(), |s| s.display_name.clone());
+    let role = summary.and_then(|s| s.role);
+    runtime
+        .services
+        .rooms
+        .register_local_agent(residuum_rooms::LocalRoomAgentInfo {
+            name: runtime.name.clone(),
+            display_name,
+            role,
+            participant: room_participant,
+        });
+    runtime.services.sync_rooms_a2a().await;
 }
 
 /// Wrap `router` so every request it handles runs inside the agent's root
@@ -518,6 +559,9 @@ struct RuntimeChannels {
     /// Pushed a fresh `ModelCallResources` on every config reload; stored on
     /// `AgentRuntime` so `crate::reload` can push to it.
     model_call_resources_tx: tokio::sync::watch::Sender<Arc<web::model::ModelCallResources>>,
+    /// Pushes the latest `SpawnContext` on every config reload.
+    spawn_context_tx: tokio::sync::watch::Sender<Arc<residuum_background::SpawnContext>>,
+    spawn_context_rx: tokio::sync::watch::Receiver<Arc<residuum_background::SpawnContext>>,
     /// Publishes the agent's current A2A router to the hub.
     a2a_router_tx: tokio::sync::watch::Sender<Option<axum::Router>>,
     /// Counts finished config reloads for the hub.
@@ -536,7 +580,6 @@ struct BusInfrastructure {
     pulse_fire_subscriber: residuum_bus::Subscriber<residuum_bus::PulseFireEvent>,
     notify_handles: Vec<tokio::task::JoinHandle<()>>,
     bus_infra_handles: Vec<tokio::task::JoinHandle<()>>,
-    spawn_context_tx: tokio::sync::watch::Sender<Arc<residuum_background::SpawnContext>>,
 }
 
 /// Subscribe to bus topics and spawn bus-level infrastructure tasks.
@@ -546,6 +589,7 @@ struct BusInfrastructure {
 async fn spawn_bus_infrastructure(
     core: &GatewayCore,
     parts: &mut crate::startup::GatewayComponents,
+    spawn_context_rx: tokio::sync::watch::Receiver<Arc<residuum_background::SpawnContext>>,
 ) -> Result<BusInfrastructure, FatalError> {
     let agent_subscriber = core
         .bus_handle
@@ -593,8 +637,6 @@ async fn spawn_bus_infrastructure(
     {
         bus_infra_handles.push(h);
     }
-    let (spawn_context_tx, spawn_context_rx) =
-        tokio::sync::watch::channel(Arc::clone(&parts.spawn_context));
     if let Some(h) = residuum_background::spawn_listener(spawn_context_rx, &core.bus_handle).await {
         bus_infra_handles.push(h);
     }
@@ -606,7 +648,6 @@ async fn spawn_bus_infrastructure(
         pulse_fire_subscriber,
         notify_handles,
         bus_infra_handles,
-        spawn_context_tx,
     })
 }
 
@@ -620,7 +661,7 @@ async fn build_runtime(
     spawned: SpawnedHandles,
     channels: RuntimeChannels,
 ) -> Result<AgentRuntime, FatalError> {
-    let infra = spawn_bus_infrastructure(&core, &mut parts).await?;
+    let infra = spawn_bus_infrastructure(&core, &mut parts, channels.spawn_context_rx).await?;
     spawned.sessions_ready_tx.send_replace(true);
     let pulse_state_path = parts.layout.pulse_state_json();
     // Both post-turn workers report into the same channel — the main loop
@@ -676,7 +717,7 @@ async fn build_runtime(
         http_client: parts.http_client,
         auto_mode: parts.auto_mode,
         spawn_context: parts.spawn_context,
-        spawn_context_tx: infra.spawn_context_tx,
+        spawn_context_tx: channels.spawn_context_tx,
         model_call_resources_tx: channels.model_call_resources_tx,
         bus_handle: core.bus_handle,
         publisher: core.publisher,
@@ -855,6 +896,7 @@ async fn handle_workspace_reload(rt: &mut AgentRuntime) {
     rt.a2a_hub
         .reload_from_file(&rt.layout.a2a_agents_json(), &rt.agent_keys)
         .await;
+    rt.services.sync_rooms_a2a().await;
 
     if let Some(note) = reload_agent_card_note(rt) {
         notes.push(note);
@@ -964,6 +1006,7 @@ async fn graceful_shutdown(rt: &mut AgentRuntime) {
     // First, so a stopping agent takes no more teammate messages while its
     // sessions wind down.
     rt.services.team_router.unregister(&rt.name);
+    rt.services.rooms.unregister_local_agent(&rt.name);
     // Messages still waiting for their turn, plus anything already published
     // to the bus but not yet read by the select loop below, get none now;
     // keep them in history so they are not lost even though their senders

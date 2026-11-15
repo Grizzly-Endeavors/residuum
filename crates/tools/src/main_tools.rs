@@ -62,6 +62,9 @@ pub struct ToolRegistryDeps<'a> {
     /// Every agent's mailbox, for the mail-aware inbox tools. `None` limits
     /// them to this agent's own inboxes.
     pub mailboxes: Option<Arc<dyn residuum_workspace::inbox::mail::MailboxDirectory>>,
+    /// Per-agent meeting room view for `room_read`. `None` omits `room_read`
+    /// in standalone registries without a hub room service.
+    pub room_view: Option<residuum_rooms::RoomAgentView>,
 }
 
 /// Main's tools for managing sessions and teammates: `stop_agent`,
@@ -152,6 +155,7 @@ fn register_main_workspace_tools(
     );
     registration::register_skill_tools(tools, injections, Arc::clone(deps.skill_state));
     registration::register_inbox_tools(tools, injections, layout, tz);
+    registration::register_room_tools(tools, deps.room_view.clone());
 }
 
 /// Build main's tool registry with all default and domain-specific tools.
@@ -467,6 +471,77 @@ mod tests {
                 .tool_names()
                 .contains(&"a2a_task_update".to_string()),
             "a conversation session for another endpoint must not get a2a_task_update"
+        );
+    }
+
+    #[tokio::test]
+    async fn room_read_registers_on_main_and_sessions_when_room_view_is_present_and_matches_tools_md()
+     {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut h = RegistryHarness::build(dir.path()).await;
+
+        let hub = residuum_workspace::testing::TeamHub::new();
+        let mailboxes = std::sync::Arc::new(
+            residuum_workspace::testing::StaticMailboxDirectory::for_team_hub(
+                &hub,
+                &["test-agent"],
+            ),
+        );
+        let store = residuum_rooms::RoomStore::open(hub.dir.path().join("hub").join("rooms"))
+            .await
+            .expect("room store");
+        let room_service = residuum_rooms::RoomService::new(
+            store,
+            residuum_inference::system_one::SystemOneService::new(None),
+            residuum_a2a::A2aClientHub::new_shared(),
+            hub.coordinator.clone(),
+            mailboxes,
+        )
+        .await;
+        h.room_view = Some(room_service.agent_view("test-agent"));
+
+        let main_tools = h.main_registry();
+        let mut main_names = main_tools.tool_names();
+        main_names.sort();
+        assert!(
+            main_names.contains(&"room_read".to_string()),
+            "main registry must register room_read when room_view is Some"
+        );
+
+        let session_tools = h.session_registry_for(
+            "spawned-test-0001",
+            "spawned",
+            Some(a2a_conversation_target()),
+        );
+        let mut session_names = session_tools.tool_names();
+        session_names.sort();
+        assert!(
+            session_names.contains(&"room_read".to_string()),
+            "session registry must register room_read when room_view is Some"
+        );
+
+        let mut expected: Vec<String> = main_names
+            .iter()
+            .filter(|name| !MAIN_ONLY_TOOLS.contains(&name.as_str()))
+            .cloned()
+            .chain(SESSION_ONLY_TOOLS.iter().map(ToString::to_string))
+            .collect();
+        expected.sort();
+        assert_eq!(
+            session_names, expected,
+            "main/session parity must hold with room_view enabled"
+        );
+
+        let tools_md = TOOLS_MD.replace("\r\n", "\n");
+        let room_def = main_tools
+            .definitions()
+            .into_iter()
+            .find(|d| d.name == "room_read")
+            .expect("room_read definition present");
+        let expected_quote = format!("\n{}\n", quote_as_tools_md(&room_def.description));
+        assert!(
+            tools_md.contains(&expected_quote),
+            "crates/tools/src/TOOLS.md must quote room_read's exact definition() description"
         );
     }
 }

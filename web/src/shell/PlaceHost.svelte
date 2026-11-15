@@ -8,6 +8,7 @@
   import Home from "../places/home/Home.svelte";
   import Inbox from "../places/inbox/Inbox.svelte";
   import NotFound from "../places/not-found/NotFound.svelte";
+  import RoomsPlace from "../places/rooms/RoomsPlace.svelte";
   import Schedule from "../places/schedule/Schedule.svelte";
   import Workbench from "../places/workbench/Workbench.svelte";
   import PlaceHeader from "./PlaceHeader.svelte";
@@ -62,6 +63,8 @@
   {#key `${files.scope}:${files.agent ?? ""}`}
     <FilesPlace source={files} />
   {/key}
+{:else if place.kind === "rooms"}
+  <RoomsPlace room={place.room} tab={place.tab} />
 {:else if place.kind === "workbench"}
   <Workbench artifact={place.artifact} />
 {:else if place.kind === "not-found"}

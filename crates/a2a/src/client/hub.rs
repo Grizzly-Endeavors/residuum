@@ -189,6 +189,13 @@ impl A2aClientHub {
             }
         };
 
+        self.set_config_agents(desired).await;
+    }
+
+    /// Replace every `Config`-sourced agent with `desired`, keeping `Sibling`
+    /// agents intact (except where `desired` overrides a sibling of the same
+    /// name). A new or changed entry is queued for an immediate card fetch.
+    pub async fn set_config_agents(&self, desired: HashMap<String, A2aAgentEntry>) {
         let mut to_refresh: Vec<String> = Vec::new();
         {
             let mut agents = self.agents.write().await;

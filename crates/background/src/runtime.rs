@@ -19,7 +19,7 @@ use residuum_agent::hop::HopCounter;
 use residuum_agent::recent_messages::RecentMessages;
 use residuum_bus::MessageEvent;
 use residuum_bus::interrupt::Interrupt;
-use residuum_bus::origin::A2A_ENDPOINT;
+use residuum_bus::origin::{A2A_ENDPOINT, ROOM_ENDPOINT};
 use residuum_bus::{
     AgentMessageEvent, AgentResultEvent, AgentResultStatus, ConversationTarget,
     ConversationTypingEvent, EndpointName, EventTrigger, HEARTBEAT_OK, HEARTBEAT_URGENT, Publisher,
@@ -1296,7 +1296,9 @@ async fn relay_result_to_spawner(
 /// the session's turn responses.
 fn external_chat(info: &SessionInfo) -> Option<&ConversationTarget> {
     info.conversation_target.as_ref().filter(|target| {
-        info.category == SessionCategory::External && target.endpoint != A2A_ENDPOINT
+        info.category == SessionCategory::External
+            && target.endpoint != A2A_ENDPOINT
+            && target.endpoint != ROOM_ENDPOINT
     })
 }
 

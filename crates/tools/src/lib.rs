@@ -30,6 +30,7 @@ pub mod path_policy;
 mod read;
 pub mod registration;
 mod registry;
+pub mod rooms;
 pub mod send_message;
 pub mod skills;
 pub(crate) mod submit_feedback;

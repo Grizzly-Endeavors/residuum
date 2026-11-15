@@ -37,10 +37,14 @@ const BLOCKED_ROUTES: [&str; 8] = [
 ];
 
 /// Route prefixes a page on the artifacts origin is refused, at the prefix
-/// itself and below it: the paired devices and the remote-access setup. A page
-/// that could approve a pairing request or mint a pairing link could let a
-/// stranger in.
-const BLOCKED_PREFIXES: [&str; 2] = ["/api/hub/devices", "/api/hub/remote-access"];
+/// itself and below it: paired devices, remote-access setup, and meeting rooms.
+/// A page that could approve a pairing request, mint a pairing link, or reach
+/// meeting rooms could let a stranger in or exfiltrate transcripts.
+const BLOCKED_PREFIXES: [&str; 3] = [
+    "/api/hub/devices",
+    "/api/hub/remote-access",
+    "/api/hub/rooms",
+];
 
 const REFUSAL_MESSAGE: &str = "Pages opened from the workbench can't shut down, stop, update, set up, \
 or manage who can reach Residuum. Do that from the Residuum app.";
@@ -98,16 +102,21 @@ mod tests {
     }
 
     #[test]
-    fn the_device_and_remote_access_routes_are_blocked_at_and_below_their_prefix() {
+    fn the_device_remote_access_and_room_routes_are_blocked_at_and_below_their_prefix() {
         for path in [
             "/api/hub/devices",
             "/api/hub/devices/abc",
             "/api/hub/devices/pending/abc/approve",
             "/api/hub/devices/recovery-codes",
             "/api/hub/remote-access/pair-link",
+            "/api/hub/rooms",
+            "/api/hub/rooms/candidates",
+            "/api/hub/rooms/room_01jcv8k9m2p4q7",
+            "/api/hub/rooms/room_01jcv8k9m2p4q7/messages",
         ] {
             assert!(is_blocked(path), "{path}");
         }
+        assert!(!is_blocked("/api/hub/roomsx"));
     }
 
     #[tokio::test]

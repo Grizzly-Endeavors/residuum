@@ -378,6 +378,8 @@ struct StartupSpawnContextInputs<'a> {
     model_catalog: &'a residuum_config::SharedModelCatalog,
     /// Every agent's mailbox, for the session tools' mail-aware inbox tools.
     mailboxes: &'a Arc<dyn residuum_workspace::inbox::mail::MailboxDirectory>,
+    /// Shared meeting room service for `<ROOMS>` and `room_read`.
+    rooms: &'a Arc<residuum_rooms::RoomService>,
 }
 
 /// Build the `SpawnContext` every session forks from, at startup, with the
@@ -410,6 +412,7 @@ fn build_startup_spawn_context(inputs: StartupSpawnContextInputs<'_>) -> Arc<Spa
         depth_cap: inputs.cfg.background.subagent_depth_cap,
         auto_mode: Some(Arc::clone(inputs.auto_mode)),
         mailboxes: Some(Arc::clone(inputs.mailboxes)),
+        room_view: Some(inputs.rooms.agent_view(&inputs.cfg.agent_name)),
     });
     Arc::new(SpawnContext {
         background_config: inputs.cfg.background.clone(),
@@ -441,6 +444,7 @@ fn build_startup_spawn_context(inputs: StartupSpawnContextInputs<'_>) -> Arc<Spa
         merge_writer: Arc::clone(inputs.merge_writer),
         messenger: Arc::clone(inputs.messenger),
         bg_tier_active_index: residuum_background::BackgroundTierActiveIndex::default(),
+        room_roster: Some(Arc::new(inputs.rooms.agent_view(&inputs.cfg.agent_name))),
     })
 }
 
@@ -869,6 +873,8 @@ struct ToolsAndAgentInputs<'a> {
     /// context, or recent messages, folded into the same grouped
     /// startup-degradation notice as every other subsystem.
     degradations: &'a mut Vec<String>,
+    /// Shared meeting room service for `<ROOMS>` prompt injection.
+    rooms: &'a Arc<residuum_rooms::RoomService>,
 }
 
 /// Build the tool registry, reserve its names against MCP name collisions,
@@ -927,6 +933,7 @@ async fn build_tools_and_agent(
     )
     .await;
     agent.set_team(Arc::new(inputs.tool_deps.agent_messenger.team().clone()));
+    agent.set_rooms(Arc::new(inputs.rooms.agent_view(&inputs.cfg.agent_name)));
 
     (agent, tool_injections, output_topic_override_tx)
 }
@@ -966,6 +973,8 @@ struct MainAgentInputs<'a> {
     degradations: &'a mut Vec<String>,
     /// See `ToolRegistryDeps::config_reload_tracker`.
     config_reload_tracker: &'a residuum_tools::SharedConfigReloadTracker,
+    /// Shared meeting room service for `room_read` and `<ROOMS>`.
+    rooms: &'a Arc<residuum_rooms::RoomService>,
 }
 
 /// Create main's hop counter and build the agent from it, wrapping
@@ -1013,6 +1022,7 @@ async fn build_main_agent(
             lifecycle: inputs.lifecycle,
             model_catalog: inputs.model_catalog,
             mailboxes: Some(Arc::clone(inputs.mailboxes)),
+            room_view: Some(inputs.rooms.agent_view(&inputs.cfg.agent_name)),
         },
         mcp_registry: &inputs.net.mcp_registry,
         provider: inputs.provider,
@@ -1020,6 +1030,7 @@ async fn build_main_agent(
         identity: inputs.identity,
         hop_counter: hop_counter.clone(),
         degradations: inputs.degradations,
+        rooms: inputs.rooms,
     })
     .await
 }
@@ -1053,6 +1064,8 @@ struct AgentInitInputs<'a> {
     /// The hub's late-bound handle to every agent's mailbox, for the
     /// mail-aware inbox tools of main and every session.
     mailboxes: &'a residuum_workspace::inbox::mail::MailboxDirectoryHandle,
+    /// Shared meeting room service for `room_read` and `<ROOMS>`.
+    rooms: &'a Arc<residuum_rooms::RoomService>,
     identity: IdentityFiles,
     provider: Box<dyn residuum_inference::InferenceProvider>,
     options: residuum_inference::CompletionOptions,
@@ -1117,6 +1130,7 @@ async fn build_spawn_context_and_agent(inputs: AgentInitInputs<'_>) -> SpawnCont
         lifecycle: &lifecycle,
         model_catalog: &model_catalog,
         mailboxes: &mailboxes,
+        rooms: inputs.rooms,
     });
 
     let (agent, tool_injections, output_topic_override_tx) = build_main_agent(MainAgentInputs {
@@ -1148,6 +1162,7 @@ async fn build_spawn_context_and_agent(inputs: AgentInitInputs<'_>) -> SpawnCont
         mailboxes: &mailboxes,
         degradations: inputs.degradations,
         config_reload_tracker: &infra.config_reload_tracker,
+        rooms: inputs.rooms,
     })
     .await;
 
@@ -1477,6 +1492,7 @@ pub(crate) async fn initialize(
         checkpoints: &checkpoints,
         directory: &shared.directory,
         mailboxes: &shared.mailboxes,
+        rooms: &shared.rooms,
         identity,
         provider: providers.provider,
         options: providers.options,

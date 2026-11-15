@@ -40,6 +40,12 @@ describe("places", () => {
     ["/agent/scout/activity", { kind: "activity", agent: "scout" }],
     ["/agent/scout/schedule", { kind: "schedule", agent: "scout" }],
     ["/agent/scout/files", { kind: "files", agent: "scout" }],
+    ["/team/rooms", { kind: "rooms", room: null, tab: "active" }],
+    ["/team/rooms?tab=archived", { kind: "rooms", room: null, tab: "archived" }],
+    [
+      "/team/rooms/room_01jcv8k9m2p4q7",
+      { kind: "rooms", room: "room_01jcv8k9m2p4q7", tab: "active" },
+    ],
     ["/team/workbench", { kind: "workbench", artifact: null }],
     ["/team/workbench/tip-splitter", { kind: "workbench", artifact: "tip-splitter" }],
     ["/team/files", { kind: "shared-files" }],
@@ -61,6 +67,7 @@ describe("places", () => {
     expect(viewedAgentOf({ kind: "files", agent: "atlas" })).toBe("atlas");
     expect(viewedAgentOf(HOME)).toBeNull();
     expect(viewedAgentOf({ kind: "workbench", artifact: null })).toBeNull();
+    expect(viewedAgentOf({ kind: "rooms", room: null, tab: "active" })).toBeNull();
     expect(viewedAgentOf({ kind: "shared-files" })).toBeNull();
     expect(viewedAgentOf({ ...INBOX, agent: "scout" })).toBeNull();
   });
@@ -84,6 +91,7 @@ describe("unknown routes", () => {
     "/agent/scout/files/extra",
     "/team/nowhere",
     "/team/files/extra",
+    "/team/rooms/a/b",
     "/team/workbench/a/b",
     "/notes.txt",
     "/%E0%A4%A",
@@ -103,8 +111,11 @@ describe("unknown routes", () => {
     expect(viewedAgentOf({ kind: "not-found", path: "/agent/x/y" })).toBeNull();
   });
 
-  it("corrects a malformed artifact name to the list", () => {
+  it("corrects a malformed artifact name or room id to its list", () => {
     expect(where("/team/workbench/Bad_Name")).toBe("/team/workbench");
+    expect(where("/team/rooms/Bad_Id")).toBe("/team/rooms");
+    expect(where("/team/rooms?tab=active")).toBe("/team/rooms");
+    expect(where("/team/rooms?tab=other")).toBe("/team/rooms");
   });
 
   it("accepts the artifact-name rule's limits", () => {
@@ -281,6 +292,10 @@ describe("the panel parameter", () => {
     ],
     ["/team/files?panel=file:notes/plan.md", { kind: "file", path: "notes/plan.md", agent: null }],
     [
+      "/team/rooms/room_01jcv8k9m2p4q7?panel=file:minutes/2026-11-14-sync.md",
+      { kind: "file", path: "minutes/2026-11-14-sync.md", agent: null },
+    ],
+    [
       "/agent/scout?panel=agent-file:atlas:SOUL.md",
       { kind: "file", path: "SOUL.md", agent: "atlas" },
     ],
@@ -408,6 +423,15 @@ describe("the panel parameter", () => {
     expect(panelAllowed(HOME, { kind: "size" })).toBe(false);
     expect(panelAllowed({ kind: "shared-files" }, { kind: "file", path: "a", agent: null })).toBe(
       true,
+    );
+    expect(
+      panelAllowed(
+        { kind: "rooms", room: "room_01jcv8k9m2p4q7", tab: "active" },
+        { kind: "file", path: "minutes/2026-11-14-sync.md", agent: null },
+      ),
+    ).toBe(true);
+    expect(panelAllowed({ kind: "rooms", room: null, tab: "active" }, { kind: "size" })).toBe(
+      false,
     );
     expect(panelAllowed({ kind: "shared-files" }, { kind: "size" })).toBe(false);
   });
@@ -791,6 +815,12 @@ describe("formatting", () => {
       panel: session("atlas", "r"),
       settings: { scope: "_all", section: "raw" },
     },
+    {
+      place: { kind: "rooms", room: "room_01jcv8k9m2p4q7", tab: "active" },
+      panel: { kind: "file", path: "minutes/2026-11-14-sync.md", agent: null },
+      settings: null,
+    },
+    locationAt({ kind: "rooms", room: null, tab: "archived" }),
     {
       place: { kind: "shared-files" },
       panel: { kind: "file", path: "x.md", agent: null },

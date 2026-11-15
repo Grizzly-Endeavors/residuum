@@ -1054,6 +1054,7 @@ pub fn build_app(
         pairing: services.pairing.clone(),
         remote_access: services.remote_access.clone(),
         uploads: services.uploads.clone(),
+        rooms: Arc::clone(&services.rooms),
     };
     Ok(hub_router(
         Arc::clone(host) as Arc<dyn AgentDirectory>,

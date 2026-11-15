@@ -52,13 +52,15 @@ export function readEntry(state: unknown): EntryState | null {
  */
 function sameList(a: Place, b: Place): boolean {
   if (a.kind === "workbench") return b.kind === "workbench";
+  if (a.kind === "rooms") return b.kind === "rooms";
   return a.kind === "inbox" && b.kind === "inbox" && a.agent === b.agent && a.folder === b.folder;
 }
 
-/** Whether the location is the Inbox with a thread or New message open, or the Workbench with an artifact selected. */
+/** Whether the location is the Inbox with a thread or New message open, or the Workbench with an artifact selected, or a Room open. */
 function hasItem(location: AppLocation): boolean {
   const { place } = location;
   if (place.kind === "workbench") return place.artifact !== null;
+  if (place.kind === "rooms") return place.room !== null;
   return place.kind === "inbox" && (place.thread !== null || place.compose !== null);
 }
 

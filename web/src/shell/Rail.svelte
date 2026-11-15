@@ -5,6 +5,7 @@
   import { Icon, type IconName } from "../lib/icons";
   import { hub } from "../lib/hub.svelte";
   import { overview } from "../lib/overview.svelte";
+  import { roomsStore } from "../lib/rooms.svelte";
   import { router } from "../lib/router.svelte";
   import { runningCount } from "../lib/running-count";
   import {
@@ -49,6 +50,7 @@
   let { accordion, actions, onclose }: Props = $props();
 
   const uid = $props.id();
+  const ROOMS: Place = { kind: "rooms", room: null, tab: "active" };
   const WORKBENCH: Place = { kind: "workbench", artifact: null };
   const SHARED_FILES: Place = { kind: "shared-files" };
   const ROW_KEYS = new Set(["ArrowDown", "ArrowUp", "Home", "End"]);
@@ -57,9 +59,11 @@
   const homeCount = $derived(overview.needsYou.count);
   const helpActions = $derived(actionRegistry.all.filter((action) => action.group === HELP_GROUP));
 
-  /** The Inbox and the Workbench stay current whatever filter or artifact they show. */
+  /** The Inbox, Rooms, and the Workbench stay current whatever filter, room, or artifact they show. */
   function isCurrent(target: Place): boolean {
-    if (target.kind === "inbox" || target.kind === "workbench") return place.kind === target.kind;
+    if (target.kind === "inbox" || target.kind === "workbench" || target.kind === "rooms") {
+      return place.kind === target.kind;
+    }
     return placesEqual(place, target);
   }
 
@@ -263,6 +267,42 @@
 
     <div class="rail-heading"><span id="{uid}-team">Team</span></div>
     <ul class="rail-list" aria-labelledby="{uid}-team">
+      <li>
+        <a
+          class="rail-row"
+          href={formatLocation(locationAt(ROOMS))}
+          data-rail-row
+          aria-current={isCurrent(ROOMS) ? "page" : undefined}
+          onclick={(event) => open(event, ROOMS)}
+        >
+          <Icon name="users" size={15} />
+          <span class="rail-label">Rooms</span>
+        </a>
+        {#if roomsStore.pinnedRooms.length > 0}
+          <ul class="rail-places">
+            {#each roomsStore.pinnedRooms as pinned (pinned.id)}
+              {@const target = { kind: "rooms", room: pinned.id, tab: "active" } satisfies Place}
+              {@const viewing = place.kind === "rooms" && place.room === pinned.id}
+              {@const unread = pinned.unread_count > 0 && !viewing}
+              <li>
+                <a
+                  class="rail-place"
+                  href={formatLocation(locationAt(target))}
+                  data-rail-row
+                  aria-current={viewing ? "page" : undefined}
+                  onclick={(event) => open(event, target)}
+                >
+                  <span class="rail-label">{pinned.name}</span>
+                  {#if unread}
+                    <span class="rail-room-unread" data-unread-dot aria-hidden="true"></span>
+                    <VisuallyHidden>, {pinned.unread_count} unread</VisuallyHidden>
+                  {/if}
+                </a>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </li>
       {@render placeRow(WORKBENCH, "Workbench", "grid")}
       {@render placeRow(SHARED_FILES, "Shared files", "folder")}
     </ul>
@@ -511,6 +551,14 @@
       background: var(--color-vein-bright);
       box-shadow: 0 0 6px var(--color-vein-line);
     }
+  }
+
+  .rail-room-unread {
+    flex: none;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--color-vein-bright);
   }
 
   .rail-foot {

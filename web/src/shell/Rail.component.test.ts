@@ -4,8 +4,9 @@ import userEvent from "@testing-library/user-event";
 import { render, screen, stubWebSocket } from "../test/component";
 import { activityFrame, snapshot } from "../test/hub-frames";
 import { hub } from "../lib/hub.svelte";
+import { roomsStore } from "../lib/rooms.svelte";
 import { router } from "../lib/router.svelte";
-import type { AgentSummary } from "../lib/hub-types";
+import type { AgentSummary, RoomSummary } from "../lib/hub-types";
 import { RailAccordion } from "./accordion.svelte";
 import { registerAppActions } from "./app-actions.svelte";
 import Rail from "./Rail.svelte";
@@ -49,8 +50,30 @@ const row = (name: RegExp | string): HTMLElement =>
 const caret = (agentName: string): HTMLElement =>
   screen.getByRole("button", { name: new RegExp(`^(Expand|Collapse) ${agentName}$`) });
 
+function roomSummary(id: string, overrides: Partial<RoomSummary> = {}): RoomSummary {
+  return {
+    id,
+    name: "Architecture Sync",
+    topic: null,
+    status: "active",
+    pinned: true,
+    created_at: "2026-11-14T10:00:00Z",
+    updated_at: "2026-11-14T10:05:00Z",
+    archived_at: null,
+    roster: [],
+    last_seq: 3,
+    unread_count: 0,
+    paused_at_cap: false,
+    minutes_shared_path: null,
+    ...overrides,
+  };
+}
+
 beforeEach(() => {
   stubWebSocket();
+  roomsStore.rooms = [];
+  roomsStore.currentRoom = null;
+  roomsStore.viewingRoomId = null;
   hub.handleFrame(
     snapshot([agent("atlas"), agent("brittle", { state: "failed" }), agent("scout")], {
       activity: { scout: { busy: true, busy_since: null, unread: 4 } },
@@ -194,5 +217,67 @@ describe("Rail", () => {
       expect(shell.openFeedback).toHaveBeenCalledWith("bug");
     });
     unregister();
+  });
+
+  it("renders Rooms under Team before Workbench, highlights on /team/rooms/*, and shows pinned active rooms with unread dots", async () => {
+    roomsStore.rooms = [
+      roomSummary("room_01jcv8k9m2p4q7", {
+        name: "Architecture Sync",
+        pinned: true,
+        unread_count: 2,
+      }),
+      roomSummary("room_01jcv8k9m2p4q8", {
+        name: "Daily Standup",
+        pinned: false,
+        unread_count: 5,
+      }),
+      roomSummary("room_01jcv8k9m2p4q9", {
+        name: "Old Retro",
+        status: "archived",
+        pinned: true,
+        unread_count: 1,
+      }),
+    ];
+
+    render(Rail, { accordion: new RailAccordion(), actions: actions() });
+
+    const teamList = screen.getByRole("list", { name: "Team" });
+    const teamLinks = [...teamList.querySelectorAll<HTMLAnchorElement>(":scope > li > a.rail-row")];
+    expect(teamLinks.map((el) => el.getAttribute("href"))).toEqual([
+      "/team/rooms",
+      "/team/workbench",
+      "/team/files",
+    ]);
+
+    const roomsLink = screen.getByRole("link", { name: "Rooms" });
+    expect(roomsLink).toHaveAttribute("href", "/team/rooms");
+
+    // Pinned active room appears under Rooms with unread indicator; unpinned and archived do not.
+    const pinnedLink = screen.getByRole("link", { name: /Architecture Sync/ });
+    expect(pinnedLink).toHaveAttribute("href", "/team/rooms/room_01jcv8k9m2p4q7");
+    expect(pinnedLink).toHaveTextContent("2 unread");
+    expect(pinnedLink.querySelector("[data-unread-dot]")).not.toBeNull();
+    expect(screen.queryByRole("link", { name: /Daily Standup/ })).toBeNull();
+    expect(screen.queryByRole("link", { name: /Old Retro/ })).toBeNull();
+
+    // Highlights Rooms as current on /team/rooms, /team/rooms?tab=archived, and /team/rooms/:roomId.
+    await router.replacePlace({ kind: "rooms", room: null, tab: "active" });
+    await tick();
+    expect(roomsLink).toHaveAttribute("aria-current", "page");
+
+    await router.replacePlace({ kind: "rooms", room: null, tab: "archived" });
+    await tick();
+    expect(roomsLink).toHaveAttribute("aria-current", "page");
+
+    await router.replacePlace({
+      kind: "rooms",
+      room: "room_01jcv8k9m2p4q7",
+      tab: "active",
+    });
+    await tick();
+    expect(roomsLink).toHaveAttribute("aria-current", "page");
+    expect(pinnedLink).toHaveAttribute("aria-current", "page");
+    // Unread dot clears on the pinned row when currently viewing that room.
+    expect(pinnedLink.querySelector("[data-unread-dot]")).toBeNull();
   });
 });

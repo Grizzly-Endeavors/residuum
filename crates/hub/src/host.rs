@@ -1171,6 +1171,8 @@ impl AgentHost {
             .await;
         // Nor does it take teammate messages: nothing queues for a dead agent.
         self.services.team_router.unregister(&run.slot.name);
+        // Remove it from meeting room local candidates as well.
+        self.services.rooms.unregister_local_agent(&run.slot.name);
 
         let current = run.slot.lock().generation == run.generation;
         if current {
@@ -1220,6 +1222,7 @@ impl AgentHost {
         // From the stop request on, no teammate message reaches the agent;
         // its event loop only unregisters once it sees the request.
         self.services.team_router.unregister(&slot.name);
+        self.services.rooms.unregister_local_agent(&slot.name);
         // Mirror that timing for the relay's A2A directory: it stops
         // advertising the agent now rather than waiting for the stop to
         // finish, which can take up to `STOP_TIMEOUT` plus `ABORT_SETTLE`.

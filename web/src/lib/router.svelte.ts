@@ -102,6 +102,9 @@ function withoutParam(location: AppLocation, param: ClosableParam): AppLocation 
           ? null
           : { ...location, place: { ...place, artifact: null } };
       }
+      if (place.kind === "rooms") {
+        return place.room === null ? null : { ...location, place: { ...place, room: null } };
+      }
       return place.kind === "inbox" && (place.thread !== null || place.compose !== null)
         ? { ...location, place: { ...place, thread: null, compose: null } }
         : null;

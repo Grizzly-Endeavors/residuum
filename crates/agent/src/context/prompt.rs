@@ -110,23 +110,24 @@ fn chat_names(chats: &[(&str, bool)], posted: bool) -> String {
 /// 5. `USER.md` (team)
 /// 6. `WIKI_INDEX` (the team wiki's root `index.md`)
 /// 7. `TEAM` (teammates with state and role line, when the agent has any)
-/// 8. `OBSERVATION_LOG` (if present)
-/// 9. `RECENT_CONTEXT` (if present)
-/// 10. `SKILLS_INDEX` (available skills listing)
-/// 11. `ACTIVE_SKILLS` (when skills are loaded)
+/// 8. `ROOMS` (meeting rooms the agent participates in, when it has any)
+/// 9. `OBSERVATION_LOG` (if present)
+/// 10. `RECENT_CONTEXT` (if present)
+/// 11. `SKILLS_INDEX` (available skills listing)
+/// 12. `ACTIVE_SKILLS` (when skills are loaded)
 ///
 /// Providers cache a request by its exact byte prefix, and the system prompt
 /// comes before the conversation, so a change to any section invalidates the
 /// cached prefix from that section on, the conversation included. Sections
-/// 1-7 change rarely (identity and wiki edits, a teammate starting or
-/// stopping); sections 8-11 change as memory is observed and skills are
-/// activated. The message's cache boundary sits after section 7: Anthropic
-/// puts an explicit cache breakpoint there, so a change to sections 8-11
-/// still reads the tools and sections 1-7 from the cache. Providers that
-/// reuse the longest matching prefix (OpenAI-compatible hosts, Gemini, local
-/// models) get the same effect from the order alone. The skills index (10)
-/// comes before the active skills (11) so activating a skill leaves the
-/// index cached.
+/// 1-8 change rarely (identity and wiki edits, a teammate starting or
+/// stopping, rooms opening or archiving); sections 9-12 change as memory is
+/// observed and skills are activated. The message's cache boundary sits after
+/// section 8: Anthropic puts an explicit cache breakpoint there, so a change to
+/// sections 9-12 still reads the tools and sections 1-8 from the cache.
+/// Providers that reuse the longest matching prefix (OpenAI-compatible hosts,
+/// Gemini, local models) get the same effect from the order alone. The skills
+/// index (11) comes before the active skills (12) so activating a skill leaves
+/// the index cached.
 pub(super) fn build_system_prompt(
     identity: &IdentityFiles,
     memory_ctx: &MemoryContext<'_>,
@@ -162,6 +163,12 @@ pub(super) fn build_system_prompt(
 
     if let Some(team) = &identity.team {
         stable.push((SectionKind::Identity, section("TEAM", team)));
+    }
+
+    if let Some(rooms) = &identity.rooms
+        && !rooms.trim().is_empty()
+    {
+        stable.push((SectionKind::Identity, section("ROOMS", rooms)));
     }
 
     let mut changing = Vec::new();
@@ -606,6 +613,67 @@ mod tests {
             &PromptContext::default(),
         );
         assert!(!content.contains("<TEAM>"));
+    }
+
+    #[test]
+    fn room_roster_none_and_empty_are_omitted() {
+        for rooms_block in [None, Some(String::new()), Some("   \n\t ".to_string())] {
+            let identity = IdentityFiles::default().with_room_roster(rooms_block);
+            let content = system_text(&identity, &no_memory(), &PromptContext::default());
+            assert!(
+                !content.contains("<ROOMS>"),
+                "None or empty room roster must not render <ROOMS>: {content}"
+            );
+        }
+
+        let direct_empty = IdentityFiles {
+            rooms: Some(String::new()),
+            ..IdentityFiles::default()
+        };
+        let content = system_text(&direct_empty, &no_memory(), &PromptContext::default());
+        assert!(!content.contains("<ROOMS>"));
+    }
+
+    #[test]
+    fn room_roster_sits_after_team_and_before_observation_log() {
+        let rooms_text = "Rooms you participate in:\n- \"Morning Standup\" (active, 2m ago)";
+        let identity = IdentityFiles {
+            wiki_index: Some("wiki".to_string()),
+            team: Some("You are \"scout\".\n- reviewer (running): Reviews".to_string()),
+            ..IdentityFiles::default()
+        }
+        .with_room_roster(Some(rooms_text.to_string()));
+        let mem = MemoryContext {
+            observations: Some("obs"),
+            recent_context: None,
+        };
+        let prompt = build_system_prompt(&identity, &mem, &PromptContext::default());
+        let content = &prompt.message.content;
+
+        let expected = format!(
+            "<TEAM>\nYou are \"scout\".\n- reviewer (running): Reviews\n</TEAM>\n\n<ROOMS>\n{rooms_text}\n</ROOMS>"
+        );
+        assert!(
+            content.contains(&expected),
+            "ROOMS block must immediately follow TEAM: {content}"
+        );
+        let positions = [
+            "</WIKI_INDEX>",
+            "<TEAM>",
+            "</TEAM>",
+            "<ROOMS>",
+            "</ROOMS>",
+            "<OBSERVATION_LOG>",
+        ]
+        .map(|needle| content.find(needle).unwrap());
+        assert!(
+            positions.is_sorted(),
+            "order must be WIKI_INDEX, TEAM, ROOMS, OBSERVATION_LOG: {positions:?}"
+        );
+
+        let (stable, rest) = split(&prompt.message);
+        assert!(stable.ends_with("</ROOMS>"), "{stable}");
+        assert!(rest.starts_with("\n\n<OBSERVATION_LOG>"), "{rest}");
     }
 
     #[test]

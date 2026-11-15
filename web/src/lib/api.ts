@@ -53,6 +53,7 @@ import type {
   AgentListResponse,
   AgentSummary,
   CreateAgentRequest,
+  CreateRoomRequest,
   DeleteOutcome,
   DeletedAgent,
   DeletedAgentListResponse,
@@ -65,9 +66,16 @@ import type {
   MailThread,
   MailThreadPage,
   OverviewResponse,
+  PatchRoomRequest,
+  PostRoomMessageRequest,
   PushDevice,
   PushPreferencesPatch,
   PushTestResult,
+  RoomCandidatesResponse,
+  RoomDetail,
+  RoomDetailResponse,
+  RoomListResponse,
+  RoomMessage,
   TeamEventPage,
   WebPushSubscription,
   WorkspaceScope,
@@ -1536,6 +1544,99 @@ export async function uploadFile(
     body: file,
     ...(options.signal === undefined ? {} : { signal: options.signal }),
   });
+}
+
+// ── Meeting rooms ───────────────────────────────────────────────────
+
+function roomPath(id: string, action?: string): string {
+  const path = `/rooms/${encodeURIComponent(id)}`;
+  return hubPath(action === undefined ? path : `${path}/${action}`);
+}
+
+export async function fetchRooms(): Promise<RoomListResponse> {
+  return apiFetch<RoomListResponse>(hubPath("/rooms"));
+}
+
+export async function fetchRoomCandidates(): Promise<RoomCandidatesResponse> {
+  return apiFetch<RoomCandidatesResponse>(hubPath("/rooms/candidates"));
+}
+
+export async function fetchRoom(
+  id: string,
+  query: { limit?: number; before_seq?: number } = {},
+): Promise<RoomDetailResponse> {
+  return apiFetch<RoomDetailResponse>(`${roomPath(id)}${queryString(query)}`);
+}
+
+export async function createRoom(request: CreateRoomRequest): Promise<RoomDetailResponse> {
+  return apiFetch<RoomDetailResponse>(hubPath("/rooms"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+}
+
+export async function patchRoom(id: string, request: PatchRoomRequest): Promise<RoomDetail> {
+  return apiFetch<RoomDetail>(roomPath(id), {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+}
+
+export async function markRoomRead(id: string, seq: number): Promise<void> {
+  await apiFetchText(roomPath(id, "read"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ seq }),
+  });
+}
+
+export async function postRoomMessage(
+  id: string,
+  request: PostRoomMessageRequest,
+): Promise<RoomMessage> {
+  return apiFetch<RoomMessage>(roomPath(id, "messages"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+}
+
+export async function continueRoom(id: string): Promise<RoomDetail> {
+  return apiFetch<RoomDetail>(roomPath(id, "continue"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({}),
+  });
+}
+
+export async function stopRoom(id: string): Promise<RoomDetail> {
+  return apiFetch<RoomDetail>(roomPath(id, "stop"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({}),
+  });
+}
+
+export async function archiveRoom(id: string): Promise<RoomDetailResponse> {
+  return apiFetch<RoomDetailResponse>(roomPath(id, "archive"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({}),
+  });
+}
+
+export async function reopenRoom(id: string): Promise<RoomDetail> {
+  return apiFetch<RoomDetail>(roomPath(id, "reopen"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({}),
+  });
+}
+
+export async function deleteRoom(id: string): Promise<void> {
+  await apiFetchText(roomPath(id), { method: "DELETE" });
 }
 
 // ── Teams setup API ─────────────────────────────────────────────────
