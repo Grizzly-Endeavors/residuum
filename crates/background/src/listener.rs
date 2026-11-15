@@ -2224,6 +2224,7 @@ mod tests {
             observer: Arc::clone(&initial_ctx.observer),
             merge_writer: Arc::clone(&initial_ctx.merge_writer),
             messenger: Arc::clone(&initial_ctx.messenger),
+            room_roster: initial_ctx.room_roster.clone(),
             bg_tier_active_index: crate::spawn_context::BackgroundTierActiveIndex::default(),
         });
         ctx_tx.send_replace(reloaded_ctx);
