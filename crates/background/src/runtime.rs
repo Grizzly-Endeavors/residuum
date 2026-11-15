@@ -913,6 +913,7 @@ async fn run_session(
     let mut summary;
     // Numbers this run's turns, for the turn ids its turn events carry.
     let mut turn_number: u32 = 0;
+    let mut turn_token = initial_turn_token(&env.registry, &info, &stop_token);
 
     loop {
         // Registered and ready for this turn but not necessarily able to
@@ -924,29 +925,19 @@ async fn run_session(
         let first_message = history.messages.len();
         (status, summary) = tokio::select! {
             biased;
-            () = stop_token.cancelled() => {
-                tracing::info!("session stopped before its turn started");
-                (AgentResultStatus::Cancelled, String::new())
+            () = turn_token.cancelled() => {
+                cancelled_queued_turn(&info, &env, &stop_token, &mut turn_number).await
             }
             permit = env.semaphore.acquire() => {
                 match permit {
                     Ok(_permit) => {
                         transition_state(&env.registry, &env.publisher, &info, SessionState::Running).await;
                         turn_number += 1;
-                        let ctx = turn_ctx(&info, resources.as_ref(), &stop_token, &env);
+                        let ctx = turn_ctx(&info, resources.as_ref(), &turn_token, &env);
                         let turn_id = format!("{}-t{turn_number}", info.run_id);
                         run_turn(&ctx, &turn_id, &mut history.messages, kickoff, &mut interrupt_rx).await
                     }
-                    Err(_closed) => {
-                        tracing::warn!("concurrency semaphore closed before session could acquire a permit");
-                        (
-                            AgentResultStatus::Failed {
-                                error: "gateway is shutting down".to_string(),
-                                details: None,
-                            },
-                            String::new(),
-                        )
-                    }
+                    Err(_closed) => semaphore_closed_failure(),
                 }
             }
         };
@@ -965,11 +956,14 @@ async fn run_session(
         )
         .await;
 
-        // A cancelled run — whether stopped before its turn started or
-        // mid-turn — skips lingering idle and goes straight to completing,
-        // per the design: stopping a session moves it straight to
-        // `completing`.
-        if matches!(status, AgentResultStatus::Cancelled) {
+        // Session-level stop (or cancelling before any turn ever ran) skips
+        // lingering idle and goes straight to `completing`. A turn-only cancel
+        // (`cancel_current_turn`, where `stop_token` is still live) returns the
+        // session to `Idle` so subsequent messages don't queue behind memory
+        // extraction/reflection.
+        if matches!(status, AgentResultStatus::Cancelled)
+            && (stop_token.is_cancelled() || turn_number == 0)
+        {
             tracing::info!("session stopped, skipping idle and completing directly");
             break;
         }
@@ -994,10 +988,12 @@ async fn run_session(
             }
             IdleOutcome::Woken(msg) => {
                 tracing::info!(from = %msg.from, "session woken by an agent message, starting another turn");
+                turn_token = next_turn_token(&env.registry, &info, &stop_token);
                 kickoff = TurnKickoff::AgentMessage(msg);
             }
             IdleOutcome::WokenExternal(msg) => {
                 tracing::info!(msg_id = %msg.id, "session woken by a conversation message, starting another turn");
+                turn_token = next_turn_token(&env.registry, &info, &stop_token);
                 kickoff = TurnKickoff::External(msg);
             }
         }
@@ -1024,6 +1020,73 @@ async fn run_session(
         &env,
     )
     .await;
+}
+
+/// Obtain the initial per-turn cancellation token registered for `info`.
+fn initial_turn_token(
+    registry: &SessionRegistry,
+    info: &SessionInfo,
+    stop_token: &CancellationToken,
+) -> CancellationToken {
+    registry
+        .current_turn_token(&info.address, &info.run_id)
+        .unwrap_or_else(|| stop_token.child_token())
+}
+
+/// Mint a fresh per-turn cancellation token when waking from `Idle`.
+fn next_turn_token(
+    registry: &SessionRegistry,
+    info: &SessionInfo,
+    stop_token: &CancellationToken,
+) -> CancellationToken {
+    registry
+        .reset_turn_token(&info.address, &info.run_id)
+        .unwrap_or_else(|| stop_token.child_token())
+}
+
+/// Failure outcome when the concurrency semaphore closes during shutdown.
+fn semaphore_closed_failure() -> (AgentResultStatus, String) {
+    tracing::warn!("concurrency semaphore closed before session could acquire a permit");
+    (
+        AgentResultStatus::Failed {
+            error: "gateway is shutting down".to_string(),
+            details: None,
+        },
+        String::new(),
+    )
+}
+
+/// Handle a turn cancelled before acquiring a concurrency permit. If only the
+/// turn (not the session) was cancelled on an already-established session,
+/// bracket it with `TurnStarted`/`TurnEnded` so turn watchers resolve cleanly.
+async fn cancelled_queued_turn(
+    info: &SessionInfo,
+    env: &RunEnv,
+    stop_token: &CancellationToken,
+    turn_number: &mut u32,
+) -> (AgentResultStatus, String) {
+    tracing::info!("session stopped before its turn started");
+    if !stop_token.is_cancelled() && *turn_number > 0 {
+        *turn_number += 1;
+        let turn_id = format!("{}-t{}", info.run_id, *turn_number);
+        publish_session_event(
+            &env.publisher,
+            &info.address,
+            &info.run_id,
+            SessionEventKind::TurnStarted {
+                turn_id: turn_id.clone(),
+            },
+        )
+        .await;
+        publish_session_event(
+            &env.publisher,
+            &info.address,
+            &info.run_id,
+            SessionEventKind::TurnEnded { turn_id },
+        )
+        .await;
+    }
+    (AgentResultStatus::Cancelled, String::new())
 }
 
 /// Drain every agent message or conversation message still queued in a run's
