@@ -301,6 +301,9 @@ pub struct RoomWindowState {
     /// True when the room fell back to `@mention`-only mode because `SystemOne` was unavailable.
     #[serde(default)]
     pub decision_model_fallback: bool,
+    /// Last per-room speaker-selection failure message, cleared once selection succeeds.
+    #[serde(default)]
+    pub selector_error: Option<String>,
 }
 
 impl RoomWindowState {
@@ -315,6 +318,7 @@ impl RoomWindowState {
             queued_seats: Vec::new(),
             paused_at_cap: false,
             decision_model_fallback: false,
+            selector_error: None,
         }
     }
 }

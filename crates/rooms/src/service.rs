@@ -110,6 +110,8 @@ pub enum RoomEvent {
         window_used: u32,
         /// Cap for the current window.
         window_cap: u32,
+        /// Per-room speaker-selection failure message, if the latest evaluation failed.
+        selector_error: Option<String>,
     },
     /// A room was permanently deleted.
     Deleted {
@@ -294,6 +296,7 @@ impl RoomService {
             paused_at_cap: record.window.paused_at_cap,
             window_used: record.window.window_used,
             window_cap: record.window.window_cap,
+            selector_error: record.window.selector_error.clone(),
         });
     }
 
@@ -489,6 +492,7 @@ impl RoomService {
     async fn clear_fallback_if_available(&self, room_id: &str, record: &mut RoomRecord) {
         if self.selector.is_available()
             && record.window.decision_model_fallback
+            && record.window.selector_error.is_none()
             && let Ok((updated, ())) = self
                 .store
                 .update_record(room_id, |rec| {
@@ -924,7 +928,10 @@ impl RoomService {
                 };
             })
             .await?;
-        if self.selector.is_available() && updated.window.decision_model_fallback {
+        if self.selector.is_available()
+            && updated.window.decision_model_fallback
+            && updated.window.selector_error.is_none()
+        {
             let (cleared, ()) = self
                 .store
                 .update_record(room_id, |rec| {
@@ -1264,7 +1271,7 @@ impl RoomService {
         let (_, action) = self
             .store
             .try_update_record(room_id, |rec| {
-                if selector_available {
+                if selector_available && rec.window.selector_error.is_none() {
                     rec.window.decision_model_fallback = false;
                 }
                 if rec.status != RoomStatus::Active {
@@ -1351,31 +1358,16 @@ impl RoomService {
 
         match outcome {
             SelectorOutcome::Unavailable => {
-                if let Ok((rec, ())) = self
-                    .store
-                    .update_record(room_id, |rec| {
-                        rec.window.decision_model_fallback = true;
-                        rec.window.paused_at_cap = false;
-                    })
-                    .await
-                {
-                    self.sync_snapshot(&rec);
-                    self.emit_record_updated(&rec);
-                }
+                self.record_selector_fallback(room_id, true, None).await;
+                None
+            }
+            SelectorOutcome::Failed(reason) => {
+                self.record_selector_fallback(room_id, true, Some(reason))
+                    .await;
                 None
             }
             SelectorOutcome::NoSpeaker => {
-                if let Ok((rec, ())) = self
-                    .store
-                    .update_record(room_id, |rec| {
-                        rec.window.decision_model_fallback = false;
-                        rec.window.paused_at_cap = false;
-                    })
-                    .await
-                {
-                    self.sync_snapshot(&rec);
-                    self.emit_record_updated(&rec);
-                }
+                self.record_selector_fallback(room_id, false, None).await;
                 None
             }
             SelectorOutcome::Pick(picked_id) => {
@@ -1383,6 +1375,7 @@ impl RoomService {
                     .store
                     .try_update_record(room_id, |rec| {
                         rec.window.decision_model_fallback = false;
+                        rec.window.selector_error = None;
                         let seat = rec.roster.iter().find(|s| s.seat_id == picked_id).cloned();
                         let used = rec
                             .window
@@ -1420,6 +1413,26 @@ impl RoomService {
                     Err(_) => None,
                 }
             }
+        }
+    }
+
+    async fn record_selector_fallback(
+        &self,
+        room_id: &str,
+        fallback: bool,
+        selector_error: Option<String>,
+    ) {
+        if let Ok((rec, ())) = self
+            .store
+            .update_record(room_id, |rec| {
+                rec.window.decision_model_fallback = fallback;
+                rec.window.selector_error = selector_error;
+                rec.window.paused_at_cap = false;
+            })
+            .await
+        {
+            self.sync_snapshot(&rec);
+            self.emit_record_updated(&rec);
         }
     }
 
@@ -3269,5 +3282,67 @@ mod tests {
         assert_eq!(analyst_atts.len(), 1);
         assert_eq!(scout_atts.first().unwrap(), &vec![att.clone()]);
         assert_eq!(analyst_atts.first().unwrap(), &vec![att]);
+    }
+
+    #[tokio::test]
+    async fn selector_failure_persists_room_selector_error_until_next_successful_evaluation() {
+        let scout = MockLocalParticipant::with_replies("scout", vec![Ok("Got it.".to_owned())]);
+        let selector = Arc::new(MockSelector::new(
+            true,
+            vec![
+                SelectorOutcome::Failed(
+                    "provider rejected speaker selection: Input blocked.".to_owned(),
+                ),
+                SelectorOutcome::Pick("agent:scout".to_owned()),
+                SelectorOutcome::NoSpeaker,
+            ],
+        ));
+        let (_hub, service) = setup_service(&[("scout", "Scout", scout)], selector).await;
+
+        let created = service
+            .create_room(CreateRoomRequest {
+                name: "Selector Failure".to_owned(),
+                topic: None,
+                seat_ids: vec!["agent:scout".to_owned()],
+                pinned: false,
+            })
+            .await
+            .unwrap();
+        let room_id = created.room.id.to_string();
+        let mut rx = service.subscribe_events();
+
+        service
+            .post_owner_message(&room_id, "First message".to_owned(), Vec::new())
+            .await
+            .unwrap();
+        wait_until_idle(&mut rx, &room_id, &service).await;
+
+        let failed_view = service.get_room(&room_id, 10, None).await.unwrap();
+        assert!(
+            failed_view.room.window.decision_model_fallback,
+            "per-request failure must keep decision_model_fallback latched across get_room"
+        );
+        assert_eq!(
+            failed_view.room.window.selector_error.as_deref(),
+            Some("provider rejected speaker selection: Input blocked."),
+            "selector_error must survive get_room while global selector remains available"
+        );
+
+        service
+            .post_owner_message(&room_id, "Second message".to_owned(), Vec::new())
+            .await
+            .unwrap();
+        wait_until_idle(&mut rx, &room_id, &service).await;
+
+        let recovered_view = service.get_room(&room_id, 10, None).await.unwrap();
+        assert!(
+            !recovered_view.room.window.decision_model_fallback,
+            "successful evaluation must clear decision_model_fallback"
+        );
+        assert_eq!(
+            recovered_view.room.window.selector_error, None,
+            "successful evaluation must clear selector_error"
+        );
+        assert_eq!(recovered_view.messages.len(), 3);
     }
 }

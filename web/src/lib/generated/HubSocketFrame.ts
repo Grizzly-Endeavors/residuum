@@ -42,4 +42,4 @@ agent: string,
 /**
  * The `session_*` frame exactly as the agent's own socket sends it.
  */
-frame: ServerMessage, } | { "type": "session_relay_lagged" } | { "type": "system_one_status", status: SystemOneStatus, } | { "type": "room_updated", room: RoomSummary, } | { "type": "room_message", room_id: RoomId, message: RoomMessage, unread_count: number, } | { "type": "room_turn_state", room_id: RoomId, active_turn: RoomActiveTurn | null, queued_seat_ids: Array<string>, paused_at_cap: boolean, window_used: number, window_cap: number, } | { "type": "room_deleted", room_id: RoomId, };
+frame: ServerMessage, } | { "type": "session_relay_lagged" } | { "type": "system_one_status", status: SystemOneStatus, } | { "type": "room_updated", room: RoomSummary, } | { "type": "room_message", room_id: RoomId, message: RoomMessage, unread_count: number, } | { "type": "room_turn_state", room_id: RoomId, active_turn: RoomActiveTurn | null, queued_seat_ids: Array<string>, paused_at_cap: boolean, window_used: number, window_cap: number, selector_error: string | null, } | { "type": "room_deleted", room_id: RoomId, };

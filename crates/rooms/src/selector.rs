@@ -6,7 +6,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use residuum_inference::system_one::{Answer, Question, SystemOneService};
+use residuum_inference::system_one::{Answer, Question, SystemOneError, SystemOneService};
 
 use crate::types::{RoomMessage, RoomSeat, RoomSeatKind};
 
@@ -26,8 +26,10 @@ pub enum SelectorOutcome {
     Pick(String),
     /// No agent needs to speak right now.
     NoSpeaker,
-    /// Decision Model is unconfigured, unreachable, or failed to answer.
+    /// Decision Model is unconfigured.
     Unavailable,
+    /// Decision Model failed or rejected speaker selection for this request.
+    Failed(String),
 }
 
 /// Abstracts speaker selection for [`crate::RoomService`] so unit tests can
@@ -166,7 +168,9 @@ impl SpeakerSelector for SystemOneSpeakerSelector {
                         answer = ?other,
                         "system one response missing choice answer for room speaker selection"
                     );
-                    SelectorOutcome::Unavailable
+                    SelectorOutcome::Failed(
+                        "Decision model returned an unreadable speaker choice.".to_owned(),
+                    )
                 }
             },
             Err(err) => {
@@ -174,7 +178,11 @@ impl SpeakerSelector for SystemOneSpeakerSelector {
                     error = %err,
                     "system one room speaker selection failed; entering mention-only fallback"
                 );
-                SelectorOutcome::Unavailable
+                if matches!(err, SystemOneError::NotConfigured) {
+                    SelectorOutcome::Unavailable
+                } else {
+                    SelectorOutcome::Failed(format_selector_failure(&err))
+                }
             }
         }
     }
@@ -183,6 +191,69 @@ impl SpeakerSelector for SystemOneSpeakerSelector {
         let status = self.system_one.status();
         status.configured && status.outage.is_none()
     }
+}
+
+const MAX_SELECTOR_ERROR_CHARS: usize = 220;
+
+fn format_selector_failure(err: &SystemOneError) -> String {
+    if let SystemOneError::RequestRejected { provider, detail } = err {
+        let cleaned = extract_error_detail(detail);
+        if cleaned.is_empty() {
+            format!("{provider} rejected speaker selection for this message.")
+        } else {
+            truncate_chars(
+                &format!("{provider} rejected speaker selection: {cleaned}"),
+                MAX_SELECTOR_ERROR_CHARS,
+            )
+        }
+    } else {
+        truncate_chars(&err.user_message(), MAX_SELECTOR_ERROR_CHARS)
+    }
+}
+
+fn extract_error_detail(detail: &str) -> String {
+    let trimmed = detail.trim();
+    let json_candidate = trimmed
+        .find('{')
+        .and_then(|idx| trimmed.get(idx..))
+        .unwrap_or(trimmed);
+    if let Ok(val) = serde_json::from_str::<Value>(json_candidate)
+        && let Some(msg) = val
+            .get("error")
+            .and_then(|e| e.get("message").or(Some(e)))
+            .and_then(Value::as_str)
+    {
+        if let Some(inner_start) = msg.find('{')
+            && let Some(inner_tail) = msg.get(inner_start..)
+        {
+            let inner_slice = inner_tail
+                .rfind('}')
+                .and_then(|end| inner_tail.get(..=end))
+                .unwrap_or(inner_tail);
+            if let Ok(inner_val) = serde_json::from_str::<Value>(inner_slice)
+                && let Some(inner_msg) = inner_val
+                    .get("error")
+                    .and_then(|e| e.get("message"))
+                    .and_then(Value::as_str)
+            {
+                return inner_msg.trim().to_owned();
+            }
+        }
+        let first_line = msg.lines().next().unwrap_or(msg).trim();
+        if !first_line.is_empty() {
+            return first_line.to_owned();
+        }
+    }
+    trimmed.lines().next().unwrap_or("").trim().to_owned()
+}
+
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_owned();
+    }
+    let mut out: String = text.chars().take(max_chars.saturating_sub(1)).collect();
+    out.push('…');
+    out
 }
 
 #[cfg(test)]
@@ -372,6 +443,48 @@ mod tests {
             selector.select_next("Sync", None, &msgs, &seats).await,
             SelectorOutcome::NoSpeaker,
             "ineligible seat choice must safely degrade to NoSpeaker"
+        );
+    }
+
+    #[tokio::test]
+    async fn system_one_selector_surfaces_clean_failure_reason_on_400_rejection() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/systemone"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+                "error": {
+                    "message": "proxy error - {\"error\":{\"message\":\"Input blocked: prompt contains sensitive words.\",\"code\":\"prohibited_content\"}}\n\nNo fallback configured."
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let cfg = SystemOneConfig {
+            provider: SystemOneProvider::Other,
+            url: server.uri(),
+            model: "decision-v1".to_owned(),
+            api_key: None,
+            keep_alive: None,
+        };
+        let selector = SystemOneSpeakerSelector::new(SystemOneService::new(Some(&cfg)));
+        let seats = sample_seats();
+        let msgs = [sample_message(1, "Owner", "Sensitive prompt")];
+
+        let outcome = selector.select_next("Sync", None, &msgs, &seats).await;
+        let SelectorOutcome::Failed(reason) = outcome else {
+            panic!("400 rejection must return SelectorOutcome::Failed, got {outcome:?}");
+        };
+        assert!(
+            reason.contains("rejected speaker selection"),
+            "failure reason must explain rejection: {reason}"
+        );
+        assert!(
+            reason.contains("Input blocked: prompt contains sensitive words."),
+            "failure reason must unwrap nested provider message: {reason}"
+        );
+        assert!(
+            selector.is_available(),
+            "per-request 400 rejection must keep global selector available"
         );
     }
 }

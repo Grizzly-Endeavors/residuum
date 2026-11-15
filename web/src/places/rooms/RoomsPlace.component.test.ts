@@ -134,6 +134,7 @@ function makeDetail(id: string, overrides: Partial<RoomDetail> = {}): RoomDetail
       queued_seats: [],
       paused_at_cap: false,
       decision_model_fallback: false,
+      selector_error: null,
     },
     minutes: {
       shared_path: null,
@@ -443,6 +444,7 @@ describe("RoomsPlace", () => {
       paused_at_cap: false,
       window_used: 1,
       window_cap: 3,
+      selector_error: null,
     });
     await tick();
 
@@ -460,6 +462,7 @@ describe("RoomsPlace", () => {
       paused_at_cap: false,
       window_used: 1,
       window_cap: 3,
+      selector_error: null,
     });
     await tick();
 
@@ -479,6 +482,7 @@ describe("RoomsPlace", () => {
       paused_at_cap: true,
       window_used: 3,
       window_cap: 3,
+      selector_error: null,
     });
     await tick();
 
@@ -758,5 +762,56 @@ describe("RoomsPlace", () => {
 
     unmount();
     expect(uploadSignal?.aborted).toBe(true);
+  });
+
+  it("renders per-room speaker-selection error banner when selector rejects a message and dismisses cleanly", async () => {
+    const user = userEvent.setup();
+    const openSettingsSpy = vi.spyOn(router, "openSettings");
+    const detail = makeDetail(ROOM_ID);
+
+    mockFetch((url) => {
+      if (url === "/api/hub/rooms") {
+        return jsonResponse({ rooms: [makeSummary(ROOM_ID)], decision_model_active: true });
+      }
+      if (url.startsWith(`/api/hub/rooms/${ROOM_ID}?`)) {
+        return jsonResponse({
+          room: detail,
+          messages: [makeMessage(1)],
+          minutes_markdown: null,
+          decision_model_active: true,
+        } satisfies RoomDetailResponse);
+      }
+      if (url.endsWith("/read")) return new Response(null, { status: 204 });
+      return jsonResponse({}, 404);
+    });
+
+    render(RoomsPlace, { room: ROOM_ID, tab: "active" });
+    await screen.findByText("Message 1");
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    roomsStore.handleFrame({
+      type: "room_turn_state",
+      room_id: ROOM_ID,
+      active_turn: null,
+      queued_seat_ids: [],
+      paused_at_cap: false,
+      window_used: 0,
+      window_cap: 3,
+      selector_error:
+        "provider rejected speaker selection: Input blocked: prompt contains sensitive words.",
+    });
+    await tick();
+
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent("Speaker selection failed");
+    expect(alert).toHaveTextContent(
+      "provider rejected speaker selection: Input blocked: prompt contains sensitive words.",
+    );
+
+    await user.click(screen.getByRole("button", { name: "Decision model settings" }));
+    expect(openSettingsSpy).toHaveBeenCalledWith({ scope: "_all", section: "system_one" });
+
+    await user.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 });

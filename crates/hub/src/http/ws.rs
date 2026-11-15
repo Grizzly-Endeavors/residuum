@@ -325,6 +325,7 @@ async fn forward_room_event(
                     paused_at_cap,
                     window_used,
                     window_cap,
+                    selector_error,
                 } => HubSocketFrame::RoomTurnState {
                     room_id,
                     active_turn,
@@ -332,6 +333,7 @@ async fn forward_room_event(
                     paused_at_cap,
                     window_used,
                     window_cap,
+                    selector_error,
                 },
                 RoomEvent::Deleted { room_id } => HubSocketFrame::RoomDeleted { room_id },
             };

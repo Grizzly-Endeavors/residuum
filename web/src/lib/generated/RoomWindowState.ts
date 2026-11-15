@@ -31,4 +31,8 @@ paused_at_cap: boolean,
 /**
  * True when the room fell back to `@mention`-only mode because `SystemOne` was unavailable.
  */
-decision_model_fallback: boolean, };
+decision_model_fallback: boolean, 
+/**
+ * Last per-room speaker-selection failure message, cleared once selection succeeds.
+ */
+selector_error: string | null, };

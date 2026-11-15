@@ -287,6 +287,7 @@ pub enum HubSocketFrame {
         paused_at_cap: bool,
         window_used: u32,
         window_cap: u32,
+        selector_error: Option<String>,
     },
     /// A meeting room was permanently deleted.
     RoomDeleted { room_id: residuum_rooms::RoomId },
@@ -579,6 +580,7 @@ mod tests {
             paused_at_cap: false,
             window_used: 1,
             window_cap: 3,
+            selector_error: None,
         };
         assert_eq!(
             serde_json::to_value(turn_state).unwrap(),
@@ -590,6 +592,7 @@ mod tests {
                 "paused_at_cap": false,
                 "window_used": 1,
                 "window_cap": 3,
+                "selector_error": null,
             })
         );
         assert_eq!(
