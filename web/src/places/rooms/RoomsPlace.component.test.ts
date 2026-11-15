@@ -237,6 +237,9 @@ describe("RoomsPlace", () => {
 
     const dialog = await screen.findByRole("dialog", { name: "New room" });
     expect(dialog).toHaveTextContent("EXT A2A");
+    expect(dialog).toHaveTextContent("@partner-bot");
+    expect(dialog).not.toHaveTextContent("@scout");
+    expect(dialog).not.toHaveTextContent("@planner");
 
     await user.type(screen.getByLabelText("Room name"), "Release Review");
     await user.type(screen.getByLabelText("Topic (optional)"), "Check readiness");
@@ -326,6 +329,9 @@ describe("RoomsPlace", () => {
     await user.click(screen.getByRole("button", { name: /Roster/i }));
     const drawer = await screen.findByRole("dialog", { name: /Room roster/i });
     expect(drawer).toHaveTextContent("EXT A2A");
+    expect(drawer).toHaveTextContent("@partner-bot");
+    expect(drawer).not.toHaveTextContent("@scout");
+    expect(drawer).not.toHaveTextContent("@planner");
 
     // Add Planner from available candidates
     await user.click(screen.getByRole("button", { name: "Add Planner" }));
@@ -952,5 +958,62 @@ describe("RoomsPlace", () => {
       path: "minutes/2026-11-14-architecture-sync.md",
       agent: null,
     });
+  });
+
+  it("shows @leafSlug handle only when display_name differs from leaf slug in NewRoomDialog and RoomRosterDrawer", async () => {
+    const user = userEvent.setup();
+    const customSiblingCandidate: RoomRosterCandidate = {
+      seat_id: "a2a:maven/ivy-assistant",
+      kind: "sibling_a2a",
+      display_name: "Ivy",
+      role: "Vault librarian",
+      instance: "maven",
+      online: true,
+    };
+    const customSiblingSeat: RoomSeat = {
+      seat_id: "a2a:maven/ivy-assistant",
+      kind: "sibling_a2a",
+      display_name: "Ivy",
+      role: "Vault librarian",
+      instance: "maven",
+    };
+
+    mockFetch((url) => {
+      if (url === "/api/hub/rooms") {
+        return jsonResponse({ rooms: [], decision_model_active: true });
+      }
+      if (url === "/api/hub/rooms/candidates") {
+        return jsonResponse({
+          candidates: [CANDIDATES[0] as RoomRosterCandidate, customSiblingCandidate],
+        });
+      }
+      if (url.startsWith(`/api/hub/rooms/${ROOM_ID}`)) {
+        return jsonResponse({
+          room: makeDetail(ROOM_ID, { roster: [LOCAL_SEAT, customSiblingSeat] }),
+          messages: [makeMessage(1)],
+          minutes_markdown: null,
+          decision_model_active: true,
+        } satisfies RoomDetailResponse);
+      }
+      if (url.endsWith("/read")) return new Response(null, { status: 204 });
+      return jsonResponse({}, 404);
+    });
+
+    const { rerender } = render(RoomsPlace, { room: null, tab: "active" });
+    await screen.findByText("No active meeting rooms");
+    await user.click(screen.getAllByRole("button", { name: "New room" })[0] as HTMLElement);
+    const newDialog = await screen.findByRole("dialog", { name: "New room" });
+    expect(newDialog).toHaveTextContent("Ivy");
+    expect(newDialog).toHaveTextContent("@ivy-assistant");
+    expect(newDialog).not.toHaveTextContent("@scout");
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    await rerender({ room: ROOM_ID, tab: "active" });
+    await screen.findByText("Message 1");
+    await user.click(screen.getByRole("button", { name: /Roster/i }));
+    const drawer = await screen.findByRole("dialog", { name: /Room roster/i });
+    expect(drawer).toHaveTextContent("Ivy");
+    expect(drawer).toHaveTextContent("@ivy-assistant");
+    expect(drawer).not.toHaveTextContent("@scout");
   });
 });

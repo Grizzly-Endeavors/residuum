@@ -48,6 +48,12 @@
     if (formError !== null) formError = null;
   }
 
+  function leafSlugOf(seatId: string): string {
+    const stripped = seatId.replace(/^(?:agent:|a2a:)/, "");
+    const slash = stripped.lastIndexOf("/");
+    return slash >= 0 ? stripped.slice(slash + 1) : stripped;
+  }
+
   function seatKindLabel(candidate: RoomRosterCandidate): string {
     switch (candidate.kind) {
       case "external_a2a":
@@ -152,6 +158,7 @@
         <ul class="new-room-candidates">
           {#each candidates as candidate (candidate.seat_id)}
             {@const checked = selectedSeatIds.includes(candidate.seat_id)}
+            {@const leafSlug = leafSlugOf(candidate.seat_id)}
             <li>
               <label class="candidate-row" data-checked={checked || undefined}>
                 <input
@@ -164,6 +171,9 @@
                 <span class="candidate-main">
                   <span class="candidate-head">
                     <span class="candidate-name">{candidate.display_name}</span>
+                    {#if leafSlug !== "" && candidate.display_name.toLowerCase() !== leafSlug.toLowerCase()}
+                      <span class="candidate-handle">@{leafSlug}</span>
+                    {/if}
                     <Badge tone={seatKindTone(candidate)}>{seatKindLabel(candidate)}</Badge>
                     {#if !candidate.online}
                       <Badge tone="neutral">offline</Badge>
@@ -282,6 +292,12 @@
     color: var(--color-text);
     font-size: var(--font-size-sm);
     font-weight: var(--font-weight-medium);
+  }
+
+  .candidate-handle {
+    color: var(--color-text-3);
+    font-family: var(--font-code);
+    font-size: var(--font-size-xs);
   }
 
   .candidate-role {

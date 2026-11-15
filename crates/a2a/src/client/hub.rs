@@ -22,6 +22,11 @@ const MIN_RETRY_BACKOFF: Duration = Duration::from_secs(5);
 const MAX_RETRY_BACKOFF: Duration = Duration::from_secs(60);
 /// How often the background refresh loop checks for agents due a retry.
 const REFRESH_TICK: Duration = Duration::from_secs(5);
+/// How often an already-`Ok` agent card is refreshed in the background so
+/// card metadata edits (e.g. display name or description) propagate.
+const OK_CARD_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
+/// How long a single agent-card HTTP fetch may take before timing out.
+const CARD_FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Where a tracked agent entry came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -51,6 +56,7 @@ struct AgentRecord {
     headers: HashMap<String, String>,
     source: AgentSource,
     status: AgentStatus,
+    fetched_at: Option<Instant>,
     retry_backoff: Duration,
     next_retry_at: Instant,
 }
@@ -316,6 +322,7 @@ impl A2aClientHub {
         match result {
             Ok(card) => {
                 rec.status = AgentStatus::Ok(Arc::new(card));
+                rec.fetched_at = Some(Instant::now());
                 rec.retry_backoff = MIN_RETRY_BACKOFF;
             }
             Err(e) => {
@@ -327,8 +334,37 @@ impl A2aClientHub {
         }
     }
 
+    async fn due_for_refresh(&self, ok_max_age: Duration) -> Vec<String> {
+        let agents = self.agents.read().await;
+        let now = Instant::now();
+        agents
+            .iter()
+            .filter(|(_, rec)| {
+                if matches!(rec.status, AgentStatus::Ok(_)) {
+                    rec.fetched_at
+                        .is_none_or(|t| now.saturating_duration_since(t) >= ok_max_age)
+                } else {
+                    now >= rec.next_retry_at
+                }
+            })
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+
+    /// Refresh cached agent cards whose last successful fetch is at least
+    /// `max_age` old, along with any non-`Ok` records whose retry backoff has
+    /// elapsed. Refreshes run concurrently across all due agents.
+    pub async fn refresh_stale_cards(&self, max_age: Duration) {
+        let due = self.due_for_refresh(max_age).await;
+        if due.is_empty() {
+            return;
+        }
+        futures_util::future::join_all(due.iter().map(|name| self.refresh_card(name))).await;
+    }
+
     /// Spawn the background loop that retries card fetches for agents not
-    /// currently `Ok`, honoring each agent's own backoff. Fire-and-forget:
+    /// currently `Ok` (honoring each agent's own backoff) and periodically
+    /// refreshes `Ok` cards past [`OK_CARD_REFRESH_INTERVAL`]. Fire-and-forget:
     /// the loop holds the hub weakly, so it ends on its own once the agent
     /// that owns the hub lets go of it.
     pub fn spawn_background_refresh(self: &Arc<Self>) {
@@ -340,17 +376,7 @@ impl A2aClientHub {
                 let Some(hub) = hub.upgrade() else {
                     return;
                 };
-                let due: Vec<String> = {
-                    let agents = hub.agents.read().await;
-                    let now = Instant::now();
-                    agents
-                        .iter()
-                        .filter(|(_, rec)| {
-                            !matches!(rec.status, AgentStatus::Ok(_)) && now >= rec.next_retry_at
-                        })
-                        .map(|(name, _)| name.clone())
-                        .collect()
-                };
+                let due = hub.due_for_refresh(OK_CARD_REFRESH_INTERVAL).await;
                 for name in due {
                     hub.refresh_card(&name).await;
                 }
@@ -420,6 +446,7 @@ fn fresh_record(entry: A2aAgentEntry, source: AgentSource) -> AgentRecord {
         headers: entry.headers,
         source,
         status: AgentStatus::Pending,
+        fetched_at: None,
         retry_backoff: MIN_RETRY_BACKOFF,
         next_retry_at: Instant::now(),
     }
@@ -458,6 +485,7 @@ fn headers_client(
     reqwest::Client::builder()
         .default_headers(map)
         .redirect(redirects)
+        .timeout(CARD_FETCH_TIMEOUT)
         .build()
         .map_err(|e| format!("failed to build http client: {e}"))
 }
@@ -717,6 +745,158 @@ mod tests {
             "a config entry must override a sibling of the same name"
         );
         assert_eq!(only.url, config_url);
+    }
+
+    async fn spawn_mutable_card_server(
+        name: Arc<std::sync::RwLock<String>>,
+        hits: Arc<std::sync::atomic::AtomicUsize>,
+        fail: Arc<std::sync::atomic::AtomicBool>,
+    ) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        residuum_core::util::spawn_in_span(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let name = Arc::clone(&name);
+                let hits = Arc::clone(&hits);
+                let fail = Arc::clone(&fail);
+                residuum_core::util::spawn_in_span(async move {
+                    use std::sync::atomic::Ordering;
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut buf = [0_u8; 4096];
+                    let _read_result = socket.read(&mut buf).await;
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    let response = if fail.load(Ordering::SeqCst) {
+                        "HTTP/1.1 500 Internal Server Error\r\ncontent-length: 0\r\nconnection: close\r\n\r\n".to_string()
+                    } else {
+                        let current_name = name.read().unwrap().clone();
+                        let body = format!(
+                            r#"{{"name":"{current_name}","description":"a test agent","version":"1.0",
+                                "supportedInterfaces":[{{"url":"http://{addr}/","protocolBinding":"JSONRPC","protocolVersion":"1.0"}}],
+                                "capabilities":{{"streaming":true}},"defaultInputModes":["text/plain"],
+                                "defaultOutputModes":["text/plain"],"skills":[]}}"#
+                        );
+                        format!(
+                            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                            body.len(),
+                            body,
+                        )
+                    };
+                    socket.write_all(response.as_bytes()).await.ok();
+                });
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn refresh_stale_cards_refreshes_expired_ok_cards_and_skips_fresh_ones() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        let hub = A2aClientHub::new();
+        let card_name = Arc::new(std::sync::RwLock::new("Initial".to_string()));
+        let hits = Arc::new(AtomicUsize::new(0));
+        let fail = Arc::new(AtomicBool::new(false));
+        let url = spawn_mutable_card_server(Arc::clone(&card_name), Arc::clone(&hits), fail).await;
+
+        hub.register_external(
+            "ops/ivy".to_string(),
+            url,
+            HashMap::new(),
+            AgentSource::Sibling,
+        )
+        .await;
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "register_external must fetch the initial card once"
+        );
+        assert_eq!(
+            hub.card_for("ops/ivy").await.unwrap().name,
+            "Initial",
+            "initial card name must match server"
+        );
+
+        *card_name.write().unwrap() = "Ivy".to_string();
+
+        hub.refresh_stale_cards(Duration::from_secs(60)).await;
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "fresh Ok card younger than max_age must be skipped"
+        );
+        assert_eq!(
+            hub.card_for("ops/ivy").await.unwrap().name,
+            "Initial",
+            "skipped refresh must keep existing cached card"
+        );
+
+        hub.refresh_stale_cards(Duration::ZERO).await;
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            2,
+            "Ok card older than max_age must be re-fetched"
+        );
+        assert_eq!(
+            hub.card_for("ops/ivy").await.unwrap().name,
+            "Ivy",
+            "re-fetched card must reflect updated display name"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_stale_cards_honors_retry_backoff_on_error_entries() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        let hub = A2aClientHub::new();
+        let card_name = Arc::new(std::sync::RwLock::new("Recovered".to_string()));
+        let hits = Arc::new(AtomicUsize::new(0));
+        let fail = Arc::new(AtomicBool::new(true));
+        let url = spawn_mutable_card_server(card_name, Arc::clone(&hits), Arc::clone(&fail)).await;
+
+        hub.register_external(
+            "flaky".to_string(),
+            url,
+            HashMap::new(),
+            AgentSource::Config,
+        )
+        .await;
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "initial registration must attempt one fetch"
+        );
+        assert!(
+            hub.card_for("flaky").await.is_none(),
+            "failed initial fetch must leave agent without a cached card"
+        );
+
+        fail.store(false, Ordering::SeqCst);
+        hub.refresh_stale_cards(Duration::ZERO).await;
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "Error entry before next_retry_at must be skipped even when max_age is zero"
+        );
+
+        {
+            let mut agents = hub.agents.write().await;
+            let rec = agents.get_mut("flaky").unwrap();
+            rec.next_retry_at = Instant::now();
+        }
+        hub.refresh_stale_cards(Duration::ZERO).await;
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            2,
+            "Error entry whose next_retry_at has elapsed must be retried"
+        );
+        assert_eq!(
+            hub.card_for("flaky").await.unwrap().name,
+            "Recovered",
+            "retried entry must promote to Ok with the served card"
+        );
     }
 
     #[test]

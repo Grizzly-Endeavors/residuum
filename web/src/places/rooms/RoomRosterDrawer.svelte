@@ -41,6 +41,12 @@
     candidates.filter((candidate) => !rosterIds.has(candidate.seat_id)),
   );
 
+  function leafSlugOf(seatId: string): string {
+    const stripped = seatId.replace(/^(?:agent:|a2a:)/, "");
+    const slash = stripped.lastIndexOf("/");
+    return slash >= 0 ? stripped.slice(slash + 1) : stripped;
+  }
+
   function kindLabel(kind: RoomSeatKind, instance: string | null): string {
     switch (kind) {
       case "external_a2a":
@@ -115,10 +121,14 @@
       <ul class="roster-list">
         {#each room.roster as seat (seat.seat_id)}
           {@const used = room.window.per_seat_used[seat.seat_id] ?? 0}
+          {@const leafSlug = leafSlugOf(seat.seat_id)}
           <li class="roster-item">
             <div class="roster-info">
               <div class="roster-title-row">
                 <span class="roster-name">{seat.display_name}</span>
+                {#if leafSlug !== "" && seat.display_name.toLowerCase() !== leafSlug.toLowerCase()}
+                  <span class="roster-handle">@{leafSlug}</span>
+                {/if}
                 <Badge tone={kindTone(seat.kind)}>{kindLabel(seat.kind, seat.instance)}</Badge>
                 {#if used > 0}
                   <span class="roster-turns">{used}/3 turns</span>
@@ -153,11 +163,15 @@
       {:else}
         <ul class="roster-list">
           {#each availableCandidates as candidate (candidate.seat_id)}
+            {@const leafSlug = leafSlugOf(candidate.seat_id)}
             <li class="roster-item">
               <StatusDot state={candidate.online ? "running" : "stopped"} />
               <div class="roster-info">
                 <div class="roster-title-row">
                   <span class="roster-name">{candidate.display_name}</span>
+                  {#if leafSlug !== "" && candidate.display_name.toLowerCase() !== leafSlug.toLowerCase()}
+                    <span class="roster-handle">@{leafSlug}</span>
+                  {/if}
                   <Badge tone={kindTone(candidate.kind)}>
                     {kindLabel(candidate.kind, candidate.instance)}
                   </Badge>
@@ -258,6 +272,12 @@
     color: var(--color-text);
     font-size: var(--font-size-sm);
     font-weight: var(--font-weight-medium);
+  }
+
+  .roster-handle {
+    color: var(--color-text-3);
+    font-family: var(--font-code);
+    font-size: var(--font-size-xs);
   }
 
   .roster-turns {
