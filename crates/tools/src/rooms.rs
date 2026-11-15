@@ -158,6 +158,19 @@ fn format_room_detail(result: &RoomReadResult) -> String {
     {
         _ = writeln!(out, "Minutes path: {shared_path}");
     }
+    if !result.meetings.is_empty() {
+        _ = writeln!(out, "\n## Captured Meetings ({})", result.meetings.len());
+        for meeting in &result.meetings {
+            let ts = meeting
+                .created_at
+                .to_rfc3339_opts(SecondsFormat::Secs, true);
+            _ = writeln!(
+                out,
+                "- {} (msgs {}..={}): {}",
+                ts, meeting.start_seq, meeting.end_seq, meeting.shared_path
+            );
+        }
+    }
 
     if let Some(minutes) = result
         .minutes_markdown
@@ -553,6 +566,11 @@ mod tests {
         assert!(
             res.output.contains("team/minutes/"),
             "output should include minutes shared_path: {}",
+            res.output
+        );
+        assert!(
+            res.output.contains("## Captured Meetings (1)") && res.output.contains("(msgs 1..=3):"),
+            "output should include past captured meetings section: {}",
             res.output
         );
         // Should contain newest 2 messages ([2] and [3]), NOT message [1].

@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::Router;
-use axum::body::Body;
-use axum::extract::rejection::{JsonRejection, QueryRejection};
+use axum::body::{Body, Bytes};
+use axum::extract::rejection::{BytesRejection, JsonRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Json, Response};
@@ -18,8 +18,9 @@ use crate::file_server::mark_agent_file;
 use crate::uploads::{StagedUpload, UploadError, UploadStore};
 use residuum_bus::attachment::detect_mime_type;
 use residuum_rooms::{
-    CreateRoomRequest, MarkRoomReadRequest, PatchRoomRequest, PostRoomMessageRequest,
-    RoomAttachment, RoomService, RoomServiceError, RoomStatus, RoomStoreError, validate_room_id,
+    CaptureRoomNotesRequest, CreateRoomRequest, MarkRoomReadRequest, PatchRoomRequest,
+    PostRoomMessageRequest, RoomAttachment, RoomService, RoomServiceError, RoomStatus,
+    RoomStoreError, validate_room_id,
 };
 
 /// Shared state for `/api/hub/rooms/*` routes.
@@ -42,6 +43,7 @@ pub(super) fn routes(state: RoomsHttpState) -> Router {
         .route("/api/hub/rooms/{id}/messages", post(post_message))
         .route("/api/hub/rooms/{id}/continue", post(continue_window))
         .route("/api/hub/rooms/{id}/stop", post(stop_room))
+        .route("/api/hub/rooms/{id}/capture-notes", post(capture_notes))
         .route("/api/hub/rooms/{id}/archive", post(archive_room))
         .route("/api/hub/rooms/{id}/reopen", post(reopen_room))
         .route(
@@ -335,6 +337,35 @@ async fn continue_window(State(state): State<RoomsHttpState>, Path(id): Path<Str
 /// `POST /api/hub/rooms/{id}/stop`
 async fn stop_room(State(state): State<RoomsHttpState>, Path(id): Path<String>) -> Response {
     match state.rooms.stop_room(&id).await {
+        Ok(detail) => Json(detail).into_response(),
+        Err(err) => room_error_response(&err),
+    }
+}
+
+/// `POST /api/hub/rooms/{id}/capture-notes`
+async fn capture_notes(
+    State(state): State<RoomsHttpState>,
+    Path(id): Path<String>,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    let bytes = match body {
+        Ok(b) => b,
+        Err(rejection) => return json_error(StatusCode::BAD_REQUEST, rejection.body_text()),
+    };
+    let req = if bytes.iter().all(u8::is_ascii_whitespace) {
+        CaptureRoomNotesRequest::default()
+    } else {
+        match serde_json::from_slice::<CaptureRoomNotesRequest>(&bytes) {
+            Ok(req) => req,
+            Err(err) => {
+                return json_error(
+                    StatusCode::BAD_REQUEST,
+                    format!("invalid request body: {err}"),
+                );
+            }
+        }
+    };
+    match state.rooms.capture_notes(&id, req).await {
         Ok(detail) => Json(detail).into_response(),
         Err(err) => room_error_response(&err),
     }

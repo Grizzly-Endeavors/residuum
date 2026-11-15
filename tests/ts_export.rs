@@ -58,9 +58,10 @@ use residuum::remote_access::status::{
     RemoteAccessState, RemoteAccessStatus, RemoteHosts, SiblingInfo,
 };
 use residuum::rooms::{
-    CreateRoomRequest, MarkRoomReadRequest, PatchRoomRequest, PostRoomMessageRequest,
-    RoomActiveTurn, RoomAttachment, RoomCandidatesResponse, RoomDetail, RoomDetailResponse, RoomId,
-    RoomListResponse, RoomMessage, RoomMessageKind, RoomMinutesMeta, RoomRecord,
+    CaptureRoomNotesMode, CaptureRoomNotesRequest, CreateRoomRequest, MarkRoomReadRequest,
+    PatchRoomRequest, PostRoomMessageRequest, RoomActiveTurn, RoomAttachment,
+    RoomCandidatesResponse, RoomDetail, RoomDetailResponse, RoomId, RoomListResponse,
+    RoomMeetingRecord, RoomMessage, RoomMessageKind, RoomMinutesMeta, RoomRecord,
     RoomRosterCandidate, RoomSeat, RoomSeatKind, RoomStatus, RoomSummary, RoomWindowState,
 };
 use residuum_net::workbench::ArtifactSummary;
@@ -276,6 +277,9 @@ fn export_protocol_types() {
     RoomSeat::export_all(&cfg).unwrap();
     RoomWindowState::export_all(&cfg).unwrap();
     RoomMinutesMeta::export_all(&cfg).unwrap();
+    RoomMeetingRecord::export_all(&cfg).unwrap();
+    CaptureRoomNotesMode::export_all(&cfg).unwrap();
+    CaptureRoomNotesRequest::export_all(&cfg).unwrap();
     RoomRecord::export_all(&cfg).unwrap();
     RoomSummary::export_all(&cfg).unwrap();
     RoomActiveTurn::export_all(&cfg).unwrap();

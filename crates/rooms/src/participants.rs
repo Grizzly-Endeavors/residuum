@@ -775,6 +775,8 @@ mod tests {
             last_seen_seq: BTreeMap::new(),
             window: RoomWindowState::fresh(2),
             minutes: RoomMinutesMeta::default(),
+            meetings: Vec::new(),
+            last_captured_seq: 0,
         };
         let missed = vec![
             RoomMessage {

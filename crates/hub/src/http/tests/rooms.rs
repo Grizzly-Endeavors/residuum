@@ -393,3 +393,125 @@ async fn hub_ws_suppresses_room_events_through_artifacts_origin() {
     })
     .await;
 }
+
+async fn post_and_wait_idle(h: &Harness, room_id: &str, content: &str, expected_seq: u64) {
+    h.expect(
+        Method::POST,
+        &format!("/api/hub/rooms/{room_id}/messages"),
+        Some(json!({ "content": content, "upload_ids": [] })),
+        StatusCode::ACCEPTED,
+    )
+    .await;
+    wait::guarded("room idle after message", async {
+        loop {
+            let detail = h
+                .get_expect(
+                    &format!("/api/hub/rooms/{room_id}?limit=10"),
+                    StatusCode::OK,
+                )
+                .await;
+            if detail["room"]["last_seq"] == expected_seq && detail["room"]["active_turn"].is_null()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    h.expect(
+        Method::POST,
+        &format!("/api/hub/rooms/{room_id}/read"),
+        Some(json!({ "seq": expected_seq })),
+        StatusCode::NO_CONTENT,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn capture_notes_endpoint_accepts_empty_and_explicit_mode_and_rejects_no_new_messages() {
+    let h = Harness::new();
+    h.rooms.register_local_agent(LocalRoomAgentInfo {
+        name: "scout".to_owned(),
+        display_name: "Scout".to_owned(),
+        role: Some("Research".to_owned()),
+        participant: Arc::new(FakeRoomParticipant {
+            reply: "First round reply.".to_owned(),
+            hold_gate: None,
+        }),
+    });
+
+    let room_id = create_test_room(&h, "Kitchen Table", Some("Weekly"), true).await;
+
+    h.expect(
+        Method::POST,
+        &format!("/api/hub/rooms/{room_id}/capture-notes"),
+        Some(json!({})),
+        StatusCode::CONFLICT,
+    )
+    .await;
+
+    post_and_wait_idle(&h, &room_id, "@Scout status?", 2).await;
+
+    let first = h
+        .post_expect(
+            &format!("/api/hub/rooms/{room_id}/capture-notes"),
+            StatusCode::OK,
+        )
+        .await;
+    assert_eq!(
+        first["room"]["status"], "active",
+        "capture-notes must leave room active"
+    );
+    assert_eq!(
+        first["room"]["meetings"].as_array().map(Vec::len),
+        Some(1),
+        "first capture must record 1 meeting"
+    );
+    assert_eq!(
+        first["room"]["last_captured_seq"], 3,
+        "last_captured_seq must include divider seq 3"
+    );
+    assert_eq!(
+        first["room"]["unread_count"], 0,
+        "capture-notes must not produce unread badge"
+    );
+    assert!(
+        first["minutes_markdown"].as_str().is_some(),
+        "capture-notes must return minutes_markdown"
+    );
+
+    h.expect(
+        Method::POST,
+        &format!("/api/hub/rooms/{room_id}/capture-notes"),
+        Some(json!({ "mode": "new" })),
+        StatusCode::CONFLICT,
+    )
+    .await;
+    h.expect(
+        Method::POST,
+        &format!("/api/hub/rooms/{room_id}/capture-notes"),
+        Some(json!({ "mode": "bogus" })),
+        StatusCode::BAD_REQUEST,
+    )
+    .await;
+
+    post_and_wait_idle(&h, &room_id, "@Scout second round?", 5).await;
+
+    let second = h
+        .expect(
+            Method::POST,
+            &format!("/api/hub/rooms/{room_id}/capture-notes"),
+            Some(json!({ "mode": "new" })),
+            StatusCode::OK,
+        )
+        .await;
+    assert_eq!(
+        second["room"]["meetings"].as_array().map(Vec::len),
+        Some(2),
+        "second capture must record 2 meetings"
+    );
+    assert_ne!(
+        second["room"]["meetings"][0]["shared_path"], second["room"]["meetings"][1]["shared_path"],
+        "second capture must allocate a distinct shared_path"
+    );
+}
