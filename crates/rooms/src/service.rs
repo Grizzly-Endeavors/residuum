@@ -29,10 +29,11 @@ use crate::participants::{
 use crate::selector::{SelectorOutcome, SpeakerSelector, SystemOneSpeakerSelector};
 use crate::store::{NewRoomMessage, RoomStore, RoomStoreError};
 use crate::types::{
-    CreateRoomRequest, MAX_SEAT_TURNS_PER_WINDOW, PatchRoomRequest, RoomActiveTurn, RoomAttachment,
-    RoomCandidatesResponse, RoomDetail, RoomDetailResponse, RoomId, RoomListResponse, RoomMessage,
-    RoomMessageKind, RoomMinutesMeta, RoomRecord, RoomRosterCandidate, RoomSeat, RoomSeatKind,
-    RoomStatus, RoomSummary, RoomValidationError, RoomWindowState, generate_room_id,
+    CaptureRoomNotesMode, CaptureRoomNotesRequest, CreateRoomRequest, MAX_SEAT_TURNS_PER_WINDOW,
+    PatchRoomRequest, RoomActiveTurn, RoomAttachment, RoomCandidatesResponse, RoomDetail,
+    RoomDetailResponse, RoomId, RoomListResponse, RoomMeetingRecord, RoomMessage, RoomMessageKind,
+    RoomMinutesMeta, RoomRecord, RoomRosterCandidate, RoomSeat, RoomSeatKind, RoomStatus,
+    RoomSummary, RoomValidationError, RoomWindowState, generate_meeting_id, generate_room_id,
     validate_room_id, validate_room_name, window_cap_for_roster,
 };
 
@@ -462,6 +463,8 @@ impl RoomService {
             last_seen_seq: BTreeMap::new(),
             window,
             minutes: RoomMinutesMeta::default(),
+            meetings: Vec::new(),
+            last_captured_seq: 0,
         };
         let created = self.store.create_room(record).await?;
         self.sync_snapshot(&created);
@@ -845,8 +848,173 @@ impl RoomService {
         }
     }
 
+    /// Capture meeting notes for an active room's uncaptured messages into a
+    /// new meeting slice (`mode = "new"`), close participating sessions cleanly,
+    /// append a system divider, and keep the room active.
+    ///
+    /// # Errors
+    /// Returns [`RoomServiceError::Validation`], [`RoomServiceError::NotFound`],
+    /// [`RoomServiceError::Conflict`] (if archived or no new owner/agent messages exist),
+    /// or storage/minutes write errors.
+    pub async fn capture_notes(
+        &self,
+        room_id: &str,
+        req: CaptureRoomNotesRequest,
+    ) -> Result<RoomDetailResponse, RoomServiceError> {
+        validate_room_id(room_id)?;
+        let CaptureRoomNotesMode::New = req.mode;
+
+        let pre = self.store.get_record(room_id).await?;
+        if pre.status != RoomStatus::Active {
+            return Err(RoomServiceError::Conflict(
+                "cannot capture notes on an archived room".to_owned(),
+            ));
+        }
+
+        let room_mutex = self.room_lock(room_id).await;
+        let _room_guard = room_mutex.lock().await;
+
+        let current = self.store.get_record(room_id).await?;
+        if current.status != RoomStatus::Active {
+            return Err(RoomServiceError::Conflict(
+                "cannot capture notes on an archived room".to_owned(),
+            ));
+        }
+
+        let stopped = self.stop_room_internal(room_id).await?;
+        let watermark = stopped.effective_captured_seq();
+        if stopped.last_seq <= watermark {
+            return Err(RoomServiceError::Conflict(
+                "no new messages to capture since last meeting notes".to_owned(),
+            ));
+        }
+
+        let slice_messages = self.uncaptured_slice(&stopped, watermark).await?;
+        if !has_conversational_messages(&slice_messages) {
+            return Err(RoomServiceError::Conflict(
+                "no new messages to capture since last meeting notes".to_owned(),
+            ));
+        }
+
+        self.finalize_capture_notes(&stopped, watermark, &slice_messages)
+            .await
+    }
+
+    async fn uncaptured_slice(
+        &self,
+        record: &RoomRecord,
+        watermark: u64,
+    ) -> Result<Vec<RoomMessage>, RoomServiceError> {
+        let divider_seqs = divider_seq_list(record);
+        let raw = self
+            .store
+            .read_messages_after(record.id.as_str(), watermark)
+            .await?;
+        Ok(raw
+            .into_iter()
+            .filter(|m| !is_capture_divider(m, &divider_seqs))
+            .collect())
+    }
+
+    async fn finalize_capture_notes(
+        &self,
+        stopped: &RoomRecord,
+        watermark: u64,
+        slice_messages: &[RoomMessage],
+    ) -> Result<RoomDetailResponse, RoomServiceError> {
+        let room_id = stopped.id.as_str();
+        let start_seq = slice_messages
+            .first()
+            .map_or_else(|| watermark.saturating_add(1), |m| m.seq);
+        let end_seq = stopped.last_seq;
+        let started_at = Utc::now();
+
+        self.close_participating_sessions(stopped).await;
+        let (markdown, writer) = self.build_minutes_markdown(stopped, slice_messages).await;
+        let meeting_id = generate_meeting_id();
+        self.store
+            .write_meeting_minutes(room_id, &meeting_id, &markdown)
+            .await?;
+        self.store.write_minutes(room_id, &markdown).await?;
+
+        let shared_path = self.allocate_shared_minutes_path(stopped, started_at);
+        self.commit_shared_minutes(&shared_path, &writer, &markdown)
+            .await?;
+        let inbox_ref = self
+            .deliver_minutes_inbox(stopped, &shared_path, &markdown)
+            .await;
+
+        let (_, divider_msg) = self
+            .store
+            .append_message(
+                room_id,
+                NewRoomMessage {
+                    kind: RoomMessageKind::System,
+                    seat_id: None,
+                    author_name: "System".to_owned(),
+                    seat_kind: None,
+                    content: format!("Notes captured — saved to `{shared_path}`."),
+                    attachments: Vec::new(),
+                    timestamp: None,
+                },
+            )
+            .await?;
+
+        let finished_at = Utc::now();
+        let meeting_record = RoomMeetingRecord {
+            id: meeting_id,
+            start_seq,
+            end_seq,
+            divider_seq: Some(divider_msg.seq),
+            shared_path: shared_path.clone(),
+            inbox_ref: inbox_ref.clone(),
+            created_at: finished_at,
+            updated_at: finished_at,
+        };
+        let (updated, ()) = self
+            .store
+            .update_record(room_id, |rec| {
+                rec.updated_at = finished_at;
+                if rec.last_read_seq >= end_seq {
+                    rec.last_read_seq = divider_msg.seq;
+                }
+                for seen in rec.last_seen_seq.values_mut() {
+                    if *seen >= end_seq {
+                        *seen = divider_msg.seq;
+                    }
+                }
+                rec.meetings.push(meeting_record);
+                rec.last_captured_seq = divider_msg.seq;
+                rec.minutes = RoomMinutesMeta {
+                    shared_path: Some(shared_path),
+                    archived_at_seq: divider_msg.seq,
+                    inbox_ref: inbox_ref.or_else(|| rec.minutes.inbox_ref.clone()),
+                    updated_at: Some(finished_at),
+                };
+                rec.window = RoomWindowState::fresh(rec.roster.len());
+            })
+            .await?;
+
+        self.sync_snapshot(&updated);
+        self.emit(RoomEvent::Message {
+            room_id: updated.id.clone(),
+            message: divider_msg,
+            unread_count: updated.unread_count(),
+        });
+        self.emit_turn_state(&updated, None);
+        self.emit_record_updated(&updated);
+        let all_messages = self.store.read_all_messages(room_id).await?;
+        let decision_model_active = self.detail_decision_active(&updated);
+        Ok(RoomDetailResponse {
+            room: RoomDetail::from_record(&updated, None),
+            messages: all_messages,
+            minutes_markdown: Some(markdown),
+            decision_model_active,
+        })
+    }
+
     /// Lock a room read-only, close participating sessions, and generate
-    /// minutes + inbox notification when new messages exist.
+    /// minutes + inbox notification when new uncaptured messages exist.
     ///
     /// # Errors
     /// Returns [`RoomServiceError::Validation`], [`RoomServiceError::NotFound`],
@@ -862,8 +1030,13 @@ impl RoomService {
         let _ = self.store.get_record(room_id).await?;
         let stopped = self.stop_room_internal(room_id).await?;
         let now = Utc::now();
-        let should_generate =
-            stopped.last_seq > 0 && stopped.last_seq > stopped.minutes.archived_at_seq;
+        let watermark = stopped.effective_captured_seq();
+        let tail_messages = if stopped.last_seq > watermark {
+            self.uncaptured_slice(&stopped, watermark).await?
+        } else {
+            Vec::new()
+        };
+        let should_generate = has_conversational_messages(&tail_messages);
 
         let (mut archived, ()) = self
             .store
@@ -895,20 +1068,30 @@ impl RoomService {
             });
         }
 
-        self.finalize_archive_minutes(&archived, now).await
+        self.finalize_archive_minutes(&archived, now, watermark, &tail_messages)
+            .await
     }
 
     async fn finalize_archive_minutes(
         &self,
         archived: &RoomRecord,
         started_at: chrono::DateTime<Utc>,
+        watermark: u64,
+        tail_messages: &[RoomMessage],
     ) -> Result<RoomDetailResponse, RoomServiceError> {
         let room_id = archived.id.as_str();
-        let messages = self.store.read_all_messages(room_id).await?;
-        let (markdown, writer) = self.build_minutes_markdown(archived, &messages).await;
+        let start_seq = tail_messages
+            .first()
+            .map_or_else(|| watermark.saturating_add(1), |m| m.seq);
+        let end_seq = archived.last_seq;
+        let (markdown, writer) = self.build_minutes_markdown(archived, tail_messages).await;
+        let meeting_id = generate_meeting_id();
+        self.store
+            .write_meeting_minutes(room_id, &meeting_id, &markdown)
+            .await?;
         self.store.write_minutes(room_id, &markdown).await?;
 
-        let shared_path = self.resolve_shared_minutes_path(archived, started_at);
+        let shared_path = self.allocate_shared_minutes_path(archived, started_at);
         self.commit_shared_minutes(&shared_path, &writer, &markdown)
             .await?;
         let inbox_ref = self
@@ -916,10 +1099,22 @@ impl RoomService {
             .await;
 
         let finished_at = Utc::now();
+        let meeting_record = RoomMeetingRecord {
+            id: meeting_id,
+            start_seq,
+            end_seq,
+            divider_seq: None,
+            shared_path: shared_path.clone(),
+            inbox_ref: inbox_ref.clone(),
+            created_at: finished_at,
+            updated_at: finished_at,
+        };
         let (mut updated, ()) = self
             .store
             .update_record(room_id, |rec| {
                 rec.updated_at = finished_at;
+                rec.meetings.push(meeting_record);
+                rec.last_captured_seq = archived.last_seq;
                 rec.minutes = RoomMinutesMeta {
                     shared_path: Some(shared_path),
                     archived_at_seq: archived.last_seq,
@@ -942,10 +1137,11 @@ impl RoomService {
         }
         self.sync_snapshot(&updated);
         self.emit_record_updated(&updated);
+        let all_messages = self.store.read_all_messages(room_id).await?;
         let decision_model_active = self.detail_decision_active(&updated);
         Ok(RoomDetailResponse {
             room: RoomDetail::from_record(&updated, None),
-            messages,
+            messages: all_messages,
             minutes_markdown: Some(markdown),
             decision_model_active,
         })
@@ -1012,14 +1208,11 @@ impl RoomService {
         )
     }
 
-    fn resolve_shared_minutes_path(
+    fn allocate_shared_minutes_path(
         &self,
         record: &RoomRecord,
         now: chrono::DateTime<Utc>,
     ) -> String {
-        if let Some(existing) = &record.minutes.shared_path {
-            return existing.clone();
-        }
         let date = now.format("%Y-%m-%d");
         let slug = slugify_room_name(&record.name, record.id.as_str());
         let base_rel = format!("minutes/{date}-{slug}.md");
@@ -1340,11 +1533,20 @@ impl RoomService {
         at_cap: bool,
         cancel_token: &CancellationToken,
     ) -> Option<RoomSeat> {
-        let recent = self
+        let divider_seqs = self
+            .store
+            .get_record(room_id)
+            .await
+            .map(|rec| divider_seq_list(&rec))
+            .unwrap_or_default();
+        let recent: Vec<RoomMessage> = self
             .store
             .read_messages(room_id, 12, None)
             .await
-            .unwrap_or_default();
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|m| !is_capture_divider(m, &divider_seqs))
+            .collect();
 
         let outcome = tokio::select! {
             biased;
@@ -1456,7 +1658,11 @@ impl RoomService {
             .read_all_messages(room_id)
             .await
             .unwrap_or_default();
-        let missed: Vec<RoomMessage> = all_msgs.into_iter().filter(|m| m.seq > last_seen).collect();
+        let divider_seqs = divider_seq_list(&record);
+        let missed: Vec<RoomMessage> = all_msgs
+            .into_iter()
+            .filter(|m| m.seq > last_seen && !is_capture_divider(m, &divider_seqs))
+            .collect();
         let missed_attachments: Vec<RoomAttachment> = missed
             .iter()
             .flat_map(|m| m.attachments.iter().cloned())
@@ -1691,6 +1897,26 @@ enum TurnStepOutcome {
     HaltedOnError,
 }
 
+fn divider_seq_list(record: &RoomRecord) -> Vec<u64> {
+    record
+        .meetings
+        .iter()
+        .filter_map(|m| m.divider_seq)
+        .collect()
+}
+
+fn is_capture_divider(msg: &RoomMessage, divider_seqs: &[u64]) -> bool {
+    msg.kind == RoomMessageKind::System
+        && (divider_seqs.contains(&msg.seq)
+            || msg.content.starts_with("Notes captured — saved to "))
+}
+
+fn has_conversational_messages(messages: &[RoomMessage]) -> bool {
+    messages
+        .iter()
+        .any(|m| matches!(m.kind, RoomMessageKind::Owner | RoomMessageKind::Agent))
+}
+
 fn pop_front_vec<T>(vec: &mut Vec<T>) -> Option<T> {
     (!vec.is_empty()).then(|| vec.remove(0))
 }
@@ -1849,7 +2075,9 @@ mod tests {
     struct MockLocalParticipant {
         name: String,
         replies: Mutex<VecDeque<Result<String, String>>>,
+        recorded_prompts: Mutex<Vec<String>>,
         recorded_attachments: Mutex<Vec<Vec<RoomAttachment>>>,
+        recorded_minutes_prompts: Mutex<Vec<String>>,
         closed_rooms: Mutex<Vec<String>>,
         canceled_rooms: Mutex<Vec<String>>,
         minutes_text: Mutex<Option<String>>,
@@ -1863,7 +2091,9 @@ mod tests {
             Arc::new(Self {
                 name: name.to_owned(),
                 replies: Mutex::new(VecDeque::from(replies)),
+                recorded_prompts: Mutex::new(Vec::new()),
                 recorded_attachments: Mutex::new(Vec::new()),
+                recorded_minutes_prompts: Mutex::new(Vec::new()),
                 closed_rooms: Mutex::new(Vec::new()),
                 canceled_rooms: Mutex::new(Vec::new()),
                 minutes_text: Mutex::new(None),
@@ -1877,7 +2107,9 @@ mod tests {
             Arc::new(Self {
                 name: name.to_owned(),
                 replies: Mutex::new(VecDeque::new()),
+                recorded_prompts: Mutex::new(Vec::new()),
                 recorded_attachments: Mutex::new(Vec::new()),
+                recorded_minutes_prompts: Mutex::new(Vec::new()),
                 closed_rooms: Mutex::new(Vec::new()),
                 canceled_rooms: Mutex::new(Vec::new()),
                 minutes_text: Mutex::new(None),
@@ -1895,7 +2127,9 @@ mod tests {
             Arc::new(Self {
                 name: name.to_owned(),
                 replies: Mutex::new(VecDeque::from(replies)),
+                recorded_prompts: Mutex::new(Vec::new()),
                 recorded_attachments: Mutex::new(Vec::new()),
+                recorded_minutes_prompts: Mutex::new(Vec::new()),
                 closed_rooms: Mutex::new(Vec::new()),
                 canceled_rooms: Mutex::new(Vec::new()),
                 minutes_text: Mutex::new(None),
@@ -1909,6 +2143,7 @@ mod tests {
     #[async_trait]
     impl LocalRoomParticipant for MockLocalParticipant {
         async fn run_room_turn(&self, req: LocalRoomTurnRequest) -> Result<RoomTurnOutput, String> {
+            self.recorded_prompts.lock().unwrap().push(req.prompt);
             self.recorded_attachments
                 .lock()
                 .unwrap()
@@ -1943,6 +2178,10 @@ mod tests {
         }
 
         async fn generate_minutes(&self, prompt: String) -> Result<String, String> {
+            self.recorded_minutes_prompts
+                .lock()
+                .unwrap()
+                .push(prompt.clone());
             if let Some(gate) = &self.minutes_gate {
                 gate.entry().pass().await;
             }
@@ -2568,29 +2807,7 @@ mod tests {
 
         let archived = service.archive_room(&room_id).await.unwrap();
         let shared_path = archived.room.minutes.shared_path.clone().unwrap();
-        assert!(
-            shared_path.starts_with("team/minutes/")
-                && shared_path.ends_with("-architecture-sync.md"),
-            "unexpected shared_path: {shared_path}"
-        );
-        let rel = shared_path.strip_prefix("team/").unwrap();
-        assert!(
-            hub.team().join(rel).is_file(),
-            "team/minutes file must exist on disk"
-        );
-        assert!(
-            archived.minutes_markdown.is_some(),
-            "minutes_markdown must be attached"
-        );
-        assert!(
-            !scout.closed_rooms.lock().unwrap().is_empty(),
-            "archive must close local room session"
-        );
-        assert_eq!(
-            inbox_count(&hub, "scout").await,
-            1,
-            "one owner inbox item must be created"
-        );
+        assert_first_archive_outputs(&hub, &scout, &archived, &shared_path).await;
 
         service.reopen_room(&room_id).await.unwrap();
         let rearchived_no_new = service.archive_room(&room_id).await.unwrap();
@@ -2615,22 +2832,79 @@ mod tests {
         wait_until_idle(&mut rx, &room_id, &service).await;
 
         let rearchived_updated = service.archive_room(&room_id).await.unwrap();
-        assert_eq!(
-            rearchived_updated.room.minutes.shared_path.as_deref(),
-            Some(shared_path.as_str()),
-            "re-archive must update existing team/minutes path in place"
+        assert_second_archive_outputs(&hub, &rearchived_updated, &shared_path).await;
+    }
+
+    async fn assert_first_archive_outputs(
+        hub: &TeamHub,
+        scout: &MockLocalParticipant,
+        archived: &RoomDetailResponse,
+        shared_path: &str,
+    ) {
+        assert!(
+            shared_path.starts_with("team/minutes/")
+                && shared_path.ends_with("-architecture-sync.md"),
+            "unexpected shared_path: {shared_path}"
         );
-        let disk_minutes = tokio::fs::read_to_string(hub.team().join(rel))
+        let rel = shared_path.strip_prefix("team/").unwrap();
+        assert!(
+            hub.team().join(rel).is_file(),
+            "team/minutes file must exist on disk"
+        );
+        assert!(
+            archived.minutes_markdown.is_some(),
+            "minutes_markdown must be attached"
+        );
+        assert!(
+            !scout.closed_rooms.lock().unwrap().is_empty(),
+            "archive must close local room session"
+        );
+        assert_eq!(
+            inbox_count(hub, "scout").await,
+            1,
+            "one owner inbox item must be created"
+        );
+    }
+
+    async fn assert_second_archive_outputs(
+        hub: &TeamHub,
+        rearchived_updated: &RoomDetailResponse,
+        first_shared: &str,
+    ) {
+        let second_shared = rearchived_updated.room.minutes.shared_path.clone().unwrap();
+        assert_ne!(
+            second_shared, first_shared,
+            "re-archive with new messages must allocate a fresh non-colliding team/minutes path"
+        );
+        assert!(
+            second_shared.ends_with("-architecture-sync-2.md"),
+            "second archive minutes path should get -2 suffix: {second_shared}"
+        );
+        let first_rel = first_shared.strip_prefix("team/").unwrap();
+        let first_disk = tokio::fs::read_to_string(hub.team().join(first_rel))
             .await
             .unwrap();
         assert!(
-            disk_minutes.contains("Updated with follow-up"),
-            "team/minutes file must be updated in place"
+            !first_disk.contains("Updated with follow-up"),
+            "earlier meeting minutes file must remain untouched on disk"
+        );
+        let second_rel = second_shared.strip_prefix("team/").unwrap();
+        let second_disk = tokio::fs::read_to_string(hub.team().join(second_rel))
+            .await
+            .unwrap();
+        assert!(
+            second_disk.contains("Updated with follow-up"),
+            "new meeting minutes file must contain follow-up notes"
         );
         assert_eq!(
-            inbox_count(&hub, "scout").await,
+            rearchived_updated.room.meetings.len(),
             2,
-            "new message on re-archive must post updated inbox item"
+            "re-archive must record a second RoomMeetingRecord"
+        );
+        assert_eq!(
+            inbox_count(hub, "scout").await,
+            2,
+            "new message on re-archive must post new inbox item"
         );
     }
 
@@ -2874,7 +3148,9 @@ mod tests {
         let slow = Arc::new(MockLocalParticipant {
             name: "slow".to_owned(),
             replies: Mutex::new(VecDeque::new()),
+            recorded_prompts: Mutex::new(Vec::new()),
             recorded_attachments: Mutex::new(Vec::new()),
+            recorded_minutes_prompts: Mutex::new(Vec::new()),
             closed_rooms: Mutex::new(Vec::new()),
             canceled_rooms: Mutex::new(Vec::new()),
             minutes_text: Mutex::new(None),
@@ -3344,5 +3620,395 @@ mod tests {
             "successful evaluation must clear selector_error"
         );
         assert_eq!(recovered_view.messages.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn capture_notes_slices_messages_writes_distinct_files_and_keeps_room_active() {
+        let scout = MockLocalParticipant::with_replies(
+            "scout",
+            vec![
+                Ok("First meeting summary.".to_owned()),
+                Ok("Second meeting summary.".to_owned()),
+            ],
+        );
+        let analyst = MockLocalParticipant::with_replies("analyst", Vec::new());
+        let selector = Arc::new(MockSelector::new(true, vec![SelectorOutcome::NoSpeaker]));
+        let (hub, service) = setup_service(
+            &[
+                ("scout", "Scout", Arc::clone(&scout)),
+                ("analyst", "Analyst", Arc::clone(&analyst)),
+            ],
+            selector,
+        )
+        .await;
+
+        let created = service
+            .create_room(CreateRoomRequest {
+                name: "Kitchen Table".to_owned(),
+                topic: Some("Daily standup".to_owned()),
+                seat_ids: vec!["agent:scout".to_owned(), "agent:analyst".to_owned()],
+                pinned: true,
+            })
+            .await
+            .unwrap();
+        let room_id = created.room.id.to_string();
+        let mut rx = service.subscribe_events();
+
+        service
+            .post_owner_message(
+                &room_id,
+                "@Scout first meeting topic".to_owned(),
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        wait_until_idle(&mut rx, &room_id, &service).await;
+        service.mark_read(&room_id, 2).await.unwrap();
+
+        let first_capture = service
+            .capture_notes(&room_id, CaptureRoomNotesRequest::default())
+            .await
+            .unwrap();
+        assert_first_capture_state(&service, &scout, &analyst, &room_id, &first_capture).await;
+        let m1 = first_capture.room.meetings.first().unwrap();
+
+        // Immediate repeat with no new messages must return Conflict.
+        let empty_retry = service
+            .capture_notes(&room_id, CaptureRoomNotesRequest::default())
+            .await;
+        assert!(
+            matches!(empty_retry, Err(RoomServiceError::Conflict(_))),
+            "capture_notes with no new messages must return Conflict, got {empty_retry:?}"
+        );
+
+        // Second meeting slice in the same active room.
+        service
+            .post_owner_message(
+                &room_id,
+                "@Scout second meeting topic".to_owned(),
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        wait_until_idle(&mut rx, &room_id, &service).await;
+        service.mark_read(&room_id, 5).await.unwrap();
+
+        {
+            let prompts = scout.recorded_prompts.lock().unwrap();
+            let second_turn_prompt = prompts.last().unwrap();
+            assert!(
+                !second_turn_prompt.contains("Notes captured"),
+                "agent catchup prompt must not include synthetic capture divider: {second_turn_prompt}"
+            );
+            assert!(
+                !second_turn_prompt.contains("first meeting topic"),
+                "agent catchup prompt after capture must only contain post-capture messages"
+            );
+        }
+
+        let second_capture = service
+            .capture_notes(&room_id, CaptureRoomNotesRequest::default())
+            .await
+            .unwrap();
+        assert_second_capture_state(&hub, &scout, &second_capture, m1);
+        assert_archive_after_capture_and_conflict(&hub, &service, &room_id).await;
+    }
+
+    async fn assert_archive_after_capture_and_conflict(
+        hub: &TeamHub,
+        service: &RoomService,
+        room_id: &str,
+    ) {
+        let archived_after_capture = service.archive_room(room_id).await.unwrap();
+        assert_eq!(
+            archived_after_capture.room.status,
+            RoomStatus::Archived,
+            "archive_room must transition to Archived"
+        );
+        assert_eq!(
+            archived_after_capture.room.meetings.len(),
+            2,
+            "archive with no uncaptured tail must not create a third meeting"
+        );
+        assert_eq!(
+            inbox_count(hub, "scout").await,
+            2,
+            "archive with no uncaptured tail must not send a third inbox item"
+        );
+        let archived_err = service
+            .capture_notes(room_id, CaptureRoomNotesRequest::default())
+            .await;
+        assert!(
+            matches!(archived_err, Err(RoomServiceError::Conflict(_))),
+            "capture_notes on archived room must return Conflict, got {archived_err:?}"
+        );
+    }
+
+    async fn assert_first_capture_state(
+        service: &RoomService,
+        scout: &MockLocalParticipant,
+        analyst: &MockLocalParticipant,
+        room_id: &str,
+        first_capture: &RoomDetailResponse,
+    ) {
+        assert_eq!(
+            first_capture.room.status,
+            RoomStatus::Active,
+            "capture_notes must keep the room active"
+        );
+        assert_eq!(
+            first_capture.room.last_seq, 3,
+            "first capture must append system divider at seq 3"
+        );
+        assert_eq!(
+            first_capture.room.last_read_seq, 3,
+            "last_read_seq must advance past divider when owner had read up to end_seq"
+        );
+        assert_eq!(
+            first_capture.room.unread_count, 0,
+            "capture_notes must not create an unread badge"
+        );
+        assert_eq!(
+            first_capture.room.last_captured_seq, 3,
+            "last_captured_seq must equal divider seq"
+        );
+        assert_eq!(
+            first_capture.room.meetings.len(),
+            1,
+            "first capture must record 1 meeting"
+        );
+        let m1 = first_capture.room.meetings.first().unwrap();
+        assert_eq!(m1.start_seq, 1, "first slice must start at seq 1");
+        assert_eq!(m1.end_seq, 2, "first slice must end at seq 2");
+        assert_eq!(
+            m1.divider_seq,
+            Some(3),
+            "first meeting must record divider_seq=3"
+        );
+        assert!(
+            m1.shared_path.ends_with("-kitchen-table.md"),
+            "first shared_path should end with -kitchen-table.md: {}",
+            m1.shared_path
+        );
+        assert_eq!(
+            first_capture.messages.last().map(|m| m.kind),
+            Some(RoomMessageKind::System),
+            "last message after capture must be the System divider"
+        );
+        assert!(
+            first_capture
+                .messages
+                .last()
+                .unwrap()
+                .content
+                .contains(&m1.shared_path),
+            "divider content must reference shared_path"
+        );
+        assert!(
+            scout
+                .closed_rooms
+                .lock()
+                .unwrap()
+                .contains(&room_id.to_owned())
+                && analyst
+                    .closed_rooms
+                    .lock()
+                    .unwrap()
+                    .contains(&room_id.to_owned()),
+            "capture_notes must close all participating local sessions"
+        );
+        assert!(
+            service
+                .store()
+                .read_meeting_minutes(room_id, &m1.id)
+                .await
+                .unwrap()
+                .is_some(),
+            "per-meeting markdown file must be written under meetings/"
+        );
+        let stored = service.store().get_record(room_id).await.unwrap();
+        assert_eq!(
+            stored.last_seen_seq.get("agent:scout").copied(),
+            Some(3),
+            "last_seen_seq at end_seq must advance to divider seq"
+        );
+    }
+
+    fn assert_second_capture_state(
+        hub: &TeamHub,
+        scout: &MockLocalParticipant,
+        second_capture: &RoomDetailResponse,
+        m1: &RoomMeetingRecord,
+    ) {
+        assert_eq!(
+            second_capture.room.meetings.len(),
+            2,
+            "second capture must append a second RoomMeetingRecord"
+        );
+        let m2 = second_capture.room.meetings.last().unwrap();
+        assert_eq!(m2.start_seq, 4, "second slice must start at seq 4");
+        assert_eq!(m2.end_seq, 5, "second slice must end at seq 5");
+        assert_eq!(
+            m2.divider_seq,
+            Some(6),
+            "second meeting must record divider_seq=6"
+        );
+        assert_ne!(
+            m2.shared_path, m1.shared_path,
+            "second capture must allocate a distinct file path"
+        );
+        assert!(
+            m2.shared_path.ends_with("-kitchen-table-2.md"),
+            "second capture path should get -2 suffix: {}",
+            m2.shared_path
+        );
+        assert!(
+            hub.team()
+                .join(m1.shared_path.strip_prefix("team/").unwrap())
+                .is_file()
+                && hub
+                    .team()
+                    .join(m2.shared_path.strip_prefix("team/").unwrap())
+                    .is_file(),
+            "both meeting files must exist on disk in team/minutes/"
+        );
+        let min_prompts = scout.recorded_minutes_prompts.lock().unwrap();
+        assert_eq!(min_prompts.len(), 2, "two minutes prompts must be recorded");
+        let second_min_prompt = min_prompts.last().unwrap();
+        assert!(
+            second_min_prompt.contains("second meeting topic")
+                && second_min_prompt.contains("Second meeting summary."),
+            "second minutes prompt must include slice 2 messages: {second_min_prompt}"
+        );
+        assert!(
+            !second_min_prompt.contains("first meeting topic")
+                && !second_min_prompt.contains("First meeting summary."),
+            "second minutes prompt must exclude slice 1 messages: {second_min_prompt}"
+        );
+    }
+
+    #[tokio::test]
+    async fn archive_after_capture_summarizes_only_uncaptured_tail() {
+        let scout = MockLocalParticipant::with_replies(
+            "scout",
+            vec![
+                Ok("Part one done.".to_owned()),
+                Ok("Part two done.".to_owned()),
+            ],
+        );
+        let selector = Arc::new(MockSelector::new(true, vec![SelectorOutcome::NoSpeaker]));
+        let (_hub, service) =
+            setup_service(&[("scout", "Scout", Arc::clone(&scout))], selector).await;
+
+        let created = service
+            .create_room(CreateRoomRequest {
+                name: "Tail Check".to_owned(),
+                topic: None,
+                seat_ids: vec!["agent:scout".to_owned()],
+                pinned: false,
+            })
+            .await
+            .unwrap();
+        let room_id = created.room.id.to_string();
+        let mut rx = service.subscribe_events();
+
+        service
+            .post_owner_message(&room_id, "@Scout part one".to_owned(), Vec::new())
+            .await
+            .unwrap();
+        wait_until_idle(&mut rx, &room_id, &service).await;
+
+        let captured = service
+            .capture_notes(&room_id, CaptureRoomNotesRequest::default())
+            .await
+            .unwrap();
+        let first_path = captured.room.minutes.shared_path.clone().unwrap();
+
+        service
+            .post_owner_message(&room_id, "@Scout part two".to_owned(), Vec::new())
+            .await
+            .unwrap();
+        wait_until_idle(&mut rx, &room_id, &service).await;
+
+        let archived = service.archive_room(&room_id).await.unwrap();
+        assert_eq!(
+            archived.room.meetings.len(),
+            2,
+            "archive after uncaptured tail must record second meeting"
+        );
+        let tail_meeting = archived.room.meetings.last().unwrap();
+        assert_eq!(tail_meeting.start_seq, 4, "tail must start after divider");
+        assert_eq!(tail_meeting.end_seq, 5, "tail must end at last_seq");
+        assert_eq!(
+            tail_meeting.divider_seq, None,
+            "archive meeting record may leave divider_seq None"
+        );
+        assert_ne!(
+            tail_meeting.shared_path, first_path,
+            "archive tail must write to a distinct file"
+        );
+        assert_eq!(
+            archived.messages.len(),
+            5,
+            "archive response must still include the full room transcript"
+        );
+        let min_prompts = scout.recorded_minutes_prompts.lock().unwrap();
+        let tail_prompt = min_prompts.last().unwrap();
+        assert!(
+            tail_prompt.contains("part two") && !tail_prompt.contains("part one"),
+            "archive tail minutes prompt must only contain post-capture messages: {tail_prompt}"
+        );
+    }
+
+    #[tokio::test]
+    async fn capture_notes_stops_active_turn_and_rejects_empty_room() {
+        let gate = Gate::closed("capture-stop-turn");
+        let slow = MockLocalParticipant::holding("scout", gate);
+        let selector = Arc::new(MockSelector::new(true, vec![SelectorOutcome::NoSpeaker]));
+        let (_hub, service) =
+            setup_service(&[("scout", "Scout", Arc::clone(&slow))], selector).await;
+
+        let created = service
+            .create_room(CreateRoomRequest {
+                name: "Stop Capture".to_owned(),
+                topic: None,
+                seat_ids: vec!["agent:scout".to_owned()],
+                pinned: false,
+            })
+            .await
+            .unwrap();
+        let room_id = created.room.id.to_string();
+
+        let empty_res = service
+            .capture_notes(&room_id, CaptureRoomNotesRequest::default())
+            .await;
+        assert!(
+            matches!(empty_res, Err(RoomServiceError::Conflict(_))),
+            "capture_notes on empty room must return Conflict"
+        );
+
+        service
+            .post_owner_message(&room_id, "@Scout start".to_owned(), Vec::new())
+            .await
+            .unwrap();
+        slow.hold_gate.as_ref().unwrap().until_held(1).await;
+
+        let captured = service
+            .capture_notes(&room_id, CaptureRoomNotesRequest::default())
+            .await
+            .unwrap();
+        assert!(
+            !slow.canceled_rooms.lock().unwrap().is_empty(),
+            "capture_notes must cancel any in-flight turn first"
+        );
+        assert!(
+            captured.room.active_turn.is_none(),
+            "active_turn must be cleared after capture_notes"
+        );
+        assert_eq!(
+            captured.room.meetings.len(),
+            1,
+            "owner message before cancelled turn must still be captured"
+        );
     }
 }

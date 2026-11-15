@@ -24,10 +24,11 @@ pub use selector::{SelectorOutcome, SpeakerSelector, SystemOneSpeakerSelector};
 pub use service::{LocalRoomAgentInfo, RoomEvent, RoomService, RoomServiceError};
 pub use store::{NewRoomMessage, RoomStore, RoomStoreError};
 pub use types::{
-    CreateRoomRequest, MAX_ROOM_NAME_CHARS, MAX_SEAT_TURNS_PER_WINDOW, MarkRoomReadRequest,
-    PatchRoomRequest, PostRoomMessageRequest, RoomActiveTurn, RoomAttachment,
-    RoomCandidatesResponse, RoomDetail, RoomDetailResponse, RoomId, RoomListResponse, RoomMessage,
-    RoomMessageKind, RoomMinutesMeta, RoomRecord, RoomRosterCandidate, RoomSeat, RoomSeatKind,
-    RoomStatus, RoomSummary, RoomValidationError, RoomWindowState, generate_message_id,
-    generate_room_id, validate_room_id, validate_room_name, window_cap_for_roster,
+    CaptureRoomNotesMode, CaptureRoomNotesRequest, CreateRoomRequest, MAX_ROOM_NAME_CHARS,
+    MAX_SEAT_TURNS_PER_WINDOW, MarkRoomReadRequest, PatchRoomRequest, PostRoomMessageRequest,
+    RoomActiveTurn, RoomAttachment, RoomCandidatesResponse, RoomDetail, RoomDetailResponse, RoomId,
+    RoomListResponse, RoomMeetingRecord, RoomMessage, RoomMessageKind, RoomMinutesMeta, RoomRecord,
+    RoomRosterCandidate, RoomSeat, RoomSeatKind, RoomStatus, RoomSummary, RoomValidationError,
+    RoomWindowState, generate_meeting_id, generate_message_id, generate_room_id,
+    validate_meeting_id, validate_room_id, validate_room_name, window_cap_for_roster,
 };

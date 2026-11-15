@@ -3,7 +3,7 @@
   import Prose from "../../feed/Prose.svelte";
   import { displayState } from "../../lib/agent-display-state";
   import { hub } from "../../lib/hub.svelte";
-  import type { RoomDetail, RoomSeat, RoomSummary } from "../../lib/hub-types";
+  import type { RoomDetail, RoomMeetingRecord, RoomSeat, RoomSummary } from "../../lib/hub-types";
   import { Icon } from "../../lib/icons";
   import { roomsStore, type RoomTurnStateSnapshot } from "../../lib/rooms.svelte";
   import { router } from "../../lib/router.svelte";
@@ -43,6 +43,7 @@
   let rosterOpen = $state(false);
   let confirmDeleteOpen = $state(false);
   let pinning = $state(false);
+  let capturingNotes = $state(false);
   let archiving = $state(false);
   let reopening = $state(false);
   let stopping = $state(false);
@@ -188,6 +189,19 @@
     return raw === null ? null : raw.replace(/^team\//, "");
   });
 
+  const earlierMeetings = $derived.by<RoomMeetingRecord[]>(() => {
+    if (openRoom === null || openRoom.meetings.length <= 1) return [];
+    return openRoom.meetings.slice(0, -1).reverse();
+  });
+
+  function meetingForDividerSeq(detail: RoomDetail, seq: number): RoomMeetingRecord | null {
+    return detail.meetings.find((m) => m.divider_seq === seq) ?? null;
+  }
+
+  function meetingFileLabel(sharedPath: string): string {
+    return sharedPath.replace(/^team\/minutes\//, "").replace(/^team\//, "");
+  }
+
   function followsInPlace(event: MouseEvent): boolean {
     if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) {
       return false;
@@ -258,6 +272,13 @@
     pinning = true;
     await roomsStore.patchRoom(openRoom.id, { pinned: !openRoom.pinned });
     pinning = false;
+  }
+
+  async function handleCaptureNotes(): Promise<void> {
+    if (openRoom === null || capturingNotes) return;
+    capturingNotes = true;
+    await roomsStore.captureNotes(openRoom.id);
+    capturingNotes = false;
   }
 
   async function handleArchive(): Promise<void> {
@@ -435,7 +456,25 @@
           Roster ({openRoom.roster.length})
         </Button>
         {#if openRoom.status === "active"}
-          <Button size="sm" icon="archive" loading={archiving} onclick={() => void handleArchive()}>
+          <Button
+            size="sm"
+            icon="document"
+            loading={capturingNotes}
+            disabled={capturingNotes ||
+              archiving ||
+              openRoom.last_seq <=
+                Math.max(openRoom.last_captured_seq, openRoom.minutes.archived_at_seq)}
+            onclick={() => void handleCaptureNotes()}
+          >
+            Capture notes
+          </Button>
+          <Button
+            size="sm"
+            icon="archive"
+            loading={archiving}
+            disabled={capturingNotes}
+            onclick={() => void handleArchive()}
+          >
             Archive room
           </Button>
         {:else}
@@ -562,6 +601,25 @@
                 />
               </div>
             {/if}
+            {#if earlierMeetings.length > 0}
+              <div class="room-earlier-meetings">
+                <span class="room-earlier-label">Earlier notes:</span>
+                <ul class="room-earlier-list" aria-label="Earlier captured notes">
+                  {#each earlierMeetings as meeting (meeting.id)}
+                    <li>
+                      <Button
+                        size="sm"
+                        variant="quiet"
+                        icon="document"
+                        onclick={() => openMinutesFile(meeting.shared_path.replace(/^team\//, ""))}
+                      >
+                        {meetingFileLabel(meeting.shared_path)}
+                      </Button>
+                    </li>
+                  {/each}
+                </ul>
+              </div>
+            {/if}
           </section>
         {/if}
 
@@ -589,9 +647,21 @@
             {#each roomsStore.messages as msg (msg.id)}
               <li>
                 {#if msg.kind === "system"}
+                  {@const capturedMeeting = meetingForDividerSeq(openRoom, msg.seq)}
                   <div class="room-system-notice" role="status">
                     <Icon name="info" size={14} />
                     <span class="room-system-text">{msg.content}</span>
+                    {#if capturedMeeting !== null}
+                      <Button
+                        variant="quiet"
+                        size="sm"
+                        icon="document"
+                        onclick={() =>
+                          openMinutesFile(capturedMeeting.shared_path.replace(/^team\//, ""))}
+                      >
+                        Open notes
+                      </Button>
+                    {/if}
                     <time class="room-msg-time" datetime={msg.timestamp}>
                       {messageTimeLabel(msg.timestamp, now)}
                     </time>
@@ -987,6 +1057,29 @@
     &[hidden] {
       display: none;
     }
+  }
+
+  .room-earlier-meetings {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-6);
+    padding-top: var(--space-8);
+    border-top: 1px solid var(--color-line-soft);
+  }
+
+  .room-earlier-label {
+    color: var(--color-text-3);
+    font-size: var(--font-size-xs);
+    font-weight: var(--font-weight-medium);
+  }
+
+  .room-earlier-list {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-4);
+    list-style: none;
   }
 
   .room-load-older {

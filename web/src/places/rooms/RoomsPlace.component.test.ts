@@ -142,6 +142,8 @@ function makeDetail(id: string, overrides: Partial<RoomDetail> = {}): RoomDetail
       inbox_ref: null,
       updated_at: null,
     },
+    meetings: [],
+    last_captured_seq: 0,
     active_turn: null,
     ...overrides,
   };
@@ -235,6 +237,9 @@ describe("RoomsPlace", () => {
 
     const dialog = await screen.findByRole("dialog", { name: "New room" });
     expect(dialog).toHaveTextContent("EXT A2A");
+    expect(dialog).toHaveTextContent("@partner-bot");
+    expect(dialog).not.toHaveTextContent("@scout");
+    expect(dialog).not.toHaveTextContent("@planner");
 
     await user.type(screen.getByLabelText("Room name"), "Release Review");
     await user.type(screen.getByLabelText("Topic (optional)"), "Check readiness");
@@ -324,6 +329,9 @@ describe("RoomsPlace", () => {
     await user.click(screen.getByRole("button", { name: /Roster/i }));
     const drawer = await screen.findByRole("dialog", { name: /Room roster/i });
     expect(drawer).toHaveTextContent("EXT A2A");
+    expect(drawer).toHaveTextContent("@partner-bot");
+    expect(drawer).not.toHaveTextContent("@scout");
+    expect(drawer).not.toHaveTextContent("@planner");
 
     // Add Planner from available candidates
     await user.click(screen.getByRole("button", { name: "Add Planner" }));
@@ -813,5 +821,199 @@ describe("RoomsPlace", () => {
 
     await user.click(screen.getByRole("button", { name: "Dismiss" }));
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("captures notes on active room, disables when caught up, and opens divider and earlier meeting files", async () => {
+    const user = userEvent.setup();
+    const meeting1 = {
+      id: "rmtg_01jcv8m9000001",
+      start_seq: 1,
+      end_seq: 2,
+      divider_seq: 3,
+      shared_path: "team/minutes/2026-11-14-architecture-sync.md",
+      inbox_ref: "scout/user/min-1",
+      created_at: "2026-11-14T10:06:00Z",
+      updated_at: "2026-11-14T10:06:00Z",
+    };
+    const meeting2 = {
+      id: "rmtg_01jcv8m9000002",
+      start_seq: 4,
+      end_seq: 5,
+      divider_seq: 6,
+      shared_path: "team/minutes/2026-11-14-architecture-sync-2.md",
+      inbox_ref: "scout/user/min-2",
+      created_at: "2026-11-14T10:20:00Z",
+      updated_at: "2026-11-14T10:20:00Z",
+    };
+
+    let captureCount = 0;
+    mockFetch((url, init) => {
+      if (url === "/api/hub/rooms") {
+        return jsonResponse({ rooms: [makeSummary(ROOM_ID)], decision_model_active: true });
+      }
+      if (url.startsWith(`/api/hub/rooms/${ROOM_ID}?`)) {
+        return jsonResponse({
+          room: makeDetail(ROOM_ID, {
+            last_seq: 5,
+            last_read_seq: 5,
+            last_captured_seq: 3,
+            meetings: [meeting1],
+            minutes: {
+              shared_path: meeting1.shared_path,
+              archived_at_seq: 3,
+              inbox_ref: meeting1.inbox_ref,
+              updated_at: meeting1.updated_at,
+            },
+          }),
+          messages: [
+            makeMessage(1),
+            makeMessage(2),
+            makeMessage(3, {
+              kind: "system",
+              seat_id: null,
+              author_name: "System",
+              seat_kind: null,
+              content: `Notes captured — saved to \`${meeting1.shared_path}\`.`,
+            }),
+            makeMessage(4),
+            makeMessage(5),
+          ],
+          minutes_markdown: "# Slice 1",
+          decision_model_active: true,
+        } satisfies RoomDetailResponse);
+      }
+      if (url === `/api/hub/rooms/${ROOM_ID}/capture-notes` && init?.method === "POST") {
+        captureCount += 1;
+        return jsonResponse({
+          room: makeDetail(ROOM_ID, {
+            last_seq: 6,
+            last_read_seq: 6,
+            last_captured_seq: 6,
+            meetings: [meeting1, meeting2],
+            minutes: {
+              shared_path: meeting2.shared_path,
+              archived_at_seq: 6,
+              inbox_ref: meeting2.inbox_ref,
+              updated_at: meeting2.updated_at,
+            },
+          }),
+          messages: [
+            makeMessage(1),
+            makeMessage(2),
+            makeMessage(3, {
+              kind: "system",
+              seat_id: null,
+              author_name: "System",
+              seat_kind: null,
+              content: `Notes captured — saved to \`${meeting1.shared_path}\`.`,
+            }),
+            makeMessage(4),
+            makeMessage(5),
+            makeMessage(6, {
+              kind: "system",
+              seat_id: null,
+              author_name: "System",
+              seat_kind: null,
+              content: `Notes captured — saved to \`${meeting2.shared_path}\`.`,
+            }),
+          ],
+          minutes_markdown: "# Slice 2",
+          decision_model_active: true,
+        } satisfies RoomDetailResponse);
+      }
+      if (url.endsWith("/read")) return new Response(null, { status: 204 });
+      return jsonResponse({}, 404);
+    });
+
+    const openPanel = vi.spyOn(router, "openPanel").mockResolvedValue(true);
+    render(RoomsPlace, { room: ROOM_ID, tab: "active" });
+
+    const captureBtn = await screen.findByRole("button", { name: "Capture notes" });
+    expect(captureBtn).toBeEnabled();
+
+    // Inline "Open notes" button on divider 1 opens meeting 1 in the panel
+    const openNotesBtnsBefore = screen.getAllByRole("button", { name: "Open notes" });
+    expect(openNotesBtnsBefore).toHaveLength(1);
+    await user.click(openNotesBtnsBefore[0] as HTMLElement);
+    expect(openPanel).toHaveBeenCalledWith({
+      kind: "file",
+      path: "minutes/2026-11-14-architecture-sync.md",
+      agent: null,
+    });
+
+    // Click Capture notes -> updates room, disables button (caught up), shows earlier notes list
+    await user.click(captureBtn);
+    await waitFor(() => {
+      expect(captureCount).toBe(1);
+      expect(screen.getByRole("button", { name: "Capture notes" })).toBeDisabled();
+    });
+
+    expect(screen.getAllByRole("button", { name: "Open notes" })).toHaveLength(2);
+    const earlierList = screen.getByRole("list", { name: "Earlier captured notes" });
+    expect(earlierList).toHaveTextContent("2026-11-14-architecture-sync.md");
+
+    await user.click(screen.getByRole("button", { name: "2026-11-14-architecture-sync.md" }));
+    expect(openPanel).toHaveBeenCalledWith({
+      kind: "file",
+      path: "minutes/2026-11-14-architecture-sync.md",
+      agent: null,
+    });
+  });
+
+  it("shows @leafSlug handle only when display_name differs from leaf slug in NewRoomDialog and RoomRosterDrawer", async () => {
+    const user = userEvent.setup();
+    const customSiblingCandidate: RoomRosterCandidate = {
+      seat_id: "a2a:maven/ivy-assistant",
+      kind: "sibling_a2a",
+      display_name: "Ivy",
+      role: "Vault librarian",
+      instance: "maven",
+      online: true,
+    };
+    const customSiblingSeat: RoomSeat = {
+      seat_id: "a2a:maven/ivy-assistant",
+      kind: "sibling_a2a",
+      display_name: "Ivy",
+      role: "Vault librarian",
+      instance: "maven",
+    };
+
+    mockFetch((url) => {
+      if (url === "/api/hub/rooms") {
+        return jsonResponse({ rooms: [], decision_model_active: true });
+      }
+      if (url === "/api/hub/rooms/candidates") {
+        return jsonResponse({
+          candidates: [CANDIDATES[0] as RoomRosterCandidate, customSiblingCandidate],
+        });
+      }
+      if (url.startsWith(`/api/hub/rooms/${ROOM_ID}`)) {
+        return jsonResponse({
+          room: makeDetail(ROOM_ID, { roster: [LOCAL_SEAT, customSiblingSeat] }),
+          messages: [makeMessage(1)],
+          minutes_markdown: null,
+          decision_model_active: true,
+        } satisfies RoomDetailResponse);
+      }
+      if (url.endsWith("/read")) return new Response(null, { status: 204 });
+      return jsonResponse({}, 404);
+    });
+
+    const { rerender } = render(RoomsPlace, { room: null, tab: "active" });
+    await screen.findByText("No active meeting rooms");
+    await user.click(screen.getAllByRole("button", { name: "New room" })[0] as HTMLElement);
+    const newDialog = await screen.findByRole("dialog", { name: "New room" });
+    expect(newDialog).toHaveTextContent("Ivy");
+    expect(newDialog).toHaveTextContent("@ivy-assistant");
+    expect(newDialog).not.toHaveTextContent("@scout");
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    await rerender({ room: ROOM_ID, tab: "active" });
+    await screen.findByText("Message 1");
+    await user.click(screen.getByRole("button", { name: /Roster/i }));
+    const drawer = await screen.findByRole("dialog", { name: /Room roster/i });
+    expect(drawer).toHaveTextContent("Ivy");
+    expect(drawer).toHaveTextContent("@ivy-assistant");
+    expect(drawer).not.toHaveTextContent("@scout");
   });
 });

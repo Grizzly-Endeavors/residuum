@@ -59,6 +59,7 @@ import type {
   DeletedAgentListResponse,
   RestoreAgentRequest,
   AgentPatch,
+  CaptureRoomNotesRequest,
   HubStatusResponse,
   MailFolder,
   MailReplyResponse,
@@ -1616,6 +1617,17 @@ export async function stopRoom(id: string): Promise<RoomDetail> {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({}),
+  });
+}
+
+export async function captureRoomNotes(
+  id: string,
+  request: CaptureRoomNotesRequest = { mode: "new" },
+): Promise<RoomDetailResponse> {
+  return apiFetch<RoomDetailResponse>(roomPath(id, "capture-notes"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
   });
 }
 

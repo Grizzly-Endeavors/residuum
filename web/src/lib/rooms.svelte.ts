@@ -7,6 +7,7 @@
 
 import {
   archiveRoom as apiArchiveRoom,
+  captureRoomNotes as apiCaptureRoomNotes,
   continueRoom as apiContinueRoom,
   createRoom as apiCreateRoom,
   deleteRoom as apiDeleteRoom,
@@ -299,6 +300,18 @@ export class RoomsStore {
     } catch (err) {
       this.error = userErrorMessage(err, { action: "Couldn't stop the room turn." });
       return null;
+    }
+  }
+
+  async captureNotes(id: string): Promise<boolean> {
+    this.error = null;
+    try {
+      const response = await apiCaptureRoomNotes(id, { mode: "new" });
+      this.applyDetailResponse(response);
+      return true;
+    } catch (err) {
+      this.error = userErrorMessage(err, { action: "Couldn't capture meeting notes." });
+      return false;
     }
   }
 

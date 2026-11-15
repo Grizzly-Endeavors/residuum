@@ -82,6 +82,8 @@ function makeDetail(id: string, overrides: Partial<RoomDetail> = {}): RoomDetail
       inbox_ref: null,
       updated_at: null,
     },
+    meetings: [],
+    last_captured_seq: 0,
     active_turn: null,
     ...overrides,
   };
@@ -732,5 +734,95 @@ describe("RoomsStore", () => {
     expect(await opening).toBeNull();
     expect(store.currentRoom).toBeNull();
     expect(store.messages).toEqual([]);
+  });
+
+  it("captureNotes posts mode='new', updates room detail/messages/minutes, and handles errors", async () => {
+    const id = "room_01jcv8k9m2p4q7";
+    const initialDetail = makeDetail(id, { last_seq: 2, last_read_seq: 2 });
+    const capturedMeeting = {
+      id: "rmtg_01jcv8m9000001",
+      start_seq: 1,
+      end_seq: 2,
+      divider_seq: 3,
+      shared_path: "team/minutes/2026-11-14-architecture-sync.md",
+      inbox_ref: "scout/user/min-1",
+      created_at: "2026-11-14T10:06:00Z",
+      updated_at: "2026-11-14T10:06:00Z",
+    };
+    const dividerMsg = makeMessage(3, {
+      room_id: id,
+      kind: "system",
+      seat_id: null,
+      author_name: "System",
+      seat_kind: null,
+      content: "Notes captured — saved to `team/minutes/2026-11-14-architecture-sync.md`.",
+    });
+
+    let failNext = false;
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      if (url === `/api/hub/rooms/${id}?limit=200` && (!init?.method || init.method === "GET")) {
+        return Promise.resolve(
+          jsonResponse({
+            room: initialDetail,
+            messages: [makeMessage(1, { room_id: id }), makeMessage(2, { room_id: id })],
+            minutes_markdown: null,
+            decision_model_active: true,
+          } satisfies RoomDetailResponse),
+        );
+      }
+      if (url === `/api/hub/rooms/${id}/capture-notes` && init?.method === "POST") {
+        if (failNext) {
+          return Promise.resolve(jsonResponse({ error: "no new messages" }, 409));
+        }
+        return Promise.resolve(
+          jsonResponse({
+            room: makeDetail(id, {
+              last_seq: 3,
+              last_read_seq: 3,
+              last_captured_seq: 3,
+              meetings: [capturedMeeting],
+              minutes: {
+                shared_path: capturedMeeting.shared_path,
+                archived_at_seq: 3,
+                inbox_ref: capturedMeeting.inbox_ref,
+                updated_at: "2026-11-14T10:06:00Z",
+              },
+            }),
+            messages: [
+              makeMessage(1, { room_id: id }),
+              makeMessage(2, { room_id: id }),
+              dividerMsg,
+            ],
+            minutes_markdown: "# Meeting Minutes\n\n## Summary\nCaptured slice 1.",
+            decision_model_active: true,
+          } satisfies RoomDetailResponse),
+        );
+      }
+      return Promise.resolve(new Response("unexpected", { status: 500 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const store = new RoomsStore();
+    await store.openRoom(id);
+
+    const ok = await store.captureNotes(id);
+    expect(ok).toBe(true);
+    expect(fetchMock).toHaveBeenCalledWith(
+      `/api/hub/rooms/${id}/capture-notes`,
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ mode: "new" }),
+      }),
+    );
+    expect(store.currentRoom?.meetings).toEqual([capturedMeeting]);
+    expect(store.currentRoom?.last_captured_seq).toBe(3);
+    expect(store.messages.map((m) => m.seq)).toEqual([1, 2, 3]);
+    expect(store.minutesMarkdown).toContain("Captured slice 1.");
+    expect(store.rooms[0]?.minutes_shared_path).toBe(capturedMeeting.shared_path);
+
+    failNext = true;
+    const failed = await store.captureNotes(id);
+    expect(failed).toBe(false);
+    expect(store.error).toContain("No new messages");
   });
 });

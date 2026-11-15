@@ -129,6 +129,8 @@ async function createRoom(ctx: RouteContext): Promise<void> {
       selector_error: null,
     },
     minutes: { shared_path: null, archived_at_seq: 0, inbox_ref: null, updated_at: null },
+    meetings: [],
+    last_captured_seq: 0,
     active_turn: null,
   };
   const entry: MockRoom = { detail, messages: [], minutesMarkdown: null };
@@ -273,6 +275,69 @@ function stopRoom(ctx: RouteContext): void {
   json(ctx.res, 200, entry.detail);
 }
 
+function captureRoomNotes(ctx: RouteContext): void {
+  const id = decodedParam(ctx, 0);
+  const entry = storeFor(ctx.hub).get(id);
+  if (entry === undefined) {
+    json(ctx.res, 404, { error: `room '${id}' not found` });
+    return;
+  }
+  const watermark = Math.max(entry.detail.last_captured_seq, entry.detail.minutes.archived_at_seq);
+  if (entry.detail.status !== "active" || entry.detail.last_seq <= watermark) {
+    json(ctx.res, 409, { error: "no new messages to capture since last meeting notes" });
+    return;
+  }
+  const now = ctx.hub.env.clock.iso();
+  const slug = entry.detail.name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+  const index = entry.detail.meetings.length + 1;
+  const suffix = index > 1 ? `-${String(index)}` : "";
+  const sharedPath = `team/minutes/${now.slice(0, 10)}-${slug || id}${suffix}.md`;
+  const endSeq = entry.detail.last_seq;
+  const divSeq = endSeq + 1;
+  entry.messages.push({
+    seq: divSeq,
+    id: `rmsg_${String(divSeq).padStart(8, "0")}`,
+    room_id: id,
+    kind: "system",
+    seat_id: null,
+    author_name: "System",
+    seat_kind: null,
+    content: `Notes captured — saved to \`${sharedPath}\`.`,
+    attachments: [],
+    timestamp: now,
+  });
+  entry.minutesMarkdown = `# Meeting Minutes: ${entry.detail.name}\n\n## Summary\n\nMock captured notes.\n`;
+  entry.detail.meetings.push({
+    id: `rmtg_${String(index).padStart(8, "0")}`,
+    start_seq: watermark + 1,
+    end_seq: endSeq,
+    divider_seq: divSeq,
+    shared_path: sharedPath,
+    inbox_ref: null,
+    created_at: now,
+    updated_at: now,
+  });
+  entry.detail.last_seq = divSeq;
+  entry.detail.last_read_seq = divSeq;
+  entry.detail.unread_count = 0;
+  entry.detail.last_captured_seq = divSeq;
+  entry.detail.minutes = {
+    shared_path: sharedPath,
+    archived_at_seq: divSeq,
+    inbox_ref: null,
+    updated_at: now,
+  };
+  json(ctx.res, 200, {
+    room: entry.detail,
+    messages: entry.messages,
+    minutes_markdown: entry.minutesMarkdown,
+    decision_model_active: true,
+  } satisfies RoomDetailResponse);
+}
+
 function archiveRoom(ctx: RouteContext): void {
   const id = decodedParam(ctx, 0);
   const entry = storeFor(ctx.hub).get(id);
@@ -337,6 +402,11 @@ export const roomsRoutes: readonly Route[] = [
   { method: "POST", pattern: /^\/api\/hub\/rooms\/([^/]+)\/messages$/, handler: postMessage },
   { method: "POST", pattern: /^\/api\/hub\/rooms\/([^/]+)\/continue$/, handler: continueRoom },
   { method: "POST", pattern: /^\/api\/hub\/rooms\/([^/]+)\/stop$/, handler: stopRoom },
+  {
+    method: "POST",
+    pattern: /^\/api\/hub\/rooms\/([^/]+)\/capture-notes$/,
+    handler: captureRoomNotes,
+  },
   { method: "POST", pattern: /^\/api\/hub\/rooms\/([^/]+)\/archive$/, handler: archiveRoom },
   { method: "POST", pattern: /^\/api\/hub\/rooms\/([^/]+)\/reopen$/, handler: reopenRoom },
 ];

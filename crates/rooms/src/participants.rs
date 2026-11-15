@@ -37,6 +37,10 @@ const POLL_MAX_MS: u64 = 2_000;
 const MAX_ROOM_ATTACHMENT_BYTES: usize = 50 * 1024 * 1024;
 /// Bounded timeout for best-effort sibling room session close notifications.
 const CLOSE_SESSION_TIMEOUT: Duration = Duration::from_secs(5);
+/// Maximum cached age for A2A agent cards when listing or resolving room
+/// candidates, ensuring recently updated cards appear promptly without
+/// hammering remote endpoints on every render.
+const CANDIDATE_CARD_MAX_AGE: Duration = Duration::from_secs(30);
 
 /// Input passed to a local agent's isolated `external-room-<room_id>` session.
 #[derive(Debug, Clone)]
@@ -410,6 +414,9 @@ impl A2aRoomDriver {
 impl RemoteRoomDriver for A2aRoomDriver {
     async fn candidates(&self) -> Vec<RoomRosterCandidate> {
         self.a2a_hub
+            .refresh_stale_cards(CANDIDATE_CARD_MAX_AGE)
+            .await;
+        self.a2a_hub
             .snapshot()
             .await
             .iter()
@@ -544,6 +551,18 @@ impl RemoteRoomDriver for A2aRoomDriver {
     }
 }
 
+fn is_placeholder_card_name(name: &str) -> bool {
+    name.is_empty() || name.eq_ignore_ascii_case("residuum agent")
+}
+
+fn is_placeholder_card_description(desc: &str) -> bool {
+    desc.is_empty()
+        || desc.eq_ignore_ascii_case(
+            "a personal ai agent, reachable over the agent2agent (a2a) protocol.",
+        )
+        || desc.eq_ignore_ascii_case("a personal ai agent.")
+}
+
 fn snapshot_to_candidate(snap: &AgentSnapshot) -> RoomRosterCandidate {
     let (kind, instance) = match snap.source {
         AgentSource::Sibling => (
@@ -559,12 +578,12 @@ fn snapshot_to_candidate(snap: &AgentSnapshot) -> RoomRosterCandidate {
         .map_or(snap.name.as_str(), |(_, leaf)| leaf);
     let display_name = card
         .map(|c| c.name.trim())
-        .filter(|n| !n.is_empty())
+        .filter(|n| !is_placeholder_card_name(n))
         .unwrap_or(fallback_name)
         .to_owned();
     let role = card
         .map(|c| c.description.trim())
-        .filter(|d| !d.is_empty())
+        .filter(|d| !is_placeholder_card_description(d))
         .map(str::to_owned);
     let online = matches!(snap.status, AgentStatus::Ok(_));
 
@@ -775,6 +794,8 @@ mod tests {
             last_seen_seq: BTreeMap::new(),
             window: RoomWindowState::fresh(2),
             minutes: RoomMinutesMeta::default(),
+            meetings: Vec::new(),
+            last_captured_seq: 0,
         };
         let missed = vec![
             RoomMessage {
@@ -1351,5 +1372,103 @@ mod tests {
         assert_eq!(std::fs::read(&saved_path).unwrap(), b"artifact-bytes");
 
         srv_task.abort();
+    }
+
+    fn make_test_card(name: &str, description: &str) -> a2a::AgentCard {
+        a2a::AgentCard {
+            name: name.to_owned(),
+            description: description.to_owned(),
+            version: "1.0".to_owned(),
+            supported_interfaces: Vec::new(),
+            capabilities: a2a::AgentCapabilities {
+                streaming: Some(true),
+                push_notifications: Some(false),
+                extensions: None,
+                extended_agent_card: None,
+            },
+            default_input_modes: vec!["text/plain".to_owned()],
+            default_output_modes: vec!["text/plain".to_owned()],
+            skills: Vec::new(),
+            provider: None,
+            documentation_url: None,
+            icon_url: None,
+            security_schemes: None,
+            security_requirements: None,
+            signatures: None,
+        }
+    }
+
+    #[test]
+    fn snapshot_to_candidate_falls_back_on_stock_card_placeholders() {
+        let stock_protocol = AgentSnapshot {
+            name: "maven/ivy".to_owned(),
+            url: "http://127.0.0.1:7702/agents/ivy".to_owned(),
+            source: AgentSource::Sibling,
+            status: AgentStatus::Ok(Arc::new(make_test_card(
+                "Residuum agent",
+                "A personal AI agent, reachable over the Agent2Agent (A2A) protocol.",
+            ))),
+        };
+        let cand = snapshot_to_candidate(&stock_protocol);
+        assert_eq!(
+            cand.seat_id, "a2a:maven/ivy",
+            "seat_id must preserve full sibling path"
+        );
+        assert_eq!(
+            cand.display_name, "ivy",
+            "stock 'Residuum agent' card name must fall back to leaf slug"
+        );
+        assert_eq!(
+            cand.role, None,
+            "stock protocol card description must map to role None"
+        );
+        assert_eq!(
+            cand.instance.as_deref(),
+            Some("maven"),
+            "sibling instance must be preserved"
+        );
+        assert!(cand.online, "Ok card status must report online");
+
+        let stock_minimal = AgentSnapshot {
+            name: "flinn-ventures/holly".to_owned(),
+            url: "http://127.0.0.1:7702/agents/holly".to_owned(),
+            source: AgentSource::Sibling,
+            status: AgentStatus::Ok(Arc::new(make_test_card(
+                "  residuum agent  ",
+                "a personal ai agent.",
+            ))),
+        };
+        let minimal_cand = snapshot_to_candidate(&stock_minimal);
+        assert_eq!(
+            minimal_cand.display_name, "holly",
+            "case-insensitive whitespace-trimmed stock name must fall back to leaf slug"
+        );
+        assert_eq!(
+            minimal_cand.role, None,
+            "minimal fallback description must map to role None"
+        );
+    }
+
+    #[test]
+    fn snapshot_to_candidate_preserves_custom_card_name_and_description() {
+        let custom = AgentSnapshot {
+            name: "flinn-ventures/sloane".to_owned(),
+            url: "http://127.0.0.1:7702/agents/sloane".to_owned(),
+            source: AgentSource::Sibling,
+            status: AgentStatus::Ok(Arc::new(make_test_card(
+                "Sloane",
+                "CEO and CFO of Flinn Ventures",
+            ))),
+        };
+        let cand = snapshot_to_candidate(&custom);
+        assert_eq!(
+            cand.display_name, "Sloane",
+            "custom card name must be preserved verbatim"
+        );
+        assert_eq!(
+            cand.role.as_deref(),
+            Some("CEO and CFO of Flinn Ventures"),
+            "custom card description must be preserved verbatim"
+        );
     }
 }

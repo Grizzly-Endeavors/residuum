@@ -28,6 +28,11 @@ pub enum RoomValidationError {
     /// The room name is empty after trimming or exceeds [`MAX_ROOM_NAME_CHARS`].
     #[error("invalid room name: {0}")]
     InvalidRoomName(String),
+    /// The meeting ID does not match `^rmtg_[a-z0-9]{1,64}$`.
+    #[error(
+        "invalid meeting id '{0}': expected 'rmtg_' followed by lowercase alphanumeric characters"
+    )]
+    InvalidMeetingId(String),
 }
 
 /// A validated meeting room identifier (`^room_[a-z0-9]{8,32}$`).
@@ -188,6 +193,31 @@ pub fn generate_message_id() -> String {
     format!("rmsg_{}", encode_base36_suffix())
 }
 
+/// Validate a meeting ID against `^rmtg_[a-z0-9]{1,64}$`.
+///
+/// # Errors
+/// Returns [`RoomValidationError::InvalidMeetingId`] if the ID does not match.
+pub fn validate_meeting_id(id: &str) -> Result<(), RoomValidationError> {
+    let Some(suffix) = id.strip_prefix("rmtg_") else {
+        return Err(RoomValidationError::InvalidMeetingId(id.to_owned()));
+    };
+    let valid_len = (1..=64).contains(&suffix.len());
+    let valid_chars = suffix
+        .bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit());
+    if valid_len && valid_chars {
+        Ok(())
+    } else {
+        Err(RoomValidationError::InvalidMeetingId(id.to_owned()))
+    }
+}
+
+/// Generate a fresh meeting ID formatted as `"rmtg_" + 14 lowercase base36 chars`.
+#[must_use]
+pub fn generate_meeting_id() -> String {
+    format!("rmtg_{}", encode_base36_suffix())
+}
+
 /// Validate and normalize a room display name (trimmed, non-empty, `<= 120` chars).
 ///
 /// # Errors
@@ -339,6 +369,54 @@ pub struct RoomMinutesMeta {
     pub updated_at: Option<DateTime<Utc>>,
 }
 
+/// One captured meeting notes slice within a room.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RoomMeetingRecord {
+    /// Meeting capture identifier (`rmtg_...`).
+    pub id: String,
+    /// First transcript message `seq` included in this captured slice.
+    #[ts(type = "number")]
+    pub start_seq: u64,
+    /// Last transcript message `seq` included in this captured slice (before the system divider).
+    #[ts(type = "number")]
+    pub end_seq: u64,
+    /// Sequence number of the `"Notes captured"` system divider appended to `transcript.jsonl`, if any.
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub divider_seq: Option<u64>,
+    /// Workspace-relative path under `team/minutes/` where this meeting's notes were saved.
+    pub shared_path: String,
+    /// Owner inbox ref created when this meeting's notes were delivered.
+    #[serde(default)]
+    pub inbox_ref: Option<String>,
+    /// Creation timestamp (UTC).
+    #[ts(type = "string")]
+    pub created_at: DateTime<Utc>,
+    /// Last update timestamp (UTC).
+    #[ts(type = "string")]
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Mode for `POST /api/hub/rooms/{id}/capture-notes`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum CaptureRoomNotesMode {
+    /// Capture a new meeting slice since the previous captured watermark.
+    #[default]
+    New,
+}
+
+/// Request body for `POST /api/hub/rooms/{id}/capture-notes`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CaptureRoomNotesRequest {
+    /// Capture mode (`new`).
+    #[serde(default)]
+    pub mode: CaptureRoomNotesMode,
+}
+
 /// Persistent `room.json` record for a meeting room.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -383,6 +461,13 @@ pub struct RoomRecord {
     /// Generated meeting minutes metadata.
     #[serde(default)]
     pub minutes: RoomMinutesMeta,
+    /// Captured meeting slices in chronological order.
+    #[serde(default)]
+    pub meetings: Vec<RoomMeetingRecord>,
+    /// Highest sequence number covered by the most recent capture/archive (`0` if none).
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub last_captured_seq: u64,
 }
 
 impl RoomRecord {
@@ -390,6 +475,13 @@ impl RoomRecord {
     #[must_use]
     pub fn unread_count(&self) -> u64 {
         self.last_seq.saturating_sub(self.last_read_seq)
+    }
+
+    /// Effective high-water mark for already-captured transcript messages,
+    /// preserving backwards compatibility with rooms archived before `last_captured_seq`.
+    #[must_use]
+    pub fn effective_captured_seq(&self) -> u64 {
+        self.last_captured_seq.max(self.minutes.archived_at_seq)
     }
 
     /// Whether `seat_id` is currently on the active roster or was ever a participant.
@@ -499,6 +591,11 @@ pub struct RoomDetail {
     pub window: RoomWindowState,
     /// Meeting minutes metadata.
     pub minutes: RoomMinutesMeta,
+    /// Captured meeting slices in chronological order.
+    pub meetings: Vec<RoomMeetingRecord>,
+    /// Highest sequence number covered by the most recent capture/archive (`0` if none).
+    #[ts(type = "number")]
+    pub last_captured_seq: u64,
     /// In-flight speaker turn if a seat is currently thinking/running tools.
     pub active_turn: Option<RoomActiveTurn>,
 }
@@ -523,6 +620,8 @@ impl RoomDetail {
             unread_count: record.unread_count(),
             window: record.window.clone(),
             minutes: record.minutes.clone(),
+            meetings: record.meetings.clone(),
+            last_captured_seq: record.last_captured_seq,
             active_turn,
         }
     }
@@ -808,6 +907,8 @@ mod tests {
             last_seen_seq: BTreeMap::from([("agent:scout".to_owned(), 4)]),
             window: RoomWindowState::fresh(1),
             minutes: RoomMinutesMeta::default(),
+            meetings: Vec::new(),
+            last_captured_seq: 0,
         };
         let json = serde_json::to_value(&record).unwrap();
         assert_eq!(
@@ -845,6 +946,66 @@ mod tests {
         assert!(
             validate_room_name(&too_long).is_err(),
             "121-char room name must be rejected"
+        );
+    }
+
+    #[test]
+    fn validate_meeting_id_and_effective_captured_seq() {
+        let generated = generate_meeting_id();
+        assert!(
+            validate_meeting_id(&generated).is_ok(),
+            "generated meeting id {generated:?} should validate"
+        );
+        assert!(
+            generated.starts_with("rmtg_") && generated.len() == 19,
+            "generated meeting id should be rmtg_ + 14 base36 chars, got {generated:?}"
+        );
+        for invalid in [
+            "",
+            "rmtg_",
+            "rmtg_ABC",
+            "../etc",
+            "rmtg_../etc",
+            "room_12345678",
+        ] {
+            assert!(
+                validate_meeting_id(invalid).is_err(),
+                "expected meeting id {invalid:?} to be rejected"
+            );
+        }
+
+        let legacy_json = serde_json::json!({
+            "id": "room_01jcv8k9m2p4q7",
+            "name": "Legacy",
+            "topic": null,
+            "status": "archived",
+            "pinned": false,
+            "created_at": "2026-11-14T10:00:00Z",
+            "updated_at": "2026-11-14T10:05:00Z",
+            "archived_at": "2026-11-14T10:05:00Z",
+            "roster": [],
+            "last_seq": 5,
+            "last_read_seq": 5,
+            "minutes": {
+                "shared_path": "team/minutes/2026-11-14-legacy.md",
+                "archived_at_seq": 5,
+                "inbox_ref": null,
+                "updated_at": "2026-11-14T10:05:00Z"
+            }
+        });
+        let legacy: RoomRecord = serde_json::from_value(legacy_json).unwrap();
+        assert!(
+            legacy.meetings.is_empty(),
+            "legacy room.json should default meetings to empty"
+        );
+        assert_eq!(
+            legacy.last_captured_seq, 0,
+            "legacy room.json should default last_captured_seq to 0"
+        );
+        assert_eq!(
+            legacy.effective_captured_seq(),
+            5,
+            "effective_captured_seq must fall back to minutes.archived_at_seq"
         );
     }
 }

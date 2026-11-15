@@ -12,7 +12,7 @@ use tokio::sync::RwLock;
 
 use crate::types::{
     RoomAttachment, RoomMessage, RoomMessageKind, RoomRecord, RoomSeatKind, RoomSummary,
-    RoomValidationError, generate_message_id, validate_room_id,
+    RoomValidationError, generate_message_id, validate_meeting_id, validate_room_id,
 };
 
 /// Errors returned by [`RoomStore`] operations.
@@ -354,6 +354,69 @@ impl RoomStore {
         self.read_messages(room_id, usize::MAX, None).await
     }
 
+    /// Read all persisted messages with `seq > after_seq`, ordered oldest-to-newest.
+    ///
+    /// # Errors
+    /// Returns [`RoomStoreError::InvalidRoomId`], [`RoomStoreError::NotFound`], or I/O errors.
+    pub async fn read_messages_after(
+        &self,
+        room_id: &str,
+        after_seq: u64,
+    ) -> Result<Vec<RoomMessage>, RoomStoreError> {
+        let all = self.read_all_messages(room_id).await?;
+        Ok(all.into_iter().filter(|m| m.seq > after_seq).collect())
+    }
+
+    /// Atomically write `<rooms_root>/<room_id>/meetings/<meeting_id>.md`.
+    ///
+    /// # Errors
+    /// Returns [`RoomStoreError::InvalidRoomId`], [`RoomStoreError::NotFound`], or write errors.
+    pub async fn write_meeting_minutes(
+        &self,
+        room_id: &str,
+        meeting_id: &str,
+        markdown: &str,
+    ) -> Result<(), RoomStoreError> {
+        validate_room_id(room_id)?;
+        validate_meeting_id(meeting_id)?;
+        let guard = self.rooms.write().await;
+        if !guard.contains_key(room_id) {
+            return Err(RoomStoreError::NotFound(room_id.to_owned()));
+        }
+        let meetings_dir = self.room_dir(room_id).join("meetings");
+        tokio::fs::create_dir_all(&meetings_dir).await?;
+        let path = meetings_dir.join(format!("{meeting_id}.md"));
+        atomic_write(&path, markdown.as_bytes())
+            .await
+            .map_err(|err| RoomStoreError::Write(err.to_string()))
+    }
+
+    /// Read `<rooms_root>/<room_id>/meetings/<meeting_id>.md`, returning `Ok(None)` if missing.
+    ///
+    /// # Errors
+    /// Returns [`RoomStoreError::InvalidRoomId`], [`RoomStoreError::NotFound`], or I/O errors.
+    pub async fn read_meeting_minutes(
+        &self,
+        room_id: &str,
+        meeting_id: &str,
+    ) -> Result<Option<String>, RoomStoreError> {
+        validate_room_id(room_id)?;
+        validate_meeting_id(meeting_id)?;
+        let guard = self.rooms.read().await;
+        if !guard.contains_key(room_id) {
+            return Err(RoomStoreError::NotFound(room_id.to_owned()));
+        }
+        let path = self
+            .room_dir(room_id)
+            .join("meetings")
+            .join(format!("{meeting_id}.md"));
+        match tokio::fs::read_to_string(&path).await {
+            Ok(text) => Ok(Some(text)),
+            Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
+            Err(err) => Err(RoomStoreError::Io(err)),
+        }
+    }
+
     /// Atomically write `<rooms_root>/<room_id>/minutes.md`.
     ///
     /// # Errors
@@ -502,6 +565,8 @@ mod tests {
             last_seen_seq: BTreeMap::new(),
             window: RoomWindowState::fresh(2),
             minutes: RoomMinutesMeta::default(),
+            meetings: Vec::new(),
+            last_captured_seq: 0,
         }
     }
 
@@ -855,6 +920,61 @@ mod tests {
                 Err(RoomStoreError::NotFound(_))
             ),
             "read_minutes on deleted room must return NotFound"
+        );
+    }
+
+    #[tokio::test]
+    async fn room_store_meeting_minutes_and_after_seq_slice() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = RoomStore::open(temp.path().join("rooms")).await.unwrap();
+        let now = Utc::now();
+        let record = sample_record(now);
+        let room_id = record.id.to_string();
+        store.create_room(record).await.unwrap();
+
+        for idx in 1..=3 {
+            store
+                .append_message(&room_id, owner_msg(&format!("msg {idx}"), now))
+                .await
+                .unwrap();
+        }
+        let slice = store.read_messages_after(&room_id, 1).await.unwrap();
+        assert_eq!(
+            slice.iter().map(|m| m.seq).collect::<Vec<_>>(),
+            vec![2, 3],
+            "read_messages_after(1) must return seqs 2 and 3"
+        );
+
+        let meeting_id = crate::types::generate_meeting_id();
+        assert_eq!(
+            store
+                .read_meeting_minutes(&room_id, &meeting_id)
+                .await
+                .unwrap(),
+            None,
+            "missing meeting file must return None"
+        );
+        store
+            .write_meeting_minutes(&room_id, &meeting_id, "# Slice 1")
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .read_meeting_minutes(&room_id, &meeting_id)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("# Slice 1"),
+            "written meeting minutes must be readable"
+        );
+        assert!(
+            matches!(
+                store.write_meeting_minutes(&room_id, "../evil", "x").await,
+                Err(RoomStoreError::InvalidRoomId(
+                    RoomValidationError::InvalidMeetingId(_)
+                ))
+            ),
+            "path traversal meeting_id must be rejected"
         );
     }
 }

@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use residuum_agent::RoomRoster;
 
 use crate::service::{RoomService, RoomServiceError};
-use crate::types::{RoomMessage, RoomRecord, RoomSeat, RoomStatus, RoomSummary};
+use crate::types::{RoomMeetingRecord, RoomMessage, RoomRecord, RoomSeat, RoomStatus, RoomSummary};
 
 /// Transcript and minutes slice returned to a participating agent by `room_read`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,6 +19,8 @@ pub struct RoomReadResult {
     pub roster: Vec<RoomSeat>,
     /// Attached meeting minutes markdown, if generated.
     pub minutes_markdown: Option<String>,
+    /// Captured meeting slices in chronological order.
+    pub meetings: Vec<RoomMeetingRecord>,
     /// Recent transcript messages, oldest-to-newest.
     pub messages: Vec<RoomMessage>,
 }
@@ -85,6 +87,7 @@ impl RoomAgentView {
             room: RoomSummary::from_record(&record),
             roster: record.roster,
             minutes_markdown,
+            meetings: record.meetings,
             messages,
         })
     }

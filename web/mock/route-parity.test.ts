@@ -308,6 +308,10 @@ const SAMPLES: Record<RequestFunction, Sample[]> = {
   ],
   continueRoom: [(a) => a.continueRoom("room_01jcv8k9m2p4q7")],
   stopRoom: [(a) => a.stopRoom("room_01jcv8k9m2p4q7")],
+  captureRoomNotes: [
+    (a) => a.captureRoomNotes("room_01jcv8k9m2p4q7"),
+    (a) => a.captureRoomNotes("room_01jcv8k9m2p4q7", { mode: "new" }),
+  ],
   archiveRoom: [(a) => a.archiveRoom("room_01jcv8k9m2p4q7")],
   reopenRoom: [(a) => a.reopenRoom("room_01jcv8k9m2p4q7")],
   deleteRoom: [(a) => a.deleteRoom("room_01jcv8k9m2p4q7")],
