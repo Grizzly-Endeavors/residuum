@@ -743,7 +743,8 @@ pub(crate) fn format_catchup_prompt(room: &RoomRecord, missed_messages: &[RoomMe
     }
     out.push_str(
         "\nYou have been selected to speak next in this room. Reply directly to the room \
-         (concise, in character; use @Name only if handing a specific follow-up to another roster member).",
+         (concise, in character; use @Name only if handing a specific follow-up to another roster member; \
+         delegate heavy or multi-step work to a background subagent, e.g. subagent_spawn, instead of running it inline so you do not stall the room).",
     );
     out
 }
@@ -838,6 +839,10 @@ mod tests {
         assert!(
             prompt.contains("You have been selected to speak next in this room."),
             "prompt must end with speaking instruction"
+        );
+        assert!(
+            prompt.contains("delegate heavy or multi-step work to a background subagent"),
+            "prompt must include background subagent delegation guidance: {prompt}"
         );
     }
 
