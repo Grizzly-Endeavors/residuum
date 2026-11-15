@@ -643,6 +643,7 @@ fn build_test_resources(deps: &MiniListenerDeps, event: &SpawnRequestEvent) -> S
         web_search_backend: None,
         model_catalog: residuum::config::ModelCatalog::default().into_shared(),
         mailboxes: None,
+        room_view: None,
         a2a_hub: Arc::clone(&deps.a2a_hub),
         a2a_tracker: Arc::clone(&deps.a2a_tracker),
         lifecycle: residuum::tools::LifecycleAccess::new(

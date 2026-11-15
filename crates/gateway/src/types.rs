@@ -253,6 +253,9 @@ pub(crate) struct AgentRuntime {
     /// without the HTTP router being rebuilt.
     pub model_call_resources_tx:
         tokio::sync::watch::Sender<Arc<crate::web::model::ModelCallResources>>,
+    /// Pushes the latest `SpawnContext` on every config reload so long-lived
+    /// local room participant handles always see updated main providers.
+    pub spawn_context_tx: tokio::sync::watch::Sender<Arc<SpawnContext>>,
     // Runtime channels + handles
     /// Bus handle for creating publishers/subscribers.
     pub bus_handle: BusHandle,

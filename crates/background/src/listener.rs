@@ -71,6 +71,8 @@ async fn listener_loop(ctx: Arc<SpawnContext>, mut subscriber: Subscriber<SpawnR
                 let trigger = event.source.clone();
                 let pulse_address =
                     matches!(event.source, EventTrigger::Pulse).then(|| event.address.clone());
+                let conv_address = matches!(event.source, EventTrigger::Conversation)
+                    .then(|| event.address.clone());
                 let owner_start = super::owner_session::is_owner_start(&event).then(|| {
                     let resume = ctx.session_registry.resume_point(&event.address).is_some();
                     (event.address.clone(), resume)
@@ -91,11 +93,19 @@ async fn listener_loop(ctx: Arc<SpawnContext>, mut subscriber: Subscriber<SpawnR
                     // A stop is not a recovery: a fork failure on record for
                     // this pulse stays deduplicated.
                     Ok(SpawnOutcome::FireStopped) => {}
-                    Err(e) => match owner_start {
-                        Some((address, resume)) => {
+                    Err(e) => {
+                        if let Some((address, resume)) = owner_start {
                             notify_owner_start_failed(&ctx.publisher, &address, resume, &e).await;
-                        }
-                        None => {
+                        } else {
+                            if let Some(address) = conv_address {
+                                publish_conversation_start_failed(
+                                    &ctx.publisher,
+                                    address,
+                                    &source_label,
+                                    &e,
+                                )
+                                .await;
+                            }
                             handle_spawn_failure(
                                 &ctx.publisher,
                                 &mut spawn_failures,
@@ -105,7 +115,7 @@ async fn listener_loop(ctx: Arc<SpawnContext>, mut subscriber: Subscriber<SpawnR
                             )
                             .await;
                         }
-                    },
+                    }
                 }
             }
             Ok(None) => break,
@@ -139,6 +149,30 @@ async fn publish_pulse_start_failed(
     };
     if let Err(e) = publisher.publish(topics::Sessions, event).await {
         tracing::warn!(source = %source_label, error = %e, "failed to publish a pulse session's start failure");
+    }
+}
+
+/// Tell a conversation caller waiting on `address` (such as a local Meeting
+/// Room turn) that its session failed to fork, so it does not hang forever.
+async fn publish_conversation_start_failed(
+    publisher: &Publisher,
+    address: SessionAddress,
+    source_label: &str,
+    error: &anyhow::Error,
+) {
+    let details = format!("{error:#}");
+    let event = SessionStartFailedEvent {
+        address,
+        error: details.clone(),
+        error_details: Some(details),
+        owner_start: false,
+    };
+    if let Err(e) = publisher.publish(topics::Sessions, event).await {
+        tracing::warn!(
+            source = %source_label,
+            error = %e,
+            "failed to publish a conversation session's start failure"
+        );
     }
 }
 
@@ -309,6 +343,8 @@ fn handle_spawn_request<'a>(
                         // race.
                         let pulse_address = matches!(event.source, EventTrigger::Pulse)
                             .then(|| event.address.clone());
+                        let conv_address = matches!(event.source, EventTrigger::Conversation)
+                            .then(|| event.address.clone());
                         let source_label = event.source_label.clone();
                         let resume = ctx.session_registry.resume_point(&event.address).is_some();
                         if let Err(e) = handle_spawn_request(&ctx, event).await {
@@ -325,6 +361,15 @@ fn handle_spawn_request<'a>(
                                 notify_owner_start_failed(&ctx.publisher, &address, resume, &e)
                                     .await;
                             } else {
+                                if let Some(address) = conv_address {
+                                    publish_conversation_start_failed(
+                                        &ctx.publisher,
+                                        address,
+                                        &source_label,
+                                        &e,
+                                    )
+                                    .await;
+                                }
                                 tracing::warn!(
                                     error = format!("{e:#}"),
                                     "failed to fork deferred session resume"
@@ -1537,6 +1582,7 @@ mod tests {
             merge_writer,
             messenger,
             bg_tier_active_index: crate::spawn_context::BackgroundTierActiveIndex::default(),
+            room_roster: None,
         })
     }
 

@@ -594,6 +594,7 @@ async fn rebuild_cheap_components(rt: &mut AgentRuntime, new_cfg: &Config) {
     reload_providers(rt, new_cfg, http_client.clone()).await;
     reload_model_catalog(rt, new_cfg).await;
     rt.spawn_context = build_spawn_context(rt, new_cfg, http_client.clone());
+    rt.spawn_context_tx.send(Arc::clone(&rt.spawn_context)).ok();
     // Pushes to the model-call HTTP endpoint's watch receiver, so `POST
     // /api/agents/{name}/model/complete` resolves providers from this reload without the
     // HTTP router being rebuilt. `.ok()`: the only way this fails is no
@@ -684,6 +685,7 @@ fn build_spawn_context(
         auto_mode: Some(Arc::clone(&rt.auto_mode)),
         // The same mailboxes main's tools were given at startup.
         mailboxes: rt.tool_injections.mailboxes.clone(),
+        room_view: Some(rt.services.rooms.agent_view(&new_cfg.agent_name)),
     });
 
     Arc::new(SpawnContext {
@@ -716,6 +718,7 @@ fn build_spawn_context(
         merge_writer: Arc::clone(&rt.merge_writer),
         messenger: Arc::clone(&rt.agent_messenger),
         bg_tier_active_index: residuum_background::BackgroundTierActiveIndex::default(),
+        room_roster: Some(Arc::new(rt.services.rooms.agent_view(&new_cfg.agent_name))),
     })
 }
 

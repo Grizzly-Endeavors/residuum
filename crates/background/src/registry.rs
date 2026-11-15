@@ -76,6 +76,9 @@ impl std::error::Error for RegisterError {}
 struct SessionEntry {
     info: SessionInfo,
     stop_token: CancellationToken,
+    /// Per-turn child token of `stop_token` so [`SessionRegistry::cancel_current_turn`]
+    /// can interrupt an in-flight turn while keeping the session alive in `Idle`.
+    turn_token: CancellationToken,
     interrupt_tx: mpsc::Sender<Interrupt>,
 }
 
@@ -212,11 +215,13 @@ impl SessionRegistry {
         if guard.contains_key(&address) {
             return Err(RegisterError { address });
         }
+        let turn_token = stop_token.child_token();
         guard.insert(
             address,
             SessionEntry {
                 info,
                 stop_token,
+                turn_token,
                 interrupt_tx,
             },
         );
@@ -439,6 +444,60 @@ impl SessionRegistry {
         }
         entry.stop_token.cancel();
         true
+    }
+
+    /// Cancel only `address`'s active turn (`Forking`, `Queued`, or `Running`)
+    /// without cancelling the session's outer `stop_token`.
+    ///
+    /// Used when stopping an individual turn inside a long-lived conversation
+    /// session (such as a Meeting Room `Stop` action) so the cancelled turn
+    /// unwinds immediately and the session returns to [`SessionState::Idle`]
+    /// instead of entering [`SessionState::Completing`] and blocking subsequent
+    /// messages behind observer/reflector memory extraction.
+    ///
+    /// Returns `true` if an active turn was signalled, `false` if the address
+    /// is unknown or currently `Idle`/`Completing`/`Completed`.
+    pub fn cancel_current_turn(&self, address: &SessionAddress) -> bool {
+        let guard = self.lock();
+        let Some(entry) = guard.get(address) else {
+            return false;
+        };
+        if !matches!(
+            entry.info.state,
+            SessionState::Forking | SessionState::Queued | SessionState::Running
+        ) {
+            return false;
+        }
+        entry.turn_token.cancel();
+        true
+    }
+
+    /// Return the current per-turn child token for `(address, run_id)`.
+    pub(crate) fn current_turn_token(
+        &self,
+        address: &SessionAddress,
+        run_id: &str,
+    ) -> Option<CancellationToken> {
+        let guard = self.lock();
+        let entry = guard.get(address)?;
+        (entry.info.run_id == run_id).then(|| entry.turn_token.clone())
+    }
+
+    /// Mint and store a fresh per-turn child token of `stop_token` for the next
+    /// turn of `(address, run_id)` when waking from `Idle`.
+    pub(crate) fn reset_turn_token(
+        &self,
+        address: &SessionAddress,
+        run_id: &str,
+    ) -> Option<CancellationToken> {
+        let mut guard = self.lock();
+        let entry = guard.get_mut(address)?;
+        if entry.info.run_id != run_id {
+            return None;
+        }
+        let next = entry.stop_token.child_token();
+        entry.turn_token = next.clone();
+        Some(next)
     }
 
     /// Stop every live session (running, idle, or forking) — used at gateway
@@ -1133,6 +1192,48 @@ mod tests {
 
         assert!(!registry.stop_if_running(&info.address));
         assert!(!token.is_cancelled());
+    }
+
+    #[test]
+    fn cancel_current_turn_cancels_turn_token_without_stopping_session() {
+        let registry = SessionRegistry::new();
+        let mut info = sample_info("external-room-test");
+        info.state = SessionState::Running;
+        let stop_token = CancellationToken::new();
+        let _rx = registry.register(info.clone(), stop_token.clone()).unwrap();
+
+        let turn_1 = registry
+            .current_turn_token(&info.address, &info.run_id)
+            .expect("turn token present");
+        assert!(!turn_1.is_cancelled());
+
+        assert!(registry.cancel_current_turn(&info.address));
+        assert!(turn_1.is_cancelled(), "turn token must be cancelled");
+        assert!(
+            !stop_token.is_cancelled(),
+            "outer session stop token must stay uncancelled"
+        );
+
+        registry.set_state(&info.address, SessionState::Idle);
+        assert!(
+            !registry.cancel_current_turn(&info.address),
+            "idle session has no active turn to cancel"
+        );
+
+        let turn_2 = registry
+            .reset_turn_token(&info.address, &info.run_id)
+            .expect("reset turn token");
+        assert!(
+            !turn_2.is_cancelled(),
+            "next turn gets a fresh uncancelled child token"
+        );
+
+        assert!(registry.stop(&info.address));
+        assert!(stop_token.is_cancelled());
+        assert!(
+            turn_2.is_cancelled(),
+            "session stop cascades to child turn token"
+        );
     }
 
     #[test]

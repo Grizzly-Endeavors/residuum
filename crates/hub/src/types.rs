@@ -266,6 +266,26 @@ pub enum HubSocketFrame {
     SystemOneStatus {
         status: residuum_inference::system_one::SystemOneStatus,
     },
+    /// A meeting room's metadata, roster, pin, read state, window, or archive status changed.
+    RoomUpdated { room: residuum_rooms::RoomSummary },
+    /// A new message was appended to a meeting room's transcript.
+    RoomMessage {
+        room_id: residuum_rooms::RoomId,
+        message: residuum_rooms::RoomMessage,
+        #[ts(type = "number")]
+        unread_count: u64,
+    },
+    /// A meeting room's active speaker turn, queue, or turn budget changed.
+    RoomTurnState {
+        room_id: residuum_rooms::RoomId,
+        active_turn: Option<residuum_rooms::RoomActiveTurn>,
+        queued_seat_ids: Vec<String>,
+        paused_at_cap: bool,
+        window_used: u32,
+        window_cap: u32,
+    },
+    /// A meeting room was permanently deleted.
+    RoomDeleted { room_id: residuum_rooms::RoomId },
 }
 
 /// The kind of subscription a `subscribed` frame confirms.
@@ -497,6 +517,59 @@ mod tests {
                     "turn_id": "t-1",
                 },
             })
+        );
+    }
+
+    #[test]
+    fn room_socket_frames_are_tagged_per_contract() {
+        let room_id = residuum_rooms::RoomId::parse("room_01jcv8k9m2p4q7").unwrap();
+        let now = DateTime::parse_from_rfc3339("2026-11-14T13:30:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let summary = residuum_rooms::RoomSummary {
+            id: room_id.clone(),
+            name: "Sync".to_owned(),
+            topic: None,
+            status: residuum_rooms::RoomStatus::Active,
+            pinned: true,
+            created_at: now,
+            updated_at: now,
+            archived_at: None,
+            roster: Vec::new(),
+            last_seq: 1,
+            unread_count: 1,
+            paused_at_cap: false,
+            minutes_shared_path: None,
+        };
+        assert_eq!(
+            serde_json::to_value(HubSocketFrame::RoomUpdated { room: summary })
+                .unwrap()
+                .get("type"),
+            Some(&json!("room_updated"))
+        );
+        let turn_state = HubSocketFrame::RoomTurnState {
+            room_id: room_id.clone(),
+            active_turn: None,
+            queued_seat_ids: vec!["agent:scout".to_owned()],
+            paused_at_cap: false,
+            window_used: 1,
+            window_cap: 3,
+        };
+        assert_eq!(
+            serde_json::to_value(turn_state).unwrap(),
+            json!({
+                "type": "room_turn_state",
+                "room_id": "room_01jcv8k9m2p4q7",
+                "active_turn": null,
+                "queued_seat_ids": ["agent:scout"],
+                "paused_at_cap": false,
+                "window_used": 1,
+                "window_cap": 3,
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(HubSocketFrame::RoomDeleted { room_id }).unwrap(),
+            json!({ "type": "room_deleted", "room_id": "room_01jcv8k9m2p4q7" })
         );
     }
 

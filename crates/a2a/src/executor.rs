@@ -2,7 +2,7 @@
 //! an `a2a` conversation session and maps that session's lifecycle back onto
 //! A2A task states. See `docs/systems-usage/a2a.md`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -243,6 +243,20 @@ async fn run_execution(executor: SessionExecutor, ctx: ExecutorContext, tx: Exec
     };
     let address = SessionExecutor::address_for(&caller, &context_id);
 
+    let Some(message) = ctx.message.clone() else {
+        tx.send(Err(A2AError::internal("execute() called with no message")))
+            .await
+            .ok();
+        return;
+    };
+
+    if is_sibling_room_close(&caller, &message) {
+        executor.session_registry.stop(&address);
+        let update = status_update(&task_id, &context_id, TaskState::Completed, None);
+        tx.send(Ok(update)).await.ok();
+        return;
+    }
+
     // Subscribe BEFORE delivering the message, so nothing the session does
     // in response can be published and missed before we start listening.
     let mut subs = match subscribe_before_delivery(&executor).await {
@@ -253,19 +267,43 @@ async fn run_execution(executor: SessionExecutor, ctx: ExecutorContext, tx: Exec
         }
     };
 
-    let Some(message) = ctx.message.clone() else {
-        tx.send(Err(A2AError::internal("execute() called with no message")))
-            .await
-            .ok();
-        return;
-    };
-
     if let Err(e) = deliver_inbound(&executor, &address, &caller, &context_id, &message).await {
         tx.send(Err(e)).await.ok();
         return;
     }
 
-    stream_until_terminal(&executor, &address, &task_id, &context_id, &mut subs, &tx).await;
+    stream_until_terminal(
+        &executor,
+        &address,
+        &task_id,
+        &context_id,
+        is_room_turn(&message),
+        &mut subs,
+        &tx,
+    )
+    .await;
+}
+
+/// Whether an inbound A2A message originates from a meeting room turn.
+fn is_room_turn(message: &A2aMessage) -> bool {
+    message
+        .metadata
+        .as_ref()
+        .and_then(|m| m.get("residuum.room"))
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+}
+
+/// Whether an inbound A2A message is a sibling room-close notification that
+/// should stop the room session directly without running an LLM turn.
+fn is_sibling_room_close(caller: &str, message: &A2aMessage) -> bool {
+    caller.starts_with("sibling:")
+        && message
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("residuum.room_close"))
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
 }
 
 /// A caller's bare name for display (`laptop` for `sibling:laptop`,
@@ -283,6 +321,24 @@ fn caller_display(caller: &str) -> (String, Option<&'static str>) {
         )
     } else {
         (caller.to_string(), None)
+    }
+}
+
+/// Choose the model selector for an inbound A2A turn: trusted sibling rooms
+/// run on the agent's primary `main` persona chain, while all other inbound
+/// A2A traffic stays on `medium`.
+fn inbound_room_model(
+    caller: &str,
+    metadata: Option<&HashMap<String, serde_json::Value>>,
+) -> ModelSelector {
+    let is_room = metadata
+        .and_then(|m| m.get("residuum.room"))
+        .and_then(serde_json::Value::as_bool)
+        == Some(true);
+    if caller.starts_with("sibling:") && is_room {
+        ModelSelector::MAIN
+    } else {
+        ModelSelector::MEDIUM
     }
 }
 
@@ -329,7 +385,7 @@ async fn deliver_inbound(
     };
     let spawn = ConversationSpawn {
         source_label: format!("a2a:{display_name}"),
-        model: ModelSelector::MEDIUM,
+        model: inbound_room_model(caller, message.metadata.as_ref()),
         skill,
     };
 
@@ -348,7 +404,20 @@ struct StreamCtx<'a> {
     address: &'a residuum_bus::SessionAddress,
     task_id: &'a str,
     context_id: &'a str,
+    is_room_turn: bool,
     tx: &'a ExecutorSender,
+}
+
+/// Mutable tracking state across events in [`stream_until_terminal`].
+struct StreamState {
+    last_final_text: String,
+    last_error: Option<String>,
+    sent_working: bool,
+    // Turns that started while this execution was following the session.
+    // A turn already running when the execution began may be the one that
+    // signaled the previous task's outcome; its closing text belongs to that
+    // task, so only responses from turns started here are relayed.
+    own_turns: HashSet<String>,
 }
 
 /// Follow the session's activity on the bus until it reaches a terminal (or
@@ -361,6 +430,7 @@ async fn stream_until_terminal(
     address: &residuum_bus::SessionAddress,
     task_id: &str,
     context_id: &str,
+    is_room_turn: bool,
     subs: &mut ExecutionSubscriptions,
     tx: &ExecutorSender,
 ) {
@@ -369,15 +439,15 @@ async fn stream_until_terminal(
         address,
         task_id,
         context_id,
+        is_room_turn,
         tx,
     };
-    let mut last_final_text = String::new();
-    let mut sent_working = false;
-    // Turns that started while this execution was following the session.
-    // A turn already running when the execution began may be the one that
-    // signaled the previous task's outcome; its closing text belongs to that
-    // task, so only responses from turns started here are relayed.
-    let mut own_turns: HashSet<String> = HashSet::new();
+    let mut state = StreamState {
+        last_final_text: String::new(),
+        last_error: None,
+        sent_working: false,
+        own_turns: HashSet::new(),
+    };
 
     loop {
         // Biased, with the session branch first: a task-outcome signal is
@@ -395,7 +465,7 @@ async fn stream_until_terminal(
                 if event.address != *stream.address {
                     continue;
                 }
-                if handle_session_event(&stream, event.kind, &mut last_final_text, &mut sent_working, &mut own_turns).await {
+                if handle_session_event(&stream, event.kind, &mut state, &mut subs.signals).await {
                     return;
                 }
             }
@@ -417,13 +487,12 @@ async fn stream_until_terminal(
 async fn handle_session_event(
     stream: &StreamCtx<'_>,
     kind: SessionEventKind,
-    last_final_text: &mut String,
-    sent_working: &mut bool,
-    own_turns: &mut HashSet<String>,
+    state: &mut StreamState,
+    signals: &mut residuum_bus::Subscriber<A2aTaskSignalEvent>,
 ) -> bool {
     match kind {
         SessionEventKind::TurnStarted { turn_id } => {
-            own_turns.insert(turn_id);
+            state.own_turns.insert(turn_id);
             // `SessionEvent` is a lossless bus route (`bus::topics::Carries`
             // for `Sessions`), so both this and the `StateChanged(Running)`
             // arm below are guaranteed delivery — neither can be dropped
@@ -431,19 +500,19 @@ async fn handle_session_event(
             // idempotent (guarded by `sent_working`), `TurnStarted` is the
             // stronger, earlier signal that the session is working, and
             // `own_turns` already depends on this event being delivered.
-            if *sent_working {
+            if state.sent_working {
                 return false;
             }
-            *sent_working = true;
+            state.sent_working = true;
             let update = status_update(stream.task_id, stream.context_id, TaskState::Working, None);
             stream.tx.send(Ok(update)).await.is_err()
         }
         SessionEventKind::Response { turn_id, content } => {
-            if !own_turns.contains(&turn_id) || content.is_empty() {
+            if !state.own_turns.contains(&turn_id) || content.is_empty() {
                 return false;
             }
-            last_final_text.clone_from(&content);
-            *sent_working = true;
+            state.last_final_text.clone_from(&content);
+            state.sent_working = true;
             let update = status_update(
                 stream.task_id,
                 stream.context_id,
@@ -452,13 +521,24 @@ async fn handle_session_event(
             );
             stream.tx.send(Ok(update)).await.is_err()
         }
-        SessionEventKind::StateChanged(SessionState::Running) if !*sent_working => {
-            *sent_working = true;
+        SessionEventKind::Error { message, .. } => {
+            if !state.own_turns.is_empty() {
+                state.last_error = Some(message);
+            }
+            false
+        }
+        SessionEventKind::TurnEnded { turn_id }
+            if stream.is_room_turn && state.own_turns.contains(&turn_id) =>
+        {
+            handle_room_turn_ended(stream, state, signals).await
+        }
+        SessionEventKind::StateChanged(SessionState::Running) if !state.sent_working => {
+            state.sent_working = true;
             let update = status_update(stream.task_id, stream.context_id, TaskState::Working, None);
             stream.tx.send(Ok(update)).await.is_err()
         }
         SessionEventKind::Completed { status, .. } => {
-            handle_run_completed(stream, status, last_final_text).await
+            handle_run_completed(stream, status, &state.last_final_text).await
         }
         SessionEventKind::StateChanged(_)
         | SessionEventKind::Started(_)
@@ -467,12 +547,56 @@ async fn handle_session_event(
         | SessionEventKind::ToolCall(_)
         | SessionEventKind::ToolResult(_)
         | SessionEventKind::Intermediate { .. }
-        | SessionEventKind::Error { .. }
         // A2A has no notion of token usage/elapsed time in its task
         // protocol, and this must never reach the agent either way — see
         // `docs/systems-usage/turn-control.md`.
         | SessionEventKind::TurnUsage { .. } => false,
     }
+}
+
+/// Complete an inbound A2A room turn when the turn finishes (`TurnEnded`) so
+/// external room sessions do not stall waiting for the 30-minute idle timeout.
+async fn handle_room_turn_ended(
+    stream: &StreamCtx<'_>,
+    state: &mut StreamState,
+    signals: &mut residuum_bus::Subscriber<A2aTaskSignalEvent>,
+) -> bool {
+    if let Some(signal) = signals
+        .drain()
+        .into_iter()
+        .find(|s| s.address == *stream.address)
+    {
+        emit_signal_outcome(stream, signal).await;
+        return true;
+    }
+    let has_live_children = stream
+        .executor
+        .session_registry
+        .list_live()
+        .into_iter()
+        .any(|s| s.spawner.as_ref() == Some(stream.address));
+    if has_live_children {
+        return false;
+    }
+    if let Some(err) = state.last_error.take() {
+        let update = status_update(
+            stream.task_id,
+            stream.context_id,
+            TaskState::Failed,
+            Some(&err),
+        );
+        stream.tx.send(Ok(update)).await.ok();
+        return true;
+    }
+    let text = (!state.last_final_text.is_empty()).then_some(state.last_final_text.as_str());
+    let update = status_update(
+        stream.task_id,
+        stream.context_id,
+        TaskState::Completed,
+        text,
+    );
+    stream.tx.send(Ok(update)).await.ok();
+    true
 }
 
 /// Map a session run's completion onto a terminal A2A state, per the "no
@@ -778,5 +902,393 @@ mod tests {
         let (name, location) = caller_display("unexpected");
         assert_eq!(name, "unexpected");
         assert_eq!(location, None);
+    }
+
+    #[test]
+    fn inbound_room_model_escalates_only_for_trusted_sibling_rooms() {
+        let mut room_meta = HashMap::new();
+        room_meta.insert("residuum.room".to_string(), serde_json::json!(true));
+
+        assert_eq!(
+            inbound_room_model("sibling:team-b", Some(&room_meta)),
+            ModelSelector::MAIN
+        );
+        assert_eq!(
+            inbound_room_model("key:partner", Some(&room_meta)),
+            ModelSelector::MEDIUM
+        );
+        assert_eq!(
+            inbound_room_model("sibling:team-b", None),
+            ModelSelector::MEDIUM
+        );
+
+        let mut false_meta = HashMap::new();
+        false_meta.insert("residuum.room".to_string(), serde_json::json!(false));
+        assert_eq!(
+            inbound_room_model("sibling:team-b", Some(&false_meta)),
+            ModelSelector::MEDIUM
+        );
+
+        let mut string_meta = HashMap::new();
+        string_meta.insert("residuum.room".to_string(), serde_json::json!("true"));
+        assert_eq!(
+            inbound_room_model("sibling:team-b", Some(&string_meta)),
+            ModelSelector::MEDIUM
+        );
+    }
+
+    async fn test_executor_setup() -> (
+        SessionExecutor,
+        Arc<SessionRegistry>,
+        residuum_bus::Subscriber<residuum_bus::SpawnRequestEvent>,
+    ) {
+        use residuum_agent::hop::HopLimits;
+        use residuum_config::A2aConfig;
+        use residuum_skills::{SkillIndex, SkillState};
+
+        use crate::card::{CardRuntime, CardState};
+
+        let bus_handle = residuum_bus::spawn_broker();
+        let spawn_sub: residuum_bus::Subscriber<residuum_bus::SpawnRequestEvent> =
+            bus_handle.subscribe(topics::Background).await.unwrap();
+        let registry = Arc::new(SessionRegistry::new());
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            residuum_background::store::SessionStore::new(dir.path().to_path_buf())
+                .with_tempdir_guard(dir),
+        );
+        let messenger = Arc::new(AgentMessenger::new(
+            Arc::clone(&registry),
+            bus_handle.publisher(),
+            Arc::clone(&store),
+            HopLimits { soft: 8, hard: 32 },
+        ));
+        let skill_state = SkillState::new_shared(SkillIndex::default(), vec![]);
+        let card_runtime =
+            CardRuntime::from_config(&A2aConfig::default(), "127.0.0.1:0", "planner", None);
+        let inbox_dir = tempfile::tempdir().unwrap();
+        let card_state =
+            CardState::load_or_default(&inbox_dir.path().join("card.json"), &card_runtime);
+        let executor = SessionExecutor::new(
+            messenger,
+            Arc::clone(&registry),
+            bus_handle,
+            skill_state,
+            card_state,
+            inbox_dir.path().to_path_buf(),
+            chrono_tz::UTC,
+        );
+        (executor, registry, spawn_sub)
+    }
+
+    #[tokio::test]
+    async fn sibling_room_close_stops_session_without_delivering_turn() {
+        use futures_util::StreamExt as _;
+        use residuum_bus::EventTrigger;
+        use residuum_bus::session::{SessionCategory, SessionInfo};
+        use tokio_util::sync::CancellationToken;
+
+        let (executor, registry, mut spawn_sub) = test_executor_setup().await;
+
+        let caller = "sibling:team-b";
+        let context_id = "room-room_01jcv8k9m2p4q7";
+        let address = SessionExecutor::address_for(caller, context_id);
+        let stop_token = CancellationToken::new();
+        let mut interrupt_rx = registry
+            .register(
+                SessionInfo {
+                    address: address.clone(),
+                    run_id: "run-room-1".to_string(),
+                    category: SessionCategory::External,
+                    trigger: EventTrigger::Conversation,
+                    source_label: "a2a:team-b".to_string(),
+                    state: SessionState::Idle,
+                    spawner: None,
+                    depth: 0,
+                    purpose: "room session".to_string(),
+                    agent_skill: None,
+                    model: ModelSelector::MAIN,
+                    resolved_model: None,
+                    conversation_target: None,
+                    started_at: chrono::Utc::now(),
+                    usage: residuum_bus::usage::SessionUsageTotals::default(),
+                    overlap: None,
+                },
+                stop_token.clone(),
+            )
+            .unwrap();
+
+        let mut msg = A2aMessage::new(a2a::Role::User, vec![Part::text("[room closed]")]);
+        msg.metadata = Some(HashMap::from([
+            ("residuum.room".to_string(), serde_json::json!(true)),
+            ("residuum.room_close".to_string(), serde_json::json!(true)),
+        ]));
+
+        let mut service_params = a2a_server::ServiceParams::new();
+        service_params.insert(CALLER_HEADER.to_string(), vec![caller.to_string()]);
+
+        let ctx = ExecutorContext {
+            message: Some(msg.clone()),
+            task_id: "task-close-1".to_string(),
+            stored_task: None,
+            context_id: context_id.to_string(),
+            metadata: None,
+            user: None,
+            service_params,
+            tenant: None,
+        };
+
+        let events: Vec<_> = executor.execute(ctx).collect().await;
+        assert_eq!(
+            events.len(),
+            1,
+            "sibling room close must emit exactly one status update"
+        );
+        match events.first() {
+            Some(Ok(StreamResponse::StatusUpdate(ev))) => {
+                assert_eq!(
+                    ev.status.state,
+                    TaskState::Completed,
+                    "sibling room close must complete immediately"
+                );
+                assert!(
+                    ev.status.message.is_none(),
+                    "sibling room close must not emit an agent reply message"
+                );
+            }
+            other => panic!("expected Completed status update, got {other:?}"),
+        }
+
+        assert!(
+            stop_token.is_cancelled(),
+            "sibling room close must cancel the registered session's stop token"
+        );
+        assert!(
+            interrupt_rx.try_recv().is_err(),
+            "sibling room close must not deliver an inbound conversation message"
+        );
+        assert!(
+            futures_util::FutureExt::now_or_never(spawn_sub.recv()).is_none(),
+            "sibling room close must not publish a spawn request"
+        );
+        assert!(
+            !is_sibling_room_close("key:partner", &msg),
+            "non-sibling key callers must not trigger the sibling room-close shortcut"
+        );
+    }
+
+    async fn publish_room_turn_events(
+        publisher: &residuum_bus::Publisher,
+        address: &residuum_bus::SessionAddress,
+        run_id: &str,
+        turn_id: &str,
+        reply: &str,
+    ) {
+        for kind in [
+            SessionEventKind::TurnStarted {
+                turn_id: turn_id.to_string(),
+            },
+            SessionEventKind::Response {
+                turn_id: turn_id.to_string(),
+                content: reply.to_string(),
+            },
+            SessionEventKind::TurnEnded {
+                turn_id: turn_id.to_string(),
+            },
+        ] {
+            publisher
+                .publish(
+                    topics::Sessions,
+                    SessionEvent {
+                        address: address.clone(),
+                        run_id: run_id.to_string(),
+                        kind,
+                    },
+                )
+                .await
+                .unwrap();
+        }
+    }
+
+    fn room_context_msg(text: &str, close: bool) -> A2aMessage {
+        let mut msg = A2aMessage::new(a2a::Role::User, vec![Part::text(text)]);
+        let mut meta = HashMap::from([("residuum.room".to_string(), serde_json::json!(true))]);
+        if close {
+            meta.insert("residuum.room_close".to_string(), serde_json::json!(true));
+        }
+        msg.metadata = Some(meta);
+        msg
+    }
+
+    fn room_executor_ctx(
+        msg: A2aMessage,
+        task_id: &str,
+        context_id: &str,
+        caller: &str,
+    ) -> ExecutorContext {
+        let mut service_params = a2a_server::ServiceParams::new();
+        service_params.insert(CALLER_HEADER.to_string(), vec![caller.to_string()]);
+        ExecutorContext {
+            message: Some(msg),
+            task_id: task_id.to_string(),
+            stored_task: None,
+            context_id: context_id.to_string(),
+            metadata: None,
+            user: None,
+            service_params,
+            tenant: None,
+        }
+    }
+
+    fn register_idle_room_session(
+        registry: &SessionRegistry,
+        address: &residuum_bus::SessionAddress,
+        run_id: &str,
+        stop_token: tokio_util::sync::CancellationToken,
+    ) -> tokio::sync::mpsc::Receiver<residuum_bus::interrupt::Interrupt> {
+        use residuum_bus::EventTrigger;
+        use residuum_bus::session::{SessionCategory, SessionInfo};
+
+        registry
+            .register(
+                SessionInfo {
+                    address: address.clone(),
+                    run_id: run_id.to_string(),
+                    category: SessionCategory::External,
+                    trigger: EventTrigger::Conversation,
+                    source_label: "a2a:team-b".to_string(),
+                    state: SessionState::Idle,
+                    spawner: None,
+                    depth: 0,
+                    purpose: "room session".to_string(),
+                    agent_skill: None,
+                    model: ModelSelector::MAIN,
+                    resolved_model: None,
+                    conversation_target: None,
+                    started_at: chrono::Utc::now(),
+                    usage: residuum_bus::usage::SessionUsageTotals::default(),
+                    overlap: None,
+                },
+                stop_token,
+            )
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn inbound_room_turn_completes_on_turn_ended_across_multiple_turns() {
+        use futures_util::StreamExt as _;
+        use tokio_util::sync::CancellationToken;
+
+        let (executor, registry, mut spawn_sub) = test_executor_setup().await;
+        let publisher = executor.bus_handle.publisher();
+
+        let caller = "sibling:team-b";
+        let context_id = "room-room_01jcv8k9m2p4q7";
+        let address = SessionExecutor::address_for(caller, context_id);
+
+        let stream1 = executor.execute(room_executor_ctx(
+            room_context_msg("First room prompt", false),
+            "task-room-1",
+            context_id,
+            caller,
+        ));
+
+        let spawn_req =
+            residuum_core::testing::wait::guarded("room spawn request", spawn_sub.recv())
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(spawn_req.address, address);
+
+        let stop_token = CancellationToken::new();
+        let mut interrupt_rx = register_idle_room_session(
+            &registry,
+            &address,
+            "run-room-turn-test",
+            stop_token.clone(),
+        );
+
+        publish_room_turn_events(
+            &publisher,
+            &address,
+            "run-room-turn-test",
+            "turn-1",
+            "Here is my room reply",
+        )
+        .await;
+
+        let events1: Vec<_> = residuum_core::testing::wait::guarded(
+            "turn 1 stream completion",
+            stream1.collect::<Vec<_>>(),
+        )
+        .await;
+        assert_completed_text(events1.last(), "Here is my room reply");
+        assert!(
+            !stop_token.is_cancelled(),
+            "session stays idle after turn 1"
+        );
+
+        let stream2 = executor.execute(room_executor_ctx(
+            room_context_msg("Second room prompt", false),
+            "task-room-2",
+            context_id,
+            caller,
+        ));
+
+        let delivered =
+            residuum_core::testing::wait::guarded("turn 2 interrupt", interrupt_rx.recv())
+                .await
+                .expect("turn 2 must deliver into idle session");
+        assert!(matches!(
+            delivered,
+            residuum_bus::interrupt::Interrupt::UserMessage(_)
+        ));
+
+        publish_room_turn_events(
+            &publisher,
+            &address,
+            "run-room-turn-test",
+            "turn-2",
+            "Second room reply",
+        )
+        .await;
+
+        let events2: Vec<_> = residuum_core::testing::wait::guarded(
+            "turn 2 stream completion",
+            stream2.collect::<Vec<_>>(),
+        )
+        .await;
+        assert_completed_text(events2.last(), "Second room reply");
+
+        let close_events: Vec<_> = executor
+            .execute(room_executor_ctx(
+                room_context_msg("[room closed]", true),
+                "task-room-close",
+                context_id,
+                caller,
+            ))
+            .collect()
+            .await;
+        assert_eq!(close_events.len(), 1);
+        assert!(stop_token.is_cancelled());
+    }
+
+    fn assert_completed_text(last: Option<&Result<StreamResponse, A2AError>>, expected: &str) {
+        match last {
+            Some(Ok(StreamResponse::StatusUpdate(ev))) => {
+                assert_eq!(ev.status.state, TaskState::Completed);
+                let reply = ev
+                    .status
+                    .message
+                    .as_ref()
+                    .and_then(|m| m.parts.first())
+                    .and_then(|p| match &p.content {
+                        PartContent::Text(t) => Some(t.as_str()),
+                        PartContent::Raw(_) | PartContent::Url(_) | PartContent::Data(_) => None,
+                    });
+                assert_eq!(reply, Some(expected));
+            }
+            other => panic!("expected Completed status update, got {other:?}"),
+        }
     }
 }

@@ -858,4 +858,49 @@ describe("HubStore deleted agents", () => {
 
     expect(hub.deleted).toEqual([]);
   });
+
+  it("dispatches room frames to roomsStore and refreshes rooms on socket connect", async () => {
+    const fetchMock = vi.fn((url: string) => {
+      if (url === "/api/hub/rooms") {
+        return Promise.resolve(
+          jsonResponse({
+            rooms: [
+              {
+                id: "room_01jcv8k9m2p4q7",
+                name: "Architecture Sync",
+                topic: null,
+                status: "active",
+                pinned: true,
+                created_at: "2026-11-14T10:00:00Z",
+                updated_at: "2026-11-14T10:05:00Z",
+                archived_at: null,
+                roster: [],
+                last_seq: 1,
+                unread_count: 0,
+                paused_at_cap: false,
+                minutes_shared_path: null,
+              },
+            ],
+            decision_model_active: true,
+          }),
+        );
+      }
+      return Promise.resolve(jsonResponse({ agents: [] }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { roomsStore } = await import("./rooms.svelte");
+    roomsStore.rooms = [];
+    const hub = new HubStore();
+    hub.connect();
+    FakeWebSocket.last.simulateOpen();
+
+    await waitFor(() => {
+      expect(roomsStore.rooms.map((r) => r.id)).toEqual(["room_01jcv8k9m2p4q7"]);
+    });
+
+    hub.handleFrame({ type: "room_deleted", room_id: "room_01jcv8k9m2p4q7" });
+    expect(roomsStore.rooms).toEqual([]);
+    hub.disconnect();
+  });
 });

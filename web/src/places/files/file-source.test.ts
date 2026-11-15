@@ -106,6 +106,9 @@ describe("a file panel's source", () => {
       scope: "agent",
     });
     expect(panelFileSource({ kind: "shared-files" }, unnamed)).toEqual(TEAM);
+    expect(
+      panelFileSource({ kind: "rooms", room: "room_01jcv8k9m2p4q7", tab: "active" }, unnamed),
+    ).toEqual(TEAM);
     expect(panelFileSource(INBOX, unnamed)).toBeNull();
   });
 

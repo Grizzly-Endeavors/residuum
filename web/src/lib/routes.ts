@@ -8,6 +8,8 @@
 //   /agent/:name/activity          its Activity
 //   /agent/:name/schedule          its Schedule
 //   /agent/:name/files             its Files
+//   /team/rooms                    Rooms (?tab=archived)
+//   /team/rooms/:roomId            a meeting room
 //   /team/workbench[/:artifact]    the Workbench list, with an artifact's row selected
 //   /team/files                    Shared files
 //
@@ -54,6 +56,7 @@ export type Place =
       compose: ComposeDraft | null;
     }
   | { kind: AgentPlaceKind; agent: string }
+  | { kind: "rooms"; room: string | null; tab: "active" | "archived" }
   | { kind: "workbench"; artifact: string | null }
   | { kind: "shared-files" }
   /** An address that leads nowhere in the app. `path` is the address's path as it arrived, still encoded. */
@@ -128,6 +131,13 @@ export function isArtifactName(value: string): boolean {
   return value.length <= 64 && ARTIFACT_NAME.test(value);
 }
 
+/** Mirrors the backend's room-id rule, so a bad URL corrects to the rooms list. */
+const ROOM_ID = /^room_[a-z0-9]{8,32}$/;
+
+export function isRoomId(value: string): boolean {
+  return ROOM_ID.test(value);
+}
+
 /** Whether `name` is a well-formed agent folder name (whether or not such an agent exists). */
 export function isAgentName(name: string): boolean {
   return isAgentSlug(name);
@@ -149,6 +159,7 @@ export function panelAllowed(place: Place, panel: Panel): boolean {
       return (
         isAgentPlace(place) ||
         place.kind === "shared-files" ||
+        place.kind === "rooms" ||
         (panel.agent !== null && place.kind === "inbox")
       );
     case "size":
@@ -311,6 +322,16 @@ function workbenchPlace(artifact: string | undefined): Place {
     : { kind: "workbench", artifact: null };
 }
 
+function roomsPlace(room: string | undefined, query: URLSearchParams): Place {
+  if (room !== undefined) {
+    return isRoomId(room)
+      ? { kind: "rooms", room, tab: "active" }
+      : { kind: "rooms", room: null, tab: "active" };
+  }
+  const tab = query.get("tab") === "archived" ? "archived" : "active";
+  return { kind: "rooms", room: null, tab };
+}
+
 /**
  * The Settings target an old settings URL stands for. `agent` is the agent an
  * agent-scope target belongs to. `needsAgent` is set when the target is an
@@ -355,10 +376,15 @@ function parseAgentPath(name: string, rest: string[], query: URLSearchParams): P
   return null;
 }
 
-function parseTeamPath(page: string | undefined, rest: string[]): PathResult | null {
+function parseTeamPath(
+  page: string | undefined,
+  rest: string[],
+  query: URLSearchParams,
+): PathResult | null {
   const [arg, ...extra] = rest;
   if (page === undefined) return { place: HOME };
   if (page === "files" && arg === undefined) return { place: { kind: "shared-files" } };
+  if (page === "rooms" && extra.length === 0) return { place: roomsPlace(arg, query) };
   if (page === "workbench" && extra.length === 0) return { place: workbenchPlace(arg) };
   if (page === "settings" && extra.length === 0) {
     const { target, needsAgent } = oldSettingsTarget("hub", null, arg);
@@ -414,7 +440,7 @@ function parsePath(segments: string[], query: URLSearchParams): PathResult | nul
   if (first === "home" && second === undefined) return { place: HOME };
   if (first === "inbox" && second === undefined) return { place: parseInbox(query) };
   if (first === "agent" && second !== undefined) return parseAgentPath(second, rest, query);
-  if (first === "team") return parseTeamPath(second, rest);
+  if (first === "team") return parseTeamPath(second, rest, query);
   return parseOldPath(segments);
 }
 
@@ -576,6 +602,15 @@ function formatPlace(place: Place): { path: string; params: string[] } {
         params.push(`thread=${encodeURIComponent(place.thread)}`);
       }
       return { path: "/inbox", params };
+    }
+    case "rooms": {
+      if (place.room !== null) {
+        return { path: `/team/rooms/${encodeURIComponent(place.room)}`, params: [] };
+      }
+      return {
+        path: "/team/rooms",
+        params: place.tab === "archived" ? ["tab=archived"] : [],
+      };
     }
     case "workbench": {
       const path =

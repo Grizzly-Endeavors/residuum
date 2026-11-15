@@ -176,6 +176,7 @@ One Cargo workspace. The root `Cargo.toml` is the workspace manifest and the `re
 | `residuum-agent` | the turn loop, context assembly, the `Tool` trait and registry, `subconscious` | bus, inference, memory, mcp, skills, workspace |
 | `residuum-background` | agent sessions, agent messaging, the team router, the session tool factory trait | agent and most layers below |
 | `residuum-a2a` | the A2A listener, caller keys, agent cards, outbound client, `diagnostics_dispatch` | agent, background, proactivity, net, … |
+| `residuum-rooms` | multi-agent meeting rooms: `RoomStore`, `RoomService` turn loop, `SystemOneSpeakerSelector`, `A2aRoomDriver`, `RoomAgentView` | a2a, agent, inference, workspace |
 | `residuum-tools` | the agent's tools, their registration, the main and session registries | a2a, background, agent, … |
 | `residuum-interfaces` | the Discord, Telegram and Teams adapters, webhooks, Teams app setup | background, net, … |
 | `residuum-hub` | the agent host, the hub's HTTP app and web routes, `launch`, `update`, `features`, `config_watcher` | interfaces, a2a, protocol, … |

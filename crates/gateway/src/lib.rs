@@ -10,6 +10,7 @@ pub(crate) mod post_turn;
 pub mod pulse_fires;
 pub(crate) mod queued_messages;
 mod reload;
+mod rooms;
 pub(crate) mod sessions;
 pub(crate) mod startup;
 pub mod turn_journal;

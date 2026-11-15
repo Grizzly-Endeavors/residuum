@@ -10,7 +10,7 @@ use crate::fork_failure::ForkFailure;
 use crate::registry::SessionRegistry;
 use crate::runtime::SessionRuntime;
 use residuum_agent::context::loading::{load_observations, load_recent_context_narrative};
-use residuum_agent::{HopCounter, TeamRoster};
+use residuum_agent::{HopCounter, RoomRoster, TeamRoster};
 use residuum_bus::session::SessionCategory;
 use residuum_bus::{Publisher, SessionAddress};
 use residuum_config::ProviderSpec;
@@ -109,6 +109,9 @@ pub struct SpawnContext {
     /// Shared failover-transition counters for the background model tiers —
     /// see [`BackgroundTierActiveIndex`].
     pub bg_tier_active_index: BackgroundTierActiveIndex,
+    /// Optional view of the meeting rooms this agent participates in, giving
+    /// forked sessions their `<ROOMS>` prompt block.
+    pub room_roster: Option<Arc<dyn RoomRoster>>,
 }
 
 /// Identity and origin of the session [`build_spawn_resources`] is forking,
@@ -186,6 +189,12 @@ fn resolve_model_chain(
     model: &ModelSelector,
 ) -> Result<SessionModelChain, anyhow::Error> {
     match model {
+        ModelSelector::Main => Ok(SessionModelChain {
+            specs: main.to_vec(),
+            label: "background sessions (main)".to_string(),
+            active_index: Arc::new(AtomicUsize::new(0)),
+            overrides_key: Some("main"),
+        }),
         ModelSelector::Tier(tier) => Ok(SessionModelChain {
             specs: tiers.resolve_tier(tier, main),
             label: format!("background sessions ({tier} tier)"),
@@ -230,11 +239,15 @@ pub(crate) struct SpawnResources {
 async fn load_fork_identity_and_memory(
     layout: &WorkspaceLayout,
     team: &crate::team::TeamLink,
+    room_roster: Option<&dyn RoomRoster>,
 ) -> Result<(IdentityFiles, Option<String>, Option<String>), anyhow::Error> {
-    let identity = IdentityFiles::load(layout)
+    let mut identity = IdentityFiles::load(layout)
         .await
         .context(ForkFailure::IdentityFiles)?
         .with_team_roster(team.prompt_block());
+    if let Some(rooms) = room_roster {
+        identity = identity.with_room_roster(rooms.prompt_block());
+    }
 
     let observations = match load_observations(&layout.observations_json()).await {
         Ok(obs) => obs,
@@ -329,8 +342,12 @@ pub(crate) async fn build_spawn_resources(
         ..CompletionOptions::default()
     };
 
-    let (identity, observations, recent_context) =
-        load_fork_identity_and_memory(&ctx.layout, ctx.messenger.team()).await?;
+    let (identity, observations, recent_context) = load_fork_identity_and_memory(
+        &ctx.layout,
+        ctx.messenger.team(),
+        ctx.room_roster.as_deref(),
+    )
+    .await?;
 
     let build_config = SubAgentBuildConfig {
         workspace_layout: ctx.layout.clone(),
@@ -438,6 +455,29 @@ mod tests {
     }
 
     #[test]
+    fn main_selector_runs_main_provider_chain_with_main_overrides() {
+        let tiers = residuum_config::BackgroundModelsConfig {
+            small: Some(vec![spec("anthropic", "claude-haiku-4-5")]),
+            medium: Some(vec![spec("openai", "gpt-4o-mini")]),
+            large: Some(vec![spec("openai", "gpt-4o")]),
+        };
+        let main_chain = vec![
+            spec("anthropic", "claude-sonnet-4-6"),
+            spec("openai", "gpt-4o"),
+        ];
+        let chain = resolve_model_chain(
+            &tiers,
+            &main_chain,
+            &BackgroundTierActiveIndex::default(),
+            &ModelCatalog::default(),
+            &ModelSelector::MAIN,
+        )
+        .unwrap();
+        assert_eq!(chain.specs, main_chain);
+        assert_eq!(chain.overrides_key, Some("main"));
+    }
+
+    #[test]
     fn an_explicit_model_naming_no_provider_fails_the_spawn_naming_it() {
         let Err(err) = resolve_model_chain(
             &residuum_config::BackgroundModelsConfig::default(),
@@ -461,6 +501,13 @@ mod tests {
 
     #[tokio::test]
     async fn fork_identity_reads_team_files() {
+        struct StubRoomRoster;
+        impl RoomRoster for StubRoomRoster {
+            fn prompt_block(&self) -> Option<String> {
+                Some("Rooms you participate in:\n- \"Sync\" (id: room_01234567)".to_owned())
+            }
+        }
+
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("scout"));
         let team = layout.team();
@@ -475,13 +522,22 @@ mod tests {
             .await
             .unwrap();
 
-        let (identity, _, _) =
-            load_fork_identity_and_memory(&layout, &crate::team::TeamLink::alone("agent"))
-                .await
-                .unwrap();
+        let (identity, _, _) = load_fork_identity_and_memory(
+            &layout,
+            &crate::team::TeamLink::alone("agent"),
+            Some(&StubRoomRoster),
+        )
+        .await
+        .unwrap();
         assert_eq!(identity.soul.as_deref(), Some("soul"));
         assert_eq!(identity.agents.as_deref(), Some("team rules"));
         assert_eq!(identity.user.as_deref(), Some("team user"));
         assert_eq!(identity.wiki_index.as_deref(), Some("team index"));
+        assert!(
+            identity
+                .rooms
+                .as_deref()
+                .is_some_and(|r| r.contains("room_01234567"))
+        );
     }
 }

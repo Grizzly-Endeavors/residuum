@@ -26,6 +26,7 @@ residuum-proactivity = { workspace = true }
 residuum-agent = { workspace = true }
 residuum-background = { workspace = true }
 residuum-a2a = { workspace = true }
+residuum-rooms = { workspace = true }
 residuum-protocol = { workspace = true }
 residuum-interfaces = { workspace = true }
 anyhow = { workspace = true }
@@ -71,6 +72,7 @@ residuum-proactivity = { workspace = true, features = ["test-support"] }
 residuum-agent = { workspace = true, features = ["test-support"] }
 residuum-background = { workspace = true, features = ["test-support"] }
 residuum-a2a = { workspace = true, features = ["test-support"] }
+residuum-rooms = { workspace = true, features = ["test-support"] }
 ctor = { workspace = true }
 regex = { workspace = true }
 rustls = { workspace = true }

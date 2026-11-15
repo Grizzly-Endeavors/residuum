@@ -192,6 +192,19 @@ describe("the open inbox thread's mark", () => {
     });
   });
 
+  it("keeps the room list item mark when opening a room from either active or archived tab", () => {
+    const activeList = locationAt({ kind: "rooms", room: null, tab: "active" });
+    const archivedList = locationAt({ kind: "rooms", room: null, tab: "archived" });
+    const openedRoom = locationAt({
+      kind: "rooms",
+      room: "room_01jcv8k9m2p4q7",
+      tab: "active",
+    });
+
+    expect(entryAfterPush({ idx: 1 }, activeList, openedRoom)).toEqual({ idx: 2, item: 2 });
+    expect(entryAfterPush({ idx: 1 }, archivedList, openedRoom)).toEqual({ idx: 2, item: 2 });
+  });
+
   it("counts when entries are compared", () => {
     expect(sameEntry({ idx: 1, item: 1 }, { idx: 1 })).toBe(false);
   });

@@ -1225,3 +1225,40 @@ On error (returned as `is_error = true`): `action` is missing or unrecognized, `
 `undo_turn`: `"Reverted {N} path(s) from checkpoint {short id}: {paths}."`, plus `" Skipped {N} path(s) changed again since: {paths}."` when any were skipped to avoid clobbering a later edit.
 
 On error (returned as `is_error = true`): `action` or `checkpoint_id` is missing or unrecognized, `path` contains `..` or is absolute, the checkpoint id doesn't resolve, or (`restore_path` only) `path` isn't present at that checkpoint.
+
+---
+
+## `room_read`
+
+**Source:** `rooms.rs` · `RoomReadTool`
+
+**Description sent to LLM:**
+> List meeting rooms you participate in (active or archived), or read a specific room's metadata, attached minutes, and recent transcript messages. Omit room_id to list your accessible rooms; pass room_id to read that room's details, minutes, and newest messages (up to limit, default 50, max 200).
+
+### Input
+
+| Parameter | Type    | Required | Description |
+|-----------|---------|----------|-------------|
+| `room_id` | string  | no       | Optional room ID (e.g. `"room_..."`). Omit to list all active and archived rooms you participate in. |
+| `limit`   | integer | no       | Maximum number of recent transcript messages to return when reading a room (default: 50, clamped to 1..=200). |
+
+### Output
+
+**List mode (`room_id` omitted, `null`, or blank):**
+- When the agent participates in one or more rooms (active or archived, including rooms where it is only in `historical_participants`):
+```
+{N} room(s):
+- "{name}" (id: {room_id}, status: {active|archived}, roster ({R}): {names}, messages: {last_seq}, updated: {RFC3339}[, topic: {topic}][, minutes: {shared_path}])
+```
+- When the agent participates in no rooms: `"No meeting rooms found."`
+
+**Read mode (`room_id` provided):**
+Returns the room header (`Room`, `Status`, optional `Topic`, `Roster`, `Messages`, optional `Minutes path`), the attached `## Minutes` markdown if present, and `## Transcript (newest {shown} of {total})` with lines formatted as `[{seq}] {RFC3339} {author_name} ({owner|agent|system}): {content}` plus `  Attachments: {filenames}` when attachments exist.
+
+On error:
+- Non-string `room_id`, or negative / non-integer `limit` → `ToolError::InvalidArguments`
+- Agent is neither on the active roster nor in `historical_participants`, room does not exist, or invalid `room_id` format → `is_error = true` with reason
+
+**Availability:** registered on both the main agent's registry and every session's (`SessionTools`) when a hub `RoomAgentView` is supplied (`None` omits it in standalone registries).
+
+**No side effects.** Read-only tool; never modifies room state, read cursors, or 1:1 chat history.

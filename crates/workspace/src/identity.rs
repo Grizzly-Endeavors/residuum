@@ -24,6 +24,10 @@ pub struct IdentityFiles {
     /// Comes from the hub, not from a file; [`Self::load`] leaves it `None`
     /// and [`Self::with_team_roster`] fills it.
     pub team: Option<String>,
+    /// The `ROOMS` roster: active/recent meeting rooms the agent participates in.
+    /// Comes from the hub, not from a file; [`Self::load`] leaves it `None`
+    /// and [`Self::with_room_roster`] fills it.
+    pub rooms: Option<String>,
 }
 
 impl IdentityFiles {
@@ -53,6 +57,7 @@ impl IdentityFiles {
             wiki_index: wiki_index_result.into_option(),
             bootstrap,
             team: None,
+            rooms: None,
         })
     }
 
@@ -61,6 +66,14 @@ impl IdentityFiles {
     #[must_use]
     pub fn with_team_roster(mut self, team_block: Option<String>) -> Self {
         self.team = team_block;
+        self
+    }
+
+    /// These files with `rooms_block` as the `ROOMS` block. `None` or an empty
+    /// block leaves no `ROOMS` block.
+    #[must_use]
+    pub fn with_room_roster(mut self, rooms_block: Option<String>) -> Self {
+        self.rooms = rooms_block.filter(|s| !s.trim().is_empty());
         self
     }
 
