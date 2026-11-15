@@ -127,11 +127,19 @@ impl SystemOneUsage {
     }
 }
 
+fn deserialize_null_or_string<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 /// The response body of `POST /v1/systemone`.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct SystemOneResponse {
     /// The model that answered; a versioned ID even when an alias was sent.
-    #[serde(default)]
+    /// Proxy gateways translating decision endpoints may emit `"model": null`.
+    #[serde(default, deserialize_with = "deserialize_null_or_string")]
     pub model: String,
     /// One answer per question, under the question's own key.
     pub answers: BTreeMap<String, Answer>,
@@ -298,5 +306,28 @@ mod tests {
         };
         assert_eq!(huge.to_usage().uncached_input_tokens, Some(u32::MAX));
         assert_eq!(huge.to_usage().output_tokens, Some(3));
+    }
+
+    #[test]
+    fn null_model_field_parses_as_empty_string() {
+        let body = json!({
+            "model": null,
+            "answers": {
+                "greeting": {
+                    "type": "noul",
+                    "noul": 0.98
+                }
+            },
+            "usage": { "input_tokens": 91, "output_tokens": 0 }
+        });
+        let parsed: SystemOneResponse = serde_json::from_value(body).unwrap();
+        assert_eq!(
+            parsed.model, "",
+            "explicit null model deserializes cleanly rather than failing"
+        );
+        assert_eq!(
+            parsed.answers.get("greeting").and_then(Answer::noul),
+            Some(0.98)
+        );
     }
 }
