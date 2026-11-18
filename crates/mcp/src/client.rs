@@ -8,11 +8,15 @@ use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsStr;
 use std::future::Future;
 use std::path::Path;
+use std::pin::Pin;
 use std::time::Duration;
 
 use http::{HeaderName, HeaderValue};
 use rmcp::RoleClient;
-use rmcp::model::{CallToolRequestParams, CallToolResult, Content};
+use rmcp::model::{
+    CallToolRequestParams, CallToolResult, ClientCapabilities, ClientConfig, ContentBlock,
+    Implementation, ProtocolVersion,
+};
 use rmcp::service::{RunningService, ServiceExt};
 use rmcp::transport::TokioChildProcess;
 use rmcp::transport::streamable_http_client::{
@@ -27,7 +31,7 @@ use residuum_inference::{ToolError, ToolResult};
 
 /// A live connection to a single MCP server process.
 pub(crate) struct McpClient {
-    service: RunningService<RoleClient, ()>,
+    service: RunningService<RoleClient, ClientConfig>,
     server_name: String,
     /// Optional per-server timeout for tool calls, from `McpServerEntry::timeout_secs`.
     ///
@@ -94,7 +98,7 @@ impl McpClient {
         let transport = TokioChildProcess::new(cmd)
             .map_err(|e| anyhow::anyhow!("failed to spawn mcp server '{}': {e}", entry.name))?;
 
-        let service = ().serve(transport).await.map_err(|e| {
+        let service = client_config().serve(transport).await.map_err(|e| {
             anyhow::anyhow!("mcp handshake failed for server '{}': {e}", entry.name)
         })?;
 
@@ -116,7 +120,7 @@ impl McpClient {
 
         let transport = StreamableHttpClientTransport::<reqwest::Client>::from_config(config);
 
-        let service = ().serve(transport).await.map_err(|e| {
+        let service = client_config().serve(transport).await.map_err(|e| {
             anyhow::anyhow!(
                 "mcp http connection failed for server '{}' at {}: {e}",
                 entry.name,
@@ -206,14 +210,15 @@ impl McpClientHandle {
         tracing::debug!(tool = %name, server = %self.server_name, "dispatching mcp tool call");
         let arguments = coerce_tool_args(args)?;
 
-        let params = CallToolRequestParams {
-            meta: None,
-            name: Cow::Owned(name.to_string()),
-            arguments,
-            task: None,
-        };
+        let mut params = CallToolRequestParams::new(name.to_string());
+        if let Some(args_map) = arguments {
+            params = params.with_arguments(args_map);
+        }
 
-        let call = self.peer.call_tool(params);
+        // Type-erase the rmcp RPC future so downstream turn state machines do not
+        // inline its deep protocol-type layout (keeps rustc layout recursion bounded).
+        let call: Pin<Box<dyn Future<Output = _> + Send + '_>> =
+            Box::pin(self.peer.call_tool(params));
         let outcome = run_with_optional_timeout(self.timeout, call).await;
         let result: CallToolResult = match outcome {
             Ok(inner) => inner.map_err(|e| {
@@ -298,11 +303,25 @@ fn expand_header_env_vars(
     Ok(result)
 }
 
+/// Client metadata sent during the MCP `initialize` handshake.
+///
+/// Advertises [`ProtocolVersion::LATEST_WITH_INITIALIZE`] rather than
+/// `ProtocolVersion::LATEST` (`2026-07-28`, which replaced `initialize` with
+/// `server/discover`), so handshake servers that echo the requested version
+/// back stay on a handshake-capable protocol revision.
+fn client_config() -> ClientConfig {
+    ClientConfig::new(
+        ClientCapabilities::default(),
+        Implementation::new("residuum", env!("CARGO_PKG_VERSION")),
+    )
+    .with_protocol_version(ProtocolVersion::LATEST_WITH_INITIALIZE)
+}
+
 /// Extract text from MCP content blocks, joining multiple blocks with newlines.
-fn extract_text_content(content: &[Content]) -> String {
+fn extract_text_content(content: &[ContentBlock]) -> String {
     content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .enumerate()
         .fold(String::new(), |mut acc, (i, s)| {
             if i > 0 {
@@ -567,7 +586,7 @@ mod tests {
 
     #[test]
     fn extract_text_content_non_text_block_returns_empty_string() {
-        let content = vec![Content::image("base64data", "image/png")];
+        let content = vec![ContentBlock::image("base64data", "image/png")];
         assert_eq!(
             extract_text_content(&content),
             "",
@@ -578,14 +597,159 @@ mod tests {
     #[test]
     fn extract_text_content_mixed_blocks_returns_only_text() {
         let content = vec![
-            Content::text("hello"),
-            Content::image("base64data", "image/png"),
-            Content::text("world"),
+            ContentBlock::text("hello"),
+            ContentBlock::image("base64data", "image/png"),
+            ContentBlock::text("world"),
         ];
         assert_eq!(
             extract_text_content(&content),
             "hello\nworld",
             "mixed blocks should return only text joined by newlines"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn connect_stdio_round_trips_list_tools_and_call_tool() {
+        let script = concat!(
+            "while IFS= read -r line; do ",
+            "case \"$line\" in ",
+            "*'\"method\":\"initialize\"'*) ",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":0,\"result\":{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"mock-stdio\",\"version\":\"1.0\"}}}' ;; ",
+            "*'\"method\":\"notifications/initialized\"'*) ;; ",
+            "*'\"method\":\"tools/list\"'*) ",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[{\"name\":\"ping\",\"description\":\"Ping tool\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"msg\":{\"type\":\"string\"}}}}]}}' ;; ",
+            "*'\"method\":\"tools/call\"'*) ",
+            "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"pong: hello\"}],\"isError\":false}}' ;; ",
+            "esac; ",
+            "done",
+        );
+        let entry = McpServerEntry {
+            name: "stdio-mock".to_string(),
+            command: "/bin/sh".to_string(),
+            args: vec!["-c".to_string(), script.to_string()],
+            env: BTreeMap::new(),
+            transport: McpTransport::Stdio,
+            headers: BTreeMap::new(),
+            timeout_secs: Some(5),
+        };
+
+        let client = McpClient::connect(&entry, None, None).await.unwrap();
+        let tools = client.list_tools().await.unwrap();
+        assert_eq!(tools.len(), 1, "should discover one tool");
+        let first_tool = tools.first().unwrap();
+        assert_eq!(first_tool.name, "ping", "tool name should match");
+        assert_eq!(
+            first_tool.description, "Ping tool",
+            "tool description should match"
+        );
+        assert_eq!(
+            first_tool.parameters.get("type").and_then(Value::as_str),
+            Some("object"),
+            "inputSchema should convert into parameters JSON object"
+        );
+
+        let result = client
+            .handle()
+            .call_tool("ping", serde_json::json!({"msg": "hello"}))
+            .await
+            .unwrap();
+        assert!(!result.is_error, "tool call should succeed");
+        assert_eq!(result.output, "pong: hello", "tool output should match");
+
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn connect_http_round_trips_with_custom_headers() {
+        use wiremock::matchers::{body_string_contains, header, method};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(header("x-api-key", "expanded-secret"))
+            .and(body_string_contains("\"method\":\"initialize\""))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 0,
+                "result": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": { "tools": {} },
+                    "serverInfo": { "name": "mock-http", "version": "1.0" }
+                }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(header("x-api-key", "expanded-secret"))
+            .and(body_string_contains(
+                "\"method\":\"notifications/initialized\"",
+            ))
+            .respond_with(ResponseTemplate::new(202))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(header("x-api-key", "expanded-secret"))
+            .and(body_string_contains("\"method\":\"tools/list\""))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "tools": [{
+                        "name": "remote_echo",
+                        "description": "Remote echo",
+                        "inputSchema": { "type": "object" }
+                    }]
+                }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(header("x-api-key", "expanded-secret"))
+            .and(body_string_contains("\"method\":\"tools/call\""))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "result": {
+                    "content": [{ "type": "text", "text": "http-ok" }],
+                    "isError": false
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let mut headers = BTreeMap::new();
+        headers.insert(
+            "X-Api-Key".to_string(),
+            "${RESIDUUM_MCP_TEST_UNSET_VAR:-expanded-secret}".to_string(),
+        );
+        let entry = McpServerEntry {
+            name: "http-mock".to_string(),
+            command: format!("{}/mcp", server.uri()),
+            args: vec![],
+            env: BTreeMap::new(),
+            transport: McpTransport::Http,
+            headers,
+            timeout_secs: Some(5),
+        };
+
+        let client = McpClient::connect(&entry, None, None).await.unwrap();
+        let tools = client.list_tools().await.unwrap();
+        assert_eq!(tools.len(), 1, "should list remote tool");
+        assert_eq!(
+            tools.first().unwrap().name,
+            "remote_echo",
+            "remote tool name should match"
+        );
+
+        let res = client
+            .handle()
+            .call_tool("remote_echo", Value::Null)
+            .await
+            .unwrap();
+        assert!(!res.is_error, "remote call should succeed");
+        assert_eq!(res.output, "http-ok", "remote output should match");
+
+        client.shutdown().await;
     }
 }
