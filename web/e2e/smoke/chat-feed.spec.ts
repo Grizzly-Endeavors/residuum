@@ -522,6 +522,6 @@ test.describe("the header", () => {
   test("its running pill opens Activity", async ({ page }) => {
     await page.goto("/agent/atlas");
     await page.getByRole("button", { name: /^\d+ running, open Activity$/ }).click();
-    await expect(page).toHaveURL(/\/agent\/atlas\/activity$/);
+    await expect(page).toHaveURL(/\/agent\/atlas\?panel=activity:atlas$/);
   });
 });

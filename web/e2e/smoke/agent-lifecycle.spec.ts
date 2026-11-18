@@ -87,7 +87,7 @@ test("New agent creates an agent that joins the board and the rail", async ({ pa
   await expect(boardRow(page, "research-buddy")).toBeVisible();
   expect(address(page)).toBe("/home");
   const rail = await openRail(page, isMobile);
-  const railRow = rail.getByRole("button", { name: /^research-buddy\b/ });
+  const railRow = rail.getByRole("link", { name: /^research-buddy\b/ });
   await expect(railRow).toBeVisible();
   // Beside the main region, the new agent's rail row takes focus.
   if (!isMobile) await expect(railRow).toBeFocused();
@@ -110,7 +110,7 @@ test("the rail's + opens Create agent where the user is", async ({ page, isMobil
   await expect(toast(page, "You created nova.")).toBeVisible();
   expect(address(page)).toBe("/agent/atlas");
   await expect(
-    (await openRail(page, isMobile)).getByRole("button", { name: /^nova\b/ }),
+    (await openRail(page, isMobile)).getByRole("link", { name: /^nova\b/ }),
   ).toBeVisible();
 });
 
