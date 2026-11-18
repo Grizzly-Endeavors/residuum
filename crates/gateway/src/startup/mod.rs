@@ -452,15 +452,17 @@ fn build_startup_spawn_context(inputs: StartupSpawnContextInputs<'_>) -> Arc<Spa
 /// needs this function's `agent_messenger` (for the A2A client), so the two
 /// can't be built in one pass.
 ///
-/// At startup, any run left in the store from a prior process exit goes
-/// through the full completion pipeline (skip check, final observation,
-/// merge) from its persisted transcript on a background task so slow observer
-/// or reflector model calls never delay agent startup.
+/// At startup, on a background task so slow observer or reflector model
+/// calls never delay agent startup, the store's unfinished runs go through
+/// the full completion pipeline (skip check, final observation, merge) from
+/// their persisted transcripts: a run left live by a prior process exit is
+/// merged and marked interrupted, and a completed run whose merge was still
+/// pending is merged without being marked interrupted.
 ///
 /// The registry itself loads its resume points from
 /// `layout.resume_points_json()`, so a message to a session that completed
-/// before a restart still resumes it with a pointer back to its previous
-/// episode, rather than starting a fresh session with no memory of it.
+/// before a restart still resumes it with a pointer to its previous run's
+/// id, rather than starting a fresh session with no memory of it.
 async fn init_session_registry_and_messenger(
     cfg: &Config,
     layout: &WorkspaceLayout,

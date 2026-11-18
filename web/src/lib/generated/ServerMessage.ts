@@ -350,7 +350,22 @@ error: string | null,
  */
 error_details?: string, 
 /**
- * Episode the run was merged into, if it produced one.
+ * Whether the run's memory merge is still running. A
+ * `SessionMemoryMerged` for the run follows exactly when this is
+ * `true`.
+ */
+memory_pending: boolean, } | { "type": "session_memory_merged", 
+/**
+ * Session address.
+ */
+address: string, 
+/**
+ * Run id.
+ */
+run_id: string, 
+/**
+ * Episode the run was merged into; `None` when the merge produced
+ * no episode (a quiet or short run) or failed.
  */
 episode_id: string | null, } | { "type": "session_start_failed", 
 /**

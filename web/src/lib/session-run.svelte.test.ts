@@ -19,6 +19,7 @@ function summary(runId: string, overrides: Partial<SessionSummary> = {}): Sessio
     started_at: "2026-09-23T12:00:00Z",
     completed_at: null,
     episode_id: null,
+    memory_pending: false,
     interrupted: false,
     usage: {
       input_tokens: 0,
@@ -327,8 +328,8 @@ describe("following a run through the hub's session relay", () => {
       run_id: "run-1",
       status: "failed",
       error: "the site timed out",
+      memory_pending: false,
       error_details: "timeout after 30s",
-      episode_id: null,
     });
     expect(run.summary).toMatchObject({
       state: "completed",
@@ -351,10 +352,42 @@ describe("following a run through the hub's session relay", () => {
       run_id: "run-1",
       status: "completed",
       error: null,
-      episode_id: null,
+      memory_pending: false,
     });
     expect(run.summary?.outcome).toBe("completed");
     expect(run.summary?.error_details).toBeNull();
+  });
+
+  it("shows the run's memory as saving until its merge finishes", async () => {
+    const { run, relay } = await opened({ address: ADDRESS });
+    relay.relay("atlas", {
+      type: "session_completed",
+      address: ADDRESS,
+      run_id: "run-1",
+      status: "completed",
+      error: null,
+      memory_pending: true,
+    });
+    expect(run.summary?.memory_pending).toBe(true);
+
+    // Another run's merge leaves this panel alone.
+    relay.relay("atlas", {
+      type: "session_memory_merged",
+      address: ADDRESS,
+      run_id: "run-0",
+      episode_id: "ep-001",
+    });
+    expect(run.summary?.memory_pending).toBe(true);
+    expect(run.summary?.episode_id).toBeNull();
+
+    relay.relay("atlas", {
+      type: "session_memory_merged",
+      address: ADDRESS,
+      run_id: "run-1",
+      episode_id: "ep-042",
+    });
+    expect(run.summary?.memory_pending).toBe(false);
+    expect(run.summary?.episode_id).toBe("ep-042");
   });
 
   it("tags the message that started a turn, so it can offer Undo this turn", async () => {
@@ -485,7 +518,7 @@ describe("a message waiting for the session to read it", () => {
       run_id: runId,
       status: "cancelled",
       error: null,
-      episode_id: null,
+      memory_pending: false,
     });
   };
 

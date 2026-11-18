@@ -29,11 +29,12 @@ use residuum_bus::{
 use residuum_config::BackgroundConfig;
 use residuum_tracing_service::{ClientContext, TracingService};
 
+use super::merge_tasks::MergeTasks;
 use super::messaging::{AgentMessenger, DeliveryOutcome, PendingInput};
 use super::session_memory::{
-    SessionMemory, SessionMemoryEnv, TimedMessage, complete_session_memory,
+    CompletionMerge, MergeHandles, SessionMemory, SessionMemoryEnv, TimedMessage,
 };
-use super::store::{RunTranscriptSink, SessionStore};
+use super::store::{RunTranscriptSink, SessionStore, TranscriptLine};
 use super::subagent::{SessionTurnIdentity, SubAgentResources, TurnKickoff, execute_subagent};
 use super::types::{SubAgentConfig, truncate_prompt_preview};
 use crate::registry::{DeliverOutcome, ResumePoint, SessionRegistry};
@@ -151,6 +152,9 @@ pub struct SessionRuntime {
     checkpoints: Arc<residuum_checkpoints::CheckpointEngine>,
     tracing_service: Arc<TracingService>,
     tracing_client_context: Arc<ClientContext>,
+    /// Memory merges of runs that have already left the registry, drained
+    /// by [`Self::shutdown`].
+    merges: MergeTasks,
 }
 
 /// Shared handles a session run needs for the lifetime of its driver task,
@@ -165,6 +169,7 @@ struct RunEnv {
     checkpoints: Arc<residuum_checkpoints::CheckpointEngine>,
     tracing_service: Arc<TracingService>,
     tracing_client_context: Arc<ClientContext>,
+    merges: MergeTasks,
 }
 
 impl SessionRuntime {
@@ -193,6 +198,7 @@ impl SessionRuntime {
             checkpoints: handles.checkpoints,
             tracing_service: handles.tracing_service,
             tracing_client_context: handles.tracing_client_context,
+            merges: MergeTasks::default(),
         }
     }
 
@@ -273,6 +279,7 @@ impl SessionRuntime {
             checkpoints: Arc::clone(&self.checkpoints),
             tracing_service: Arc::clone(&self.tracing_service),
             tracing_client_context: Arc::clone(&self.tracing_client_context),
+            merges: self.merges.clone(),
         };
         let config = req.subagent_config;
 
@@ -285,11 +292,11 @@ impl SessionRuntime {
             )
             .await;
             env.store.begin_run(&info).await;
-            // Recorded again with the episode on completion; recording it at
-            // start too means a process crash mid-run still leaves the next
-            // message a pointer back to this run instead of a fresh start.
+            // Recorded again on completion; recording it at start too means a
+            // process crash mid-run still leaves the next message a pointer
+            // back to this run instead of a fresh start.
             env.registry
-                .record_resume_point(&info.address, resume_point(&info, None))
+                .record_resume_point(&info.address, resume_point(&info))
                 .await;
 
             // Cloned up front so cleanup still has something to work with if
@@ -303,12 +310,10 @@ impl SessionRuntime {
                 publisher: env.publisher.clone(),
                 messenger: Arc::clone(&env.messenger),
                 tz: env.tz,
+                merges: env.merges.clone(),
             };
             let mem_extras = resources.as_ref().map(|res| PanicMemoryExtras {
-                observer: Arc::clone(&res.observer),
-                merge_writer: Arc::clone(&res.merge_writer),
-                layout: res.layout.clone(),
-                episode_skip_token_floor: res.episode_skip_token_floor,
+                handles: res.merge_handles(),
                 hop_counter: res.hop_counter.clone(),
             });
 
@@ -337,32 +342,32 @@ impl SessionRuntime {
         });
     }
 
-    /// Stop every live session and wait for their runs to finish completing
-    /// and being recorded, so a graceful shutdown doesn't leave sessions for
-    /// startup recovery to pick up.
+    /// Stop every live session, wait for their runs to finish completing and
+    /// being recorded, then wait for every memory merge still running, so a
+    /// graceful shutdown leaves nothing for startup recovery to pick up.
     ///
-    /// Waits up to `timeout` for the registry to empty, waking as each run
-    /// leaves it; logs a warning and returns if sessions are still live once
-    /// the deadline passes (their runs remain in the store as `running` and
-    /// get swept by startup recovery on the next boot).
+    /// Both waits share one `timeout`. A session still live at the deadline
+    /// stays `running` in the store, and a merge still running stays
+    /// `memory_pending`; each is logged at `warn`, and startup recovery
+    /// finishes it on the next boot.
     pub async fn shutdown(&self, timeout: Duration) {
+        let deadline = tokio::time::Instant::now() + timeout;
         let signalled = self.registry.stop_all();
-        if signalled == 0 {
-            return;
+        if signalled > 0 {
+            tracing::info!(sessions = signalled, "stopping live sessions for shutdown");
+            if tokio::time::timeout_at(deadline, self.registry.wait_until_empty())
+                .await
+                .is_ok()
+            {
+                tracing::info!("all sessions completed for shutdown");
+            } else {
+                tracing::warn!(
+                    remaining = self.registry.list_live().len(),
+                    "shutdown timed out waiting for live sessions to complete"
+                );
+            }
         }
-        tracing::info!(sessions = signalled, "stopping live sessions for shutdown");
-
-        if tokio::time::timeout(timeout, self.registry.wait_until_empty())
-            .await
-            .is_ok()
-        {
-            tracing::info!("all sessions completed for shutdown");
-            return;
-        }
-        tracing::warn!(
-            remaining = self.registry.list_live().len(),
-            "shutdown timed out waiting for live sessions to complete"
-        );
+        self.merges.drain(deadline).await;
     }
 }
 
@@ -533,19 +538,15 @@ struct PanicRecoveryEnv {
     publisher: Publisher,
     messenger: Arc<AgentMessenger>,
     tz: chrono_tz::Tz,
+    merges: MergeTasks,
 }
 
-/// Owned copies of the memory subsystem handles a run's completion pipeline
-/// needs, cloned up front (before `resources` moves into [`run_session`])
-/// since a panic unwinds through and drops the original `SubAgentResources`
-/// — its provider/tools/MCP registry aren't `Clone`, but these three handles
-/// are cheap `Arc`/owned clones and are all [`recover_from_panic`] needs to
-/// run the same completion pipeline a normal run does.
+/// What a run's completion pipeline needs from its [`SubAgentResources`],
+/// cloned up front (before `resources` moves into [`run_session`]) since a
+/// panic unwinds through and drops the original — its provider, tools and
+/// MCP registry aren't `Clone`.
 struct PanicMemoryExtras {
-    observer: Arc<residuum_memory::observer::Observer>,
-    merge_writer: Arc<residuum_memory::merge_writer::MemoryMergeWriter>,
-    layout: residuum_config::WorkspaceLayout,
-    episode_skip_token_floor: usize,
+    handles: MergeHandles,
     /// The run's hop counter at the moment it panicked, cloned so a panicked
     /// spawned session's relay to its spawner (see [`relay_result_to_spawner`])
     /// still carries the right outgoing hop count.
@@ -560,8 +561,8 @@ struct PanicMemoryExtras {
 /// Backfills the transcript from the run's durable `.transcript.jsonl`
 /// sidecar (the same file [`RunTranscriptSink`] appended to during the run)
 /// and, when the resources for it are available, runs the normal completion
-/// memory pipeline over it — a panic mid-turn must not silently drop
-/// whatever the run had already produced. The merge writer's own
+/// memory pipeline over it after the run has released its address — a panic
+/// mid-turn must not silently drop whatever the run had already produced. The merge writer's own
 /// idempotency check (memory's merged-run log) makes this safe
 /// even if the panic happened after a merge had already succeeded.
 async fn recover_from_panic(
@@ -593,33 +594,24 @@ async fn recover_from_panic(
         .read_transcript_lines(&info.run_id, info.started_at)
         .await;
 
-    let episode_id = if let Some(extras) = mem_extras.as_ref() {
+    let mut transcript: Vec<residuum_inference::Message> =
+        lines.iter().map(|line| line.message.clone()).collect();
+    // As in `finish_run`, the merge runs after this run has released its
+    // address; it is owned here so it can outlive the panicked task's state.
+    let merge = mem_extras.as_ref().map(|extras| {
         let summary = lines
             .last()
             .map(|line| line.message.content.clone())
             .unwrap_or_default();
-        let mem_env = SessionMemoryEnv {
-            observer: extras.observer.as_ref(),
-            merge_writer: extras.merge_writer.as_ref(),
-            layout: &extras.layout,
-            episode_skip_token_floor: extras.episode_skip_token_floor,
-            tz: env.tz,
-        };
-        let tag = residuum_memory::types::SourceTag::session(
-            info.address.to_string(),
-            info.run_id.clone(),
-            info.category.as_str(),
-        );
-        let timed: Vec<_> = lines
-            .iter()
-            .map(super::store::TranscriptLine::timed)
-            .collect();
-        complete_session_memory(tag, &summary, &timed, SessionMemory::new(), &mem_env).await
-    } else {
-        None
-    };
-    let mut transcript: Vec<residuum_inference::Message> =
-        lines.into_iter().map(|line| line.message).collect();
+        CompletionMerge::for_run(
+            info,
+            summary,
+            lines,
+            SessionMemory::new(),
+            extras.handles.clone(),
+            env.tz,
+        )
+    });
 
     let status = AgentResultStatus::Failed {
         error: format!("session task panicked: {panic_msg}"),
@@ -649,7 +641,7 @@ async fn recover_from_panic(
     }
 
     env.registry
-        .record_resume_point(&info.address, resume_point(info, episode_id.clone()))
+        .record_resume_point(&info.address, resume_point(info))
         .await;
 
     let transcript_path = env
@@ -659,7 +651,7 @@ async fn recover_from_panic(
             SessionState::Completed.as_str(),
             &status,
             transcript,
-            episode_id.clone(),
+            merge.is_some(),
         )
         .await;
 
@@ -673,19 +665,31 @@ async fn recover_from_panic(
         &env.publisher,
         &info.address,
         &info.run_id,
-        SessionEventKind::Completed { status, episode_id },
+        SessionEventKind::Completed {
+            status,
+            memory_pending: merge.is_some(),
+        },
     )
     .await;
     tracing::info!("session removed from registry after panic recovery");
+
+    if let Some(merge) = merge {
+        spawn_memory_merge(
+            &env.merges,
+            merge,
+            info.clone(),
+            Arc::clone(&env.store),
+            env.publisher.clone(),
+        );
+    }
 }
 
 /// Build the resume point a completed run leaves behind, so a later
 /// `message_agent` call to its address can fork it again with a pointer back
 /// to what it produced.
-fn resume_point(info: &SessionInfo, episode_id: Option<String>) -> ResumePoint {
+fn resume_point(info: &SessionInfo) -> ResumePoint {
     ResumePoint {
         previous_run_id: info.run_id.clone(),
-        previous_episode_id: episode_id,
         trigger: info.trigger.clone(),
         source_label: info.source_label.clone(),
         agent_skill: info.agent_skill.clone(),
@@ -1087,22 +1091,23 @@ async fn finish_run(
     )
     .await;
 
-    // Merge into global memory before recording the run as completed, so a
-    // successful merge's episode id lands in the same record. A stopped run
-    // merges like any other — stopping is not discarding.
-    let episode_id = if let Some(res) = resources {
-        let mem_env = session_memory_env(res, env.tz);
-        let tag = residuum_memory::types::SourceTag::session(
-            info.address.to_string(),
-            info.run_id.clone(),
-            info.category.as_str(),
-        );
-        complete_session_memory(tag, &summary, &history.own_timed(), memory, &mem_env).await
-    } else {
-        None
-    };
+    // The memory merge (extraction, possibly the reflector) is slow, so it
+    // runs on its own task after this run has left the registry. Only fast
+    // local work happens before that: the resume point and the transcript
+    // record. A stopped run merges like any other — stopping is not
+    // discarding.
+    let merge = resources.map(|res| {
+        CompletionMerge::for_run(
+            info,
+            summary.clone(),
+            owned_transcript(&history.own_timed()),
+            memory,
+            res.merge_handles(),
+            env.tz,
+        )
+    });
 
-    let point = resume_point(info, episode_id.clone());
+    let point = resume_point(info);
     env.registry
         .record_resume_point(&info.address, point.clone())
         .await;
@@ -1114,7 +1119,7 @@ async fn finish_run(
             SessionState::Completed.as_str(),
             &status,
             history.own().to_vec(),
-            episode_id.clone(),
+            merge.is_some(),
         )
         .await;
 
@@ -1128,10 +1133,23 @@ async fn finish_run(
         &env.publisher,
         &info.address,
         &info.run_id,
-        SessionEventKind::Completed { status, episode_id },
+        SessionEventKind::Completed {
+            status,
+            memory_pending: merge.is_some(),
+        },
     )
     .await;
     tracing::info!("session completed");
+
+    if let Some(merge) = merge {
+        spawn_memory_merge(
+            &env.merges,
+            merge,
+            info.clone(),
+            Arc::clone(&env.store),
+            env.publisher.clone(),
+        );
+    }
 
     if !leftover_messages.is_empty() {
         tracing::warn!(
@@ -1164,6 +1182,47 @@ fn session_memory_env(res: &SubAgentResources, tz: chrono_tz::Tz) -> SessionMemo
         episode_skip_token_floor: res.episode_skip_token_floor,
         tz,
     }
+}
+
+/// Copy a borrowed transcript into owned lines, keeping each message's time.
+fn owned_transcript(transcript: &[TimedMessage<'_>]) -> Vec<TranscriptLine> {
+    transcript
+        .iter()
+        .map(|m| TranscriptLine {
+            message: m.message.clone(),
+            recorded_at: m.recorded_at,
+        })
+        .collect()
+}
+
+/// Run a finished run's memory merge on its own task, tracked in `merges`,
+/// after the run has released its address. When the merge finishes, its
+/// outcome is written to the run's store record and announced as
+/// [`SessionEventKind::MemoryMerged`], with the episode it produced or none.
+/// A failed merge is logged by the pipeline with the run id and records no
+/// episode.
+///
+/// [`SessionRuntime::shutdown`] waits for the merge. If the process exits
+/// first, the record stays pending and startup recovery finishes the merge
+/// (see `SessionStore::recover_incomplete_runs`).
+fn spawn_memory_merge(
+    merges: &MergeTasks,
+    merge: CompletionMerge,
+    info: SessionInfo,
+    store: Arc<SessionStore>,
+    publisher: Publisher,
+) {
+    merges.spawn(info.run_id.clone(), async move {
+        let episode_id = merge.run().await;
+        store.finish_memory_merge(&info, episode_id.clone()).await;
+        publish_session_event(
+            &publisher,
+            &info.address,
+            &info.run_id,
+            SessionEventKind::MemoryMerged { episode_id },
+        )
+        .await;
+    });
 }
 
 /// Build the content to relay to a spawned session's direct spawner for one
@@ -3052,7 +3111,6 @@ mod tests {
             .resume_point(&address)
             .expect("a crash mid-run must still leave a resume point for the next message");
         assert_eq!(point.previous_run_id, info.run_id);
-        assert!(point.previous_episode_id.is_none());
         assert!(runtime.registry.stop(&address));
     }
 
@@ -3177,6 +3235,130 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["don't forget this"]
         );
+    }
+
+    /// The episode id of the next `MemoryMerged` event on the sessions topic.
+    async fn next_memory_merged(
+        sub: &mut residuum_bus::Subscriber<residuum_bus::SessionEvent>,
+    ) -> Option<String> {
+        loop {
+            let event = next_event("a run's memory merge", sub).await;
+            if let SessionEventKind::MemoryMerged { episode_id } = event.kind {
+                return episode_id;
+            }
+        }
+    }
+
+    /// What the observer answers with in the gated-merge test: one
+    /// observation, so the merge has an episode to record.
+    const GATED_OBSERVER_RESPONSE: &str = r#"{
+        "observations": [
+            {"content": "the run finished its work", "timestamp": "2026-02-21T14:30", "visibility": "background"}
+        ],
+        "narrative": "the session finished its work"
+    }"#;
+
+    #[tokio::test]
+    async fn a_message_to_a_finished_run_resumes_it_while_its_memory_merge_is_still_blocked() {
+        // The run's observer extraction is held at a gate, so its memory merge
+        // cannot finish. A message to the run's address must still resume it
+        // at once: the address leaves the registry before the merge starts.
+        // Releasing the gate then lets the merge finish, and the episode it
+        // produced is recorded on the run and announced.
+        let bus_handle = residuum_bus::spawn_broker();
+        let mut sessions: residuum_bus::Subscriber<residuum_bus::SessionEvent> =
+            bus_handle.subscribe(topics::Sessions).await.unwrap();
+        let mut spawn_sub: residuum_bus::Subscriber<residuum_bus::SpawnRequestEvent> =
+            bus_handle.subscribe(topics::Background).await.unwrap();
+        let registry = Arc::new(SessionRegistry::new());
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = dir.path().to_path_buf();
+        let store = Arc::new(SessionStore::new(dir_path.clone()).with_tempdir_guard(dir));
+        let messenger = Arc::new(AgentMessenger::new(
+            Arc::clone(&registry),
+            bus_handle.publisher(),
+            Arc::clone(&store),
+            residuum_agent::hop::HopLimits { soft: 8, hard: 32 },
+        ));
+        let runtime = SessionRuntime::new(
+            registry,
+            Arc::clone(&store),
+            Arc::new(tokio::sync::Semaphore::new(3)),
+            IdleTimeouts {
+                scheduled: Duration::from_millis(20),
+                spawned: Duration::from_millis(20),
+                external: Duration::from_millis(20),
+                artifact: Duration::from_millis(20),
+            },
+            SessionRuntimeHandles {
+                publisher: bus_handle.publisher(),
+                tz: chrono_tz::UTC,
+                messenger: Arc::clone(&messenger),
+                checkpoints: test_checkpoints(&dir_path),
+                tracing_service: test_tracing_service(),
+                tracing_client_context: test_tracing_client_context(),
+            },
+        );
+
+        let gate = Gate::closed("observer");
+        let mut resources = make_resources("all done");
+        resources.observer = Arc::new(residuum_memory::observer::Observer::new(
+            Box::new(GatedProvider::new(&gate, GATED_OBSERVER_RESPONSE)),
+            residuum_memory::observer::ObserverConfig::default(),
+        ));
+        resources.episode_skip_token_floor = 1;
+
+        let address = SessionAddress::from("spawned-researcher-0009");
+        runtime.spawn(sample_request(address.as_ref()), Some(resources));
+
+        let completed = loop {
+            let event = next_event("the run's completion", &mut sessions).await;
+            if let SessionEventKind::Completed { memory_pending, .. } = event.kind {
+                assert!(memory_pending, "the run's merge has started and is held");
+                break event;
+            }
+        };
+        let run_id = completed.run_id;
+        gate.until_held(1).await;
+        let (held, _) = store.read_run(&run_id).await.unwrap().unwrap();
+        assert!(
+            held.memory_pending,
+            "the record shows the merge pending while it is held"
+        );
+        assert!(
+            runtime.registry.get(&address).is_none(),
+            "the finished run must leave the registry while its merge is held"
+        );
+
+        messenger
+            .send(
+                address.as_ref(),
+                AgentMessageEvent::new(
+                    SessionAddress::from(MAIN_ADDRESS),
+                    "main",
+                    "a message for the finished run",
+                    0,
+                ),
+            )
+            .await
+            .unwrap();
+        let resume = next_event("the message's resume as a new run", &mut spawn_sub).await;
+        assert_eq!(resume.address, address);
+        assert_eq!(
+            resume
+                .delivered_messages
+                .iter()
+                .map(|m| m.content.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a message for the finished run"]
+        );
+
+        gate.open_all();
+        let episode_id = next_memory_merged(&mut sessions).await;
+        assert!(episode_id.is_some(), "the merge produced an episode");
+        let (record, _) = store.read_run(&run_id).await.unwrap().unwrap();
+        assert_eq!(record.episode_id, episode_id);
+        assert!(!record.memory_pending);
     }
 
     struct PanickingProvider;
@@ -3333,10 +3515,12 @@ mod tests {
             residuum_memory::observer::ObserverConfig::default(),
         ));
         PanicMemoryExtras {
-            observer,
-            merge_writer,
-            layout,
-            episode_skip_token_floor: 2000,
+            handles: MergeHandles {
+                observer,
+                merge_writer,
+                layout,
+                episode_skip_token_floor: 2000,
+            },
             hop_counter: residuum_agent::HopCounter::new(0),
         }
     }
@@ -3392,6 +3576,8 @@ mod tests {
         let bus_handle = residuum_bus::spawn_broker();
         let mut sub: residuum_bus::Subscriber<AgentResultEvent> =
             bus_handle.subscribe(topics::Background).await.unwrap();
+        let mut sessions_sub: residuum_bus::Subscriber<residuum_bus::SessionEvent> =
+            bus_handle.subscribe(topics::Sessions).await.unwrap();
         let publisher = bus_handle.publisher();
         let messenger = Arc::new(AgentMessenger::new(
             Arc::new(SessionRegistry::new()),
@@ -3405,6 +3591,7 @@ mod tests {
             publisher,
             messenger,
             tz: chrono_tz::UTC,
+            merges: MergeTasks::default(),
         };
 
         recover_from_panic(
@@ -3433,9 +3620,24 @@ mod tests {
             2,
             "the pre-panic transcript must be backfilled from the sidecar file"
         );
-        assert!(
-            record.get("episode_id").unwrap().is_string(),
-            "a substantial pre-panic transcript should still be merged into an episode, got {record:?}"
+        // The merge runs after the panicked run has released its address, so
+        // its episode arrives as a later event, once it is recorded.
+        let merged = next_memory_merged(&mut sessions_sub).await;
+        let merged_contents = tokio::fs::read_to_string(&transcript_path).await.unwrap();
+        let merged_record: serde_json::Value = serde_json::from_str(&merged_contents).unwrap();
+        assert_eq!(
+            merged_record
+                .get("episode_id")
+                .and_then(serde_json::Value::as_str),
+            merged.as_deref(),
+            "a substantial pre-panic transcript should still be merged into an episode, got {merged_record:?}"
+        );
+        assert_eq!(
+            merged_record
+                .get("memory_pending")
+                .and_then(serde_json::Value::as_bool),
+            Some(false),
+            "the record must no longer be pending once its merge is recorded"
         );
     }
 
@@ -3491,6 +3693,50 @@ mod tests {
         );
         let event = next_event("the session's result after shutdown", &mut sub).await;
         assert!(matches!(event.status, AgentResultStatus::Cancelled));
+    }
+
+    #[tokio::test]
+    async fn shutdown_waits_for_a_finished_runs_memory_merge() {
+        // The run has left the registry, but its merge is held at a gate.
+        // Shutdown must not return until the merge has finished and been
+        // recorded, so nothing is left for startup recovery to merge again.
+        let (runtime, _results, bus_handle) = test_runtime_with_bus(3).await;
+        let mut sessions: residuum_bus::Subscriber<residuum_bus::SessionEvent> =
+            bus_handle.subscribe(topics::Sessions).await.unwrap();
+        let gate = Gate::closed("observer");
+        let mut resources = make_resources("all done");
+        resources.observer = Arc::new(residuum_memory::observer::Observer::new(
+            Box::new(GatedProvider::new(&gate, GATED_OBSERVER_RESPONSE)),
+            residuum_memory::observer::ObserverConfig::default(),
+        ));
+        resources.episode_skip_token_floor = 1;
+        let mut request = sample_request("spawned-researcher-drain");
+        request.spawner = None;
+        runtime.spawn(request, Some(resources));
+
+        let run_id = loop {
+            let event = next_event("the run's completion", &mut sessions).await;
+            if let SessionEventKind::Completed { .. } = event.kind {
+                break event.run_id;
+            }
+        };
+        gate.until_held(1).await;
+
+        let shutdown = runtime.shutdown(wait::HANG_GUARD * 2);
+        tokio::pin!(shutdown);
+        assert!(
+            shutdown.as_mut().now_or_never().is_none(),
+            "shutdown must wait while the run's merge is held"
+        );
+
+        gate.open_all();
+        wait::guarded("shutdown to return once the merge finishes", shutdown).await;
+        let (record, _) = runtime.store.read_run(&run_id).await.unwrap().unwrap();
+        assert!(
+            !record.memory_pending,
+            "the merge is recorded before shutdown returns"
+        );
+        assert!(record.episode_id.is_some(), "the merge produced an episode");
     }
 
     #[tokio::test]
@@ -4430,6 +4676,9 @@ mod tests {
             SessionEventKind::Started(info) => format!("started:{}", info.state),
             SessionEventKind::StateChanged(state) => format!("state:{state}"),
             SessionEventKind::Completed { status, .. } => format!("completed:{status}"),
+            SessionEventKind::MemoryMerged { episode_id } => {
+                format!("memory_merged:{}", episode_id.as_deref().unwrap_or("none"))
+            }
             SessionEventKind::TurnStarted { .. } => "turn_started".to_string(),
             SessionEventKind::TurnEnded { .. } => "turn_ended".to_string(),
             SessionEventKind::MessageRead { content, .. } => format!("message_read:{content}"),
@@ -4544,6 +4793,7 @@ mod tests {
                 SessionEventKind::Started(_)
                 | SessionEventKind::StateChanged(_)
                 | SessionEventKind::Completed { .. }
+                | SessionEventKind::MemoryMerged { .. }
                 | SessionEventKind::ToolCall(_)
                 | SessionEventKind::ToolResult(_)
                 | SessionEventKind::Intermediate { .. }
@@ -4908,7 +5158,6 @@ mod tests {
                 &address,
                 ResumePoint {
                     previous_run_id: "run-old".to_string(),
-                    previous_episode_id: None,
                     trigger: EventTrigger::Agent,
                     source_label: "agent:researcher".to_string(),
                     agent_skill: None,

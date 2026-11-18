@@ -284,6 +284,7 @@ async fn run_session_phase(fire: PulseFire, mut spawn: SpawnRequestEvent, deps: 
                     }
                     SessionEventKind::Started(_)
                     | SessionEventKind::Completed { .. }
+                    | SessionEventKind::MemoryMerged { .. }
                     | SessionEventKind::StateChanged(_)
                     | SessionEventKind::TurnStarted { .. }
                     | SessionEventKind::TurnEnded { .. }
@@ -624,7 +625,7 @@ mod tests {
                     run_id: run_id.to_string(),
                     kind: SessionEventKind::Completed {
                         status,
-                        episode_id: None,
+                        memory_pending: false,
                     },
                 },
             )

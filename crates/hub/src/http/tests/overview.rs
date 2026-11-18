@@ -505,7 +505,6 @@ async fn live_sessions_appear_as_they_start_and_clear_as_they_end_or_when_the_ag
             address: SessionAddress::from("spawned-notes"),
             run_id: "run-notes".to_string(),
             status: AgentResultStatus::Completed,
-            episode_id: None,
         },
     );
     let actual = &next_overview(&mut frames).await.live_sessions;

@@ -63,6 +63,7 @@ pub(crate) fn summary_from_record(record: &RunRecord) -> Option<SessionSummary> 
         started_at: record.started_at,
         completed_at: record.completed_at,
         episode_id: record.episode_id.clone(),
+        memory_pending: record.memory_pending,
         interrupted: record.interrupted,
         usage: record.usage,
         outcome,
@@ -385,7 +386,6 @@ mod tests {
                 &SessionAddress::from("spawned-b-0001"),
                 ResumePoint {
                     previous_run_id: "run-old".to_string(),
-                    previous_episode_id: None,
                     trigger: EventTrigger::Agent,
                     source_label: "agent:researcher".to_string(),
                     agent_skill: None,

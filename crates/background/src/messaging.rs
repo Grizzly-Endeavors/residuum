@@ -454,9 +454,8 @@ impl AgentMessenger {
     /// publishing a fresh `SpawnRequestEvent` for the spawn listener to pick
     /// up — the same path any other session fork takes. The new run opens
     /// with the delivered message as its own entry; its context carries a
-    /// pointer back to the previous run's episode (or its run id, if it
-    /// produced none), so the resumed session can retrieve it with
-    /// `memory_get`. The new run's hop count is the delivered message's hop
+    /// pointer back to the previous run's id, so the resumed session can
+    /// retrieve that run with `memory_get`. The new run's hop count is the delivered message's hop
     /// count directly (that message *is* the run's kickoff input).
     async fn resume(
         &self,
@@ -1298,18 +1297,11 @@ async fn publish_resume(
 /// Build the note telling a resumed session how to retrieve what its
 /// previous run produced.
 fn pointer_note(point: &ResumePoint) -> String {
-    match &point.previous_episode_id {
-        Some(episode_id) => format!(
-            "[Resumed session] Your previous run ({}) was merged as episode {episode_id} — \
-             retrieve it with memory_get if useful.",
-            point.previous_run_id
-        ),
-        None => format!(
-            "[Resumed session] Your previous run ({}) produced no episode — retrieve its \
-             transcript with memory_get using that run id if useful.",
-            point.previous_run_id
-        ),
-    }
+    format!(
+        "[Resumed session] Your previous run ({}) has ended. Retrieve its transcript \
+         with memory_get using that run id if useful.",
+        point.previous_run_id
+    )
 }
 
 #[cfg(test)]
@@ -1349,7 +1341,6 @@ mod tests {
     fn sample_resume_point(run_id: &str, model: residuum_config::ModelSelector) -> ResumePoint {
         ResumePoint {
             previous_run_id: run_id.to_string(),
-            previous_episode_id: Some("ep-42".to_string()),
             trigger: EventTrigger::Agent,
             source_label: "agent:researcher".to_string(),
             agent_skill: Some(SkillName::from("researcher")),
@@ -1846,12 +1837,13 @@ mod tests {
             "the resumed run's hop count must be the delivered message's own hop count"
         );
         let context = event.context.expect("resume should carry a pointer note");
-        assert!(context.contains("ep-42"));
+        assert!(context.contains("run-old"));
         assert!(context.contains("memory_get"));
+        assert!(!context.contains("episode"));
     }
 
     #[tokio::test]
-    async fn send_to_completed_session_without_episode_points_at_run_id() {
+    async fn send_to_completed_session_points_at_run_id_without_claiming_an_episode() {
         let (messenger, registry, bus_handle) = messenger();
         let mut sub: Subscriber<residuum_bus::SpawnRequestEvent> =
             bus_handle.subscribe(topics::Background).await.unwrap();
@@ -1862,7 +1854,6 @@ mod tests {
                 &address,
                 ResumePoint {
                     previous_run_id: "run-quiet".to_string(),
-                    previous_episode_id: None,
                     trigger: EventTrigger::Agent,
                     source_label: "agent:researcher".to_string(),
                     agent_skill: None,
@@ -1886,7 +1877,8 @@ mod tests {
         let event = sub.recv().await.unwrap().unwrap();
         let context = event.context.unwrap();
         assert!(context.contains("run-quiet"));
-        assert!(context.contains("produced no episode"));
+        assert!(context.contains("memory_get"));
+        assert!(!context.contains("produced no episode"));
     }
 
     #[tokio::test]

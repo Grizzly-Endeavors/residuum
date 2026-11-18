@@ -111,7 +111,6 @@ fn finish(
             address: SessionAddress::from(address),
             run_id: run_id.to_string(),
             status,
-            episode_id: None,
         },
     });
 }

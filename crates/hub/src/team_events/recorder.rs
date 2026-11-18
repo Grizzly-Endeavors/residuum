@@ -312,7 +312,6 @@ impl Recorder {
                 address,
                 run_id,
                 status,
-                episode_id: _,
             } => self.on_session_completed(&agent, address.as_ref(), &run_id, &status),
             AgentChangeKind::PulseFireFinished { pulse, outcome } => {
                 let (level, summary) = pulse_fire_finished(&agent, &pulse, &outcome);

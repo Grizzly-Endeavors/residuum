@@ -853,11 +853,21 @@ pub enum SessionEventKind {
     /// instead.
     StateChanged(crate::session::SessionState),
     /// The run finished, was recorded in the session store, and left the
-    /// registry.
+    /// registry. Its memory merge may still be running; its outcome arrives
+    /// later as [`Self::MemoryMerged`].
     Completed {
         /// Outcome of the run's last turn.
         status: AgentResultStatus,
-        /// Episode the run was merged into, if it produced one.
+        /// Whether the run's memory merge started and is still running. A
+        /// [`Self::MemoryMerged`] for the run follows exactly when this is
+        /// `true`.
+        memory_pending: bool,
+    },
+    /// The run's memory merge finished. Published after [`Self::Completed`],
+    /// off the run's own teardown path.
+    MemoryMerged {
+        /// Episode the run was merged into; `None` when the merge produced
+        /// no episode (a quiet or short run) or failed.
         episode_id: Option<String>,
     },
     /// A turn began executing.

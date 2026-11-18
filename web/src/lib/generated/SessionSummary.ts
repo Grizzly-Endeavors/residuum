@@ -55,6 +55,12 @@ completed_at: string | null,
  */
 episode_id: string | null, 
 /**
+ * `true` while a completed run's memory merge is still running, so
+ * `episode_id` may still arrive (see `SessionMemoryMerged`). `false`
+ * for a live run.
+ */
+memory_pending: boolean, 
+/**
  * `true` when the run was completed at startup because the process
  * exited before it finished on its own.
  */

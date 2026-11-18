@@ -41,6 +41,7 @@ function summary(overrides: Partial<SessionSummary> = {}): SessionSummary {
     started_at: "2026-03-14T11:00:00Z",
     completed_at: null,
     episode_id: null,
+    memory_pending: false,
     interrupted: false,
     usage: {
       input_tokens: 0,
@@ -127,6 +128,23 @@ describe("the session panel", () => {
     expect(screen.getByText("Model", { selector: "dt" }).nextElementSibling).toHaveTextContent(
       "anthropic/claude-haiku-4-5, from the small tier",
     );
+  });
+
+  it("says a finished run is saving to memory while its merge runs", async () => {
+    await show(summary({ state: "completed", outcome: "completed", memory_pending: true }));
+    await userEvent.click(screen.getByRole("button", { name: "Details" }));
+    expect(
+      screen.getByText("Remembered as", { selector: "dt" }).nextElementSibling,
+    ).toHaveTextContent("Saving to memory…");
+  });
+
+  it("names the episode a finished run was remembered as", async () => {
+    await show(summary({ state: "completed", outcome: "completed", episode_id: "ep-042" }));
+    await userEvent.click(screen.getByRole("button", { name: "Details" }));
+    expect(
+      screen.getByText("Remembered as", { selector: "dt" }).nextElementSibling,
+    ).toHaveTextContent("ep-042");
+    expect(screen.queryByText("Saving to memory…")).toBeNull();
   });
 
   it("says the owner started a run, and when it forked the conversation", async () => {
