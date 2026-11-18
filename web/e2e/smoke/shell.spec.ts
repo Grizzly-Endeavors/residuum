@@ -28,7 +28,7 @@ function agentRow(rail: Locator, name: string): Locator {
 
 /** The chevron beside an agent's name: it opens and closes the places without navigating. */
 function agentChevron(rail: Locator, name: string): Locator {
-  return rail.getByRole("button", { name: new RegExp(`^(Expand|Collapse) ${name}$`) });
+  return rail.getByRole("button", { name: new RegExp(`^${name} places$`) });
 }
 
 /** Open an agent's places in the rail, unless they already are. */
@@ -127,14 +127,8 @@ test.describe("every place opens from the rail, or the drawer on a phone", () =>
       await expect.poll(() => address(page), place.name).toBe(place.path);
       await expect(place.shows(page), place.name).toBeVisible();
       await expect(page.getByRole("dialog", { name: "Agents and places" })).toBeHidden();
-      if (!isMobile) {
-        // An agent's name marks the agent being viewed; the other places carry aria-current.
-        if (place.name === "Chat") {
-          await expect(placeLink(rail, place)).toHaveAttribute("data-viewed");
-        } else {
-          await expect(placeLink(rail, place)).toHaveAttribute("aria-current", "page");
-        }
-      }
+      // The rail marks the current place with aria-current; an agent's name marks its Chat.
+      if (!isMobile) await expect(placeLink(rail, place)).toHaveAttribute("aria-current", "page");
       await expectNoAxeViolations(page);
     });
   }

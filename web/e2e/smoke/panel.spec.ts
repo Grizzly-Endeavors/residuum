@@ -20,9 +20,9 @@ function contextPanel(page: Page, isMobile: boolean, name: string): Locator {
   return page.getByRole(isMobile ? "dialog" : "complementary", { name });
 }
 
-/** The panel's way out: Close beside the main region, Back on a phone's sheet. */
-function closeButton(panel: Locator, isMobile: boolean): Locator {
-  return panel.getByRole("button", { name: isMobile ? "Back" : "Close panel", exact: true });
+/** The panel's way out, Close panel, on a phone's sheet as beside the main region. */
+function closeButton(panel: Locator): Locator {
+  return panel.getByRole("button", { name: "Close panel", exact: true });
 }
 
 /** The panel's box once it has finished sliding in. */
@@ -69,7 +69,7 @@ test("a run opens in the panel from Activity, and closing it goes back", async (
   await expect(panel.getByRole("heading", { name: RUN })).toBeVisible();
   await scanPanel(page, isMobile);
 
-  await closeButton(panel, isMobile).click();
+  await closeButton(panel).click();
   await expect(panel).toBeHidden();
   await expect.poll(() => address(page)).toBe("/agent/atlas/activity");
   await expect(row).toBeFocused();

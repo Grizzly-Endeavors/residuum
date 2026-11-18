@@ -84,9 +84,9 @@ function filePanel(page: Page, isMobile: boolean, name: string): Locator {
   return page.getByRole(isMobile ? "dialog" : "complementary", { name });
 }
 
-/** The panel's way out: Close beside the main region, Back on a phone's sheet. */
-function closePanel(panel: Locator, isMobile: boolean): Locator {
-  return panel.getByRole("button", { name: isMobile ? "Back" : "Close panel", exact: true });
+/** The panel's way out, Close panel, on a phone's sheet as beside the main region. */
+function closePanel(panel: Locator): Locator {
+  return panel.getByRole("button", { name: "Close panel", exact: true });
 }
 
 /** The composer's file picker, which a button opens. */
@@ -670,7 +670,7 @@ test.describe("attachments", () => {
     await panel.getByRole("button", { name: "Edit" }).click();
     await expect(panel.getByText("Added in the panel.")).toBeVisible();
 
-    await closePanel(panel, isMobile).click();
+    await closePanel(panel).click();
     await expect(panel).toBeHidden();
     await expect.poll(() => address(page)).toBe(`/inbox?thread=${SYNC.threadId}`);
     await expect(heading(page, SYNC.subject)).toBeVisible();

@@ -21,7 +21,7 @@ async function railActivity(page: Page, isMobile: boolean): Promise<Locator> {
     await expect(page.getByRole("dialog", { name: "Agents and places" })).toBeVisible();
   }
   const rail = page.getByRole("navigation", { name: "Places and agents" });
-  const agent = rail.getByRole("button", { name: /^(Expand|Collapse) atlas$/ });
+  const agent = rail.getByRole("button", { name: /^atlas places$/ });
   if ((await agent.getAttribute("aria-expanded")) !== "true") await agent.click();
   return rail.getByRole("link", { name: /^Activity/ }).first();
 }
