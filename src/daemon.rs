@@ -488,6 +488,41 @@ pub fn spawn_gateway_process(
         .spawn()
 }
 
+/// Replace the current process image with `exe` and `args`, with stdin closed,
+/// stdout discarded, and stderr appended to [`stderr_log_path`].
+///
+/// Used by `commands::serve::foreground::relaunch_with_watchdog` on Unix so
+/// handing off to the update-rollback watchdog keeps the same PID — preventing
+/// service managers like systemd (`KillMode=control-group`) from seeing the
+/// main process exit and killing the cgroup mid-update.
+///
+/// Only returns if preparing the log file or `exec()` fails.
+#[cfg(unix)]
+#[must_use]
+pub fn exec_gateway_process(exe: &Path, args: &[String], hub_dir: &Path) -> std::io::Error {
+    use std::os::unix::process::CommandExt;
+
+    let log_dir = crate::config::HubPaths::new(hub_dir).logs_dir();
+    if let Err(e) = std::fs::create_dir_all(&log_dir) {
+        return e;
+    }
+    let stderr_file = match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(stderr_log_path(hub_dir))
+    {
+        Ok(file) => file,
+        Err(e) => return e,
+    };
+
+    std::process::Command::new(exe)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(stderr_file)
+        .exec()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

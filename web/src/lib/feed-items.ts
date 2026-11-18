@@ -43,6 +43,26 @@ function appendResult(call: ToolCallState, output: string): void {
   call.result = (call.result ? call.result + "\n" : "") + TOOL_RESULT_MARKER + output;
 }
 
+/**
+ * Extract the standalone message text when a `send_message` call targeting
+ * `endpoint = "ws"` (with no `file_path` or `conversation`) succeeded.
+ */
+function sentWsMessage(call: ToolCallState, resultContent: string): string | null {
+  if (call.name !== "send_message") return null;
+  if (call.arguments.endpoint !== "ws") return null;
+  if (typeof call.arguments.file_path === "string" && call.arguments.file_path.length > 0) {
+    return null;
+  }
+  if (typeof call.arguments.conversation === "string" && call.arguments.conversation.length > 0) {
+    return null;
+  }
+  const message = call.arguments.message;
+  if (typeof message !== "string" || !message.trim()) return null;
+  const firstLine = resultContent.split("\n")[0];
+  if (firstLine !== "Message published to endpoint 'ws'") return null;
+  return message;
+}
+
 /** How many of `messages` carry each turn id. */
 export function countByTurn(messages: readonly RecentMessage[]): ReadonlyMap<string, number> {
   const counts = new Map<string, number>();
@@ -250,10 +270,34 @@ export function convertHistory(
         break;
       }
       case "tool": {
+        const call = msg.tool_call_id ? toolCallItems.get(msg.tool_call_id) : undefined;
         if (msg.tool_call_id) {
-          const call = toolCallItems.get(msg.tool_call_id);
           if (call && content) appendResult(call, content);
           toolCallItems.delete(msg.tool_call_id);
+        }
+        if (msg.sent_attachment) {
+          out.push({
+            id: nextFeedId(),
+            kind: "file-attachment",
+            filename: msg.sent_attachment.filename,
+            mimeType: msg.sent_attachment.mime_type,
+            size: msg.sent_attachment.size,
+            url: msg.sent_attachment.url,
+            caption: msg.sent_attachment.caption ?? null,
+            ...ofTurn,
+            ...sent,
+          });
+        } else if (call) {
+          const wsMessage = sentWsMessage(call, content);
+          if (wsMessage !== null) {
+            out.push({
+              id: nextFeedId(),
+              kind: "assistant",
+              content: wsMessage,
+              ...ofTurn,
+              ...sent,
+            });
+          }
         }
         break;
       }
@@ -282,6 +326,9 @@ export function convertHistoryMessages(
 export function feedItemSignature(item: FeedItem): string | null {
   if (item.kind === "user" || item.kind === "assistant" || item.kind === "agent-message") {
     return `${item.kind}\u0000${item.content}`;
+  }
+  if (item.kind === "file-attachment") {
+    return `${item.kind}\u0000${item.filename}\u0000${item.caption ?? ""}`;
   }
   return null;
 }

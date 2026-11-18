@@ -104,7 +104,7 @@ impl SystemOneClient {
             keep_alive: self.endpoint.keep_alive.as_deref(),
         };
         let url = self.url("systemone");
-        let response = self
+        let mut response = self
             .retrying(|| async {
                 let request = self.authorize(self.http.client().post(&url)).json(&body);
                 let text = self.send(request, &url).await?;
@@ -116,6 +116,9 @@ impl SystemOneClient {
                 })
             })
             .await?;
+        if response.model.is_empty() {
+            response.model.clone_from(&self.endpoint.model);
+        }
         debug!(
             answered_by = %response.model,
             input_tokens = response.usage.input_tokens,
@@ -344,6 +347,30 @@ mod tests {
             response.answers.get("urgent").and_then(Answer::noul),
             Some(0.95),
             "noul answer parses"
+        );
+    }
+
+    #[tokio::test]
+    async fn evaluate_falls_back_to_configured_model_when_response_model_is_null() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/systemone"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "model": null,
+                "answers": { "urgent": { "type": "noul", "noul": 0.88 } },
+                "usage": { "input_tokens": 50, "output_tokens": 0 }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let response = client(&server, Some("sk-test"))
+            .evaluate(&json!("Hello there!"), &one_question())
+            .await
+            .unwrap();
+        assert_eq!(
+            response.model, "jev-latest",
+            "null model falls back to configured endpoint model"
         );
     }
 

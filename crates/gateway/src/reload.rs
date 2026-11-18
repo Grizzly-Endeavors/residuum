@@ -145,6 +145,7 @@ fn summary_parts(old: &Config, new: &Config) -> Vec<&'static str> {
         || old.temperature != new.temperature
         || old.thinking != new.thinking
         || old.role_overrides != new.role_overrides
+        || old.model_catalog != new.model_catalog
     {
         parts.push("providers");
     }
@@ -174,14 +175,18 @@ fn summary_parts(old: &Config, new: &Config) -> Vec<&'static str> {
     }
     if old.subconscious != new.subconscious
         || old.subconscious_settings != new.subconscious_settings
+        || old.learning != new.learning
     {
         parts.push("subconscious");
     }
     if old.background != new.background {
         parts.push("background");
     }
-    if old.agent != new.agent {
+    if old.agent != new.agent || old.auto_mode != new.auto_mode {
         parts.push("agent abilities");
+    }
+    if old.autostart != new.autostart {
+        parts.push("autostart");
     }
     if old.skills != new.skills {
         parts.push("skills");
@@ -260,6 +265,16 @@ fn provider_credential_changes(old: &Config, new: &Config) -> Vec<String> {
         old.background.models.large.as_deref().unwrap_or_default(),
         new.background.models.large.as_deref().unwrap_or_default(),
     ));
+
+    for name in old
+        .model_catalog
+        .credential_changed_providers(&new.model_catalog)
+    {
+        let prefix = format!("{name} (");
+        if !changes.iter().any(|entry| entry.starts_with(&prefix)) {
+            changes.push(format!("{name} (catalog)"));
+        }
+    }
 
     changes
 }
@@ -594,6 +609,12 @@ async fn rebuild_cheap_components(rt: &mut AgentRuntime, new_cfg: &Config) {
     reload_providers(rt, new_cfg, http_client.clone()).await;
     reload_model_catalog(rt, new_cfg).await;
     rt.spawn_context = build_spawn_context(rt, new_cfg, http_client.clone());
+    // Push the rebuilt `SpawnContext` to the background spawn listener so
+    // sessions forked after this reload (`subagent_spawn`, pulses, scheduled
+    // actions, A2A turns, resumed conversations) use the reloaded provider
+    // chains, credentials, and session tools instead of the startup snapshot.
+    rt.spawn_context_tx
+        .send_replace(Arc::clone(&rt.spawn_context));
     // Pushes to the model-call HTTP endpoint's watch receiver, so `POST
     // /api/agents/{name}/model/complete` resolves providers from this reload without the
     // HTTP router being rebuilt. `.ok()`: the only way this fails is no
@@ -633,13 +654,16 @@ fn build_spawn_context(
     new_cfg: &Config,
     http_client: SharedHttpClient,
 ) -> Arc<SpawnContext> {
-    // Rebuilt fresh so sessions forked after this reload pick up the new
-    // `[observer]` config, mirroring `reload_providers`'s treatment of the
-    // main agent's own observer. A failed rebuild keeps the previous
-    // instance (stale config) rather than losing session extraction
-    // entirely — the same degrade-gracefully choice `reload_providers` makes.
+    // Updated in place on the shared `Arc<Observer>` so both sessions forked
+    // after this reload and any session already holding a clone pick up the
+    // new `[observer]` config and cleared backoff wait while preserving their
+    // failure-streak recovery tracking. A failed rebuild keeps the previous
+    // instance (stale config) rather than losing session extraction entirely.
     let observer = match startup::init_session_observer(new_cfg, rt.tz, http_client.clone()) {
-        Ok(observer) => Arc::new(observer),
+        Ok(observer) => {
+            rt.spawn_context.observer.replace_from(observer);
+            Arc::clone(&rt.spawn_context.observer)
+        }
         Err(err) => {
             tracing::warn!(error = %err, "session observer rebuild failed, keeping current instance");
             Arc::clone(&rt.spawn_context.observer)
@@ -736,11 +760,16 @@ async fn reload_providers(rt: &mut AgentRuntime, new_cfg: &Config, http_client: 
         Ok(components) => {
             rt.agent
                 .swap_provider(components.provider, components.options);
-            rt.observer = Arc::new(components.observer);
+            // Mutate the shared `Arc<Observer>` in place so any already-queued
+            // `MemoryWorker` task sees the new provider and cleared backoff
+            // wait without losing its failure-streak recovery state.
+            rt.observer.replace_from(components.observer);
             rt.merge_writer.swap_reflector(components.reflector).await;
             rt.merge_writer
-                .set_embedding_provider(components.embedding_provider)
+                .set_embedding_provider(components.embedding_provider.clone())
                 .await;
+            rt.hybrid_searcher
+                .set_embedding_provider(components.embedding_provider);
             tracing::debug!("providers swapped successfully");
             if !degradations.is_empty() {
                 publish_notice(
@@ -853,6 +882,9 @@ async fn reload_memory_thresholds(rt: &mut AgentRuntime, new_cfg: &Config) {
             role_overrides: new_cfg.role_overrides.get("reflector").cloned(),
         })
         .await;
+
+    rt.hybrid_searcher
+        .update_config(new_cfg.memory.search.clone());
 
     tracing::debug!("memory thresholds updated");
 }
@@ -1521,5 +1553,86 @@ mod tests {
         let diff = diff_config(&old, &new);
         assert!(!diff.changed);
         assert!(!diff.summary().contains("credential changed for"));
+    }
+
+    #[test]
+    fn diff_config_detects_model_catalog_change_and_catalog_credential_rotation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("config.toml"), "timezone = \"UTC\"\n")
+            .expect("write hub config.toml");
+        let cfg_dir = dir.path().join("config");
+        std::fs::create_dir_all(&cfg_dir).expect("create config dir");
+        std::fs::write(cfg_dir.join("config.toml"), "timezone = \"UTC\"\n")
+            .expect("write agent config.toml");
+        std::fs::write(
+            cfg_dir.join("providers.toml"),
+            r#"[models]
+main = "ollama/qwen3:8b"
+
+[providers.openrouter]
+type = "openai"
+url = "https://openrouter.ai/api/v1"
+api_key = "sk-old-catalog-key"
+"#,
+        )
+        .expect("write providers.toml");
+        let hub = residuum_config::HubConfig::load_at(dir.path()).expect("load hub config");
+        let old = Config::load_agent_at(dir.path(), &hub).expect("load old config");
+
+        std::fs::write(
+            cfg_dir.join("providers.toml"),
+            r#"[models]
+main = "ollama/qwen3:8b"
+
+[providers.openrouter]
+type = "openai"
+url = "https://openrouter.ai/api/v1"
+api_key = "sk-new-catalog-key"
+"#,
+        )
+        .expect("rewrite providers.toml");
+        let new = Config::load_agent_at(dir.path(), &hub).expect("load new config");
+
+        let diff = diff_config(&old, &new);
+        assert!(
+            diff.changed,
+            "an edit to an unreferenced [providers.<name>] catalog entry must mark diff.changed"
+        );
+        assert!(diff.summary().contains("providers"));
+        assert!(
+            diff.summary()
+                .contains("credential changed for openrouter (catalog)"),
+            "summary should name the catalog provider whose credential changed: {}",
+            diff.summary()
+        );
+        assert!(
+            !diff.summary().contains("sk-old-catalog-key")
+                && !diff.summary().contains("sk-new-catalog-key"),
+            "summary must never contain credential values: {}",
+            diff.summary()
+        );
+    }
+
+    #[test]
+    fn diff_config_detects_auto_mode_learning_and_autostart_changes() {
+        let old = test_config();
+
+        let mut new_auto = old.clone();
+        new_auto.auto_mode.enabled = !old.auto_mode.enabled;
+        let auto_diff = diff_config(&old, &new_auto);
+        assert!(auto_diff.changed);
+        assert!(auto_diff.summary().contains("agent abilities"));
+
+        let mut new_learning = old.clone();
+        new_learning.learning.nudge_after_turns = 99;
+        let learning_diff = diff_config(&old, &new_learning);
+        assert!(learning_diff.changed);
+        assert!(learning_diff.summary().contains("subconscious"));
+
+        let mut new_autostart = old.clone();
+        new_autostart.autostart = !old.autostart;
+        let autostart_diff = diff_config(&old, &new_autostart);
+        assert!(autostart_diff.changed);
+        assert!(autostart_diff.summary().contains("autostart"));
     }
 }

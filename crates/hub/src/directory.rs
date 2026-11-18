@@ -119,11 +119,21 @@ pub trait AgentDirectory: TeamDirectory {
     /// [`LifecycleError::NotFound`], or a failure stopping it.
     async fn stop(&self, name: &str) -> Result<AgentSummary, LifecycleError>;
 
-    /// Stop then start an agent.
+    /// Stop then start an agent. When a main turn is running, waits for the
+    /// turn to end (up to the graceful restart timeout) before restarting,
+    /// marking the agent's activity `restart_pending` in the meantime.
     ///
     /// # Errors
     /// As [`Self::stop`] and [`Self::start`].
     async fn restart(&self, name: &str) -> Result<AgentSummary, LifecycleError>;
+
+    /// Stop then start an agent immediately, interrupting any turn in progress.
+    ///
+    /// # Errors
+    /// As [`Self::stop`] and [`Self::start`].
+    async fn restart_now(&self, name: &str) -> Result<AgentSummary, LifecycleError> {
+        self.restart(name).await
+    }
 
     /// Change autostart and/or A2A visibility (writes the agent's config).
     ///

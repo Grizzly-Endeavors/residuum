@@ -281,8 +281,8 @@ export class HubStore {
     return this.lifecycle(name, apiStopAgent, "stop");
   }
 
-  async restartAgent(name: string): Promise<boolean> {
-    return this.lifecycle(name, apiRestartAgent, "restart");
+  async restartAgent(name: string, force = false): Promise<boolean> {
+    return this.lifecycle(name, (n) => apiRestartAgent(n, force), "restart");
   }
 
   async setAutostart(name: string, autostart: boolean): Promise<boolean> {
@@ -367,7 +367,12 @@ export class HubStore {
       case "agent_activity":
         this.activity = {
           ...this.activity,
-          [msg.name]: { busy: msg.busy, busy_since: msg.busy_since, unread: msg.unread },
+          [msg.name]: {
+            busy: msg.busy,
+            busy_since: msg.busy_since,
+            unread: msg.unread,
+            ...(msg.restart_pending === true ? { restart_pending: true } : {}),
+          },
         };
         break;
       case "notice": {

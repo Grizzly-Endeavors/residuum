@@ -117,9 +117,49 @@ async fn stop_agent(State(state): State<LifecycleState>, Path(name): Path<String
     summary_response(state.directory.stop(&name).await)
 }
 
+#[derive(Default, serde::Deserialize)]
+struct RestartParams {
+    #[serde(default)]
+    force: bool,
+}
+
 /// `POST /api/hub/agents/{name}/restart`.
-async fn restart_agent(State(state): State<LifecycleState>, Path(name): Path<String>) -> Response {
-    summary_response(state.directory.restart(&name).await)
+async fn restart_agent(
+    State(state): State<LifecycleState>,
+    Path(name): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<RestartParams>,
+    body: Bytes,
+) -> Response {
+    let body_force = if body.is_empty() {
+        false
+    } else {
+        match parse_body::<RestartParams>(&body) {
+            Ok(params) => params.force,
+            Err(message) => return json_error(StatusCode::BAD_REQUEST, message),
+        }
+    };
+    let force = query.force || body_force;
+    let result = if force {
+        state.directory.restart_now(&name).await
+    } else {
+        state.directory.restart(&name).await
+    };
+    match result {
+        Ok(summary) => {
+            let restart_pending = state
+                .directory
+                .activity()
+                .into_iter()
+                .find(|(agent, _)| agent == &summary.name)
+                .is_some_and(|(_, activity)| activity.restart_pending);
+            let mut value = serde_json::to_value(&summary).unwrap_or_default();
+            if restart_pending && let Some(obj) = value.as_object_mut() {
+                obj.insert("restart_pending".to_string(), serde_json::Value::Bool(true));
+            }
+            Json(value).into_response()
+        }
+        Err(e) => lifecycle_error_response(&e),
+    }
 }
 
 /// `PATCH /api/hub/agents/{name}` — change autostart and/or A2A visibility.

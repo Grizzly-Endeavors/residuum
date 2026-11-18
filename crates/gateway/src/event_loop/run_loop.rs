@@ -536,6 +536,7 @@ struct BusInfrastructure {
     pulse_fire_subscriber: residuum_bus::Subscriber<residuum_bus::PulseFireEvent>,
     notify_handles: Vec<tokio::task::JoinHandle<()>>,
     bus_infra_handles: Vec<tokio::task::JoinHandle<()>>,
+    spawn_context_tx: tokio::sync::watch::Sender<Arc<residuum_background::SpawnContext>>,
 }
 
 /// Subscribe to bus topics and spawn bus-level infrastructure tasks.
@@ -592,10 +593,9 @@ async fn spawn_bus_infrastructure(
     {
         bus_infra_handles.push(h);
     }
-    if let Some(h) =
-        residuum_background::spawn_listener(Arc::clone(&parts.spawn_context), &core.bus_handle)
-            .await
-    {
+    let (spawn_context_tx, spawn_context_rx) =
+        tokio::sync::watch::channel(Arc::clone(&parts.spawn_context));
+    if let Some(h) = residuum_background::spawn_listener(spawn_context_rx, &core.bus_handle).await {
         bus_infra_handles.push(h);
     }
 
@@ -606,6 +606,7 @@ async fn spawn_bus_infrastructure(
         pulse_fire_subscriber,
         notify_handles,
         bus_infra_handles,
+        spawn_context_tx,
     })
 }
 
@@ -675,6 +676,7 @@ async fn build_runtime(
         http_client: parts.http_client,
         auto_mode: parts.auto_mode,
         spawn_context: parts.spawn_context,
+        spawn_context_tx: infra.spawn_context_tx,
         model_call_resources_tx: channels.model_call_resources_tx,
         bus_handle: core.bus_handle,
         publisher: core.publisher,
@@ -1295,10 +1297,27 @@ async fn dispatch_reload(
     rt.reload_done_tx.send_modify(|finished| *finished += 1);
 }
 
+/// Apply `first` and any other reload signals already queued behind it.
+async fn dispatch_pending_reloads(
+    first: ReloadSignal,
+    rt: &mut AgentRuntime,
+    idle_deadline: &mut Option<tokio::time::Instant>,
+    observe_deadline: &mut Option<tokio::time::Instant>,
+) {
+    for signal in drain_pending_reloads(first, &mut rt.reload_rx) {
+        dispatch_reload(signal, rt, idle_deadline, observe_deadline).await;
+    }
+}
+
 /// The message waiting in `deferred_inbound` to run next: one the person asked
 /// to send now goes ahead of the rest. A message withdrawn while it waited
-/// is dropped here, and the next one taken instead.
+/// is dropped here, and the next one taken instead. Returns `None` when a
+/// graceful restart is pending so queued messages stay in `deferred_inbound`
+/// and are persisted by `graceful_shutdown`.
 fn next_deferred_message(rt: &mut AgentRuntime) -> Option<residuum_bus::MessageEvent> {
+    if rt.activity.snapshot().restart_pending {
+        return None;
+    }
     loop {
         let next = rt
             .deferred_inbound
@@ -1329,6 +1348,13 @@ async fn run_agent_loop(mut rt: AgentRuntime) -> AgentExit {
     tracing::info!("agent ready, entering main loop");
 
     loop {
+        // Apply any config reload that arrived during the previous turn before
+        // running deferred inbound messages so the next turn and any sessions
+        // it forks see the updated configuration immediately.
+        if let Ok(first) = rt.reload_rx.try_recv() {
+            dispatch_pending_reloads(first, &mut rt, &mut idle_deadline, &mut observe_deadline)
+                .await;
+        }
         // Messages that arrived after the last turn's final checkpoint run
         // first: their senders are waiting on a reply, and anything queued
         // on the bus arrived after them.
@@ -1352,15 +1378,11 @@ async fn run_agent_loop(mut rt: AgentRuntime) -> AgentExit {
                 return AgentExit::Stopped;
             }
 
-            first = rt.reload_rx.recv() => {
-                if let Some(first) = first {
-                    for signal in drain_pending_reloads(first, &mut rt.reload_rx) {
-                        dispatch_reload(signal, &mut rt, &mut idle_deadline, &mut observe_deadline).await;
-                    }
-                }
+            Some(first) = rt.reload_rx.recv() => {
+                dispatch_pending_reloads(first, &mut rt, &mut idle_deadline, &mut observe_deadline).await;
             }
 
-            event = rt.agent_subscriber.recv() => {
+            event = rt.agent_subscriber.recv(), if !rt.activity.snapshot().restart_pending => {
                 if let Some(exit) = Box::pin(apply_bus_event(event, &mut rt, &mut observe_deadline, &mut idle_deadline)).await {
                     return exit;
                 }
@@ -1373,7 +1395,7 @@ async fn run_agent_loop(mut rt: AgentRuntime) -> AgentExit {
                 }
             }
 
-            _ = pulse_tick.tick(), if rt.pulse_enabled => {
+            _ = pulse_tick.tick(), if rt.pulse_enabled && !rt.activity.snapshot().restart_pending => {
                 handle_pulse_tick(&mut rt).await;
             }
 
@@ -1381,9 +1403,9 @@ async fn run_agent_loop(mut rt: AgentRuntime) -> AgentExit {
 
             fire = rt.pulse_fire_subscriber.recv() => handle_pulse_fire_event(fire, &mut rt),
 
-            _ = action_tick.tick() => check_and_run_due_actions(&mut rt).await,
+            _ = action_tick.tick(), if !rt.activity.snapshot().restart_pending => check_and_run_due_actions(&mut rt).await,
 
-            () = rt.action_notify.notified() => check_and_run_due_actions(&mut rt).await,
+            () = rt.action_notify.notified(), if !rt.activity.snapshot().restart_pending => check_and_run_due_actions(&mut rt).await,
 
             () = wait_for_deadline(observe_deadline) => {
                 observe_deadline = None;

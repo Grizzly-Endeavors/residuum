@@ -160,6 +160,7 @@ impl MemoryMergeWriter {
     /// so the two calls simply agree on the same end state.
     pub async fn swap_reflector(&self, reflector: Reflector) {
         self.state.lock().await.reflector = reflector;
+        self.reflector_failure.clear_backoff_wait();
     }
 
     /// Replace the embedding provider (e.g. after a provider reload).

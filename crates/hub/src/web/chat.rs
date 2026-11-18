@@ -11,12 +11,13 @@ use serde::{Deserialize, Serialize};
 use residuum_agent::usage::load_session_usage_totals;
 use residuum_bus::usage::SessionUsageTotals;
 use residuum_config::WorkspaceLayout;
-use residuum_inference::{Message, readable_thinking};
+use residuum_inference::{Message, Role, readable_thinking};
 use residuum_memory::episode_store::{older_main_episode_id, read_episode_jsonl};
 use residuum_memory::recent_messages::{RecentMessage, load_recent_messages};
 use residuum_memory::types::Visibility;
 
 use super::AgentFilesState;
+use crate::file_server::{FileRegistry, SentAttachment};
 
 /// Query parameters for `GET /api/agents/{name}/chat/history`.
 #[derive(Debug, Deserialize)]
@@ -50,6 +51,10 @@ pub struct HistoryMessage {
     /// The correlation id of the turn that produced the message, if known.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub turn_id: Option<String>,
+    /// File attachment delivered to the web UI by a `send_message(endpoint = "ws")`
+    /// tool call whose result this message records.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sent_attachment: Option<SentAttachment>,
 }
 
 impl From<RecentMessage> for HistoryMessage {
@@ -69,6 +74,7 @@ impl From<RecentMessage> for HistoryMessage {
             timestamp: recent.timestamp,
             visibility: recent.visibility,
             turn_id: recent.turn_id,
+            sent_attachment: None,
         }
     }
 }
@@ -134,6 +140,7 @@ pub(super) async fn api_chat_history(
             let mut messages: Vec<HistoryMessage> =
                 recent.into_iter().map(HistoryMessage::from).collect();
             refresh_attachment_paths(&state.workspace_dir, &mut messages).await;
+            resolve_sent_attachments(&state.file_registry, &mut messages).await;
             let next_cursor = older_main_episode_id(&episodes_dir, None)
                 .await
                 .map_err(|err| {
@@ -181,6 +188,7 @@ pub(super) async fn api_chat_history(
                 .map(|message| HistoryMessage::from(wrap_episode_message(message, timestamp)))
                 .collect();
             refresh_attachment_paths(&state.workspace_dir, &mut messages).await;
+            resolve_sent_attachments(&state.file_registry, &mut messages).await;
 
             let next_cursor = older_main_episode_id(&episodes_dir, Some(&meta.id))
                 .await
@@ -264,6 +272,80 @@ async fn refresh_attachment_paths(workspace_dir: &Path, messages: &mut [HistoryM
                 .join("/");
         }
     }
+}
+
+/// Attach [`SentAttachment`] metadata to any `tool` message that records a
+/// successful `send_message(endpoint = "ws", file_path = ...)` call.
+async fn resolve_sent_attachments(registry: &FileRegistry, messages: &mut [HistoryMessage]) {
+    let mut pending_ws_files: std::collections::HashMap<String, (String, Option<String>)> =
+        std::collections::HashMap::new();
+    for history in messages {
+        match history.message.role {
+            Role::Assistant => {
+                for tc in history.message.tool_calls.iter().flatten() {
+                    if let Some(spec) = parse_ws_file_send(&tc.name, &tc.arguments) {
+                        pending_ws_files.insert(tc.id.clone(), spec);
+                    }
+                }
+            }
+            Role::Tool => {
+                let Some(call_id) = &history.message.tool_call_id else {
+                    continue;
+                };
+                let Some((file_path, caption)) = pending_ws_files.remove(call_id) else {
+                    continue;
+                };
+                if is_ws_publish_success(&history.message.content) {
+                    history.sent_attachment = registry
+                        .resolve_sent_attachment(Path::new(&file_path), caption)
+                        .await;
+                }
+            }
+            Role::User | Role::System => {}
+        }
+    }
+}
+
+/// Extract `(file_path, caption)` from a `send_message` call targeting the
+/// web UI (`endpoint = "ws"`) with a `file_path`.
+fn parse_ws_file_send(
+    name: &str,
+    arguments: &serde_json::Value,
+) -> Option<(String, Option<String>)> {
+    if name != "send_message" {
+        return None;
+    }
+    let endpoint = arguments
+        .get("endpoint")
+        .and_then(serde_json::Value::as_str)?;
+    if endpoint != residuum_config::WEB_UI_ENDPOINT {
+        return None;
+    }
+    if arguments
+        .get("conversation")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|c| !c.is_empty())
+    {
+        return None;
+    }
+    let file_path = arguments
+        .get("file_path")
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.is_empty())?;
+    let caption = arguments
+        .get("message")
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    Some((file_path.to_string(), caption))
+}
+
+/// Whether `content` is the success output of a `send_message` call to `"ws"`.
+fn is_ws_publish_success(content: &str) -> bool {
+    content
+        .lines()
+        .next()
+        .is_some_and(|line| line.ends_with(" published to endpoint 'ws'"))
 }
 
 /// Whether `path` exists as a file. A failed lookup is logged and reads as absent.
@@ -495,5 +577,103 @@ mod tests {
             messages[0].message.attachments[0].path, "inbox/agent/attachments/item-1/notes.md",
             "a file found nowhere keeps the path it was recorded with"
         );
+    }
+
+    #[tokio::test]
+    async fn history_attaches_durable_workspace_url_for_successful_ws_file_send() {
+        let dir = tempfile::tempdir().unwrap();
+        let outbox = dir.path().join("outbox");
+        tokio::fs::create_dir_all(&outbox).await.unwrap();
+        let file = outbox.join("chart.png");
+        tokio::fs::write(&file, b"png-bytes").await.unwrap();
+
+        let call = residuum_inference::ToolCall {
+            id: "call-1".to_string(),
+            name: "send_message".to_string(),
+            arguments: serde_json::json!({
+                "endpoint": "ws",
+                "file_path": file.to_string_lossy(),
+                "message": "Monthly chart"
+            }),
+            server: None,
+        };
+        append_recent_messages(
+            &dir.path().join("recent_messages.json"),
+            &[
+                Message::assistant(String::new(), Some(vec![call])),
+                Message::tool(
+                    "Message and file 'chart.png' published to endpoint 'ws'",
+                    "call-1",
+                ),
+            ],
+            Visibility::User,
+            chrono_tz::UTC,
+            Some("turn-1"),
+        )
+        .await
+        .unwrap();
+
+        let json = history_json(dir.path().to_path_buf()).await;
+        let messages = json
+            .get("messages")
+            .and_then(serde_json::Value::as_array)
+            .unwrap();
+        assert_eq!(
+            messages[1].get("sent_attachment"),
+            Some(&serde_json::json!({
+                "filename": "chart.png",
+                "mime_type": "image/png",
+                "size": 9,
+                "url": "/api/agents/test-agent/files/workspace?path=outbox%2Fchart.png",
+                "caption": "Monthly chart"
+            }))
+        );
+    }
+
+    #[tokio::test]
+    async fn history_omits_sent_attachment_when_send_message_failed_or_file_is_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("chart.png");
+        tokio::fs::write(&file, b"png-bytes").await.unwrap();
+
+        let failed_call = residuum_inference::ToolCall {
+            id: "call-err".to_string(),
+            name: "send_message".to_string(),
+            arguments: serde_json::json!({
+                "endpoint": "ws",
+                "file_path": file.to_string_lossy(),
+            }),
+            server: None,
+        };
+        let missing_call = residuum_inference::ToolCall {
+            id: "call-gone".to_string(),
+            name: "send_message".to_string(),
+            arguments: serde_json::json!({
+                "endpoint": "ws",
+                "file_path": dir.path().join("deleted.png").to_string_lossy(),
+            }),
+            server: None,
+        };
+        append_recent_messages(
+            &dir.path().join("recent_messages.json"),
+            &[
+                Message::assistant(String::new(), Some(vec![failed_call, missing_call])),
+                Message::tool("sessions cannot message the owner directly", "call-err"),
+                Message::tool("File 'deleted.png' published to endpoint 'ws'", "call-gone"),
+            ],
+            Visibility::User,
+            chrono_tz::UTC,
+            Some("turn-1"),
+        )
+        .await
+        .unwrap();
+
+        let json = history_json(dir.path().to_path_buf()).await;
+        let messages = json
+            .get("messages")
+            .and_then(serde_json::Value::as_array)
+            .unwrap();
+        assert!(messages[1].get("sent_attachment").is_none());
+        assert!(messages[2].get("sent_attachment").is_none());
     }
 }

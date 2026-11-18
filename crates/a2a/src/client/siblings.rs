@@ -124,13 +124,21 @@ impl SiblingFanout {
     }
 
     /// Add (or replace) `agent`'s client hub, and give it the most recent
-    /// discovery result.
+    /// discovery result without blocking on remote card fetches.
     pub async fn register(&self, agent: &str, hub: Arc<A2aClientHub>) {
-        let mut inner = self.inner.lock().await;
-        if let Some(last) = inner.last.clone() {
-            hub.set_siblings(last).await;
+        let last = {
+            let mut inner = self.inner.lock().await;
+            inner.hubs.insert(agent.to_string(), Arc::clone(&hub));
+            inner.last.clone()
+        };
+        if let Some(last) = last {
+            let to_refresh = hub.apply_siblings(last).await;
+            if !to_refresh.is_empty() {
+                residuum_core::util::spawn_in_span(async move {
+                    hub.refresh_cards(to_refresh).await;
+                });
+            }
         }
-        inner.hubs.insert(agent.to_string(), hub);
     }
 
     /// Stop fanning results out to `agent`'s hub.
@@ -140,11 +148,13 @@ impl SiblingFanout {
 
     /// Replace the sibling set in every registered hub.
     async fn set_siblings(&self, siblings: Vec<SiblingEntry>) {
-        let mut inner = self.inner.lock().await;
-        for hub in inner.hubs.values() {
-            hub.set_siblings(siblings.clone()).await;
-        }
-        inner.last = Some(siblings);
+        let hubs: Vec<Arc<A2aClientHub>> = {
+            let mut inner = self.inner.lock().await;
+            inner.last = Some(siblings.clone());
+            inner.hubs.values().cloned().collect()
+        };
+        futures_util::future::join_all(hubs.iter().map(|hub| hub.set_siblings(siblings.clone())))
+            .await;
     }
 }
 
@@ -810,6 +820,54 @@ mod tests {
         );
 
         task.abort();
+    }
+
+    #[tokio::test]
+    async fn register_does_not_block_on_stalled_sibling_card_fetch() {
+        let stalled_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let stalled_addr = stalled_listener.local_addr().unwrap();
+        let accepted = Arc::new(tokio::sync::Notify::new());
+        let accepted_signal = Arc::clone(&accepted);
+        let hold_task = residuum_core::util::spawn_in_span(async move {
+            let mut held = Vec::new();
+            while let Ok((socket, _)) = stalled_listener.accept().await {
+                held.push(socket);
+                accepted_signal.notify_waiters();
+            }
+        });
+
+        let first = Arc::new(A2aClientHub::new());
+        let fanout = fanout_of(&first).await;
+        let fanout_for_set = Arc::clone(&fanout);
+        let set_task = residuum_core::util::spawn_in_span(async move {
+            fanout_for_set
+                .set_siblings(vec![(
+                    "beta/atlas".to_string(),
+                    format!("http://{stalled_addr}/a2a/atlas"),
+                    HashMap::new(),
+                )])
+                .await;
+        });
+
+        // Wait until `set_siblings` is actively blocked inside the stalled HTTP card fetch.
+        accepted.notified().await;
+
+        let second = Arc::new(A2aClientHub::new());
+        wait::guarded(
+            "registering a new agent hub while a sibling card fetch is stalled",
+            fanout.register("second", Arc::clone(&second)),
+        )
+        .await;
+
+        let snap = second.snapshot().await;
+        assert_eq!(sibling_names(&snap), ["beta/atlas"]);
+        assert!(matches!(
+            snap.first().map(|a| &a.status),
+            Some(AgentStatus::Pending)
+        ));
+
+        set_task.abort();
+        hold_task.abort();
     }
 
     #[test]

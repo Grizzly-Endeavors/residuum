@@ -164,7 +164,7 @@ impl TurnKickoff {
             } => {
                 let mut msgs = Vec::new();
                 if let Some(ctx) = context {
-                    msgs.push(Message::system(ctx).as_context());
+                    msgs.push(Message::user(ctx).as_context());
                 }
                 let user = if images.is_empty() {
                     Message::user(prompt)
@@ -252,7 +252,17 @@ async fn prepare_session_skill_state(
     skill: Option<&str>,
 ) -> anyhow::Result<(SharedSkillState, Option<String>)> {
     let (cloned_skill_index, skill_dirs) = {
-        let guard = main_skill_state.lock().await;
+        let mut guard = main_skill_state.lock().await;
+        if let Some(name) = skill
+            && guard.index().find_by_name(name).is_none()
+            && let Err(err) = guard.rescan().await
+        {
+            tracing::warn!(
+                skill = %name,
+                error = %err,
+                "failed to rescan skill directories before session fork"
+            );
+        }
         (guard.index().clone(), guard.dirs().to_vec())
     };
     let skill_state = SkillState::new_shared(cloned_skill_index, skill_dirs);
@@ -671,6 +681,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn session_fork_rescans_when_requested_skill_was_added_after_startup() {
+        let agent_skills = tempfile::tempdir().unwrap();
+        let dirs = vec![SkillDir::agent(agent_skills.path())];
+        // Startup scan runs before `newly-added` exists on disk.
+        let index = SkillIndex::scan(&dirs).await.unwrap();
+        let main_state = SkillState::new_shared(index, dirs);
+
+        let new_dir = agent_skills.path().join("newly-added");
+        tokio::fs::create_dir_all(&new_dir).await.unwrap();
+        tokio::fs::write(
+            new_dir.join("SKILL.md"),
+            "---\nname: newly-added\ndescription: added without restart\n---\n\nFresh role body.\n",
+        )
+        .await
+        .unwrap();
+
+        let (session_state, skills_index) =
+            prepare_session_skill_state(&main_state, Some("newly-added"))
+                .await
+                .expect("prepare_session_skill_state should rescan on miss and find newly-added");
+
+        let active = session_state
+            .lock()
+            .await
+            .format_active_for_prompt()
+            .unwrap();
+        assert!(
+            active.contains("Fresh role body."),
+            "newly added skill body should activate without restarting the agent: {active}"
+        );
+        assert!(
+            skills_index
+                .as_deref()
+                .is_some_and(|idx| idx.contains("- newly-added (agent, ")),
+            "rescanned index should include newly-added: {skills_index:?}"
+        );
+        assert!(
+            main_state
+                .lock()
+                .await
+                .index()
+                .find_by_name("newly-added")
+                .is_some(),
+            "main_skill_state should retain the rescanned index"
+        );
+    }
+
+    #[tokio::test]
     async fn subagent_returns_summary() {
         let resources = make_resources("3 new emails found");
         let mut recent_messages = RecentMessages::new();
@@ -880,7 +938,7 @@ mod tests {
         let [context, user, ..] = messages else {
             panic!("expected context then user message, got {messages:?}");
         };
-        assert_eq!(context.role, residuum_inference::Role::System);
+        assert_eq!(context.role, residuum_inference::Role::User);
         assert_eq!(context.content, "[14:00] Sam: build is red");
         assert!(context.context, "the context entry is marked as context");
         assert_eq!(user.role, residuum_inference::Role::User);
@@ -1086,7 +1144,7 @@ mod tests {
         let [context, user, ..] = messages else {
             panic!("expected context then user message, got {messages:?}");
         };
-        assert_eq!(context.role, residuum_inference::Role::System);
+        assert_eq!(context.role, residuum_inference::Role::User);
         assert_eq!(context.content, "[14:00] Sam: build is red");
         assert_eq!(user.content, "can you check the build?");
         assert_eq!(user.sender.as_ref().map(|s| s.name.as_str()), Some("Jane"));

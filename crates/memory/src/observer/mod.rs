@@ -215,6 +215,21 @@ impl Observer {
     pub fn swap_provider(&self, provider: Box<dyn InferenceProvider>) {
         tracing::debug!("swapping observer model provider");
         self.write_inner().provider = Arc::from(provider);
+        self.automatic_failure.clear_backoff_wait();
+    }
+
+    /// Replace this observer's provider and configuration in place from
+    /// `other`, and clear any active failure-backoff wait so the next
+    /// automatic attempt can run immediately against the reloaded provider
+    /// while preserving streak state for recovery notices.
+    pub fn replace_from(&self, other: Self) {
+        tracing::debug!("replacing observer provider and config in place");
+        let new_inner = other
+            .inner
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *self.write_inner() = new_inner;
+        self.automatic_failure.clear_backoff_wait();
     }
 
     /// Check token thresholds and return the appropriate action.
@@ -852,6 +867,71 @@ mod tests {
             result.observations.first().map(|o| o.content.as_str()),
             Some("new provider obs"),
             "content should come from new provider"
+        );
+    }
+
+    #[tokio::test]
+    async fn replace_from_updates_shared_arc_in_place_and_clears_backoff_wait() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        tokio::fs::create_dir_all(layout.episodes_dir())
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(layout.memory_dir())
+            .await
+            .unwrap();
+
+        let observer = Arc::new(Observer::new(
+            Box::new(MockMemoryProvider::new(SAMPLE_RESPONSE)),
+            ObserverConfig {
+                threshold_tokens: 10,
+                ..ObserverConfig::default()
+            },
+        ));
+        let held_by_worker = Arc::clone(&observer);
+
+        assert_eq!(
+            observer.automatic_failure_tracker().record_failure(),
+            residuum_core::util::NoticeAction::FailureStarted
+        );
+        assert_eq!(
+            held_by_worker.automatic_failure_tracker().gate(),
+            residuum_core::util::RetryGate::Skip
+        );
+
+        let new_response = r#"{
+            "observations": [
+                {"content": "reloaded observer obs", "timestamp": "2026-02-21T14:30", "visibility": "user"}
+            ],
+            "narrative": ""
+        }"#;
+        let replacement = Observer::new(
+            Box::new(MockMemoryProvider::new(new_response)),
+            ObserverConfig {
+                threshold_tokens: 42,
+                ..ObserverConfig::default()
+            },
+        );
+        observer.replace_from(replacement);
+
+        assert_eq!(held_by_worker.threshold_tokens(), 42);
+        assert_eq!(
+            held_by_worker.automatic_failure_tracker().gate(),
+            residuum_core::util::RetryGate::Proceed,
+            "replace_from should clear backoff wait on existing Arc clones"
+        );
+        let messages = make_recent_messages(5);
+        let result = held_by_worker
+            .extract(&messages, &layout, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            result.observations.first().map(|o| o.content.as_str()),
+            Some("reloaded observer obs")
+        );
+        assert_eq!(
+            held_by_worker.automatic_failure_tracker().record_success(),
+            residuum_core::util::NoticeAction::Recovered
         );
     }
 

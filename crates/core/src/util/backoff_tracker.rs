@@ -106,6 +106,14 @@ impl BackoffTracker {
         }
     }
 
+    /// Clear any active backoff wait while keeping `consecutive_failures`
+    /// intact, so a configuration reload lets the next attempt run immediately
+    /// against the updated config and still emits [`NoticeAction::Recovered`]
+    /// when it succeeds.
+    pub fn clear_backoff_wait(&self) {
+        self.lock().backoff_until = None;
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
         self.state
             .lock()
@@ -192,6 +200,25 @@ mod tests {
         assert!(
             second_deadline > first_deadline,
             "second consecutive failure should push the deadline further out"
+        );
+    }
+
+    #[test]
+    fn clear_backoff_wait_allows_immediate_retry_and_preserves_recovery_notice() {
+        let tracker = BackoffTracker::new();
+        assert_eq!(tracker.record_failure(), NoticeAction::FailureStarted);
+        assert_eq!(tracker.gate(), RetryGate::Skip);
+
+        tracker.clear_backoff_wait();
+        assert_eq!(
+            tracker.gate(),
+            RetryGate::Proceed,
+            "clearing backoff wait should allow the next attempt right away"
+        );
+        assert_eq!(
+            tracker.record_success(),
+            NoticeAction::Recovered,
+            "preserving the failure streak should still emit Recovered on success"
         );
     }
 }
