@@ -126,7 +126,7 @@ describe("the chat header", () => {
 
   it("counts the agent's running sessions, and opens Activity beside the Chat from them", async () => {
     setViewedAgent("atlas");
-    const openPlace = vi.spyOn(router, "openPlace").mockResolvedValue(true);
+    const openPlace = vi.spyOn(router, "open").mockResolvedValue(true);
     render(ChatPlace, { agent: "atlas", actions: shell });
     expect(screen.queryByRole("button", { name: /running/ })).toBeNull();
 
@@ -134,10 +134,11 @@ describe("the chat header", () => {
     await settle();
     await userEvent.click(screen.getByRole("button", { name: "2 running, open Activity" }));
 
-    expect(openPlace).toHaveBeenCalledWith(
-      { kind: "chat", agent: "atlas" },
-      { panel: { kind: "activity", agent: "atlas" } },
-    );
+    expect(openPlace).toHaveBeenCalledWith({
+      place: { kind: "chat", agent: "atlas" },
+      panel: { kind: "activity", agent: "atlas" },
+      settings: null,
+    });
   });
 
   it("offers the conversation's size, Restart and Stop for a running agent", async () => {

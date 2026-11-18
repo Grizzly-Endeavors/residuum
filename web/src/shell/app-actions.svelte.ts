@@ -15,7 +15,7 @@ import type { InstallOffer } from "../lib/install";
 import type { IconName } from "../lib/icons";
 import { notifications } from "../lib/notifications.svelte";
 import { router } from "../lib/router.svelte";
-import { HOME, INBOX, type Place } from "../lib/routes";
+import { agentPlaceLocation, HOME, INBOX, type Place } from "../lib/routes";
 import {
   AGENT_SECTIONS,
   ALL_SCOPE,
@@ -25,7 +25,6 @@ import {
 import { openSessionByAddress } from "../lib/session-address";
 import { runIcon, runKind } from "../lib/session-format";
 import { ws } from "../lib/ws.svelte";
-import { openAgentPlace } from "./open-agent-place";
 import { AGENT_PLACES, stateWord } from "./rail-model";
 import type { ShellActions } from "./shell-actions";
 
@@ -98,7 +97,7 @@ function agentPlaces(): AppAction[] {
       hint: name,
       icon: entry.icon,
       searchOnly: name !== ws.agent,
-      run: () => void openAgentPlace(name, entry.kind, "page"),
+      run: () => void router.open(agentPlaceLocation(name, entry.kind, "page")),
     })),
   );
 }

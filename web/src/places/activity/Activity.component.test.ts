@@ -206,12 +206,13 @@ describe("Activity", () => {
   });
 
   it("opens Activity beside the agent's Chat from its page header", async () => {
-    const openPlace = vi.spyOn(router, "openPlace").mockResolvedValue(true);
+    const openPlace = vi.spyOn(router, "open").mockResolvedValue(true);
     await showAtlas([]);
     await userEvent.click(screen.getByRole("button", { name: "Open Activity beside chat" }));
-    expect(openPlace).toHaveBeenCalledWith(
-      { kind: "chat", agent: "atlas" },
-      { panel: { kind: "activity", agent: "atlas" } },
-    );
+    expect(openPlace).toHaveBeenCalledWith({
+      place: { kind: "chat", agent: "atlas" },
+      panel: { kind: "activity", agent: "atlas" },
+      settings: null,
+    });
   });
 });

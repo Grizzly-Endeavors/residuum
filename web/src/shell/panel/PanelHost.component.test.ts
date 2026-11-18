@@ -307,23 +307,23 @@ describe("an agent's file beside the Inbox", () => {
 describe("agent places in the context panel", () => {
   it("renders Activity, Schedule and Files in the panel, and maximizes them to the main region", async () => {
     setViewedAgent("atlas");
-    const openPlace = vi.spyOn(router, "openPlace").mockResolvedValue(true);
+    const openPlace = vi.spyOn(router, "open").mockResolvedValue(true);
     render(PanelHost);
 
     await go({ kind: "chat", agent: "atlas" }, { kind: "activity", agent: "atlas" });
     expect(screen.getByRole("heading", { name: "Activity" })).toBeTruthy();
     await userEvent.click(screen.getByRole("button", { name: "Maximize Activity" }));
-    expect(openPlace).toHaveBeenLastCalledWith({ kind: "activity", agent: "atlas" }, {});
+    expect(openPlace).toHaveBeenLastCalledWith(locationAt({ kind: "activity", agent: "atlas" }));
 
     await go({ kind: "chat", agent: "atlas" }, { kind: "schedule", agent: "atlas" });
     expect(screen.getByRole("heading", { name: "Schedule" })).toBeTruthy();
     await userEvent.click(screen.getByRole("button", { name: "Maximize Schedule" }));
-    expect(openPlace).toHaveBeenLastCalledWith({ kind: "schedule", agent: "atlas" }, {});
+    expect(openPlace).toHaveBeenLastCalledWith(locationAt({ kind: "schedule", agent: "atlas" }));
 
     await go({ kind: "chat", agent: "atlas" }, { kind: "files", agent: "atlas" });
     expect(screen.getByRole("heading", { name: "Files" })).toBeTruthy();
     await userEvent.click(screen.getByRole("button", { name: "Maximize Files" }));
-    expect(openPlace).toHaveBeenLastCalledWith({ kind: "files", agent: "atlas" }, {});
+    expect(openPlace).toHaveBeenLastCalledWith(locationAt({ kind: "files", agent: "atlas" }));
   });
 
   it("offers Back to the panel it replaced, and goes back when pressed", async () => {

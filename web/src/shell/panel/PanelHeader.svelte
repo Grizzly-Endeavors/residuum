@@ -31,7 +31,7 @@
 
 <header class="context-panel-head">
   {#if frame.layout === "phone"}
-    <IconButton icon="chevron-left" label="Back" onclick={frame.close} />
+    <IconButton icon="chevron-left" label="Close panel" onclick={frame.close} />
   {/if}
   {#if router.canReturnToPanel}
     <IconButton

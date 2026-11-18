@@ -4,7 +4,7 @@
 import { displayState } from "../lib/agent-display-state";
 import type { AgentActivity, AgentSummary } from "../lib/hub-types";
 import type { IconName } from "../lib/icons";
-import { isAgentPanelKind, type AgentPanelKind, type AgentPlaceKind } from "../lib/routes";
+import { AGENT_PANEL_KINDS, type AgentPanelKind, type AgentPlaceKind } from "../lib/routes";
 import type { StatusDotState } from "../lib/ui";
 
 export interface AgentPlaceEntry<Kind extends AgentPlaceKind = AgentPlaceKind> {
@@ -13,26 +13,26 @@ export interface AgentPlaceEntry<Kind extends AgentPlaceKind = AgentPlaceKind> {
   icon: IconName;
 }
 
+const PLACE_ENTRIES: Record<AgentPlaceKind, { label: string; icon: IconName }> = {
+  chat: { label: "Chat", icon: "chat" },
+  activity: { label: "Activity", icon: "activity" },
+  schedule: { label: "Schedule", icon: "clock" },
+  files: { label: "Files", icon: "folder" },
+};
+
+export function agentPlaceEntry<Kind extends AgentPlaceKind>(kind: Kind): AgentPlaceEntry<Kind> {
+  return { kind, ...PLACE_ENTRIES[kind] };
+}
+
 /** An agent's places, in order: Chat, then the ones the rail lists under the agent. */
-export const AGENT_PLACES: readonly AgentPlaceEntry[] = [
-  { kind: "chat", label: "Chat", icon: "chat" },
-  { kind: "activity", label: "Activity", icon: "activity" },
-  { kind: "schedule", label: "Schedule", icon: "clock" },
-  { kind: "files", label: "Files", icon: "folder" },
-];
+export const AGENT_PLACES: readonly AgentPlaceEntry[] = (
+  ["chat", ...AGENT_PANEL_KINDS] as const
+).map((kind) => agentPlaceEntry(kind));
 
 /** The places listed under an agent in the rail, each of which also opens beside its Chat. */
-export const AGENT_PANEL_PLACES: readonly AgentPlaceEntry<AgentPanelKind>[] = AGENT_PLACES.filter(
-  (entry): entry is AgentPlaceEntry<AgentPanelKind> => isAgentPanelKind(entry.kind),
+export const AGENT_PANEL_PLACES: readonly AgentPlaceEntry<AgentPanelKind>[] = AGENT_PANEL_KINDS.map(
+  (kind) => agentPlaceEntry(kind),
 );
-
-export function agentPlaceEntry(kind: AgentPlaceKind): AgentPlaceEntry {
-  return AGENT_PLACES.find((entry) => entry.kind === kind) ?? { kind, label: kind, icon: "chat" };
-}
-
-export function agentPlaceLabel(kind: AgentPlaceKind): string {
-  return agentPlaceEntry(kind).label;
-}
 
 /** What follows an agent's name in its row: its chat-unread count, a word for its state, or nothing. */
 export type AgentRowTail =

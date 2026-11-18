@@ -1,8 +1,8 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
   import { hub } from "../lib/hub.svelte";
-  import { openAgentPlace } from "./open-agent-place";
-  import type { AgentPanelKind } from "../lib/routes";
+  import { router } from "../lib/router.svelte";
+  import { agentPlaceLocation, type AgentPanelKind } from "../lib/routes";
   import { IconButton } from "../lib/ui";
   import PanelHeader from "./panel/PanelHeader.svelte";
   import PlaceHeader from "./PlaceHeader.svelte";
@@ -35,14 +35,14 @@
       icon="expand"
       label="Maximize {entry.label}"
       size="sm"
-      onclick={() => void openAgentPlace(agent, kind, "page")}
+      onclick={() => void router.open(agentPlaceLocation(agent, kind, "page"))}
     />
   {:else}
     <IconButton
       icon="panel"
       label="Open {entry.label} beside chat"
       size="sm"
-      onclick={() => void openAgentPlace(agent, kind, "beside-chat")}
+      onclick={() => void router.open(agentPlaceLocation(agent, kind, "beside-chat"))}
     />
   {/if}
 {/snippet}

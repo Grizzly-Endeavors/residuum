@@ -65,7 +65,7 @@
 
   /** Go to `to` (push) and close the drawer. */
   function go(to: AppLocation): void {
-    void router.openPlace(to.place, to.panel === null ? {} : { panel: to.panel });
+    void router.open(to);
     onclose?.();
   }
 
@@ -169,6 +169,9 @@
               data-rail-row
               data-rail-agent={agent.name}
               data-viewed={viewed || undefined}
+              aria-current={place.kind === "chat" && place.agent === agent.name
+                ? "page"
+                : undefined}
               onclick={(event) => follow(event, chat, () => accordion.expand(agent.name))}
             >
               <StatusDot state={status.dot} working={status.working} />
@@ -185,7 +188,7 @@
             <button
               type="button"
               class="rail-chevron"
-              aria-label="{expanded ? 'Collapse' : 'Expand'} {agentLabel(agent)}"
+              aria-label="{agentLabel(agent)} places"
               aria-expanded={expanded}
               aria-controls="{uid}-places-{agent.name}"
               onclick={() => accordion.toggle(agent.name)}
@@ -544,6 +547,11 @@
     .rail-row,
     .rail-agent,
     .rail-place {
+      height: var(--layout-touch-target);
+    }
+
+    .rail-chevron {
+      width: var(--layout-touch-target);
       height: var(--layout-touch-target);
     }
   }

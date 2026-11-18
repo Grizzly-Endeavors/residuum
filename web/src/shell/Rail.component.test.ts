@@ -49,7 +49,7 @@ const row = (name: RegExp | string): HTMLElement =>
   });
 
 const caret = (agentName: string): HTMLElement =>
-  screen.getByRole("button", { name: new RegExp(`^(Expand|Collapse) ${agentName}$`) });
+  screen.getByRole("button", { name: `${agentName} places` });
 
 beforeEach(() => {
   stubWebSocket();
@@ -76,11 +76,11 @@ describe("Rail", () => {
 
   it("opens an agent's Chat and expands its places when its name is clicked, without collapsing on a repeat click", async () => {
     const user = userEvent.setup();
-    const navigate = vi.spyOn(router, "openPlace");
+    const navigate = vi.spyOn(router, "open");
     render(Rail, { accordion: new RailAccordion(), actions: actions() });
 
     await user.click(row(/^atlas/));
-    expect(navigate).toHaveBeenLastCalledWith({ kind: "chat", agent: "atlas" }, {});
+    expect(navigate).toHaveBeenLastCalledWith(locationAt({ kind: "chat", agent: "atlas" }));
     expect(caret("atlas")).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByRole("link", { name: "Activity" })).toHaveAttribute(
       "href",
@@ -101,7 +101,7 @@ describe("Rail", () => {
     expect(screen.getByRole("link", { name: "Files" })).toBeVisible();
 
     await user.click(row(/^scout/));
-    expect(navigate).toHaveBeenLastCalledWith({ kind: "chat", agent: "scout" }, {});
+    expect(navigate).toHaveBeenLastCalledWith(locationAt({ kind: "chat", agent: "scout" }));
     expect(caret("atlas")).toHaveAttribute("aria-expanded", "false");
     expect(caret("scout")).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByRole("link", { name: "Activity" })).toHaveAttribute(
@@ -112,7 +112,7 @@ describe("Rail", () => {
 
   it("folds and unfolds an agent's places from its caret without navigating", async () => {
     const user = userEvent.setup();
-    const navigate = vi.spyOn(router, "openPlace");
+    const navigate = vi.spyOn(router, "open");
     render(Rail, { accordion: new RailAccordion(), actions: actions() });
 
     await user.click(caret("atlas"));
@@ -127,19 +127,20 @@ describe("Rail", () => {
 
   it("opens Activity, Schedule and Files as pages, or beside the agent's Chat from their panel buttons", async () => {
     const user = userEvent.setup();
-    const openPlace = vi.spyOn(router, "openPlace").mockResolvedValue(true);
+    const openPlace = vi.spyOn(router, "open").mockResolvedValue(true);
     const accordion = new RailAccordion();
     accordion.expand("atlas");
     render(Rail, { accordion, actions: actions() });
 
     await user.click(screen.getByRole("link", { name: "Schedule" }));
-    expect(openPlace).toHaveBeenLastCalledWith({ kind: "schedule", agent: "atlas" }, {});
+    expect(openPlace).toHaveBeenLastCalledWith(locationAt({ kind: "schedule", agent: "atlas" }));
 
     await user.click(screen.getByRole("button", { name: "Open Files beside chat" }));
-    expect(openPlace).toHaveBeenLastCalledWith(
-      { kind: "chat", agent: "atlas" },
-      { panel: { kind: "files", agent: "atlas" } },
-    );
+    expect(openPlace).toHaveBeenLastCalledWith({
+      place: { kind: "chat", agent: "atlas" },
+      panel: { kind: "files", agent: "atlas" },
+      settings: null,
+    });
     expect(screen.getByRole("button", { name: "Open Activity beside chat" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Open Schedule beside chat" })).toBeTruthy();
   });
@@ -169,6 +170,27 @@ describe("Rail", () => {
     router.location = locationAt({ kind: "chat", agent: "atlas" });
     await tick();
     expect(current()).toEqual([]);
+  });
+
+  it("marks the agent's name current while its Chat is the page, with or without a panel beside it", async () => {
+    const accordion = new RailAccordion();
+    accordion.expand("atlas");
+    router.location = locationAt({ kind: "chat", agent: "atlas" });
+    render(Rail, { accordion, actions: actions() });
+    expect(row(/^atlas/)).toHaveAttribute("aria-current", "page");
+    expect(row(/^scout/)).not.toHaveAttribute("aria-current");
+
+    router.location = {
+      place: { kind: "chat", agent: "atlas" },
+      panel: { kind: "files", agent: "atlas" },
+      settings: null,
+    };
+    await tick();
+    expect(row(/^atlas/)).toHaveAttribute("aria-current", "page");
+
+    router.location = locationAt({ kind: "activity", agent: "atlas" });
+    await tick();
+    expect(row(/^atlas/)).not.toHaveAttribute("aria-current");
   });
 
   it("leaves the beside-chat buttons out of the phone drawer and out of the arrow-key rows", async () => {
@@ -219,7 +241,7 @@ describe("Rail", () => {
   });
 
   it("opens an agent's places as pages from the command palette", () => {
-    const openPlace = vi.spyOn(router, "openPlace").mockResolvedValue(true);
+    const openPlace = vi.spyOn(router, "open").mockResolvedValue(true);
     const unregister = registerAppActions(actions());
     const run = (id: string): void => {
       const action = actionRegistry.all.find((candidate) => candidate.id === id);
@@ -228,11 +250,11 @@ describe("Rail", () => {
     };
 
     run("place:atlas:files");
-    expect(openPlace).toHaveBeenLastCalledWith({ kind: "files", agent: "atlas" }, {});
+    expect(openPlace).toHaveBeenLastCalledWith(locationAt({ kind: "files", agent: "atlas" }));
     run("place:atlas:activity");
-    expect(openPlace).toHaveBeenLastCalledWith({ kind: "activity", agent: "atlas" }, {});
+    expect(openPlace).toHaveBeenLastCalledWith(locationAt({ kind: "activity", agent: "atlas" }));
     run("place:atlas:chat");
-    expect(openPlace).toHaveBeenLastCalledWith({ kind: "chat", agent: "atlas" }, {});
+    expect(openPlace).toHaveBeenLastCalledWith(locationAt({ kind: "chat", agent: "atlas" }));
     unregister();
   });
 

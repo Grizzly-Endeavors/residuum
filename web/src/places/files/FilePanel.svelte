@@ -131,7 +131,7 @@
   title={buffer.name}
   code
   meta={inFolder ? folder : undefined}
-  {actions}
+  actions={buffer.status === "ready" ? actions : undefined}
 />
 
 {#snippet folder()}
@@ -139,21 +139,19 @@
 {/snippet}
 
 {#snippet actions()}
-  {#if buffer.status === "ready"}
-    {#if renderMode !== null}
-      <Button
-        class="file-panel-edit"
-        variant="quiet"
-        size="sm"
-        icon="edit"
-        pressed={!rendered}
-        onclick={() => (buffer.editing = !buffer.editing)}>Edit</Button
-      >
-    {/if}
-    <Button variant="quiet" size="sm" icon="restore" onclick={() => (historyOpen = true)}
-      >History</Button
+  {#if renderMode !== null}
+    <Button
+      class="file-panel-edit"
+      variant="quiet"
+      size="sm"
+      icon="edit"
+      pressed={!rendered}
+      onclick={() => (buffer.editing = !buffer.editing)}>Edit</Button
     >
   {/if}
+  <Button variant="quiet" size="sm" icon="restore" onclick={() => (historyOpen = true)}
+    >History</Button
+  >
 {/snippet}
 
 <svelte:window onkeydown={saveOnShortcut} />
