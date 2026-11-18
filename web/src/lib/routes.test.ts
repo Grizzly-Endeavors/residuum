@@ -1,16 +1,20 @@
 import { describe, expect, it } from "vitest";
 import {
+  AGENT_PANEL_KINDS,
+  agentPlaceLocation,
   correctForAgents,
   correctForArtifacts,
   formatLocation,
   HOME,
   INBOX,
   isAgentName,
+  isAgentPanelKind,
   isArtifactName,
   locationAt,
   locationsEqual,
   panelAllowed,
   parseUrl,
+  showsAgentPlace,
   userInboxRef,
   viewedAgentOf,
   type AppLocation,
@@ -813,5 +817,45 @@ describe("formatting", () => {
     expect(
       locationsEqual(read("/agent/scout").location, read("/agent/scout?panel=size").location),
     ).toBe(false);
+  });
+});
+
+describe("an agent's places", () => {
+  it("knows which places open beside the agent's Chat", () => {
+    expect(AGENT_PANEL_KINDS).toEqual(["activity", "schedule", "files"]);
+    expect(isAgentPanelKind("files")).toBe(true);
+    expect(isAgentPanelKind("chat")).toBe(false);
+    expect(isAgentPanelKind("session")).toBe(false);
+  });
+
+  it("locates each place as a page or beside the agent's Chat", () => {
+    for (const kind of AGENT_PANEL_KINDS) {
+      expect(formatLocation(agentPlaceLocation("scout", kind, "page"))).toBe(
+        `/agent/scout/${kind}`,
+      );
+      expect(formatLocation(agentPlaceLocation("scout", kind, "beside-chat"))).toBe(
+        `/agent/scout?panel=${kind}:scout`,
+      );
+    }
+    const chat = locationAt({ kind: "chat", agent: "scout" });
+    expect(agentPlaceLocation("scout", "chat", "page")).toEqual(chat);
+    expect(agentPlaceLocation("scout", "chat", "beside-chat")).toEqual(chat);
+  });
+
+  it("shows a place when its page is open or it is beside that agent's Chat", () => {
+    const beside = (agent: string, panelAgent: string): AppLocation => ({
+      place: { kind: "chat", agent },
+      panel: { kind: "files", agent: panelAgent },
+      settings: null,
+    });
+    const page = (agent: string): AppLocation => locationAt({ kind: "files", agent });
+    expect(showsAgentPlace(page("scout"), "scout", "files")).toBe(true);
+    expect(showsAgentPlace(beside("scout", "scout"), "scout", "files")).toBe(true);
+    expect(showsAgentPlace(beside("scout", "scout"), "scout", "activity")).toBe(false);
+    expect(showsAgentPlace(beside("scout", "scout"), "atlas", "files")).toBe(false);
+    expect(showsAgentPlace(page("atlas"), "scout", "files")).toBe(false);
+    expect(showsAgentPlace(locationAt({ kind: "chat", agent: "scout" }), "scout", "files")).toBe(
+      false,
+    );
   });
 });
