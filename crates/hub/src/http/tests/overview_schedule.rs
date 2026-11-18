@@ -50,7 +50,7 @@ fn write_pulse_state(h: &Harness, agent: &str, last_runs: &[(&str, &str)]) {
         .collect();
     std::fs::write(
         h.agent_dir(agent).join("pulse_state.json"),
-        json!({ "last_run": last_run }).to_string(),
+        json!({ "anchor": last_run }).to_string(),
     )
     .unwrap();
 }

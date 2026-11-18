@@ -7,6 +7,7 @@
 //! output joins its prompt or, for a `script_only` pulse, is the result
 //! with no session at all (see `script`).
 
+pub mod cadence;
 pub mod edit;
 pub mod executor;
 pub mod next_run;
