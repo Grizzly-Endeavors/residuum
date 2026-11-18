@@ -5,7 +5,7 @@
 // `history.back()`), and "is this entry an overlay's?" (Back then closes the
 // overlay and nothing else).
 
-import { placesEqual, type AppLocation, type Place } from "./routes";
+import { formatLocation, placesEqual, type AppLocation, type Place } from "./routes";
 
 export interface EntryState {
   /** Position among the entries this page lineage pushed; each push is one more than the entry it follows. */
@@ -18,8 +18,19 @@ export interface EntryState {
   panel?: number;
   /** The same, for the thread or New message open in the Inbox, or the artifact selected on the Workbench. */
   item?: number;
+  /**
+   * On an entry that opened a different panel over a panel on the same place:
+   * the address of the panel it replaced. The entry below shows that panel, so
+   * Back returns to it.
+   */
+  backUrl?: string;
   /** Set on an entry pushed for an overlay: same URL as the entry below it. */
   overlay?: string;
+}
+
+/** The address of a location's place and panel, without the Settings modal. */
+export function panelAddress(location: AppLocation): string {
+  return formatLocation({ ...location, settings: null });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -42,6 +53,7 @@ export function readEntry(state: unknown): EntryState | null {
   if (section !== undefined) entry.section = section;
   if (panel !== undefined) entry.panel = panel;
   if (item !== undefined) entry.item = item;
+  if (typeof state.backUrl === "string") entry.backUrl = state.backUrl;
   if (typeof state.overlay === "string") entry.overlay = state.overlay;
   return entry;
 }
@@ -92,6 +104,11 @@ export function entryAfterPush(entry: EntryState, from: AppLocation, to: AppLoca
     if (from.panel === null) next.panel = idx;
     else if (entry.panel !== undefined) next.panel = entry.panel;
   }
+  // A panel opened over another one: the entry below shows the one replaced.
+  if (from.panel !== null && to.panel !== null) {
+    const replaced = panelAddress(from);
+    if (replaced !== panelAddress(to)) next.backUrl = replaced;
+  }
   return next;
 }
 
@@ -122,6 +139,9 @@ export function entryAfterReplace(
   if (to.panel !== null && from.panel !== null && entry.panel !== undefined) {
     next.panel = entry.panel;
   }
+  if (to.panel !== null && from.panel !== null && entry.backUrl !== undefined) {
+    next.backUrl = entry.backUrl;
+  }
   return next;
 }
 
@@ -133,6 +153,7 @@ export function sameEntry(a: EntryState | null, b: EntryState): boolean {
     a.settings === b.settings &&
     a.section === b.section &&
     a.panel === b.panel &&
+    a.backUrl === b.backUrl &&
     a.item === b.item &&
     a.overlay === b.overlay
   );

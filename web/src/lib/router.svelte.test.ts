@@ -329,6 +329,49 @@ describe("the bound agent", () => {
   });
 });
 
+describe("returning to the panel a panel replaced", () => {
+  const activity: Panel = { kind: "activity", agent: "scout" };
+
+  it("is offered once a panel opens over another on the same place, and Back goes there", async () => {
+    const page = await boot("/agent/scout?panel=activity:scout");
+    expect(page.router.canReturnToPanel).toBe(false);
+
+    await page.router.openPanel(run("scout", "run-1"));
+    expect(page.router.canReturnToPanel).toBe(true);
+
+    page.router.returnToPanel();
+    await settle();
+    expect(page.url()).toBe("/agent/scout?panel=activity:scout");
+    expect(page.router.panel).toEqual(activity);
+    expect(page.router.canReturnToPanel).toBe(false);
+  });
+
+  it("is not offered when the panel opened from no panel", async () => {
+    const page = await boot("/agent/scout");
+    await page.router.openPanel(run("scout", "run-1"));
+    expect(page.router.canReturnToPanel).toBe(false);
+  });
+
+  it("is not offered on a deep link to a panel", async () => {
+    const page = await boot("/agent/scout?panel=session:scout:run-1");
+    expect(page.router.canReturnToPanel).toBe(false);
+  });
+
+  it("is not offered after the panel is replaced by the one it replaced", async () => {
+    const page = await boot("/agent/scout?panel=activity:scout");
+    await page.router.openPanel(run("scout", "run-1"));
+    await page.router.replacePanel(activity);
+    expect(page.router.canReturnToPanel).toBe(false);
+  });
+
+  it("is kept while the panel shows another run from inside", async () => {
+    const page = await boot("/agent/scout?panel=activity:scout");
+    await page.router.openPanel(run("scout", "run-1"));
+    await page.router.replacePanel(run("scout", "run-2"));
+    expect(page.router.canReturnToPanel).toBe(true);
+  });
+});
+
 describe("push and replace", () => {
   it("pushes when opening a place", async () => {
     const page = await boot("/agent/scout");

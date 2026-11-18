@@ -326,15 +326,26 @@ describe("agent places in the context panel", () => {
     expect(openPlace).toHaveBeenLastCalledWith({ kind: "files", agent: "atlas" }, {});
   });
 
-  it("offers All files in the file panel when viewing a file on an agent's Chat", async () => {
+  it("offers Back to the panel it replaced, and goes back when pressed", async () => {
     setViewedAgent("atlas");
-    const openPanel = vi.spyOn(router, "openPanel").mockResolvedValue(true);
+    vi.spyOn(router, "canReturnToPanel", "get").mockReturnValue(true);
+    const returnToPanel = vi.spyOn(router, "returnToPanel").mockImplementation(() => {});
     render(PanelHost);
 
-    await go({ kind: "chat", agent: "atlas" }, file(null));
-    expect(await screen.findByText("atlas report")).toBeTruthy();
-    await userEvent.click(screen.getByRole("button", { name: "All files" }));
-    expect(openPanel).toHaveBeenCalledWith({ kind: "files", agent: "atlas" });
+    await go({ kind: "chat", agent: "atlas" }, { kind: "activity", agent: "atlas" });
+    expect(screen.getByRole("heading", { name: "Activity" })).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "Back to previous panel" }));
+    expect(returnToPanel).toHaveBeenCalledOnce();
+  });
+
+  it("hides Back when the panel didn't replace another one", async () => {
+    setViewedAgent("atlas");
+    vi.spyOn(router, "canReturnToPanel", "get").mockReturnValue(false);
+    render(PanelHost);
+
+    await go({ kind: "chat", agent: "atlas" }, { kind: "activity", agent: "atlas" });
+    expect(screen.getByRole("heading", { name: "Activity" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Back to previous panel" })).toBeNull();
   });
 
   it("remembers the panel width across Maximize and Restore", async () => {
