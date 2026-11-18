@@ -268,3 +268,30 @@ test("on the Workbench, a run on any agent shows in the panel", async ({ page, i
   await expect(panel.getByText("Starting with what's already in the wiki.")).toBeVisible();
   await scanPanel(page, isMobile);
 });
+
+test("a run opened from the Activity panel goes Back to the Activity panel", async ({
+  page,
+  isMobile,
+}) => {
+  await page.goto("/agent/atlas?panel=activity:atlas");
+  const activity = contextPanel(page, isMobile, "Activity");
+  await expect(activity).toBeVisible();
+  await activity.getByRole("button", { name: RUN_ROW }).click();
+
+  await expect.poll(() => address(page)).toBe("/agent/atlas?panel=session:atlas:run-live-research");
+  const session = contextPanel(page, isMobile, RUN);
+  await expect(session).toBeVisible();
+  await scanPanel(page, isMobile);
+
+  await session.getByRole("button", { name: "Back to previous panel" }).click();
+  await expect.poll(() => address(page)).toBe("/agent/atlas?panel=activity:atlas");
+  await expect(contextPanel(page, isMobile, "Activity")).toBeVisible();
+  await expect(session).toBeHidden();
+});
+
+test("a panel opened directly has no Back to a previous panel", async ({ page, isMobile }) => {
+  await page.goto("/agent/atlas?panel=session:atlas:run-live-research");
+  const session = contextPanel(page, isMobile, RUN);
+  await expect(session).toBeVisible();
+  await expect(session.getByRole("button", { name: "Back to previous panel" })).toHaveCount(0);
+});

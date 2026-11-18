@@ -144,7 +144,7 @@ test("an agent's own palette lists its places and sessions, and opens a session 
   const running = dialog.getByRole("group", { name: "Running now" });
   await expect(running).toBeVisible();
   await running.getByRole("option").first().click();
-  await expect.poll(() => address(page)).toMatch(/^\/agent\/atlas\/activity\?panel=session:atlas:/);
+  await expect.poll(() => address(page)).toMatch(/^\/agent\/atlas\?panel=session:atlas:/);
 });
 
 test("New message to an agent opens the compose view addressed to it from the palette", async ({

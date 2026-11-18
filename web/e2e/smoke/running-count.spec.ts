@@ -21,7 +21,7 @@ async function railActivity(page: Page, isMobile: boolean): Promise<Locator> {
     await expect(page.getByRole("dialog", { name: "Agents and places" })).toBeVisible();
   }
   const rail = page.getByRole("navigation", { name: "Places and agents" });
-  const agent = rail.getByRole("button", { name: /^atlas\b/ });
+  const agent = rail.getByRole("button", { name: /^(Expand|Collapse) atlas$/ });
   if ((await agent.getAttribute("aria-expanded")) !== "true") await agent.click();
   return rail.getByRole("link", { name: /^Activity/ }).first();
 }
@@ -47,7 +47,7 @@ test("the header pill, the rail and Activity count the same runs", async ({ page
     await expect(page.getByRole("dialog", { name: "Agents and places" })).toBeHidden();
   }
   await pill(page).click();
-  await expect(page).toHaveURL(/\/agent\/atlas\/activity$/);
+  await expect(page).toHaveURL(/\/agent\/atlas\?panel=activity:atlas$/);
   const heading = page.getByRole("heading", { name: /^Running now/ });
   expect(runningIn(await heading.textContent())).toBe(fromPill);
 });

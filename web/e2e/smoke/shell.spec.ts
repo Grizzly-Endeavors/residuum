@@ -21,14 +21,27 @@ async function openRail(page: Page, isMobile: boolean): Promise<Locator> {
   return page.getByRole("navigation", { name: "Places and agents" });
 }
 
+/** An agent's name in the rail: a link to its Chat that also opens its places. */
 function agentRow(rail: Locator, name: string): Locator {
-  return rail.getByRole("button", { name: new RegExp(`^${name}\\b`) });
+  return rail.getByRole("link", { name: new RegExp(`^${name}\\b`) });
+}
+
+/** The chevron beside an agent's name: it opens and closes the places without navigating. */
+function agentChevron(rail: Locator, name: string): Locator {
+  return rail.getByRole("button", { name: new RegExp(`^(Expand|Collapse) ${name}$`) });
 }
 
 /** Open an agent's places in the rail, unless they already are. */
 async function expandAgent(rail: Locator, name: string): Promise<void> {
-  const row = agentRow(rail, name);
-  if ((await row.getAttribute("aria-expanded")) !== "true") await row.click();
+  const chevron = agentChevron(rail, name);
+  if ((await chevron.getAttribute("aria-expanded")) !== "true") await chevron.click();
+}
+
+/** The rail's page link for `place`: an agent's Chat is its name, the other places are sub-rows. */
+function placeLink(rail: Locator, place: { name: string; agent?: string; link: RegExp }): Locator {
+  return place.agent !== undefined && place.name === "Chat"
+    ? agentRow(rail, place.agent)
+    : rail.getByRole("link", { name: place.link });
 }
 
 /** Path and query of the page's URL, decoded, so a test can compare them exactly. */
@@ -109,16 +122,18 @@ test.describe("every place opens from the rail, or the drawer on a phone", () =>
 
       const rail = await openRail(page, isMobile);
       if (place.agent !== undefined) await expandAgent(rail, place.agent);
-      await rail.getByRole("link", { name: place.link }).click();
+      await placeLink(rail, place).click();
 
       await expect.poll(() => address(page), place.name).toBe(place.path);
       await expect(place.shows(page), place.name).toBeVisible();
       await expect(page.getByRole("dialog", { name: "Agents and places" })).toBeHidden();
       if (!isMobile) {
-        await expect(rail.getByRole("link", { name: place.link })).toHaveAttribute(
-          "aria-current",
-          "page",
-        );
+        // An agent's name marks the agent being viewed; the other places carry aria-current.
+        if (place.name === "Chat") {
+          await expect(placeLink(rail, place)).toHaveAttribute("data-viewed");
+        } else {
+          await expect(placeLink(rail, place)).toHaveAttribute("aria-current", "page");
+        }
       }
       await expectNoAxeViolations(page);
     });
@@ -174,31 +189,32 @@ test.describe("the phone's bottom bar", () => {
 });
 
 test.describe("the agent accordion", () => {
-  test("opens one agent at a time, closes the open one on a second press, and never navigates", async ({
+  test("the chevron opens one agent at a time and closes the open one without navigating", async ({
     page,
     isMobile,
   }) => {
     await page.goto("/agent/atlas");
     const rail = await openRail(page, isMobile);
 
-    // The viewed agent starts open.
-    await expect(agentRow(rail, "atlas")).toHaveAttribute("aria-expanded", "true");
-    await expect(rail.getByRole("link", { name: /^Chat$/ })).toHaveAttribute(
-      "aria-current",
-      "page",
-    );
-
-    await agentRow(rail, "scout").click();
-    await expect(agentRow(rail, "scout")).toHaveAttribute("aria-expanded", "true");
-    await expect(agentRow(rail, "atlas")).toHaveAttribute("aria-expanded", "false");
-    await expect(rail.getByRole("link", { name: /^Chat$/ })).toHaveAttribute(
-      "href",
-      "/agent/scout",
-    );
-
-    await agentRow(rail, "scout").click();
-    await expect(agentRow(rail, "scout")).toHaveAttribute("aria-expanded", "false");
+    // The viewed agent starts open, and has no Chat sub-row.
+    await expect(agentChevron(rail, "atlas")).toHaveAttribute("aria-expanded", "true");
     await expect(rail.getByRole("link", { name: /^Chat$/ })).toHaveCount(0);
+    await expect(rail.getByRole("link", { name: /^Activity/ })).toHaveAttribute(
+      "href",
+      "/agent/atlas/activity",
+    );
+
+    await agentChevron(rail, "scout").click();
+    await expect(agentChevron(rail, "scout")).toHaveAttribute("aria-expanded", "true");
+    await expect(agentChevron(rail, "atlas")).toHaveAttribute("aria-expanded", "false");
+    await expect(rail.getByRole("link", { name: /^Activity/ })).toHaveAttribute(
+      "href",
+      "/agent/scout/activity",
+    );
+
+    await agentChevron(rail, "scout").click();
+    await expect(agentChevron(rail, "scout")).toHaveAttribute("aria-expanded", "false");
+    await expect(rail.getByRole("link", { name: /^Activity/ })).toBeHidden();
 
     // Collapsed, the viewed agent keeps its highlight, and the page stays.
     await expect(agentRow(rail, "atlas")).toHaveAttribute("data-viewed");
@@ -206,22 +222,48 @@ test.describe("the agent accordion", () => {
     await expectNoAxeViolations(page);
   });
 
-  test("Enter and Space toggle a row, and Up and Down move between rows", async ({
+  test("an agent's name opens its Chat and its places", async ({ page, isMobile }) => {
+    await page.goto("/home");
+    const rail = await openRail(page, isMobile);
+    await expect(agentChevron(rail, "scout")).toHaveAttribute("aria-expanded", "false");
+
+    await agentRow(rail, "scout").click();
+    await expect.poll(() => address(page)).toBe("/agent/scout");
+    if (!isMobile) {
+      await expect(agentChevron(rail, "scout")).toHaveAttribute("aria-expanded", "true");
+      await expect(rail.getByRole("link", { name: /^Activity/ })).toHaveAttribute(
+        "href",
+        "/agent/scout/activity",
+      );
+    }
+  });
+
+  test("Enter and Space toggle the chevron, and Up and Down move between rows", async ({
     page,
     isMobile,
   }) => {
     await page.goto("/home");
     const rail = await openRail(page, isMobile);
-    await agentRow(rail, "atlas").focus();
+    await agentChevron(rail, "atlas").focus();
 
     await page.keyboard.press("Enter");
-    await expect(agentRow(rail, "atlas")).toHaveAttribute("aria-expanded", "true");
+    await expect(agentChevron(rail, "atlas")).toHaveAttribute("aria-expanded", "true");
+    await page.keyboard.press(" ");
+    await expect(agentChevron(rail, "atlas")).toHaveAttribute("aria-expanded", "false");
+    await page.keyboard.press("Enter");
+    await expect(agentChevron(rail, "atlas")).toHaveAttribute("aria-expanded", "true");
+
+    // The rows are the links: the name, then its places.
+    await agentRow(rail, "atlas").focus();
     await page.keyboard.press("ArrowDown");
-    await expect(rail.getByRole("link", { name: /^Chat$/ })).toBeFocused();
+    await expect(rail.getByRole("link", { name: /^Activity/ })).toBeFocused();
     await page.keyboard.press("ArrowUp");
     await expect(agentRow(rail, "atlas")).toBeFocused();
-    await page.keyboard.press(" ");
-    await expect(agentRow(rail, "atlas")).toHaveAttribute("aria-expanded", "false");
+
+    await agentChevron(rail, "atlas").focus();
+    await page.keyboard.press("Enter");
+    await expect(agentChevron(rail, "atlas")).toHaveAttribute("aria-expanded", "false");
+    await agentRow(rail, "atlas").focus();
     await page.keyboard.press("ArrowDown");
     await expect(agentRow(rail, "brittle")).toBeFocused();
     expect(address(page)).toBe("/home");
@@ -231,11 +273,11 @@ test.describe("the agent accordion", () => {
 test("Back and Forward move between places", async ({ page, isMobile }) => {
   await page.goto("/home");
   let rail = await openRail(page, isMobile);
-  await expandAgent(rail, "atlas");
-  await rail.getByRole("link", { name: /^Chat$/ }).click();
+  await agentRow(rail, "atlas").click();
   await expect.poll(() => address(page)).toBe("/agent/atlas");
 
   rail = await openRail(page, isMobile);
+  await expandAgent(rail, "atlas");
   await rail.getByRole("link", { name: /^Activity/ }).click();
   await expect.poll(() => address(page)).toBe("/agent/atlas/activity");
 
@@ -395,4 +437,37 @@ test("setup mode has no shell, and neither ? nor the palette's keys open anythin
   await page.keyboard.press("ControlOrMeta+k");
   await expect(page.getByRole("dialog", { name: "Keyboard shortcuts" })).toHaveCount(0);
   await expect(page.getByRole("dialog", { name: "Search and commands" })).toHaveCount(0);
+});
+
+test.describe("the rail's beside-chat buttons", () => {
+  test("open a place beside the agent's Chat", async ({ page, isMobile }) => {
+    test.skip(isMobile, "The phone's drawer has no beside-chat buttons; it is covered below.");
+    await page.goto("/home");
+    const rail = await openRail(page, isMobile);
+    await expandAgent(rail, "atlas");
+
+    for (const [label, kind] of [
+      ["Activity", "activity"],
+      ["Schedule", "schedule"],
+      ["Files", "files"],
+    ] as const) {
+      await rail.getByRole("button", { name: `Open ${label} beside chat` }).click();
+      await expect.poll(() => address(page)).toBe(`/agent/atlas?panel=${kind}:atlas`);
+      await expect(page.getByRole("complementary", { name: label })).toBeVisible();
+      await expect(rail.getByRole("link", { name: new RegExp(`^${label}`) })).toHaveAttribute(
+        "aria-current",
+        "page",
+      );
+    }
+    await expectNoAxeViolations(page);
+  });
+
+  test("are absent from the phone's drawer", async ({ page, isMobile }) => {
+    test.skip(!isMobile, "The drawer is the phone's rail.");
+    await page.goto("/home");
+    const rail = await openRail(page, isMobile);
+    await expandAgent(rail, "atlas");
+    await expect(rail.getByRole("link", { name: /^Activity/ })).toBeVisible();
+    await expect(rail.getByRole("button", { name: /beside chat$/ })).toHaveCount(0);
+  });
 });
