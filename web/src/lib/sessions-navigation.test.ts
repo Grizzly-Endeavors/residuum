@@ -21,6 +21,7 @@ function summary(
     started_at: "2026-09-23T12:00:00Z",
     completed_at: null,
     episode_id: null,
+    memory_pending: false,
     interrupted: false,
     usage: {
       input_tokens: 0,
@@ -196,6 +197,7 @@ describe("the finished list", () => {
       run_id: "run-1",
       status: "failed",
       error: "the site timed out",
+      memory_pending: false,
     });
     expect(s.live).toEqual([]);
     const [finished] = s.finished.all.runs;
@@ -206,6 +208,49 @@ describe("the finished list", () => {
     expect(finished?.error_details).toBeNull();
     // A kind not loaded yet takes it with its first page.
     expect(s.finished.spawned.runs).toEqual([]);
+  });
+
+  it("shows a finished run's memory as saving until its merge finishes", () => {
+    const s = store();
+    s.handleFrame({ type: "session_started", session: summary("run-1", "spawned-x-1") });
+    s.handleFrame({ type: "session_started", session: summary("run-2", "spawned-x-2") });
+    for (const [runId, address] of [
+      ["run-1", "spawned-x-1"],
+      ["run-2", "spawned-x-2"],
+    ] as const) {
+      s.handleFrame({
+        type: "session_completed",
+        address,
+        run_id: runId,
+        status: "completed",
+        error: null,
+        memory_pending: true,
+      });
+    }
+    const run = (id: string): SessionSummary | undefined =>
+      s.finished.all.runs.find((r) => r.run_id === id);
+    expect(run("run-1")?.memory_pending).toBe(true);
+
+    s.handleFrame({
+      type: "session_memory_merged",
+      address: "spawned-x-1",
+      run_id: "run-1",
+      episode_id: "ep-042",
+    });
+    expect(run("run-1")?.episode_id).toBe("ep-042");
+    expect(run("run-1")?.memory_pending).toBe(false);
+    // Another run's merge is untouched by this one's frame.
+    expect(run("run-2")?.episode_id).toBeNull();
+    expect(run("run-2")?.memory_pending).toBe(true);
+
+    s.handleFrame({
+      type: "session_memory_merged",
+      address: "spawned-x-2",
+      run_id: "run-2",
+      episode_id: null,
+    });
+    expect(run("run-2")?.episode_id).toBeNull();
+    expect(run("run-2")?.memory_pending).toBe(false);
   });
 
   it("says when a kind's finished runs couldn't load", async () => {
@@ -230,6 +275,7 @@ describe("stopping from the list", () => {
       run_id: "run-1",
       status: "cancelled",
       error: null,
+      memory_pending: false,
     });
     expect(s.stopping.has("spawned-x-1")).toBe(false);
   });

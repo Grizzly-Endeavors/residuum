@@ -86,7 +86,7 @@ function completeSession(
     sessions.live = sessions.live.filter((s) => s.run_id !== session.run_id);
     session.state = "completed";
     session.completed_at = state.env.clock.iso();
-    session.episode_id = status === "completed" ? "ep-301" : null;
+    session.memory_pending = true;
     sessions.completed.unshift(session);
     state.broadcast({
       type: "session_completed",
@@ -95,14 +95,19 @@ function completeSession(
       status,
       error,
       ...(errorDetails === null ? {} : { error_details: errorDetails }),
+      memory_pending: true,
     });
-    if (session.episode_id !== null)
+    // The memory merge runs after the run has left the live list.
+    state.env.after(1500, () => {
+      session.episode_id = status === "completed" ? "ep-301" : null;
+      session.memory_pending = false;
       state.broadcast({
         type: "session_memory_merged",
         address: session.address,
         run_id: session.run_id,
         episode_id: session.episode_id,
       });
+    });
     if (unread.length > 0)
       resumeRun(state, session, { runIdPrefix: "run-resumed", messages: unread });
   });

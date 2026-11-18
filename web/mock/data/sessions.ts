@@ -48,7 +48,14 @@ export interface MockSessions {
  */
 export function untrackedRunFields(): Pick<
   SessionSummary,
-  "usage" | "outcome" | "error" | "error_details" | "overlap" | "model" | "resolved_model"
+  | "usage"
+  | "outcome"
+  | "error"
+  | "error_details"
+  | "memory_pending"
+  | "overlap"
+  | "model"
+  | "resolved_model"
 > {
   return {
     usage: {
@@ -62,6 +69,7 @@ export function untrackedRunFields(): Pick<
     outcome: null,
     error: null,
     error_details: null,
+    memory_pending: false,
     overlap: null,
     model: "medium",
     resolved_model: "anthropic/claude-sonnet-4-6",

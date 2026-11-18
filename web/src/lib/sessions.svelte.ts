@@ -444,6 +444,7 @@ export class SessionsStore {
       outcome: frame.status,
       error: frame.error,
       error_details: frame.error_details ?? null,
+      memory_pending: frame.memory_pending,
     };
     this.finished.all.prepend(finished);
     const kind = this.finished[finished.category];
@@ -451,14 +452,16 @@ export class SessionsStore {
   }
 
   /**
-   * A finished run's memory merge produced an episode. Runs not loaded here
-   * pick it up from the server's listing when they are.
+   * A finished run's memory merge finished, with an episode or none. Runs
+   * not loaded here pick it up from the server's listing when they are.
    */
   private handleMemoryMerged(
     frame: Extract<SessionFrame, { type: "session_memory_merged" }>,
   ): void {
     for (const run of this.completedRuns()) {
-      if (run.run_id === frame.run_id) run.episode_id = frame.episode_id;
+      if (run.run_id !== frame.run_id) continue;
+      run.episode_id = frame.episode_id;
+      run.memory_pending = false;
     }
   }
 
