@@ -85,6 +85,15 @@ impl Cadence {
         self.window
     }
 
+    /// Whether a pulse's clock starts only on a tick inside its window. An
+    /// interval pulse's anchor must land inside the window; a day pulse's slot
+    /// is fixed by the window's start, so its clock starts whenever it is
+    /// first seen.
+    #[must_use]
+    pub fn clock_waits_for_window(&self) -> bool {
+        self.window.is_some() && matches!(self.rule, Rule::Every(_))
+    }
+
     /// The scheduled time a run at `now` answers, if the pulse is due at `now`
     /// given its `anchor`. The caller fires it once and stores the returned
     /// time as the new anchor.
@@ -117,6 +126,19 @@ impl Cadence {
                 (now < self.day_slot_end(slot)).then_some(slot)
             }
         }
+    }
+
+    /// A listed day's slot after `anchor` whose window has closed without a
+    /// run answering it. The caller moves the anchor to it and reports the
+    /// missed run once.
+    #[must_use]
+    pub fn missed_slot(&self, anchor: NaiveDateTime, now: NaiveDateTime) -> Option<NaiveDateTime> {
+        let Rule::OnDays { days, min_gap } = &self.rule else {
+            return None;
+        };
+        let slot = latest_day_slot(days, self.start_time(), now)?;
+        let eligible = slot > anchor && min_gap.is_none_or(|gap| slot >= anchor + gap);
+        (eligible && now >= self.day_slot_end(slot)).then_some(slot)
     }
 
     /// The first moment the pulse is scheduled to run at or after `now`,
@@ -276,6 +298,35 @@ mod tests {
             "overnight window still open"
         );
         assert_eq!(cadence.due_slot(at(1, 0, 0), at(9, 6, 0)), None);
+    }
+
+    #[test]
+    fn a_day_run_whose_window_closed_unanswered_is_missed_once_the_anchor_moves() {
+        let pulse = PulseDef {
+            name: "p".to_string(),
+            enabled: true,
+            schedule: None,
+            days: Some(names(&["sun"])),
+            active_hours: Some("09:00-10:00".to_string()),
+            agent: None,
+            model_tier: None,
+            context_from: None,
+            include_identity: None,
+            tasks: Vec::new(),
+        };
+        let cadence = Cadence::of(&pulse).unwrap();
+        // 2026-03-08 is a Sunday.
+        assert_eq!(cadence.missed_slot(at(7, 12, 0), at(8, 9, 30)), None);
+        assert_eq!(
+            cadence.missed_slot(at(7, 12, 0), at(9, 9, 30)),
+            Some(at(8, 9, 0)),
+            "Monday: Sunday's window closed without a run"
+        );
+        assert_eq!(
+            cadence.missed_slot(at(8, 9, 0), at(9, 9, 30)),
+            None,
+            "a run that answered the slot is not missed"
+        );
     }
 
     #[test]
