@@ -172,6 +172,7 @@ impl PulseScheduler {
 
         let mut due = Vec::new();
         let mut first_seen = false;
+        let mut missed = false;
 
         for pulse in heartbeat.pulses {
             if !pulse.enabled {
@@ -195,18 +196,21 @@ impl PulseScheduler {
                 }
             };
 
-            // Check active hours if configured
-            if let Some((start, end)) = cadence.window()
-                && !is_within_active_hours(now, start, end)
-            {
-                tracing::trace!(pulse = %pulse.name, "skipped: outside active hours");
-                continue;
-            }
-
             // A pulse seen for the first time (new install, or added to
             // HEARTBEAT.yml mid-session) starts its clock now, so its first
-            // run comes one schedule later rather than immediately.
+            // run comes one schedule later rather than immediately. An
+            // interval pulse waits for a tick inside its active hours so its
+            // clock starts inside the window; a day pulse's slot is fixed by
+            // the window, so it starts at once and keeps its first listed day.
             let Some(anchor) = self.anchor.get(&pulse.name).copied() else {
+                if cadence.clock_waits_for_window()
+                    && cadence
+                        .window()
+                        .is_some_and(|(start, end)| !is_within_active_hours(now, start, end))
+                {
+                    tracing::trace!(pulse = %pulse.name, "skipped: outside active hours");
+                    continue;
+                }
                 tracing::debug!(
                     pulse = %pulse.name,
                     "pulse seen for the first time, starting its clock now"
@@ -220,12 +224,20 @@ impl PulseScheduler {
                 tracing::debug!(pulse = %pulse.name, "pulse due, queuing execution");
                 self.anchor.insert(pulse.name.clone(), slot);
                 due.push(pulse);
+            } else if let Some(slot) = cadence.missed_slot(anchor, now) {
+                tracing::info!(
+                    pulse = %pulse.name,
+                    day = %slot.format("%A %Y-%m-%d %H:%M"),
+                    "pulse missed its run: the gateway was not running through the day's active hours"
+                );
+                self.anchor.insert(pulse.name.clone(), slot);
+                missed = true;
             }
         }
 
         self.record_heartbeat_problems(problems);
 
-        if (pruned || first_seen || !due.is_empty())
+        if (pruned || first_seen || missed || !due.is_empty())
             && let Err(e) = self.save_state()
         {
             tracing::warn!(
@@ -1900,6 +1912,40 @@ pulses:
             due_names(&mut scheduler, at(22, 9, 0), &path),
             vec!["review"],
             "the next Sunday"
+        );
+    }
+
+    const EVENING_SUNDAY: &str = "pulses:\n  - name: review\n    days: [sun]\n    active_hours: \"17:30-18:30\"\n    tasks: []\n";
+
+    #[test]
+    fn a_day_pulse_added_outside_its_window_still_runs_its_first_listed_day() {
+        let dir = tempdir().unwrap();
+        let path = write_heartbeat(dir.path(), EVENING_SUNDAY);
+        let mut scheduler = PulseScheduler::new();
+        // Saturday noon, outside the 17:30 window.
+        assert_eq!(
+            due_names(&mut scheduler, at(14, 12, 0), &path),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            due_names(&mut scheduler, at(15, 17, 30), &path),
+            vec!["review"],
+            "the coming Sunday, not a week later"
+        );
+    }
+
+    #[test]
+    fn a_day_pulse_added_on_its_day_before_the_window_runs_that_day() {
+        let dir = tempdir().unwrap();
+        let path = write_heartbeat(dir.path(), EVENING_SUNDAY);
+        let mut scheduler = PulseScheduler::new();
+        assert_eq!(
+            due_names(&mut scheduler, at(15, 9, 0), &path),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            due_names(&mut scheduler, at(15, 17, 30), &path),
+            vec!["review"]
         );
     }
 

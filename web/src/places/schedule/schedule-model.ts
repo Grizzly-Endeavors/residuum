@@ -33,16 +33,26 @@ function dayNames(days: readonly string[]): string {
   return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
 }
 
+/** A `schedule` as a span of time: "2 hours", "1 day"; the raw text when it isn't a count and unit. */
+function spanWords(schedule: string): string {
+  const match = /^(\d+)([smhd])$/.exec(schedule);
+  if (match === null) return schedule;
+  const unit = UNITS[match[2] as keyof typeof UNITS];
+  return `${match[1]} ${unit}${Number(match[1]) === 1 ? "" : "s"}`;
+}
+
 /**
  * How often a pulse runs: "Every 2 hours", "Every day, between 02:00 and 06:00", or for a
- * pulse pinned to weekdays "Every Sunday at midnight". `null` for a pulse with neither.
+ * pulse pinned to weekdays when it runs: "Every Sunday at 17:30" (the start of its active
+ * hours, midnight without any), with ", at least 14 days apart" when it also sets a
+ * `schedule`. `null` for a pulse with neither.
  */
 export function pulseCadence(pulse: PulseInfo): string | null {
   if (pulse.days !== null) {
-    const every = `Every ${dayNames(pulse.days)}`;
-    if (pulse.active_hours === null) return `${every} at midnight`;
-    const [from, to] = pulse.active_hours.split("-");
-    return from && to ? `${every}, between ${from} and ${to}` : `${every}, ${pulse.active_hours}`;
+    const start = pulse.active_hours?.split("-")[0];
+    const at = start ? start : (pulse.active_hours ?? "midnight");
+    const gap = pulse.schedule === null ? "" : `, at least ${spanWords(pulse.schedule)} apart`;
+    return `Every ${dayNames(pulse.days)} at ${at}${gap}`;
   }
   if (pulse.schedule === null) return null;
   const match = /^(\d+)([smhd])$/.exec(pulse.schedule);

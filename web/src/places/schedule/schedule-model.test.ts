@@ -60,7 +60,13 @@ describe("pulseCadence", () => {
   it("reads a pulse pinned to weekdays as a weekly cadence", () => {
     expect(
       pulseCadence(pulse({ schedule: null, days: ["sun"], active_hours: "17:30-18:30" })),
-    ).toBe("Every Sunday, between 17:30 and 18:30");
+    ).toBe("Every Sunday at 17:30");
+    expect(
+      pulseCadence(pulse({ schedule: "14d", days: ["sun"], active_hours: "17:30-18:30" })),
+    ).toBe("Every Sunday at 17:30, at least 14 days apart");
+    expect(pulseCadence(pulse({ schedule: "1d", days: ["sun"] }))).toBe(
+      "Every Sunday at midnight, at least 1 day apart",
+    );
     expect(pulseCadence(pulse({ schedule: null, days: ["Sunday"] }))).toBe(
       "Every Sunday at midnight",
     );

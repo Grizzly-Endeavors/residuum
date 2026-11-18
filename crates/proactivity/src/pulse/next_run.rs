@@ -48,9 +48,16 @@ pub fn next_run_at(
     let this_minute = now.duration_trunc(TimeDelta::minutes(1)).ok()?;
     let now_local = this_minute.with_timezone(&tz).naive_local();
     let anchor = match (anchor, window) {
-        (Some(anchor), _) => anchor,
-        (None, Some((start, end))) => next_active_moment(now_local, start, end)?,
-        (None, None) => now_local,
+        (Some(anchor), _) => {
+            if cadence.due_slot(anchor, now_local).is_some() {
+                return Some(this_minute);
+            }
+            anchor
+        }
+        (None, Some((start, end))) if cadence.clock_waits_for_window() => {
+            next_active_moment(now_local, start, end)?
+        }
+        (None, _) => now_local,
     };
     let scheduled = cadence.next_slot(anchor, now_local)?;
     let at = match window {
@@ -417,6 +424,35 @@ mod tests {
             next_run_at(&sunday, Some(local(8, 9, 0)), utc(8, 9, 30), chrono_tz::UTC),
             Some(utc(15, 9, 0)),
             "after Sunday's run, the next is a week on"
+        );
+    }
+
+    #[test]
+    fn a_day_pulse_never_seen_outside_its_window_runs_on_its_first_listed_day() {
+        let sunday = on_days(&["sun"], Some("17:30-18:30"));
+        assert_eq!(
+            next_run_at(&sunday, None, utc(7, 12, 0), chrono_tz::UTC),
+            Some(utc(8, 17, 30)),
+            "Saturday noon: Sunday at the window start"
+        );
+        assert_eq!(
+            next_run_at(&sunday, None, utc(8, 9, 0), chrono_tz::UTC),
+            Some(utc(8, 17, 30)),
+            "Sunday morning, before the window"
+        );
+    }
+
+    #[test]
+    fn a_day_pulse_due_inside_its_open_window_is_next_this_minute() {
+        let sunday = on_days(&["sun"], Some("09:00-10:00"));
+        assert_eq!(
+            next_run_at(
+                &sunday,
+                Some(local(7, 9, 30)),
+                utc(8, 9, 20),
+                chrono_tz::UTC
+            ),
+            Some(utc(8, 9, 20)),
         );
     }
 
