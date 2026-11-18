@@ -21,8 +21,7 @@
   import { Badge, Banner, Button, EmptyState, SelectField, Skeleton } from "../../lib/ui";
   import type { Choice } from "../../lib/ui";
   import { ws } from "../../lib/ws.svelte";
-  import PlaceHeader from "../../shell/PlaceHeader.svelte";
-  import { agentPlaceLabel } from "../../shell/rail-model";
+  import AgentPlaceHeader from "../../shell/AgentPlaceHeader.svelte";
   import { notRunningTitle } from "../schedule/schedule-model";
   import RunStatus from "./RunStatus.svelte";
 
@@ -32,7 +31,7 @@
   // session the owner starts. The agent is the bound one, so the lists are
   // the coordinator's sessions store.
 
-  let { agent }: { agent: string } = $props();
+  let { agent, inPanel = false }: { agent: string; inPanel?: boolean } = $props();
   const label = $derived(hub.shownName(agent));
 
   const uid = $props.id();
@@ -105,7 +104,7 @@
   <span class="row-title">{run.purpose || run.address}</span>
 {/snippet}
 
-<PlaceHeader title={label} {agent} sub={agentPlaceLabel("activity")} />
+<AgentPlaceHeader {agent} kind="activity" {inPanel} />
 
 <div class="activity-scroll">
   <div class="activity">

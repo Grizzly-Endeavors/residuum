@@ -4,6 +4,8 @@
   import { hub } from "../../lib/hub.svelte";
   import { router } from "../../lib/router.svelte";
   import { EmptyState, Skeleton } from "../../lib/ui";
+  import AgentPlaceHeader from "../../shell/AgentPlaceHeader.svelte";
+  import PlaceHeader from "../../shell/PlaceHeader.svelte";
   import FileHistoryDialog from "./FileHistoryDialog.svelte";
   import { parentDir, type FileSource } from "./file-source";
   import { FileTree } from "./file-tree.svelte";
@@ -12,7 +14,7 @@
   // Files (an agent's folder) and Shared files (the team's): the tree, kept
   // current from the disk. A file opens in the context panel's editor.
 
-  let { source }: { source: FileSource } = $props();
+  let { source, inPanel = false }: { source: FileSource; inPanel?: boolean } = $props();
 
   // The shell keys this place by its source, so the tree is made for one.
   const tree = untrack(() => new FileTree(source));
@@ -37,6 +39,12 @@
     if (shown === from) void router.replacePanel({ kind: "file", path: to, agent: null });
   }
 </script>
+
+{#if source.agent !== null}
+  <AgentPlaceHeader agent={source.agent} kind="files" {inPanel} />
+{:else}
+  <PlaceHeader title="Shared files" />
+{/if}
 
 <div class="files-scroll">
   <div class="files">

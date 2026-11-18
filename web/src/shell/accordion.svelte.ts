@@ -7,9 +7,14 @@ export class RailAccordion {
   open = $state<string | null>(null);
   private viewed: string | null = null;
 
-  /** A press on an agent's row: open it, or close it when it is the one open. Never navigates. */
+  /** A press on an agent's caret: open it, or close it when it is the one open. Never navigates. */
   toggle(name: string): void {
     this.open = this.open === name ? null : name;
+  }
+
+  /** A press on an agent's name: open its places without ever closing them. */
+  expand(name: string): void {
+    this.open = name;
   }
 
   /**

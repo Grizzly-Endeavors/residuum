@@ -15,9 +15,11 @@
     sub?: string | null;
     /** More beside the title, such as Home's tally of its agents. */
     children?: Snippet;
+    /** Buttons at the far end of the bar, for what the place shows. */
+    actions?: Snippet;
   }
 
-  let { title, agent, sub, children }: Props = $props();
+  let { title, agent, sub, children, actions }: Props = $props();
 
   const summary = $derived(agent === undefined ? undefined : hub.agent(agent));
 </script>
@@ -36,6 +38,9 @@
     <span class="place-sub">{sub}</span>
   {/if}
   {@render children?.()}
+  {#if actions}
+    <div class="place-actions">{@render actions()}</div>
+  {/if}
 </header>
 
 <style>
@@ -68,6 +73,15 @@
     font-size: var(--font-size-sm);
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .place-actions {
+    display: flex;
+    flex: none;
+    align-self: center;
+    align-items: center;
+    gap: var(--space-4);
+    margin-left: auto;
   }
 
   @media (max-width: 760px) {

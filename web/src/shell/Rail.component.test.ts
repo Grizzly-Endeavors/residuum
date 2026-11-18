@@ -3,8 +3,10 @@ import { tick } from "svelte";
 import userEvent from "@testing-library/user-event";
 import { render, screen, stubWebSocket } from "../test/component";
 import { activityFrame, snapshot } from "../test/hub-frames";
+import { actionRegistry } from "../lib/action-registry.svelte";
 import { hub } from "../lib/hub.svelte";
 import { router } from "../lib/router.svelte";
+import { HOME, locationAt } from "../lib/routes";
 import type { AgentSummary } from "../lib/hub-types";
 import { RailAccordion } from "./accordion.svelte";
 import { registerAppActions } from "./app-actions.svelte";
@@ -39,12 +41,15 @@ function actions(): ShellActions {
 
 /** An agent row by the start of its name, or by its whole name as read: "atlas, running". */
 const row = (name: RegExp | string): HTMLElement =>
-  screen.getByRole("button", {
+  screen.getByRole("link", {
     name: (accessible) => {
       const read = accessible.replace(/\s+,/g, ",");
       return typeof name === "string" ? read === name : name.test(read);
     },
   });
+
+const caret = (agentName: string): HTMLElement =>
+  screen.getByRole("button", { name: `${agentName} places` });
 
 beforeEach(() => {
   stubWebSocket();
@@ -57,6 +62,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  router.location = locationAt(HOME);
 });
 
 describe("Rail", () => {
@@ -68,30 +74,145 @@ describe("Rail", () => {
     expect(screen.getByRole("link", { name: "Home 1 thing needs you" })).toBeTruthy();
   });
 
-  it("opens one agent's places at a time, and a row press never navigates", async () => {
+  it("opens an agent's Chat and expands its places when its name is clicked, without collapsing on a repeat click", async () => {
     const user = userEvent.setup();
-    const navigate = vi.spyOn(router, "openPlace");
+    const navigate = vi.spyOn(router, "open");
     render(Rail, { accordion: new RailAccordion(), actions: actions() });
 
     await user.click(row(/^atlas/));
-    expect(row(/^atlas/)).toHaveAttribute("aria-expanded", "true");
+    expect(navigate).toHaveBeenLastCalledWith(locationAt({ kind: "chat", agent: "atlas" }));
+    expect(caret("atlas")).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByRole("link", { name: "Activity" })).toHaveAttribute(
       "href",
       "/agent/atlas/activity",
     );
+    expect(screen.getByRole("link", { name: "Schedule" })).toHaveAttribute(
+      "href",
+      "/agent/atlas/schedule",
+    );
+    expect(screen.getByRole("link", { name: "Files" })).toHaveAttribute(
+      "href",
+      "/agent/atlas/files",
+    );
+
+    // Clicking the already-expanded agent's name again never collapses its places.
+    await user.click(row(/^atlas/));
+    expect(caret("atlas")).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("link", { name: "Files" })).toBeVisible();
 
     await user.click(row(/^scout/));
-    expect(row(/^atlas/)).toHaveAttribute("aria-expanded", "false");
-    expect(row(/^scout/)).toHaveAttribute("aria-expanded", "true");
+    expect(navigate).toHaveBeenLastCalledWith(locationAt({ kind: "chat", agent: "scout" }));
+    expect(caret("atlas")).toHaveAttribute("aria-expanded", "false");
+    expect(caret("scout")).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByRole("link", { name: "Activity" })).toHaveAttribute(
       "href",
       "/agent/scout/activity",
     );
+  });
 
-    await user.click(row(/^scout/));
-    expect(row(/^scout/)).toHaveAttribute("aria-expanded", "false");
+  it("folds and unfolds an agent's places from its caret without navigating", async () => {
+    const user = userEvent.setup();
+    const navigate = vi.spyOn(router, "open");
+    render(Rail, { accordion: new RailAccordion(), actions: actions() });
+
+    await user.click(caret("atlas"));
+    expect(caret("atlas")).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("link", { name: "Activity" })).toBeVisible();
+
+    await user.click(caret("atlas"));
+    expect(caret("atlas")).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByRole("link", { name: "Activity" })).toBeNull();
     expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it("opens Activity, Schedule and Files as pages, or beside the agent's Chat from their panel buttons", async () => {
+    const user = userEvent.setup();
+    const openPlace = vi.spyOn(router, "open").mockResolvedValue(true);
+    const accordion = new RailAccordion();
+    accordion.expand("atlas");
+    render(Rail, { accordion, actions: actions() });
+
+    await user.click(screen.getByRole("link", { name: "Schedule" }));
+    expect(openPlace).toHaveBeenLastCalledWith(locationAt({ kind: "schedule", agent: "atlas" }));
+
+    await user.click(screen.getByRole("button", { name: "Open Files beside chat" }));
+    expect(openPlace).toHaveBeenLastCalledWith({
+      place: { kind: "chat", agent: "atlas" },
+      panel: { kind: "files", agent: "atlas" },
+      settings: null,
+    });
+    expect(screen.getByRole("button", { name: "Open Activity beside chat" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Open Schedule beside chat" })).toBeTruthy();
+  });
+
+  it("marks a place current when its page is open or it shows beside the agent's Chat", async () => {
+    const accordion = new RailAccordion();
+    accordion.expand("atlas");
+    router.location = locationAt({ kind: "activity", agent: "atlas" });
+    render(Rail, { accordion, actions: actions() });
+    const current = (): string[] =>
+      ["Activity", "Schedule", "Files"].filter(
+        (name) => screen.getByRole("link", { name }).getAttribute("aria-current") === "page",
+      );
+    expect(current()).toEqual(["Activity"]);
+
+    router.location = {
+      place: { kind: "chat", agent: "atlas" },
+      panel: { kind: "files", agent: "atlas" },
+      settings: null,
+    };
+    await tick();
+    expect(current()).toEqual(["Files"]);
+    expect(screen.getByRole("link", { name: "Files" }).parentElement).toHaveAttribute(
+      "data-current",
+    );
+
+    router.location = locationAt({ kind: "chat", agent: "atlas" });
+    await tick();
+    expect(current()).toEqual([]);
+  });
+
+  it("marks the agent's name current while its Chat is the page, with or without a panel beside it", async () => {
+    const accordion = new RailAccordion();
+    accordion.expand("atlas");
+    router.location = locationAt({ kind: "chat", agent: "atlas" });
+    render(Rail, { accordion, actions: actions() });
+    expect(row(/^atlas/)).toHaveAttribute("aria-current", "page");
+    expect(row(/^scout/)).not.toHaveAttribute("aria-current");
+
+    router.location = {
+      place: { kind: "chat", agent: "atlas" },
+      panel: { kind: "files", agent: "atlas" },
+      settings: null,
+    };
+    await tick();
+    expect(row(/^atlas/)).toHaveAttribute("aria-current", "page");
+
+    router.location = locationAt({ kind: "activity", agent: "atlas" });
+    await tick();
+    expect(row(/^atlas/)).not.toHaveAttribute("aria-current");
+  });
+
+  it("leaves the beside-chat buttons out of the phone drawer and out of the arrow-key rows", async () => {
+    const user = userEvent.setup();
+    const accordion = new RailAccordion();
+    accordion.expand("atlas");
+    const { unmount } = render(Rail, { accordion, actions: actions() });
+
+    // Arrow keys skip the button; Tab reaches it.
+    screen.getByRole("link", { name: "Activity" }).focus();
+    await user.keyboard("{ArrowDown}");
+    expect(document.activeElement).toBe(screen.getByRole("link", { name: "Schedule" }));
+    screen.getByRole("link", { name: "Activity" }).focus();
+    await user.tab();
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "Open Activity beside chat" }),
+    );
+    unmount();
+
+    render(Rail, { accordion, actions: actions(), onclose: vi.fn() });
+    expect(screen.getByRole("link", { name: "Activity" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /beside chat$/ })).toBeNull();
   });
 
   it("moves between the rows that show with the arrow keys, Home and End", async () => {
@@ -102,7 +223,7 @@ describe("Rail", () => {
 
     row(/^atlas/).focus();
     await user.keyboard("{ArrowDown}");
-    expect(document.activeElement).toBe(screen.getByRole("link", { name: "Chat" }));
+    expect(document.activeElement).toBe(screen.getByRole("link", { name: "Activity" }));
     await user.keyboard("{ArrowUp}{ArrowUp}");
     expect(document.activeElement).toBe(screen.getByRole("link", { name: /^Inbox/ }));
     await user.keyboard("{End}");
@@ -117,6 +238,24 @@ describe("Rail", () => {
     hub.handleFrame({ type: "agent_stopping", name: "atlas" });
     await tick();
     expect(row("atlas, stopping, 2 unread")).toBeTruthy();
+  });
+
+  it("opens an agent's places as pages from the command palette", () => {
+    const openPlace = vi.spyOn(router, "open").mockResolvedValue(true);
+    const unregister = registerAppActions(actions());
+    const run = (id: string): void => {
+      const action = actionRegistry.all.find((candidate) => candidate.id === id);
+      expect(action).toBeDefined();
+      action?.run();
+    };
+
+    run("place:atlas:files");
+    expect(openPlace).toHaveBeenLastCalledWith(locationAt({ kind: "files", agent: "atlas" }));
+    run("place:atlas:activity");
+    expect(openPlace).toHaveBeenLastCalledWith(locationAt({ kind: "activity", agent: "atlas" }));
+    run("place:atlas:chat");
+    expect(openPlace).toHaveBeenLastCalledWith(locationAt({ kind: "chat", agent: "atlas" }));
+    unregister();
   });
 
   it("asks the shell for search, Settings, the help menu's items and a new agent", async () => {

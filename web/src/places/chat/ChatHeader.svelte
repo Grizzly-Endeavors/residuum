@@ -3,15 +3,16 @@
   import { hub } from "../../lib/hub.svelte";
   import type { IconName } from "../../lib/icons";
   import { router } from "../../lib/router.svelte";
+  import { agentPlaceLocation } from "../../lib/routes";
   import { runningCount } from "../../lib/running-count";
   import { IconButton, Menu, MenuItem } from "../../lib/ui";
   import PlaceHeader from "../../shell/PlaceHeader.svelte";
 
   // The Chat's title bar: the agent with its role, how much it has running
-  // (the number the rail's Activity row shows, opening Activity, and only while
-  // the agent is up), its settings, and a menu with the conversation's size,
-  // Restart and Stop. The menu's items are the action registry's, so they carry
-  // the same reasons when they can't run.
+  // (the number the rail's Activity row shows, opening Activity beside the
+  // Chat, and only while the agent is up), its settings, and a menu with the
+  // conversation's size, Restart and Stop. The menu's items are the action
+  // registry's, so they carry the same reasons when they can't run.
 
   let { agent }: { agent: string } = $props();
 
@@ -51,7 +52,7 @@
         type="button"
         class="running-pill"
         aria-label="{running} running, open Activity"
-        onclick={() => void router.openPlace({ kind: "activity", agent })}
+        onclick={() => void router.open(agentPlaceLocation(agent, "activity", "beside-chat"))}
       >
         <span class="running-dot" aria-hidden="true"></span>
         {running} running

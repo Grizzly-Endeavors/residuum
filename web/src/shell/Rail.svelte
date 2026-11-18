@@ -7,7 +7,17 @@
   import { overview } from "../lib/overview.svelte";
   import { router } from "../lib/router.svelte";
   import { runningCount } from "../lib/running-count";
-  import { formatLocation, HOME, INBOX, locationAt, placesEqual, type Place } from "../lib/routes";
+  import {
+    agentPlaceLocation,
+    formatLocation,
+    HOME,
+    INBOX,
+    locationAt,
+    placesEqual,
+    showsAgentPlace,
+    type AppLocation,
+    type Place,
+  } from "../lib/routes";
   import {
     Badge,
     Button,
@@ -21,7 +31,7 @@
   } from "../lib/ui";
   import type { RailAccordion } from "./accordion.svelte";
   import InstanceSwitcher from "./InstanceSwitcher.svelte";
-  import { AGENT_PLACES, agentRowStatus } from "./rail-model";
+  import { AGENT_PANEL_PLACES, agentRowStatus } from "./rail-model";
   import type { ShellActions } from "./shell-actions";
 
   // The rail: the search row, Home and Inbox, every agent with its places in
@@ -53,14 +63,20 @@
     return placesEqual(place, target);
   }
 
-  function open(event: MouseEvent, target: Place): void {
-    // A modified click opens the place in a new tab, as a link does.
+  /** Go to `to` (push) and close the drawer. */
+  function go(to: AppLocation): void {
+    void router.open(to);
+    onclose?.();
+  }
+
+  /** A row's link click: a modified click opens the place in a new tab, as a link does. */
+  function follow(event: MouseEvent, to: AppLocation, onFollow?: () => void): void {
     if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) {
       return;
     }
     event.preventDefault();
-    void router.openPlace(target);
-    onclose?.();
+    onFollow?.();
+    go(to);
   }
 
   /** Up and Down move between the rows that show, Home and End go to the ends. */
@@ -93,7 +109,7 @@
       href={formatLocation(locationAt(target))}
       data-rail-row
       aria-current={isCurrent(target) ? "page" : undefined}
-      onclick={(event) => open(event, target)}
+      onclick={(event) => follow(event, locationAt(target))}
     >
       <Icon name={icon} size={15} />
       <span class="rail-label">{label}</span>
@@ -144,45 +160,69 @@
           onItsChat: viewed && place.kind === "chat",
         })}
         {@const expanded = accordion.open === agent.name}
+        {@const chat = agentPlaceLocation(agent.name, "chat", "page")}
         <li>
-          <button
-            type="button"
-            class="rail-agent"
-            data-rail-row
-            data-rail-agent={agent.name}
-            data-viewed={viewed || undefined}
-            aria-expanded={expanded}
-            aria-controls="{uid}-places-{agent.name}"
-            onclick={() => accordion.toggle(agent.name)}
-          >
-            <StatusDot state={status.dot} working={status.working} />
-            <span class="rail-label">{agentLabel(agent)}</span>
-            <span class="rail-tail" aria-hidden="true">
-              {#if status.tail.kind === "unread"}
-                <Badge count={status.tail.count} solid />
-              {:else if status.tail.kind === "word"}
-                <span class="rail-word" data-tone={status.tail.tone}>{status.tail.word}</span>
-              {/if}
-            </span>
-            <span class="rail-chevron"><Icon name="chevron-down" size={14} /></span>
-            <VisuallyHidden>, {status.spoken}</VisuallyHidden>
-          </button>
+          <div class="rail-agent-head">
+            <a
+              class="rail-agent"
+              href={formatLocation(chat)}
+              data-rail-row
+              data-rail-agent={agent.name}
+              data-viewed={viewed || undefined}
+              aria-current={place.kind === "chat" && place.agent === agent.name
+                ? "page"
+                : undefined}
+              onclick={(event) => follow(event, chat, () => accordion.expand(agent.name))}
+            >
+              <StatusDot state={status.dot} working={status.working} />
+              <span class="rail-label">{agentLabel(agent)}</span>
+              <span class="rail-tail" aria-hidden="true">
+                {#if status.tail.kind === "unread"}
+                  <Badge count={status.tail.count} solid />
+                {:else if status.tail.kind === "word"}
+                  <span class="rail-word" data-tone={status.tail.tone}>{status.tail.word}</span>
+                {/if}
+              </span>
+              <VisuallyHidden>, {status.spoken}</VisuallyHidden>
+            </a>
+            <button
+              type="button"
+              class="rail-chevron"
+              aria-label="{agentLabel(agent)} places"
+              aria-expanded={expanded}
+              aria-controls="{uid}-places-{agent.name}"
+              onclick={() => accordion.toggle(agent.name)}
+            >
+              <Icon name="chevron-down" size={14} />
+            </button>
+          </div>
           <ul class="rail-places" id="{uid}-places-{agent.name}" hidden={!expanded}>
-            {#each AGENT_PLACES as entry (entry.kind)}
-              {@const target = { kind: entry.kind, agent: agent.name } satisfies Place}
+            {#each AGENT_PANEL_PLACES as entry (entry.kind)}
               {@const running = entry.kind === "activity" ? runningCount(agent.name) : 0}
-              <li>
+              {@const page = agentPlaceLocation(agent.name, entry.kind, "page")}
+              {@const current = showsAgentPlace(router.location, agent.name, entry.kind)}
+              <li class="rail-place-row" data-current={current || undefined}>
                 <a
                   class="rail-place"
-                  href={formatLocation(locationAt(target))}
+                  href={formatLocation(page)}
                   data-rail-row
-                  aria-current={isCurrent(target) ? "page" : undefined}
-                  onclick={(event) => open(event, target)}
+                  aria-current={current ? "page" : undefined}
+                  onclick={(event) => follow(event, page)}
                 >
                   <Icon name={entry.icon} size={15} />
                   <span class="rail-label">{entry.label}</span>
                   <Badge count={running} label="running" />
                 </a>
+                <!-- In the phone drawer the panel is a full-screen sheet, so beside chat means nothing there. -->
+                {#if !onclose}
+                  <IconButton
+                    class="rail-beside"
+                    icon="panel"
+                    size="sm"
+                    label="Open {entry.label} beside chat"
+                    onclick={() => go(agentPlaceLocation(agent.name, entry.kind, "beside-chat"))}
+                  />
+                {/if}
               </li>
             {/each}
           </ul>
@@ -318,8 +358,30 @@
     }
   }
 
-  .rail-row,
+  .rail-agent-head {
+    display: flex;
+    align-items: center;
+    border-radius: var(--corner-sm);
+    transition: background-color var(--duration-fast) var(--ease-out);
+
+    &:hover {
+      background: var(--color-stone-3);
+    }
+  }
+
   .rail-agent {
+    flex: 1;
+    min-width: 0;
+    gap: var(--space-10);
+    height: 32px;
+    padding: 0 var(--space-4) 0 var(--space-8);
+
+    &:hover {
+      background: none;
+    }
+  }
+
+  .rail-row {
     gap: var(--space-10);
     height: 32px;
     padding: 0 var(--space-8);
@@ -354,15 +416,37 @@
     &[data-tone="accent"] {
       color: var(--color-vein-bright);
     }
+
+    /* text-3 is not allowed on the current row's vein tint; text-2 is. */
+    [aria-current="page"] &[data-tone="quiet"] {
+      color: var(--color-text-2);
+    }
   }
 
   .rail-chevron {
     display: grid;
+    place-items: center;
+    flex: none;
+    width: 26px;
+    height: 26px;
+    margin-right: var(--space-4);
+    border-radius: var(--corner-sm);
     color: var(--color-text-3);
-    transform: rotate(-90deg);
-    transition: transform var(--duration-base) var(--ease-out);
+    transition:
+      background-color var(--duration-fast) var(--ease-out),
+      color var(--duration-fast) var(--ease-out);
 
-    [aria-expanded="true"] > & {
+    &:hover {
+      background: var(--color-stone-4);
+      color: var(--color-text);
+    }
+
+    & :global(svg) {
+      transform: rotate(-90deg);
+      transition: transform var(--duration-base) var(--ease-out);
+    }
+
+    &[aria-expanded="true"] :global(svg) {
       transform: none;
     }
   }
@@ -384,12 +468,48 @@
     }
   }
 
+  /* A place under an agent, and its way to open beside the agent's Chat. The row carries the hover and current fills, so they cover both. */
+  .rail-place-row {
+    display: flex;
+    align-items: center;
+    border-radius: var(--corner-sm);
+    transition: background-color var(--duration-fast) var(--ease-out);
+
+    &:hover {
+      background: var(--color-stone-3);
+    }
+
+    &[data-current] {
+      background: var(--color-vein-tint);
+    }
+
+    /* Beside chat stays out of the way until the row is in play, and shows on the row that is open. */
+    & > :global(.rail-beside) {
+      flex: none;
+      margin-right: var(--space-2);
+      opacity: 0;
+    }
+
+    &:hover > :global(.rail-beside),
+    &:focus-within > :global(.rail-beside),
+    &[data-current] > :global(.rail-beside) {
+      opacity: 1;
+    }
+  }
+
   .rail-place {
     position: relative;
+    flex: 1;
+    min-width: 0;
     gap: 9px;
     height: 30px;
     padding: 0 var(--space-8);
     font-size: var(--font-size-sm);
+
+    &:hover,
+    &[aria-current="page"] {
+      background: none;
+    }
 
     &[aria-current="page"]::before {
       content: "";
@@ -412,6 +532,13 @@
     border-top: 1px solid var(--color-line-soft);
   }
 
+  /* Touch has no hover: beside chat shows on every row. */
+  @media (hover: none) {
+    .rail-place-row > :global(.rail-beside) {
+      opacity: 1;
+    }
+  }
+
   @media (max-width: 760px) {
     .rail-search {
       height: var(--layout-touch-target);
@@ -425,6 +552,11 @@
     .rail-row,
     .rail-agent,
     .rail-place {
+      height: var(--layout-touch-target);
+    }
+
+    .rail-chevron {
+      width: var(--layout-touch-target);
       height: var(--layout-touch-target);
     }
   }

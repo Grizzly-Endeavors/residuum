@@ -63,8 +63,8 @@ test("a file opens in the panel, and Save writes the edits", async ({ page, isMo
   await expect.poll(() => address(page)).toBe("/agent/atlas/files?panel=file:SOUL.md");
   await expect(row(page, "SOUL.md")).toHaveAttribute("aria-current", "true");
   if (isMobile) {
-    // On a phone the editor is the whole screen, with Back.
-    await expect(panel.getByRole("button", { name: "Back" })).toBeVisible();
+    // On a phone the editor is the whole screen, with Close panel.
+    await expect(panel.getByRole("button", { name: "Close panel", exact: true })).toBeVisible();
     const box = await panel.boundingBox();
     expect(box?.width).toBeCloseTo(390, 0);
     expect(box?.height).toBeCloseTo(844, 0);
@@ -116,7 +116,7 @@ test("rename is inline, and a slash moves the file into a folder", async ({ page
 test("delete is immediate, and Undo brings the file back", async ({ page, isMobile }) => {
   await page.goto("/agent/atlas/files");
   const panel = await openFile(page, isMobile, "PRESENCE.toml");
-  if (isMobile) await panel.getByRole("button", { name: "Back" }).click();
+  if (isMobile) await panel.getByRole("button", { name: "Close panel", exact: true }).click();
 
   await rowMenu(page, "PRESENCE.toml");
   await page.getByRole("menuitem", { name: "Delete" }).click();
@@ -233,7 +233,7 @@ test.describe("unsaved edits", () => {
   });
 
   test("are asked about before changing place", async ({ page, isMobile }) => {
-    test.skip(isMobile, "On a phone the editor covers the places; Back is how to leave it.");
+    test.skip(isMobile, "On a phone the editor covers the places; Close panel is how to leave it.");
     await edited(page, false);
     const rail = page.getByRole("navigation", { name: "Places and agents" });
 
@@ -254,7 +254,7 @@ test.describe("unsaved edits", () => {
 
   test("are asked about before the panel closes", async ({ page, isMobile }) => {
     const panel = await edited(page, isMobile);
-    await panel.getByRole("button", { name: isMobile ? "Back" : "Close panel" }).click();
+    await panel.getByRole("button", { name: "Close panel", exact: true }).click();
     await leaveDialog(page).getByRole("button", { name: "Keep editing" }).click();
     await expect(editor(panel, "SOUL.md")).toHaveValue(/Unsaved\.$/);
 

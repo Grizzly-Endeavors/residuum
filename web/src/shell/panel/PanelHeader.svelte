@@ -1,12 +1,15 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
   import { Icon, type IconName } from "../../lib/icons";
+  import { router } from "../../lib/router.svelte";
   import { IconButton } from "../../lib/ui";
   import { panelFrame } from "./panel-frame";
 
   // The top of whatever the context panel shows: what it is, its title (which
   // names the panel), a line of details, its own actions, and the way out:
-  // Close beside the main region, Back on a phone's full-screen sheet.
+  // Close beside the main region, Back on a phone's full-screen sheet. When the
+  // panel replaced another one on this place, a Back before the title returns to
+  // that one.
 
   interface Props {
     icon: IconName;
@@ -28,7 +31,15 @@
 
 <header class="context-panel-head">
   {#if frame.layout === "phone"}
-    <IconButton icon="chevron-left" label="Back" onclick={frame.close} />
+    <IconButton icon="chevron-left" label="Close panel" onclick={frame.close} />
+  {/if}
+  {#if router.canReturnToPanel}
+    <IconButton
+      icon="back"
+      label="Back to previous panel"
+      size="sm"
+      onclick={() => router.returnToPanel()}
+    />
   {/if}
   <div class="context-panel-titles">
     {#if kind !== undefined}

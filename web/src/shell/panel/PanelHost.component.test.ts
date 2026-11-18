@@ -303,3 +303,72 @@ describe("an agent's file beside the Inbox", () => {
     expect(await openEditor()).toBeTruthy();
   });
 });
+
+describe("agent places in the context panel", () => {
+  it("renders Activity, Schedule and Files in the panel, and maximizes them to the main region", async () => {
+    setViewedAgent("atlas");
+    const openPlace = vi.spyOn(router, "open").mockResolvedValue(true);
+    render(PanelHost);
+
+    await go({ kind: "chat", agent: "atlas" }, { kind: "activity", agent: "atlas" });
+    expect(screen.getByRole("heading", { name: "Activity" })).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "Maximize Activity" }));
+    expect(openPlace).toHaveBeenLastCalledWith(locationAt({ kind: "activity", agent: "atlas" }));
+
+    await go({ kind: "chat", agent: "atlas" }, { kind: "schedule", agent: "atlas" });
+    expect(screen.getByRole("heading", { name: "Schedule" })).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "Maximize Schedule" }));
+    expect(openPlace).toHaveBeenLastCalledWith(locationAt({ kind: "schedule", agent: "atlas" }));
+
+    await go({ kind: "chat", agent: "atlas" }, { kind: "files", agent: "atlas" });
+    expect(screen.getByRole("heading", { name: "Files" })).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "Maximize Files" }));
+    expect(openPlace).toHaveBeenLastCalledWith(locationAt({ kind: "files", agent: "atlas" }));
+  });
+
+  it("offers Back to the panel it replaced, and goes back when pressed", async () => {
+    setViewedAgent("atlas");
+    vi.spyOn(router, "canReturnToPanel", "get").mockReturnValue(true);
+    const returnToPanel = vi.spyOn(router, "returnToPanel").mockImplementation(() => {});
+    render(PanelHost);
+
+    await go({ kind: "chat", agent: "atlas" }, { kind: "activity", agent: "atlas" });
+    expect(screen.getByRole("heading", { name: "Activity" })).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "Back to previous panel" }));
+    expect(returnToPanel).toHaveBeenCalledOnce();
+  });
+
+  it("hides Back when the panel didn't replace another one", async () => {
+    setViewedAgent("atlas");
+    vi.spyOn(router, "canReturnToPanel", "get").mockReturnValue(false);
+    render(PanelHost);
+
+    await go({ kind: "chat", agent: "atlas" }, { kind: "activity", agent: "atlas" });
+    expect(screen.getByRole("heading", { name: "Activity" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Back to previous panel" })).toBeNull();
+  });
+
+  it("remembers the panel width across Maximize and Restore", async () => {
+    setViewedAgent("atlas");
+    localStorage.removeItem("residuum-panel-width");
+    vi.stubGlobal("innerWidth", 1400);
+    render(PanelHost);
+
+    await go({ kind: "chat", agent: "atlas" }, { kind: "activity", agent: "atlas" });
+    const grip = screen.getByRole("separator", { name: "Resize panel" });
+    grip.focus();
+    await userEvent.keyboard("{ArrowLeft}");
+    const resizedWidth = grip.getAttribute("aria-valuenow");
+    expect(resizedWidth).toBe("456");
+
+    // Maximize moves Activity to the main region and closes the panel.
+    await go({ kind: "activity", agent: "atlas" }, null);
+    expect(screen.queryByRole("separator", { name: "Resize panel" })).toBeNull();
+
+    // Restore reopens Activity in the side panel at the width set before Maximize.
+    await go({ kind: "chat", agent: "atlas" }, { kind: "activity", agent: "atlas" });
+    expect(
+      screen.getByRole("separator", { name: "Resize panel" }).getAttribute("aria-valuenow"),
+    ).toBe("456");
+  });
+});

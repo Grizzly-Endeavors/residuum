@@ -15,7 +15,7 @@ import type { InstallOffer } from "../lib/install";
 import type { IconName } from "../lib/icons";
 import { notifications } from "../lib/notifications.svelte";
 import { router } from "../lib/router.svelte";
-import { HOME, INBOX, type Place } from "../lib/routes";
+import { agentPlaceLocation, HOME, INBOX, type Place } from "../lib/routes";
 import {
   AGENT_SECTIONS,
   ALL_SCOPE,
@@ -97,7 +97,7 @@ function agentPlaces(): AppAction[] {
       hint: name,
       icon: entry.icon,
       searchOnly: name !== ws.agent,
-      run: open({ kind: entry.kind, agent: name }),
+      run: () => void router.open(agentPlaceLocation(name, entry.kind, "page")),
     })),
   );
 }
@@ -116,7 +116,7 @@ function sessions(): AppAction[] {
     run: () => {
       const panel = { kind: "session", agent, runId: run.run_id } as const;
       if (router.viewedAgent === agent) void router.openPanel(panel);
-      else void router.openPlace({ kind: "activity", agent }, { panel });
+      else void router.openPlace({ kind: "chat", agent }, { panel });
     },
   }));
 }

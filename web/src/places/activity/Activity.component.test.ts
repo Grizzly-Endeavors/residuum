@@ -205,4 +205,15 @@ describe("Activity", () => {
     expect(screen.getByRole("button", { name: "Start drifter" })).toBeVisible();
     expect(screen.queryByRole("heading", { name: /^Running now/ })).toBeNull();
   });
+
+  it("opens Activity beside the agent's Chat from its page header", async () => {
+    const openPlace = vi.spyOn(router, "open").mockResolvedValue(true);
+    await showAtlas([]);
+    await userEvent.click(screen.getByRole("button", { name: "Open Activity beside chat" }));
+    expect(openPlace).toHaveBeenCalledWith({
+      place: { kind: "chat", agent: "atlas" },
+      panel: { kind: "activity", agent: "atlas" },
+      settings: null,
+    });
+  });
 });

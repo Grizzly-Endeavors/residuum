@@ -9,8 +9,6 @@
   import NotFound from "../places/not-found/NotFound.svelte";
   import Schedule from "../places/schedule/Schedule.svelte";
   import Workbench from "../places/workbench/Workbench.svelte";
-  import PlaceHeader from "./PlaceHeader.svelte";
-  import { agentPlaceLabel } from "./rail-model";
   import type { ShellActions } from "./shell-actions";
 
   // The main region's place: Home, Inbox, an agent's Chat, Activity, Schedule
@@ -39,11 +37,6 @@
     <Schedule agent={place.agent} />
   {/key}
 {:else if files !== null && (place.kind === "files" || place.kind === "shared-files")}
-  {#if place.kind === "files"}
-    <PlaceHeader title={place.agent} agent={place.agent} sub={agentPlaceLabel("files")} />
-  {:else}
-    <PlaceHeader title="Shared files" />
-  {/if}
   {#key `${files.scope}:${files.agent ?? ""}`}
     <FilesPlace source={files} />
   {/key}
