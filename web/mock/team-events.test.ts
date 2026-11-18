@@ -370,7 +370,6 @@ describe("the team event routes", () => {
       run_id: run.run_id,
       status: "completed",
       error: null,
-      episode_id: null,
     });
     const failing = { ...run, run_id: "run-action-2", source_label: "action:nightly digest" };
     scout.state.sessions.completed.unshift(failing);
@@ -380,7 +379,6 @@ describe("the team event routes", () => {
       run_id: failing.run_id,
       status: "failed",
       error: "The model is unavailable.",
-      episode_id: null,
     });
 
     const runs = (await fetchPage()).events.filter(

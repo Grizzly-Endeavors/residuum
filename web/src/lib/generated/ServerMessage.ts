@@ -348,11 +348,19 @@ error: string | null,
  * expandable "details" toggle as a live `SessionError`. `None` when
  * there's nothing richer to show.
  */
-error_details?: string, 
+error_details?: string, } | { "type": "session_memory_merged", 
 /**
- * Episode the run was merged into, if it produced one.
+ * Session address.
  */
-episode_id: string | null, } | { "type": "session_start_failed", 
+address: string, 
+/**
+ * Run id.
+ */
+run_id: string, 
+/**
+ * Episode the run was merged into.
+ */
+episode_id: string, } | { "type": "session_start_failed", 
 /**
  * Address the start was given.
  */

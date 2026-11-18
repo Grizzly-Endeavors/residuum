@@ -265,15 +265,13 @@ impl WatchState {
                 run_id: event.run_id.clone(),
                 state: *state,
             }),
-            SessionEventKind::Completed { status, episode_id } => {
-                Some(AgentChangeKind::SessionCompleted {
-                    address: event.address.clone(),
-                    run_id: event.run_id.clone(),
-                    status: status.clone(),
-                    episode_id: episode_id.clone(),
-                })
-            }
-            SessionEventKind::TurnStarted { .. }
+            SessionEventKind::Completed { status } => Some(AgentChangeKind::SessionCompleted {
+                address: event.address.clone(),
+                run_id: event.run_id.clone(),
+                status: status.clone(),
+            }),
+            SessionEventKind::MemoryMerged { .. }
+            | SessionEventKind::TurnStarted { .. }
             | SessionEventKind::TurnEnded { .. }
             | SessionEventKind::MessageRead { .. }
             | SessionEventKind::ToolCall(_)
@@ -621,15 +619,16 @@ mod tests {
                 "run-1",
                 SessionEventKind::Completed {
                     status: AgentResultStatus::Completed,
-                    episode_id: Some("ep-7".to_string()),
                 },
             ),
         )
         .await;
         assert!(matches!(
             rig.next().await,
-            AgentChangeKind::SessionCompleted { status: AgentResultStatus::Completed, episode_id: Some(episode), .. }
-                if episode == "ep-7"
+            AgentChangeKind::SessionCompleted {
+                status: AgentResultStatus::Completed,
+                ..
+            }
         ));
 
         let task = residuum_bus::remote_task::TrackedTask {
@@ -737,7 +736,6 @@ mod tests {
             },
             SessionEventKind::Completed {
                 status: AgentResultStatus::Completed,
-                episode_id: None,
             },
         ];
         for kind in events {

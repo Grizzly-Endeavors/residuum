@@ -811,7 +811,7 @@ mod tests {
                     details: None,
                 },
                 vec![],
-                None,
+                false,
             )
             .await;
 

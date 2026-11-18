@@ -328,7 +328,6 @@ describe("following a run through the hub's session relay", () => {
       status: "failed",
       error: "the site timed out",
       error_details: "timeout after 30s",
-      episode_id: null,
     });
     expect(run.summary).toMatchObject({
       state: "completed",
@@ -351,7 +350,6 @@ describe("following a run through the hub's session relay", () => {
       run_id: "run-1",
       status: "completed",
       error: null,
-      episode_id: null,
     });
     expect(run.summary?.outcome).toBe("completed");
     expect(run.summary?.error_details).toBeNull();
@@ -485,7 +483,6 @@ describe("a message waiting for the session to read it", () => {
       run_id: runId,
       status: "cancelled",
       error: null,
-      episode_id: null,
     });
   };
 

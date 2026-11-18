@@ -901,8 +901,17 @@ pub enum ServerMessage {
         #[serde(skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         error_details: Option<String>,
-        /// Episode the run was merged into, if it produced one.
-        episode_id: Option<String>,
+    },
+    /// A finished run's memory merge produced an episode. Sent after
+    /// `SessionCompleted`, once the merge finishes; a run that produced no
+    /// episode sends nothing.
+    SessionMemoryMerged {
+        /// Session address.
+        address: String,
+        /// Run id.
+        run_id: String,
+        /// Episode the run was merged into.
+        episode_id: String,
     },
     /// A start or a resume of a session the owner started was accepted but
     /// couldn't be forked, so no run was registered for it: no

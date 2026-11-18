@@ -80,14 +80,15 @@ struct SessionEntry {
 }
 
 /// What's needed to resume a completed session as a new run at the same
-/// address: enough of its last run's identity to fork it again, plus a
-/// pointer to what that run produced.
+/// address: enough of its last run's identity to fork it again, plus the id
+/// of that run, which the resumed run uses to retrieve its transcript.
+///
+/// The run's memory merge may still be in flight when this is recorded, so
+/// it names no episode; the run is retrieved by id.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResumePoint {
     /// Run id of the run that completed.
     pub previous_run_id: String,
-    /// Episode the completed run was merged into, if any.
-    pub previous_episode_id: Option<String>,
     /// What triggered the original run — determines the resumed run's
     /// category the same way it did the first time.
     pub trigger: EventTrigger,
@@ -1398,7 +1399,6 @@ mod tests {
     fn sample_resume_point(run_id: &str) -> ResumePoint {
         ResumePoint {
             previous_run_id: run_id.to_string(),
-            previous_episode_id: Some("ep-1".to_string()),
             trigger: EventTrigger::Agent,
             source_label: "agent:researcher".to_string(),
             agent_skill: Some(SkillName::from("researcher")),
@@ -1424,7 +1424,6 @@ mod tests {
             .resume_point(&address)
             .expect("resume point should be recorded");
         assert_eq!(found.previous_run_id, "run-1");
-        assert_eq!(found.previous_episode_id.as_deref(), Some("ep-1"));
         assert_eq!(found.spawner, Some(SessionAddress::from(MAIN_ADDRESS)));
         assert_eq!(found.depth, 1);
     }
@@ -1478,16 +1477,16 @@ mod tests {
     async fn a_resume_point_survives_a_simulated_restart() {
         // A registry rebuilt from the same persisted file stands in for a
         // process restart; it must still resolve the address to its previous
-        // run and episode.
+        // run.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("resume_points.json");
         let address = SessionAddress::from("external-discord-restart-test");
 
         {
             let registry = SessionRegistry::load(path.clone()).await;
-            let mut point = sample_resume_point("run-before-restart");
-            point.previous_episode_id = Some("ep-before-restart".to_string());
-            registry.record_resume_point(&address, point).await;
+            registry
+                .record_resume_point(&address, sample_resume_point("run-before-restart"))
+                .await;
         }
         // The first registry (and everything it held in memory) is dropped
         // here, standing in for the process exiting.
@@ -1497,10 +1496,6 @@ mod tests {
             .resume_point(&address)
             .expect("the resume point must survive the simulated restart");
         assert_eq!(found.previous_run_id, "run-before-restart");
-        assert_eq!(
-            found.previous_episode_id.as_deref(),
-            Some("ep-before-restart")
-        );
     }
 
     #[tokio::test]

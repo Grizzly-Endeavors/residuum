@@ -75,9 +75,12 @@ pub fn session_event_to_server_message(event: SessionEvent) -> ServerMessage {
             run_id,
             state,
         },
-        SessionEventKind::Completed { status, episode_id } => {
-            completed_frame(address, run_id, status, episode_id)
-        }
+        SessionEventKind::Completed { status } => completed_frame(address, run_id, status),
+        SessionEventKind::MemoryMerged { episode_id } => ServerMessage::SessionMemoryMerged {
+            address,
+            run_id,
+            episode_id,
+        },
         SessionEventKind::TurnStarted { turn_id } => ServerMessage::SessionTurnStarted {
             address,
             run_id,
@@ -154,12 +157,7 @@ pub fn session_event_to_server_message(event: SessionEvent) -> ServerMessage {
 }
 
 /// The `SessionCompleted` frame for a run that finished with `status`.
-fn completed_frame(
-    address: String,
-    run_id: String,
-    status: AgentResultStatus,
-    episode_id: Option<String>,
-) -> ServerMessage {
+fn completed_frame(address: String, run_id: String, status: AgentResultStatus) -> ServerMessage {
     let (status, error, error_details) = match status {
         AgentResultStatus::Completed => (SessionRunStatus::Completed, None, None),
         AgentResultStatus::Cancelled => (SessionRunStatus::Cancelled, None, None),
@@ -173,7 +171,6 @@ fn completed_frame(
         status,
         error,
         error_details,
-        episode_id,
     }
 }
 
@@ -239,7 +236,6 @@ mod tests {
                     error: "model down".to_string(),
                     details: None,
                 },
-                episode_id: Some("ep-007".to_string()),
             },
         });
         let json = serde_json::to_value(&msg).unwrap();
@@ -251,7 +247,27 @@ mod tests {
                 "run_id": "run-d",
                 "status": "failed",
                 "error": "model down",
-                "episode_id": "ep-007",
+            })
+        );
+    }
+
+    #[test]
+    fn memory_merged_event_becomes_a_session_memory_merged_frame() {
+        let msg = session_event_to_server_message(SessionEvent {
+            address: SessionAddress::from("spawned-d-0004"),
+            run_id: "run-d4".to_string(),
+            kind: SessionEventKind::MemoryMerged {
+                episode_id: "ep-008".to_string(),
+            },
+        });
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "type": "session_memory_merged",
+                "address": "spawned-d-0004",
+                "run_id": "run-d4",
+                "episode_id": "ep-008",
             })
         );
     }
@@ -297,7 +313,6 @@ mod tests {
                     error: "model down".to_string(),
                     details: Some("connect timeout after 30s".to_string()),
                 },
-                episode_id: None,
             },
         });
         let json = serde_json::to_value(&msg).unwrap();
@@ -310,7 +325,6 @@ mod tests {
                 "status": "failed",
                 "error": "model down",
                 "error_details": "connect timeout after 30s",
-                "episode_id": null,
             }),
             "the full cause chain must reach the client alongside the plain message"
         );

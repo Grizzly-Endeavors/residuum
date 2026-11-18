@@ -375,6 +375,9 @@ export class SessionsStore {
       case "session_command_failed":
         // Replies to socket commands, which this page sends over HTTP instead.
         return;
+      case "session_memory_merged":
+        this.handleMemoryMerged(frame);
+        return;
       case "session_state_changed":
       case "session_completed":
       case "session_turn_started":
@@ -420,6 +423,9 @@ export class SessionsStore {
       case "session_user_message":
         // A run's output is the session panel's, through the hub's relay.
         break;
+      case "session_memory_merged":
+        // Routed to `handleMemoryMerged` by `handleFrame`.
+        break;
     }
   }
 
@@ -435,7 +441,6 @@ export class SessionsStore {
       ...$state.snapshot(live),
       state: "completed",
       completed_at: isoNow(),
-      episode_id: frame.episode_id,
       outcome: frame.status,
       error: frame.error,
       error_details: frame.error_details ?? null,
@@ -443,6 +448,18 @@ export class SessionsStore {
     this.finished.all.prepend(finished);
     const kind = this.finished[finished.category];
     if (kind.loaded) kind.prepend(finished);
+  }
+
+  /**
+   * A finished run's memory merge produced an episode. Runs not loaded here
+   * pick it up from the server's listing when they are.
+   */
+  private handleMemoryMerged(
+    frame: Extract<SessionFrame, { type: "session_memory_merged" }>,
+  ): void {
+    for (const run of this.completedRuns()) {
+      if (run.run_id === frame.run_id) run.episode_id = frame.episode_id;
+    }
   }
 
   // ── Private ──────────────────────────────────────────────────────

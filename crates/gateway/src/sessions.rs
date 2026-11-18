@@ -385,7 +385,6 @@ mod tests {
                 &SessionAddress::from("spawned-b-0001"),
                 ResumePoint {
                     previous_run_id: "run-old".to_string(),
-                    previous_episode_id: None,
                     trigger: EventTrigger::Agent,
                     source_label: "agent:researcher".to_string(),
                     agent_skill: None,

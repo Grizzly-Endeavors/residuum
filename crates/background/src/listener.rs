@@ -1342,7 +1342,6 @@ mod tests {
                 &address,
                 crate::registry::ResumePoint {
                     previous_run_id: "run-winner".to_string(),
-                    previous_episode_id: None,
                     trigger: EventTrigger::Conversation,
                     source_label: "discord:#builds".to_string(),
                     agent_skill: None,
@@ -1402,7 +1401,6 @@ mod tests {
                 &address,
                 crate::registry::ResumePoint {
                     previous_run_id: "run-winner".to_string(),
-                    previous_episode_id: None,
                     trigger: EventTrigger::Conversation,
                     source_label: "discord:#builds".to_string(),
                     agent_skill: None,
@@ -1793,7 +1791,6 @@ mod tests {
                 address,
                 crate::registry::ResumePoint {
                     previous_run_id: "run-previous".to_string(),
-                    previous_episode_id: None,
                     trigger: EventTrigger::Agent,
                     source_label: "owner:session".to_string(),
                     agent_skill: None,

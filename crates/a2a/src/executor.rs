@@ -466,11 +466,12 @@ async fn handle_session_event(
             let update = status_update(stream.task_id, stream.context_id, TaskState::Working, None);
             stream.tx.send(Ok(update)).await.is_err()
         }
-        SessionEventKind::Completed { status, .. } => {
+        SessionEventKind::Completed { status } => {
             handle_run_completed(stream, status, last_final_text).await
         }
         SessionEventKind::StateChanged(_)
         | SessionEventKind::Started(_)
+        | SessionEventKind::MemoryMerged { .. }
         | SessionEventKind::TurnEnded { .. }
         | SessionEventKind::MessageRead { .. }
         | SessionEventKind::ToolCall(_)

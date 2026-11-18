@@ -196,7 +196,6 @@ describe("the finished list", () => {
       run_id: "run-1",
       status: "failed",
       error: "the site timed out",
-      episode_id: null,
     });
     expect(s.live).toEqual([]);
     const [finished] = s.finished.all.runs;
@@ -231,7 +230,6 @@ describe("stopping from the list", () => {
       run_id: "run-1",
       status: "cancelled",
       error: null,
-      episode_id: null,
     });
     expect(s.stopping.has("spawned-x-1")).toBe(false);
   });
