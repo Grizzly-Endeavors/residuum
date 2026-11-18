@@ -22,8 +22,8 @@ To disable either, set `enabled: false` on the pulse (don't delete it — the bl
 pulses:
   - name: check-inbox
     enabled: true
-    schedule: 30m            # Duration: "30s", "5m", "2h", "1d"
-    active_hours: "09:00-17:00"  # Optional — HH:MM-HH:MM window
+    schedule: 30m            # Duration: "30s", "5m", "2h", "1d". Required unless `days` is set
+    active_hours: "09:00-17:00"  # Optional — HH:MM-HH:MM window; with `days`, the time of the run
     agent: ~                 # null → session with no skill
     model_tier: small        # Optional — small (default), medium, large, or a provider/model id
     tasks:
@@ -38,6 +38,10 @@ pulses:
       - name: check_status
         prompt: "Check deployment status."
 ```
+
+### Weekday pulses
+
+`days` pins a pulse to weekdays: `days: [sun]` with `active_hours: "17:30-18:30"` runs every Sunday at 17:30, once. Day names are `mon`–`sun` or full names, any case; an unknown name fails the pulse's load. With `days`, `schedule` is optional and, when given, is the least time between two runs. A run is spaced from its scheduled time, so a run that the gateway reaches late does not move the following ones. A run whose window has closed is skipped, not moved to a later day.
 
 ## Output Chaining (`context_from`)
 
@@ -121,7 +125,7 @@ Editing `HEARTBEAT.yml` via `write_file`/`edit_file`, the Files editor, or `POST
 - If you (the agent) just wrote `HEARTBEAT.yml` yourself, its outcome on the very next scheduler tick arrives as a system note in your own transcript — "reloaded cleanly", the current problem list, or a parse-failure message — so you don't need to ask the user to check for you. A tick that isn't the result of your own write never sends you this note.
 - The scheduler **hot-reloads** `HEARTBEAT.yml` on every tick — edits take effect without restart. The file is parsed generically first, then each pulse entry is deserialized on its own: one bad pulse (a rejected option, a bad field type) is dropped individually and reported as a per-pulse problem, while every other pulse in the file still loads. It's also fully re-validated on every tick — a rejected pulse, a duplicate pulse name, an unparseable `schedule`/`active_hours` string, or a pulse that fails to deserialize — but each is only logged and notified about when the problem set actually changes, not on every tick of an unchanged file. A whole-document YAML syntax error (as opposed to one bad pulse in an otherwise-valid file) keeps the last pulse set that loaded successfully running, rather than firing nothing until it's fixed, and notifies the owner with the parse error (deduped the same way).
 - A pulse fires **immediately on first run** after startup (no wait for the first interval).
-- Last-run timestamps are persisted to `pulse_state.json`, so pulses resume their schedule across restarts. It also holds each pulse's last delivered output (`last_output`) and the outcome of its last fire that ran no session (`last_fire`).
+- Each pulse's anchor (the scheduled time its last run answered) is persisted to `pulse_state.json` as `anchor`, so pulses resume their schedule across restarts. A run that fires late does not move later runs, and a pulse that missed several intervals fires once. It also holds each pulse's last delivered output (`last_output`) and the outcome of its last fire that ran no session (`last_fire`).
 - A fire whose session couldn't start (its model, skill or identity files couldn't be loaded) is recorded as failed, with a plain sentence saying what couldn't be loaded and what to check; the full cause is in the agent's logs.
 - Disabled pulses (`enabled: false`) are skipped entirely.
 - A pulse that comes due while an earlier fire of its own is still in flight (in its scripts, waiting for its session, or with its session live) starts anyway — never skipped, blocked, or cancelled — but is flagged as overlapping: visible on the pulse in the web UI's Schedule place and on the run itself, and logged at `info!` with the pulse name, the earlier fire's id and run id, and how long it had been going. No separate notice for this; the UI flag is the signal.
@@ -132,7 +136,7 @@ Editing `HEARTBEAT.yml` via `write_file`/`edit_file`, the Files editor, or `POST
 
 ## Schedule Place
 
-The web UI's Schedule place (under each agent in the rail, `/agent/<agent>/schedule`) lists every pulse by its name in words ("Inbox check") — how often it runs, active hours, skill, an on/off switch, when it runs next, last outcome (with error if failed, and Open session for its session, or "No session ran" when it ran none), current run ("Running scripts", "Starting session" or "Running session", when it started, an Open session link once it has a session, any overlap with Stop earlier run when the earlier run is a fire, and Stop), and per-pulse loading problems — and every pending scheduled action with Cancel, and Stop for its run in flight. Stop on a pulse's run stops that one fire, and Stop earlier run stops the earlier fire it overlaps; an action's run, or a pulse session no fire tracks, stops through its session. It takes each `pulse_fire_changed` frame's run in flight and outcome at once, and refetches when HEARTBEAT.yml or scheduled_actions.json changes, when a scheduled run starts or ends, and after each fire frame. The schedule endpoints answer only while the agent runs, so a stopped agent's Schedule offers Start instead. A pulse's next fire time is the first moment at or after the later of now and the end of its `schedule` since its last run that falls inside its `active_hours`; it is `null` for a disabled pulse and for every pulse when `[pulse] enabled` is `false` in the agent's `config.toml`. Toggling a pulse's enabled switch edits just that value in HEARTBEAT.yml, leaving the rest of the file untouched. Backed by `GET/PUT /api/agents/<agent>/scheduled/pulses...` (with `POST .../pulses/<pulse>/fires/<fire_id>/stop` to stop one fire) and `GET/DELETE /api/agents/<agent>/scheduled/actions...`; each fire's start, phase change and finish also reaches the agent's socket as a `pulse_fire_changed` frame.
+The web UI's Schedule place (under each agent in the rail, `/agent/<agent>/schedule`) lists every pulse by its name in words ("Inbox check") — how often it runs, active hours, skill, an on/off switch, when it runs next, last outcome (with error if failed, and Open session for its session, or "No session ran" when it ran none), current run ("Running scripts", "Starting session" or "Running session", when it started, an Open session link once it has a session, any overlap with Stop earlier run when the earlier run is a fire, and Stop), and per-pulse loading problems — and every pending scheduled action with Cancel, and Stop for its run in flight. Stop on a pulse's run stops that one fire, and Stop earlier run stops the earlier fire it overlaps; an action's run, or a pulse session no fire tracks, stops through its session. It takes each `pulse_fire_changed` frame's run in flight and outcome at once, and refetches when HEARTBEAT.yml or scheduled_actions.json changes, when a scheduled run starts or ends, and after each fire frame. The schedule endpoints answer only while the agent runs, so a stopped agent's Schedule offers Start instead. A pulse's next fire time is the first moment at or after the later of now and its next scheduled time after its anchor that falls inside its `active_hours`; it is `null` for a disabled pulse and for every pulse when `[pulse] enabled` is `false` in the agent's `config.toml`. Toggling a pulse's enabled switch edits just that value in HEARTBEAT.yml, leaving the rest of the file untouched. Backed by `GET/PUT /api/agents/<agent>/scheduled/pulses...` (with `POST .../pulses/<pulse>/fires/<fire_id>/stop` to stop one fire) and `GET/DELETE /api/agents/<agent>/scheduled/actions...`; each fire's start, phase change and finish also reaches the agent's socket as a `pulse_fire_changed` frame.
 
 ## Gotchas
 

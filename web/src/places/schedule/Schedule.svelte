@@ -251,7 +251,7 @@
                       layout="inline"
                       checked={pulse.enabled}
                       loading={scheduled.pending.has(pulse.name)}
-                      disabled={pulse.schedule === null}
+                      disabled={pulse.schedule === null && pulse.days === null}
                       onchange={() => void scheduled.toggleEnabled(pulse)}
                     />
                   </div>

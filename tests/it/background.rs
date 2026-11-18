@@ -92,7 +92,8 @@ fn build_pulse_execution_creates_correct_structure() {
     let pulse = PulseDef {
         name: "status_check".to_string(),
         enabled: true,
-        schedule: "1h".to_string(),
+        schedule: Some("1h".to_string()),
+        days: None,
         active_hours: None,
         agent: None,
         model_tier: None,

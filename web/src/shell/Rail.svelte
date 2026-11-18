@@ -416,6 +416,11 @@
     &[data-tone="accent"] {
       color: var(--color-vein-bright);
     }
+
+    /* text-3 is not allowed on the current row's vein tint; text-2 is. */
+    [aria-current="page"] &[data-tone="quiet"] {
+      color: var(--color-text-2);
+    }
   }
 
   .rail-chevron {

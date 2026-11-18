@@ -16,8 +16,34 @@ import { runWhen } from "../home/home-model";
 
 const UNITS = { s: "second", m: "minute", h: "hour", d: "day" } as const;
 
-/** How often a pulse runs: "Every 2 hours", "Every day, between 02:00 and 06:00". `null` without a schedule. */
+const WEEKDAYS: Record<string, string> = {
+  mon: "Monday",
+  tue: "Tuesday",
+  wed: "Wednesday",
+  thu: "Thursday",
+  fri: "Friday",
+  sat: "Saturday",
+  sun: "Sunday",
+};
+
+/** A pulse's weekday names, read from their first three letters ("Sunday" and "sun" both name Sunday). */
+function dayNames(days: readonly string[]): string {
+  const names = days.map((day) => WEEKDAYS[day.slice(0, 3).toLowerCase()] ?? day);
+  if (names.length <= 1) return names.join("");
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
+/**
+ * How often a pulse runs: "Every 2 hours", "Every day, between 02:00 and 06:00", or for a
+ * pulse pinned to weekdays "Every Sunday at midnight". `null` for a pulse with neither.
+ */
 export function pulseCadence(pulse: PulseInfo): string | null {
+  if (pulse.days !== null) {
+    const every = `Every ${dayNames(pulse.days)}`;
+    if (pulse.active_hours === null) return `${every} at midnight`;
+    const [from, to] = pulse.active_hours.split("-");
+    return from && to ? `${every}, between ${from} and ${to}` : `${every}, ${pulse.active_hours}`;
+  }
   if (pulse.schedule === null) return null;
   const match = /^(\d+)([smhd])$/.exec(pulse.schedule);
   const unit = match === null ? null : UNITS[match[2] as keyof typeof UNITS];
@@ -34,7 +60,7 @@ export function pulseCadence(pulse: PulseInfo): string | null {
  * while stopped"), or why it won't run.
  */
 export function pulseNext(pulse: PulseInfo, state: StatusDotState, now: number): string {
-  if (pulse.schedule === null) return "Won't run until fixed";
+  if (pulse.schedule === null && pulse.days === null) return "Won't run until fixed";
   if (!pulse.enabled) return "Paused";
   if (pulse.next_fire_at === null) return "No next run";
   return runWhen({ kind: "pulse", name: pulse.name, at: pulse.next_fire_at }, state, now);
@@ -72,7 +98,9 @@ export function actionWhen(action: ActionInfo, state: StatusDotState, now: numbe
  * turned off in its settings, or its settings can't be read.
  */
 export function pulsesHeld(pulses: readonly PulseInfo[]): boolean {
-  const scheduled = pulses.filter((pulse) => pulse.enabled && pulse.schedule !== null);
+  const scheduled = pulses.filter(
+    (pulse) => pulse.enabled && (pulse.schedule !== null || pulse.days !== null),
+  );
   return scheduled.length > 0 && scheduled.every((pulse) => pulse.next_fire_at === null);
 }
 

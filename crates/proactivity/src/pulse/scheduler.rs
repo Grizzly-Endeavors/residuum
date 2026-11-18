@@ -7,9 +7,10 @@ use serde::{Deserialize, Serialize};
 use residuum_bus::PulseFireOutcome;
 use residuum_config::ModelCatalog;
 
+use super::cadence::Cadence;
 use super::types::{
     HeartbeatProblem, ProblemKind, PulseDef, heartbeat_problems_notice, is_within_active_hours,
-    load_heartbeat, parse_active_hours, parse_schedule_duration, read_and_parse,
+    load_heartbeat, read_and_parse,
 };
 
 /// A problem naming `pulse` when its `model_tier` is an explicit model that
@@ -28,15 +29,21 @@ fn unusable_model_problem(pulse: &PulseDef, models: &ModelCatalog) -> Option<Hea
     })
 }
 
-/// Tracks per-pulse last-run times and determines which pulses are due.
+/// Tracks each pulse's anchor and determines which pulses are due.
 ///
-/// When constructed with `with_state_path`, timestamps are persisted to
-/// `pulse_state.json` and survive restarts. Without a state path, timestamps
-/// are in-memory only (backward-compatible).
+/// A pulse's anchor is the scheduled time its last run answered, or the
+/// moment it was first seen (see [`Cadence`]). Runs are spaced from the
+/// anchor, so a late run doesn't move the pulse's later ones.
+///
+/// When constructed with `with_state_path`, anchors are persisted to
+/// `pulse_state.json` and survive restarts. Without a state path, anchors
+/// are in-memory only.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PulseScheduler {
-    #[serde(default)]
-    last_run: HashMap<String, NaiveDateTime>,
+    /// Each pulse's anchor. Read from the older `last_run` key too, whose
+    /// values were fire times; they serve as the starting anchor.
+    #[serde(default, alias = "last_run")]
+    anchor: HashMap<String, NaiveDateTime>,
     /// Each pulse's most recently delivered output — a completed run whose
     /// summary isn't `HEARTBEAT_OK` (a failed or cancelled run never
     /// updates this) — keyed by pulse name, for `context_from` injection.
@@ -93,7 +100,7 @@ impl PulseScheduler {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            last_run: HashMap::new(),
+            anchor: HashMap::new(),
             last_output: HashMap::new(),
             last_fire: HashMap::new(),
             state_path: None,
@@ -119,19 +126,22 @@ impl PulseScheduler {
     ///
     /// A pulse is due when all of the following hold:
     /// - `enabled == true`
-    /// - Its schedule duration can be parsed
-    /// - `now - last_run >= schedule duration`
+    /// - Its timing settings can be read (see [`Cadence::of`])
+    /// - Its [`Cadence`] says it is due at `now` from its anchor
     /// - If `active_hours` is set, `now` falls within the window
     /// - Its `model_tier`, when it names an explicit model, resolves against
     ///   `models`
     ///
-    /// A pulse with no `last_run` yet (a new install, or a pulse just added
-    /// to HEARTBEAT.yml) is not due: it is recorded as seen at `now` and first
-    /// runs one schedule duration later. A pulse outside its `active_hours`
-    /// window is not recorded until it is evaluated inside the window.
+    /// A pulse with no anchor yet (a new install, or a pulse just added to
+    /// HEARTBEAT.yml) is not due: its anchor is set to `now`, so its first run
+    /// comes one schedule later, or on its first listed day after `now`. A
+    /// pulse outside its `active_hours` window is not recorded until it is
+    /// evaluated inside the window.
     ///
-    /// Due and first-seen pulses have their `last_run` set to `now` and
-    /// persisted (if a state path is set).
+    /// A due pulse fires once and its anchor moves to the scheduled time it
+    /// answered, not to `now`, so a late run doesn't shift the next one.
+    /// Anchors that moved and first-seen pulses are persisted (if a state
+    /// path is set).
     #[must_use]
     #[tracing::instrument(skip_all, fields(heartbeat_path = %heartbeat_path.display()))]
     pub fn due_pulses(
@@ -173,48 +183,20 @@ impl PulseScheduler {
                 continue;
             }
 
-            let duration = match parse_schedule_duration(&pulse.schedule) {
-                Ok(d) => d,
-                Err(e) => {
+            let cadence = match Cadence::of(&pulse) {
+                Ok(cadence) => cadence,
+                Err(message) => {
                     problems.push(HeartbeatProblem {
                         name: pulse.name.clone(),
-                        message: format!(
-                            "pulse '{}' has an invalid schedule '{}' ({e}) — skipping until fixed",
-                            pulse.name, pulse.schedule
-                        ),
+                        message,
                         kind: ProblemKind::Malformed,
                     });
                     continue;
                 }
             };
 
-            // Parse active hours window
-            let active_window = match pulse.active_hours.as_deref() {
-                None => None,
-                Some(hours_str) => match parse_active_hours(hours_str) {
-                    Ok(window) => Some(window),
-                    Err(e) => {
-                        problems.push(HeartbeatProblem {
-                            name: pulse.name.clone(),
-                            message: format!(
-                                "pulse '{}' has an invalid active_hours '{hours_str}' ({e}) — \
-                                 skipping until fixed",
-                                pulse.name
-                            ),
-                            kind: ProblemKind::Malformed,
-                        });
-                        None
-                    }
-                },
-            };
-
-            // Skip if active_hours was set but failed to parse
-            if pulse.active_hours.is_some() && active_window.is_none() {
-                continue;
-            }
-
             // Check active hours if configured
-            if let Some((start, end)) = active_window
+            if let Some((start, end)) = cadence.window()
                 && !is_within_active_hours(now, start, end)
             {
                 tracing::trace!(pulse = %pulse.name, "skipped: outside active hours");
@@ -223,21 +205,20 @@ impl PulseScheduler {
 
             // A pulse seen for the first time (new install, or added to
             // HEARTBEAT.yml mid-session) starts its clock now, so its first
-            // run comes one schedule duration later rather than immediately.
-            let Some(last) = self.last_run.get(&pulse.name) else {
+            // run comes one schedule later rather than immediately.
+            let Some(anchor) = self.anchor.get(&pulse.name).copied() else {
                 tracing::debug!(
                     pulse = %pulse.name,
-                    schedule = %pulse.schedule,
-                    "pulse seen for the first time, deferring first run by one schedule duration"
+                    "pulse seen for the first time, starting its clock now"
                 );
-                self.last_run.insert(pulse.name.clone(), now);
+                self.anchor.insert(pulse.name.clone(), now);
                 first_seen = true;
                 continue;
             };
 
-            if (now - *last) >= duration {
+            if let Some(slot) = cadence.due_slot(anchor, now) {
                 tracing::debug!(pulse = %pulse.name, "pulse due, queuing execution");
-                self.last_run.insert(pulse.name.clone(), now);
+                self.anchor.insert(pulse.name.clone(), slot);
                 due.push(pulse);
             }
         }
@@ -315,28 +296,28 @@ impl PulseScheduler {
         self.last_heartbeat_parse_error.as_deref()
     }
 
-    /// Remove `last_run`/`last_output`/`last_fire` entries for pulses no
+    /// Remove `anchor`/`last_output`/`last_fire` entries for pulses no
     /// longer present in `HEARTBEAT.yml` (deleted or renamed), so
     /// `pulse_state.json` doesn't grow unboundedly with unexplainable stale
     /// keys. Returns whether anything was removed.
     fn prune_removed_pulses(&mut self, current_pulse_names: &HashSet<String>) -> bool {
-        let last_run_before = self.last_run.len();
+        let anchor_before = self.anchor.len();
         let last_output_before = self.last_output.len();
         let last_fire_before = self.last_fire.len();
 
-        self.last_run
+        self.anchor
             .retain(|name, _| current_pulse_names.contains(name));
         self.last_output
             .retain(|name, _| current_pulse_names.contains(name));
         self.last_fire
             .retain(|name, _| current_pulse_names.contains(name));
 
-        let pruned = self.last_run.len() != last_run_before
+        let pruned = self.anchor.len() != anchor_before
             || self.last_output.len() != last_output_before
             || self.last_fire.len() != last_fire_before;
         if pruned {
             tracing::debug!(
-                removed_last_run = last_run_before - self.last_run.len(),
+                removed_anchor = anchor_before - self.anchor.len(),
                 removed_last_output = last_output_before - self.last_output.len(),
                 removed_last_fire = last_fire_before - self.last_fire.len(),
                 "pruned pulse state for pulses no longer in HEARTBEAT.yml"
@@ -356,7 +337,7 @@ impl PulseScheduler {
     /// summary isn't `HEARTBEAT_OK`) and persist it immediately — this
     /// arrives from the bus between scheduler ticks (see
     /// the gateway's `handle_pulse_result_event`), so
-    /// unlike `last_run` it can't simply ride along with `due_pulses`'s own
+    /// unlike an anchor it can't simply ride along with `due_pulses`'s own
     /// save at the next tick.
     pub fn record_pulse_output(&mut self, pulse_name: &str, output: String) {
         self.last_output.insert(pulse_name.to_string(), output);
@@ -402,7 +383,7 @@ fn load_state(path: &Path) -> PulseScheduler {
     let Some(state) = read_and_parse(path, |s| serde_json::from_str::<PulseScheduler>(s)) else {
         return PulseScheduler::new();
     };
-    tracing::debug!(path = %path.display(), pulses = state.last_run.len(), "loaded pulse state");
+    tracing::debug!(path = %path.display(), pulses = state.anchor.len(), "loaded pulse state");
     state
 }
 
@@ -703,7 +684,7 @@ pulses:
                 .is_empty()
         );
         assert!(
-            !scheduler.last_run.contains_key("daytime_pulse"),
+            !scheduler.anchor.contains_key("daytime_pulse"),
             "a pulse outside its window should not be recorded as seen"
         );
         assert!(
@@ -722,7 +703,7 @@ pulses:
                 .is_empty()
         );
         assert_eq!(
-            scheduler.last_run.get("daytime_pulse"),
+            scheduler.anchor.get("daytime_pulse"),
             Some(&morning),
             "first evaluation inside the window records the pulse as seen"
         );
@@ -957,7 +938,7 @@ pulses:
             "corrupt state file should recover to empty state, pulse is first-seen and deferred"
         );
         assert!(
-            sched.last_run.contains_key("test_pulse"),
+            sched.anchor.contains_key("test_pulse"),
             "the pulse should be recorded as seen after recovery"
         );
     }
@@ -1009,12 +990,12 @@ pulses:
         let contents = std::fs::read_to_string(&state_path).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&contents).unwrap();
         assert!(
-            parsed.get("last_run").is_some(),
-            "state file should have last_run key"
+            parsed.get("anchor").is_some(),
+            "state file should have an anchor key"
         );
-        let last_run = parsed.get("last_run").unwrap().as_object().unwrap();
+        let anchors = parsed.get("anchor").unwrap().as_object().unwrap();
         assert!(
-            last_run.contains_key("test_pulse"),
+            anchors.contains_key("test_pulse"),
             "should contain the pulse name"
         );
     }
@@ -1124,7 +1105,7 @@ pulses:
         let sched = PulseScheduler::with_state_path(&state_path);
         assert_eq!(sched.last_fire.get("test_pulse"), None);
         assert_eq!(sched.last_output("test_pulse"), Some("x"));
-        assert!(sched.last_run.contains_key("test_pulse"));
+        assert!(sched.anchor.contains_key("test_pulse"));
     }
 
     #[test]
@@ -1168,7 +1149,7 @@ pulses:
         let sched = PulseScheduler::with_state_path(&state_path);
         assert_eq!(sched.last_output("test_pulse"), None);
         assert!(
-            sched.last_run.contains_key("test_pulse"),
+            sched.anchor.contains_key("test_pulse"),
             "last_run from the older file should still load"
         );
     }
@@ -1259,15 +1240,15 @@ pulses:
         // deleted or renamed, plus a still-valid entry for "test_pulse".
         {
             let mut sched = PulseScheduler::new();
-            sched.last_run.insert("removed_pulse".to_string(), earlier);
-            sched.last_run.insert("test_pulse".to_string(), earlier);
+            sched.anchor.insert("removed_pulse".to_string(), earlier);
+            sched.anchor.insert("test_pulse".to_string(), earlier);
             sched.state_path = Some(state_path.clone());
             sched.save_state().unwrap();
         }
 
         let mut sched = PulseScheduler::with_state_path(&state_path);
         assert!(
-            sched.last_run.contains_key("removed_pulse"),
+            sched.anchor.contains_key("removed_pulse"),
             "sanity check: stale entry should be loaded from disk"
         );
 
@@ -1287,24 +1268,24 @@ pulses:
         );
 
         assert!(
-            !sched.last_run.contains_key("removed_pulse"),
-            "stale last_run entry should be pruned in memory"
+            !sched.anchor.contains_key("removed_pulse"),
+            "stale anchor entry should be pruned in memory"
         );
         assert!(
-            sched.last_run.contains_key("test_pulse"),
+            sched.anchor.contains_key("test_pulse"),
             "state for pulses still in HEARTBEAT.yml should be preserved"
         );
 
         // Reload from disk to confirm the prune was persisted, not just in-memory.
         let contents = std::fs::read_to_string(&state_path).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&contents).unwrap();
-        let last_run = parsed.get("last_run").unwrap().as_object().unwrap();
+        let anchors = parsed.get("anchor").unwrap().as_object().unwrap();
         assert!(
-            !last_run.contains_key("removed_pulse"),
+            !anchors.contains_key("removed_pulse"),
             "stale entry should not survive save/reload"
         );
         assert!(
-            last_run.contains_key("test_pulse"),
+            anchors.contains_key("test_pulse"),
             "current pulse entry should survive save/reload"
         );
     }
@@ -1486,7 +1467,7 @@ pulses:
             "the surviving 'dup' pulse is first-seen, so deferred"
         );
         assert!(
-            scheduler.last_run.contains_key("dup"),
+            scheduler.anchor.contains_key("dup"),
             "the surviving 'dup' pulse should still be scheduled"
         );
         let notice = scheduler.take_problem_notice();
@@ -1590,7 +1571,7 @@ pulses:
             "the new 'also-dup' survivor is first-seen, so deferred"
         );
         assert!(
-            scheduler.last_run.contains_key("also-dup"),
+            scheduler.anchor.contains_key("also-dup"),
             "the new 'also-dup' survivor should be recorded as seen"
         );
         let notice = scheduler.take_problem_notice();
@@ -1751,5 +1732,303 @@ pulses:
             "with nothing known-good yet, a syntax error fires nothing"
         );
         assert!(scheduler.take_problem_notice().is_some());
+    }
+
+    // 2026-11-15 is a Sunday.
+    fn at(day: u32, hour: u32, minute: u32) -> chrono::NaiveDateTime {
+        chrono::NaiveDate::from_ymd_opt(2026, 11, day)
+            .unwrap()
+            .and_hms_opt(hour, minute, 0)
+            .unwrap()
+    }
+
+    fn due_names(
+        scheduler: &mut PulseScheduler,
+        now: chrono::NaiveDateTime,
+        path: &std::path::Path,
+    ) -> Vec<String> {
+        scheduler
+            .due_pulses(now, path, &residuum_config::ModelCatalog::default())
+            .into_iter()
+            .map(|p| p.name)
+            .collect()
+    }
+
+    #[test]
+    fn a_late_run_keeps_the_weekday_its_pulse_was_anchored_to() {
+        let dir = tempdir().unwrap();
+        let path = write_heartbeat(
+            dir.path(),
+            "pulses:\n  - name: weekly\n    schedule: \"7d\"\n    tasks: []\n",
+        );
+        let state_path = dir.path().join("pulse_state.json");
+        let mut scheduler = PulseScheduler::with_state_path(&state_path);
+        assert_eq!(
+            due_names(&mut scheduler, at(15, 12, 0), &path),
+            Vec::<String>::new()
+        );
+
+        // The gateway was busy until 12:37 on the Sunday after.
+        assert_eq!(
+            due_names(&mut scheduler, at(22, 12, 37), &path),
+            vec!["weekly"]
+        );
+        assert_eq!(
+            scheduler.anchor.get("weekly"),
+            Some(&at(22, 12, 0)),
+            "the anchor is the scheduled 12:00, not the 12:37 fire"
+        );
+
+        assert!(
+            due_names(&mut scheduler, at(29, 11, 59), &path).is_empty(),
+            "the next run is not due before 12:00 on the following Sunday"
+        );
+        assert_eq!(
+            due_names(&mut scheduler, at(29, 12, 0), &path),
+            vec!["weekly"],
+            "and it runs on that Sunday at 12:00"
+        );
+    }
+
+    #[test]
+    fn a_pulse_that_missed_several_intervals_fires_once_and_skips_the_rest() {
+        let dir = tempdir().unwrap();
+        let path = write_heartbeat(
+            dir.path(),
+            "pulses:\n  - name: weekly\n    schedule: \"7d\"\n    tasks: []\n",
+        );
+        let mut scheduler = PulseScheduler::new();
+        assert_eq!(
+            due_names(&mut scheduler, at(1, 12, 0), &path),
+            Vec::<String>::new()
+        );
+
+        // Down for three weeks: the 11-08, 11-15 and 11-22 runs were all missed.
+        assert_eq!(
+            due_names(&mut scheduler, at(22, 14, 0), &path),
+            vec!["weekly"],
+            "one catch-up run"
+        );
+        assert!(
+            due_names(&mut scheduler, at(22, 14, 15), &path).is_empty(),
+            "no burst of catch-up runs after it"
+        );
+        assert_eq!(
+            due_names(&mut scheduler, at(29, 11, 59), &path),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            due_names(&mut scheduler, at(29, 12, 0), &path),
+            vec!["weekly"],
+            "the next run is the first scheduled slot after the catch-up"
+        );
+    }
+
+    #[test]
+    fn a_run_deferred_by_active_hours_keeps_its_scheduled_time_for_the_next_week() {
+        let dir = tempdir().unwrap();
+        let path = write_heartbeat(
+            dir.path(),
+            "pulses:\n  - name: review\n    schedule: \"7d\"\n    active_hours: \"17:00-23:00\"\n    tasks: []\n",
+        );
+        let mut scheduler = PulseScheduler::new();
+        // First seen Sunday 2026-11-15 at 17:30, inside the window.
+        assert_eq!(
+            due_names(&mut scheduler, at(15, 17, 30), &path),
+            Vec::<String>::new()
+        );
+
+        // Due Sunday 2026-11-22 at 17:30, but the gateway is only back on the
+        // Monday morning, outside the window. The window reopens at 17:00 that day.
+        assert_eq!(
+            due_names(&mut scheduler, at(23, 9, 0), &path),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            due_names(&mut scheduler, at(23, 17, 0), &path),
+            vec!["review"],
+            "the deferred run fires once the window reopens"
+        );
+        assert_eq!(
+            scheduler.anchor.get("review"),
+            Some(&at(22, 17, 30)),
+            "the anchor is the scheduled Sunday 17:30, not the Monday fire"
+        );
+
+        assert!(
+            due_names(&mut scheduler, at(23, 17, 1), &path).is_empty(),
+            "not due again straight after the deferred run"
+        );
+        assert!(
+            due_names(&mut scheduler, at(29, 17, 29), &path).is_empty(),
+            "the next run waits for Sunday 17:30 the following week, not Monday"
+        );
+        assert_eq!(
+            due_names(&mut scheduler, at(29, 17, 30), &path),
+            vec!["review"]
+        );
+    }
+
+    #[test]
+    fn a_day_pulse_runs_once_on_each_listed_day_at_the_window_start() {
+        let dir = tempdir().unwrap();
+        let path = write_heartbeat(
+            dir.path(),
+            "pulses:\n  - name: review\n    days: [sun]\n    active_hours: \"09:00-10:00\"\n    tasks: []\n",
+        );
+        let mut scheduler = PulseScheduler::new();
+        // First seen on Saturday: its first run is the next listed day.
+        assert_eq!(
+            due_names(&mut scheduler, at(14, 9, 30), &path),
+            Vec::<String>::new()
+        );
+
+        assert_eq!(
+            due_names(&mut scheduler, at(15, 9, 0), &path),
+            vec!["review"],
+            "Sunday at the window start"
+        );
+        assert!(
+            due_names(&mut scheduler, at(15, 9, 30), &path).is_empty(),
+            "at most once per listed day"
+        );
+        assert!(
+            due_names(&mut scheduler, at(15, 10, 0), &path).is_empty(),
+            "the window has closed for the day"
+        );
+        assert_eq!(
+            due_names(&mut scheduler, at(22, 9, 0), &path),
+            vec!["review"],
+            "the next Sunday"
+        );
+    }
+
+    #[test]
+    fn a_day_run_missed_while_the_gateway_was_down_is_skipped_not_moved() {
+        let dir = tempdir().unwrap();
+        let path = write_heartbeat(
+            dir.path(),
+            "pulses:\n  - name: review\n    days: [sun]\n    active_hours: \"09:00-10:00\"\n    tasks: []\n",
+        );
+        let mut scheduler = PulseScheduler::new();
+        assert_eq!(
+            due_names(&mut scheduler, at(14, 9, 30), &path),
+            Vec::<String>::new()
+        );
+
+        // Sunday's window passed while the gateway was down; Monday is not Sunday.
+        assert!(
+            due_names(&mut scheduler, at(16, 9, 30), &path).is_empty(),
+            "Sunday's run is skipped, not run on Monday"
+        );
+        assert_eq!(
+            due_names(&mut scheduler, at(22, 9, 0), &path),
+            vec!["review"]
+        );
+    }
+
+    #[test]
+    fn a_day_run_started_late_in_its_window_still_runs_that_day() {
+        let dir = tempdir().unwrap();
+        let path = write_heartbeat(
+            dir.path(),
+            "pulses:\n  - name: review\n    days: [sun]\n    active_hours: \"09:00-10:00\"\n    tasks: []\n",
+        );
+        let mut scheduler = PulseScheduler::new();
+        assert_eq!(
+            due_names(&mut scheduler, at(14, 9, 30), &path),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            due_names(&mut scheduler, at(15, 9, 45), &path),
+            vec!["review"],
+            "a gateway that comes up within the window still runs the day's run"
+        );
+    }
+
+    #[test]
+    fn a_day_pulse_seen_on_its_own_day_waits_for_the_next_listed_day() {
+        let dir = tempdir().unwrap();
+        let path = write_heartbeat(
+            dir.path(),
+            "pulses:\n  - name: review\n    days: [sun]\n    tasks: []\n",
+        );
+        let mut scheduler = PulseScheduler::new();
+        assert!(
+            due_names(&mut scheduler, at(15, 12, 0), &path).is_empty(),
+            "first seen on a Sunday, the Sunday that has begun does not count"
+        );
+        assert_eq!(
+            due_names(&mut scheduler, at(16, 0, 0), &path),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            due_names(&mut scheduler, at(22, 0, 0), &path),
+            vec!["review"]
+        );
+    }
+
+    #[test]
+    fn a_day_pulse_with_a_schedule_keeps_that_gap_between_its_runs() {
+        let dir = tempdir().unwrap();
+        let path = write_heartbeat(
+            dir.path(),
+            "pulses:\n  - name: review\n    schedule: \"3d\"\n    days: [sun, mon]\n    tasks: []\n",
+        );
+        let mut scheduler = PulseScheduler::new();
+        // First seen Saturday 2026-11-14 at noon: the first run is at least
+        // one schedule after that, so Sunday and Monday are both too early.
+        assert_eq!(
+            due_names(&mut scheduler, at(14, 12, 0), &path),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            due_names(&mut scheduler, at(15, 0, 0), &path),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            due_names(&mut scheduler, at(16, 0, 0), &path),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            due_names(&mut scheduler, at(22, 0, 0), &path),
+            vec!["review"],
+            "the first Sunday at least three days after first seen"
+        );
+        assert!(
+            due_names(&mut scheduler, at(23, 0, 0), &path).is_empty(),
+            "Monday is only a day after Sunday, under the 3d gap"
+        );
+        assert_eq!(
+            due_names(&mut scheduler, at(29, 0, 0), &path),
+            vec!["review"],
+            "the Sunday after is seven days on"
+        );
+    }
+
+    #[test]
+    fn an_invalid_day_name_drops_the_pulse_and_names_it() {
+        let dir = tempdir().unwrap();
+        let path = write_heartbeat(
+            dir.path(),
+            "pulses:\n  - name: review\n    days: [funday]\n    tasks: []\n",
+        );
+        let mut scheduler = PulseScheduler::new();
+        assert_eq!(
+            due_names(&mut scheduler, at(15, 12, 0), &path),
+            Vec::<String>::new()
+        );
+        let [problem] = scheduler.current_problems() else {
+            panic!(
+                "expected one problem, got {:?}",
+                scheduler.current_problems()
+            );
+        };
+        assert_eq!(problem.name, "review");
+        assert!(
+            problem.message.contains("'review'") && problem.message.contains("'funday'"),
+            "{}",
+            problem.message
+        );
     }
 }

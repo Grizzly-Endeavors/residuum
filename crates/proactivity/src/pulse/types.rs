@@ -6,6 +6,8 @@ use serde::Deserialize;
 
 use anyhow::bail;
 
+use super::cadence::parse_weekdays;
+
 /// Top-level HEARTBEAT.yml structure.
 #[derive(Debug, Clone, Deserialize)]
 pub struct HeartbeatConfig {
@@ -19,7 +21,14 @@ pub struct PulseDef {
     pub name: String,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
-    pub schedule: String,
+    /// How often the pulse runs: a duration (`"30m"`, `"7d"`). Required unless
+    /// `days` is set, where it becomes the least time between two runs.
+    #[serde(default)]
+    pub schedule: Option<String>,
+    /// Weekdays the pulse runs on (`mon`..`sun`, or full names), at the start
+    /// of `active_hours` (midnight without it). See [`super::cadence`].
+    #[serde(default)]
+    pub days: Option<Vec<String>>,
     pub active_hours: Option<String>,
     /// Optional agent routing: a skill name to run a session with that skill
     /// activated. `"main"` is rejected at load — see [`validate_pulse`].
@@ -71,6 +80,26 @@ pub fn validate_pulse(pulse: &PulseDef) -> Result<(), String> {
              already carries SOUL.md and AGENTS.md, so remove the `include_identity` line",
             pulse.name
         ));
+    }
+    Ok(())
+}
+
+/// Validate a pulse's timing: it sets a `schedule` or `days` (or both), and
+/// its `days` name real weekdays. Its `schedule` and `active_hours` strings
+/// are read when the pulse is due, so they are not checked here.
+///
+/// # Errors
+/// Returns an error naming the pulse and the bad value.
+pub fn validate_pulse_timing(pulse: &PulseDef) -> Result<(), String> {
+    if pulse.schedule.is_none() && pulse.days.is_none() {
+        return Err(format!(
+            "pulse '{}' has no `schedule` or `days` — set how often it runs, or the weekdays it \
+             runs on",
+            pulse.name
+        ));
+    }
+    if let Some(days) = &pulse.days {
+        parse_weekdays(days).map_err(|e| format!("pulse '{}' {e}", pulse.name))?;
     }
     Ok(())
 }
@@ -754,7 +783,8 @@ fn reject_invalid_pulses(pulses: &mut Vec<PulseDef>) -> Vec<HeartbeatProblem> {
     pulses.retain(|pulse| {
         let problem = match validate_pulse(pulse) {
             Err(message) => Some((message, ProblemKind::RemovedOption)),
-            Ok(()) => validate_pulse_tasks(pulse)
+            Ok(()) => validate_pulse_timing(pulse)
+                .and_then(|()| validate_pulse_tasks(pulse))
                 .err()
                 .map(|message| (message, ProblemKind::Malformed)),
         };
@@ -1142,7 +1172,7 @@ pulses:
                     pulse.name
                 )
             });
-            parse_schedule_duration(&pulse.schedule).unwrap();
+            parse_schedule_duration(pulse.schedule.as_deref().unwrap_or_default()).unwrap();
             if let Some(hours) = &pulse.active_hours {
                 parse_active_hours(hours).unwrap();
             }
@@ -1182,7 +1212,8 @@ pulses:
         let last_good = vec![PulseDef {
             name: "still_running".to_string(),
             enabled: true,
-            schedule: "1h".to_string(),
+            schedule: Some("1h".to_string()),
+            days: None,
             active_hours: None,
             agent: None,
             model_tier: None,
@@ -1375,7 +1406,8 @@ pulses:
         let last_good = vec![PulseDef {
             name: "still_running".to_string(),
             enabled: true,
-            schedule: "1h".to_string(),
+            schedule: Some("1h".to_string()),
+            days: None,
             active_hours: None,
             agent: None,
             model_tier: None,
@@ -1450,8 +1482,8 @@ pulses:
             "second pulse named 'dup' should be dropped, keeping the first occurrence"
         );
         assert_eq!(
-            cfg.pulses.first().unwrap().schedule,
-            "1h",
+            cfg.pulses.first().unwrap().schedule.as_deref(),
+            Some("1h"),
             "the surviving 'dup' pulse should be the first one in the file"
         );
     }

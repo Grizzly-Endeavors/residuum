@@ -20,7 +20,8 @@ fn sample_pulse() -> PulseDef {
     PulseDef {
         name: "email_check".to_string(),
         enabled: true,
-        schedule: "30m".to_string(),
+        schedule: Some("30m".to_string()),
+        days: None,
         active_hours: None,
         agent: None,
         model_tier: None,
@@ -72,7 +73,8 @@ fn build_pulse_execution_empty_tasks_still_builds() {
     let pulse = PulseDef {
         name: "empty_test".to_string(),
         enabled: true,
-        schedule: "1h".to_string(),
+        schedule: Some("1h".to_string()),
+        days: None,
         active_hours: None,
         agent: None,
         model_tier: None,

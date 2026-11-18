@@ -246,7 +246,8 @@ mod tests {
         residuum_proactivity::pulse::types::PulseDef {
             name: name.to_string(),
             enabled: true,
-            schedule: "1h".to_string(),
+            schedule: Some("1h".to_string()),
+            days: None,
             active_hours: None,
             agent: None,
             model_tier: None,
