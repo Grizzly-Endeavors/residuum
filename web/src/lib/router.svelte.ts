@@ -220,6 +220,11 @@ class Router {
     );
   }
 
+  /** Open a location (push): its place and panel; the Settings modal is closed. */
+  open(location: AppLocation): Promise<boolean> {
+    return this.go(location, "push");
+  }
+
   /** Go to a place without adding history, for moves the user didn't make by navigating. */
   replacePlace(place: Place, extras: PlaceExtras = {}): Promise<boolean> {
     return this.go(

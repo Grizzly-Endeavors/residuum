@@ -42,10 +42,10 @@
   const live = $derived(agentState === "running" || agentState === "stopping");
   const chat = $derived<Place>({ kind: "chat", agent });
 
-  /** A run's session in the context panel, over this place (or Chat when shown in the panel). */
+  /** A run's session in the context panel, over the place now showing. */
   function sessionLocation(runId: string): AppLocation {
     return {
-      place: inPanel ? router.place : { kind: "schedule", agent },
+      place: router.place,
       panel: { kind: "session", agent, runId },
       settings: null,
     };

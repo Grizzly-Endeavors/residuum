@@ -14,6 +14,7 @@ import { hub } from "../../lib/hub.svelte";
 import type { AgentSummary } from "../../lib/hub-types";
 import { notifications } from "../../lib/notifications.svelte";
 import { router } from "../../lib/router.svelte";
+import { locationAt } from "../../lib/routes";
 import { scheduled } from "../../lib/scheduled.svelte";
 import type { ActionInfo, PulseInfo, ScheduledCurrentRun, ServerMessage } from "../../lib/types";
 import { ws } from "../../lib/ws.svelte";
@@ -113,6 +114,7 @@ function serveSchedule(
 
 beforeEach(() => {
   stubWebSocket();
+  router.location = locationAt({ kind: "schedule", agent: "atlas" });
   hub.handleFrame(
     snapshot([
       agent("atlas"),
@@ -485,16 +487,17 @@ describe("Schedule", () => {
 
   it("opens Schedule beside the agent's Chat from its page header", async () => {
     const user = userEvent.setup();
-    const openPlace = vi.spyOn(router, "openPlace").mockResolvedValue(true);
+    const openPlace = vi.spyOn(router, "open").mockResolvedValue(true);
     scheduled.reset("atlas");
     serveSchedule([], []);
     render(Schedule, { agent: "atlas" });
     await settle();
 
     await user.click(screen.getByRole("button", { name: "Open Schedule beside chat" }));
-    expect(openPlace).toHaveBeenCalledWith(
-      { kind: "chat", agent: "atlas" },
-      { panel: { kind: "schedule", agent: "atlas" } },
-    );
+    expect(openPlace).toHaveBeenCalledWith({
+      place: { kind: "chat", agent: "atlas" },
+      panel: { kind: "schedule", agent: "atlas" },
+      settings: null,
+    });
   });
 });

@@ -2,8 +2,8 @@
   import { actionRegistry, type AppAction } from "../../lib/action-registry.svelte";
   import { hub } from "../../lib/hub.svelte";
   import type { IconName } from "../../lib/icons";
-  import { openAgentPlace } from "../../shell/open-agent-place";
   import { router } from "../../lib/router.svelte";
+  import { agentPlaceLocation } from "../../lib/routes";
   import { runningCount } from "../../lib/running-count";
   import { IconButton, Menu, MenuItem } from "../../lib/ui";
   import PlaceHeader from "../../shell/PlaceHeader.svelte";
@@ -52,7 +52,7 @@
         type="button"
         class="running-pill"
         aria-label="{running} running, open Activity"
-        onclick={() => void openAgentPlace(agent, "activity", "beside-chat")}
+        onclick={() => void router.open(agentPlaceLocation(agent, "activity", "beside-chat"))}
       >
         <span class="running-dot" aria-hidden="true"></span>
         {running} running

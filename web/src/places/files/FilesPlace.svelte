@@ -5,6 +5,7 @@
   import { router } from "../../lib/router.svelte";
   import { EmptyState, Skeleton } from "../../lib/ui";
   import AgentPlaceHeader from "../../shell/AgentPlaceHeader.svelte";
+  import PlaceHeader from "../../shell/PlaceHeader.svelte";
   import FileHistoryDialog from "./FileHistoryDialog.svelte";
   import { parentDir, type FileSource } from "./file-source";
   import { FileTree } from "./file-tree.svelte";
@@ -39,8 +40,10 @@
   }
 </script>
 
-{#if inPanel && source.agent !== null}
-  <AgentPlaceHeader agent={source.agent} kind="files" inPanel />
+{#if source.agent !== null}
+  <AgentPlaceHeader agent={source.agent} kind="files" {inPanel} />
+{:else}
+  <PlaceHeader title="Shared files" />
 {/if}
 
 <div class="files-scroll">
