@@ -483,7 +483,7 @@ describe("Schedule", () => {
     expect(screen.getByRole("button", { name: "Start brittle" })).toBeTruthy();
   });
 
-  it("restores Schedule to the side panel from its maximized header", async () => {
+  it("opens Schedule beside the agent's Chat from its page header", async () => {
     const user = userEvent.setup();
     const openPlace = vi.spyOn(router, "openPlace").mockResolvedValue(true);
     scheduled.reset("atlas");
@@ -491,7 +491,7 @@ describe("Schedule", () => {
     render(Schedule, { agent: "atlas" });
     await settle();
 
-    await user.click(screen.getByRole("button", { name: "Restore Schedule to side panel" }));
+    await user.click(screen.getByRole("button", { name: "Open Schedule beside chat" }));
     expect(openPlace).toHaveBeenCalledWith(
       { kind: "chat", agent: "atlas" },
       { panel: { kind: "schedule", agent: "atlas" } },

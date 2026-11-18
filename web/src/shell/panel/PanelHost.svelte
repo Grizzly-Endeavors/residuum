@@ -7,7 +7,6 @@
   import { Skeleton } from "../../lib/ui";
   import { ws } from "../../lib/ws.svelte";
   import ContextPanel from "./ContextPanel.svelte";
-  import { saveLastPanelKind } from "./panel-width";
   import Activity from "../../places/activity/Activity.svelte";
   import ConversationSize from "../../places/chat/ConversationSize.svelte";
   import { NewSession } from "../../places/activity/new-session.svelte";
@@ -98,13 +97,6 @@
         void router.replacePanel({ kind: "session", agent: run.agent, runId });
       }
     });
-  });
-
-  $effect(() => {
-    const kind = panel?.kind;
-    if (kind === "activity" || kind === "schedule" || kind === "files") {
-      saveLastPanelKind(kind);
-    }
   });
 </script>
 

@@ -124,9 +124,9 @@ describe("the chat header", () => {
     expect(openSettings).toHaveBeenCalledWith({ scope: "atlas", section: null });
   });
 
-  it("counts the agent's running sessions, and opens Activity in the side panel from them", async () => {
+  it("counts the agent's running sessions, and opens Activity beside the Chat from them", async () => {
     setViewedAgent("atlas");
-    const openPanel = vi.spyOn(router, "openPanel").mockResolvedValue(true);
+    const openPlace = vi.spyOn(router, "openPlace").mockResolvedValue(true);
     render(ChatPlace, { agent: "atlas", actions: shell });
     expect(screen.queryByRole("button", { name: /running/ })).toBeNull();
 
@@ -134,36 +134,10 @@ describe("the chat header", () => {
     await settle();
     await userEvent.click(screen.getByRole("button", { name: "2 running, open Activity" }));
 
-    expect(openPanel).toHaveBeenCalledWith({ kind: "activity", agent: "atlas" });
-  });
-
-  it("toggles the side panel from the header button, remembering the last-used panel kind", async () => {
-    setViewedAgent("atlas");
-    router.location = { place: { kind: "chat", agent: "atlas" }, panel: null, settings: null };
-    const openPanel = vi.spyOn(router, "openPanel").mockResolvedValue(true);
-    const closePanel = vi.spyOn(router, "closePanel").mockResolvedValue(true);
-    localStorage.removeItem("residuum-panel-kind");
-    render(ChatPlace, { agent: "atlas", actions: shell });
-
-    const openBtn = screen.getByRole("button", { name: "Open side panel" });
-    expect(openBtn).toHaveAttribute("aria-pressed", "false");
-    await userEvent.click(openBtn);
-    expect(openPanel).toHaveBeenLastCalledWith({ kind: "files", agent: "atlas" });
-
-    localStorage.setItem("residuum-panel-kind", "schedule");
-    await userEvent.click(openBtn);
-    expect(openPanel).toHaveBeenLastCalledWith({ kind: "schedule", agent: "atlas" });
-
-    router.location = {
-      place: { kind: "chat", agent: "atlas" },
-      panel: { kind: "schedule", agent: "atlas" },
-      settings: null,
-    };
-    await settle();
-    const closeBtn = screen.getByRole("button", { name: "Close side panel" });
-    expect(closeBtn).toHaveAttribute("aria-pressed", "true");
-    await userEvent.click(closeBtn);
-    expect(closePanel).toHaveBeenCalledOnce();
+    expect(openPlace).toHaveBeenCalledWith(
+      { kind: "chat", agent: "atlas" },
+      { panel: { kind: "activity", agent: "atlas" } },
+    );
   });
 
   it("offers the conversation's size, Restart and Stop for a running agent", async () => {

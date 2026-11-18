@@ -25,6 +25,7 @@ import {
 import { openSessionByAddress } from "../lib/session-address";
 import { runIcon, runKind } from "../lib/session-format";
 import { ws } from "../lib/ws.svelte";
+import { openAgentPlace } from "./open-agent-place";
 import { AGENT_PLACES, stateWord } from "./rail-model";
 import type { ShellActions } from "./shell-actions";
 
@@ -97,18 +98,7 @@ function agentPlaces(): AppAction[] {
       hint: name,
       icon: entry.icon,
       searchOnly: name !== ws.agent,
-      run: () => {
-        if (entry.kind === "chat") {
-          void router.openPlace({ kind: "chat", agent: name });
-        } else {
-          const panel = { kind: entry.kind, agent: name } as const;
-          if (router.place.kind === "chat" && router.place.agent === name) {
-            void router.openPanel(panel);
-          } else {
-            void router.openPlace({ kind: "chat", agent: name }, { panel });
-          }
-        }
-      },
+      run: () => void openAgentPlace(name, entry.kind, "page"),
     })),
   );
 }

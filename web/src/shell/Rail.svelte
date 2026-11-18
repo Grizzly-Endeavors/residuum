@@ -8,14 +8,14 @@
   import { router } from "../lib/router.svelte";
   import { runningCount } from "../lib/running-count";
   import {
+    agentPlaceLocation,
     formatLocation,
     HOME,
     INBOX,
     locationAt,
     placesEqual,
-    type AgentPlaceKind,
+    showsAgentPlace,
     type AppLocation,
-    type Panel,
     type Place,
   } from "../lib/routes";
   import {
@@ -31,7 +31,7 @@
   } from "../lib/ui";
   import type { RailAccordion } from "./accordion.svelte";
   import InstanceSwitcher from "./InstanceSwitcher.svelte";
-  import { AGENT_PLACES, agentRowStatus } from "./rail-model";
+  import { AGENT_PANEL_PLACES, agentRowStatus } from "./rail-model";
   import type { ShellActions } from "./shell-actions";
 
   // The rail: the search row, Home and Inbox, every agent with its places in
@@ -63,67 +63,20 @@
     return placesEqual(place, target);
   }
 
-  /** Where an agent's sub-row leads: Chat as the main place, Activity/Schedule/Files in the side panel beside Chat. */
-  function agentPlaceLocation(agent: string, kind: AgentPlaceKind): AppLocation {
-    const chat: Place = { kind: "chat", agent };
-    if (kind === "chat") return locationAt(chat);
-    const panel: Panel = { kind, agent };
-    return { place: chat, panel, settings: null };
+  /** Go to `to` (push) and close the drawer. */
+  function go(to: AppLocation): void {
+    void router.openPlace(to.place, to.panel === null ? {} : { panel: to.panel });
+    onclose?.();
   }
 
-  /** Whether an agent's sub-row is current: either open as the full place, or shown in the context panel for that agent. */
-  function isAgentPlaceCurrent(agent: string, kind: AgentPlaceKind): boolean {
-    if (kind === "chat") {
-      return (
-        place.kind === "chat" &&
-        place.agent === agent &&
-        router.panel?.kind !== "activity" &&
-        router.panel?.kind !== "schedule" &&
-        router.panel?.kind !== "files"
-      );
-    }
-    return (
-      (place.kind === kind && place.agent === agent) ||
-      (router.viewedAgent === agent && router.panel?.kind === kind && router.panel.agent === agent)
-    );
-  }
-
-  function open(event: MouseEvent, target: Place): void {
-    // A modified click opens the place in a new tab, as a link does.
+  /** A row's link click: a modified click opens the place in a new tab, as a link does. */
+  function follow(event: MouseEvent, to: AppLocation, onFollow?: () => void): void {
     if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) {
       return;
     }
     event.preventDefault();
-    void router.openPlace(target);
-    onclose?.();
-  }
-
-  function openAgent(event: MouseEvent, agent: string): void {
-    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) {
-      return;
-    }
-    event.preventDefault();
-    accordion.expand(agent);
-    void router.openPlace({ kind: "chat", agent });
-    onclose?.();
-  }
-
-  function openAgentPlace(event: MouseEvent, agent: string, kind: AgentPlaceKind): void {
-    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) {
-      return;
-    }
-    event.preventDefault();
-    if (kind === "chat") {
-      void router.openPlace({ kind: "chat", agent });
-    } else {
-      const panel: Panel = { kind, agent };
-      if (place.kind === "chat" && place.agent === agent) {
-        void router.openPanel(panel);
-      } else {
-        void router.openPlace({ kind: "chat", agent }, { panel });
-      }
-    }
-    onclose?.();
+    onFollow?.();
+    go(to);
   }
 
   /** Up and Down move between the rows that show, Home and End go to the ends. */
@@ -156,7 +109,7 @@
       href={formatLocation(locationAt(target))}
       data-rail-row
       aria-current={isCurrent(target) ? "page" : undefined}
-      onclick={(event) => open(event, target)}
+      onclick={(event) => follow(event, locationAt(target))}
     >
       <Icon name={icon} size={15} />
       <span class="rail-label">{label}</span>
@@ -207,15 +160,16 @@
           onItsChat: viewed && place.kind === "chat",
         })}
         {@const expanded = accordion.open === agent.name}
+        {@const chat = agentPlaceLocation(agent.name, "chat", "page")}
         <li>
           <div class="rail-agent-head">
             <a
               class="rail-agent"
-              href={formatLocation(locationAt({ kind: "chat", agent: agent.name }))}
+              href={formatLocation(chat)}
               data-rail-row
               data-rail-agent={agent.name}
               data-viewed={viewed || undefined}
-              onclick={(event) => openAgent(event, agent.name)}
+              onclick={(event) => follow(event, chat, () => accordion.expand(agent.name))}
             >
               <StatusDot state={status.dot} working={status.working} />
               <span class="rail-label">{agentLabel(agent)}</span>
@@ -240,20 +194,32 @@
             </button>
           </div>
           <ul class="rail-places" id="{uid}-places-{agent.name}" hidden={!expanded}>
-            {#each AGENT_PLACES as entry (entry.kind)}
+            {#each AGENT_PANEL_PLACES as entry (entry.kind)}
               {@const running = entry.kind === "activity" ? runningCount(agent.name) : 0}
-              <li>
+              {@const page = agentPlaceLocation(agent.name, entry.kind, "page")}
+              {@const current = showsAgentPlace(router.location, agent.name, entry.kind)}
+              <li class="rail-place-row" data-current={current || undefined}>
                 <a
                   class="rail-place"
-                  href={formatLocation(agentPlaceLocation(agent.name, entry.kind))}
+                  href={formatLocation(page)}
                   data-rail-row
-                  aria-current={isAgentPlaceCurrent(agent.name, entry.kind) ? "page" : undefined}
-                  onclick={(event) => openAgentPlace(event, agent.name, entry.kind)}
+                  aria-current={current ? "page" : undefined}
+                  onclick={(event) => follow(event, page)}
                 >
                   <Icon name={entry.icon} size={15} />
                   <span class="rail-label">{entry.label}</span>
                   <Badge count={running} label="running" />
                 </a>
+                <!-- In the phone drawer the panel is a full-screen sheet, so beside chat means nothing there. -->
+                {#if !onclose}
+                  <IconButton
+                    class="rail-beside"
+                    icon="panel"
+                    size="sm"
+                    label="Open {entry.label} beside chat"
+                    onclick={() => go(agentPlaceLocation(agent.name, entry.kind, "beside-chat"))}
+                  />
+                {/if}
               </li>
             {/each}
           </ul>
@@ -494,12 +460,48 @@
     }
   }
 
+  /* A place under an agent, and its way to open beside the agent's Chat. The row carries the hover and current fills, so they cover both. */
+  .rail-place-row {
+    display: flex;
+    align-items: center;
+    border-radius: var(--corner-sm);
+    transition: background-color var(--duration-fast) var(--ease-out);
+
+    &:hover {
+      background: var(--color-stone-3);
+    }
+
+    &[data-current] {
+      background: var(--color-vein-tint);
+    }
+
+    /* Beside chat stays out of the way until the row is in play, and shows on the row that is open. */
+    & > :global(.rail-beside) {
+      flex: none;
+      margin-right: var(--space-2);
+      opacity: 0;
+    }
+
+    &:hover > :global(.rail-beside),
+    &:focus-within > :global(.rail-beside),
+    &[data-current] > :global(.rail-beside) {
+      opacity: 1;
+    }
+  }
+
   .rail-place {
     position: relative;
+    flex: 1;
+    min-width: 0;
     gap: 9px;
     height: 30px;
     padding: 0 var(--space-8);
     font-size: var(--font-size-sm);
+
+    &:hover,
+    &[aria-current="page"] {
+      background: none;
+    }
 
     &[aria-current="page"]::before {
       content: "";
@@ -520,6 +522,13 @@
     justify-content: space-between;
     padding: var(--space-10) var(--space-12) var(--space-14);
     border-top: 1px solid var(--color-line-soft);
+  }
+
+  /* Touch has no hover: beside chat shows on every row. */
+  @media (hover: none) {
+    .rail-place-row > :global(.rail-beside) {
+      opacity: 1;
+    }
   }
 
   @media (max-width: 760px) {

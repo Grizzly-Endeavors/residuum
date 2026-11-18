@@ -205,10 +205,10 @@ describe("Activity", () => {
     expect(screen.queryByRole("heading", { name: /^Running now/ })).toBeNull();
   });
 
-  it("restores Activity to the side panel from its maximized header", async () => {
+  it("opens Activity beside the agent's Chat from its page header", async () => {
     const openPlace = vi.spyOn(router, "openPlace").mockResolvedValue(true);
     await showAtlas([]);
-    await userEvent.click(screen.getByRole("button", { name: "Restore Activity to side panel" }));
+    await userEvent.click(screen.getByRole("button", { name: "Open Activity beside chat" }));
     expect(openPlace).toHaveBeenCalledWith(
       { kind: "chat", agent: "atlas" },
       { panel: { kind: "activity", agent: "atlas" } },

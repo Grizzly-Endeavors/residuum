@@ -9,9 +9,7 @@
   import type { ScheduledCurrentRun } from "../../lib/types";
   import { Badge, Banner, Button, EmptyState, IconButton, Skeleton, Toggle } from "../../lib/ui";
   import { ws } from "../../lib/ws.svelte";
-  import PanelHeader from "../../shell/panel/PanelHeader.svelte";
-  import PlaceHeader from "../../shell/PlaceHeader.svelte";
-  import { agentPlaceLabel } from "../../shell/rail-model";
+  import AgentPlaceHeader from "../../shell/AgentPlaceHeader.svelte";
   import { followLink } from "../home/follow-link";
   import { runTitle } from "../home/home-model";
   import {
@@ -128,48 +126,19 @@
   {/if}
 {/snippet}
 
-{#if inPanel}
-  <PanelHeader icon="clock" kind={label} title={agentPlaceLabel("schedule")}>
-    {#snippet actions()}
-      {#if live}
-        <IconButton
-          icon="reload"
-          label="Reload the schedule"
-          size="sm"
-          loading={scheduled.loading}
-          onclick={() => void scheduled.load()}
-        />
-      {/if}
+<AgentPlaceHeader {agent} kind="schedule" {inPanel}>
+  {#snippet actions()}
+    {#if live}
       <IconButton
-        icon="expand"
-        label="Maximize Schedule"
+        icon="reload"
+        label="Reload the schedule"
         size="sm"
-        onclick={() => void router.openPlace({ kind: "schedule", agent })}
+        loading={scheduled.loading}
+        onclick={() => void scheduled.load()}
       />
-    {/snippet}
-  </PanelHeader>
-{:else}
-  <PlaceHeader title={label} {agent} sub={agentPlaceLabel("schedule")}>
-    <span class="reload">
-      {#if live}
-        <IconButton
-          icon="reload"
-          label="Reload the schedule"
-          size="sm"
-          loading={scheduled.loading}
-          onclick={() => void scheduled.load()}
-        />
-      {/if}
-      <IconButton
-        icon="collapse"
-        label="Restore Schedule to side panel"
-        size="sm"
-        onclick={() =>
-          void router.openPlace({ kind: "chat", agent }, { panel: { kind: "schedule", agent } })}
-      />
-    </span>
-  </PlaceHeader>
-{/if}
+    {/if}
+  {/snippet}
+</AgentPlaceHeader>
 
 <div class="schedule-scroll">
   <div class="schedule">
@@ -356,14 +325,6 @@
 </div>
 
 <style>
-  .reload {
-    display: flex;
-    align-self: center;
-    align-items: center;
-    gap: var(--space-4);
-    margin-left: auto;
-  }
-
   .schedule-scroll {
     flex: 1;
     min-height: 0;

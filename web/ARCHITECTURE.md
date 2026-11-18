@@ -47,7 +47,10 @@ The URL is the source of truth for where the user is. A location is a place, an 
 
 Any place also takes:
 
-- `panel=` for the context panel: `session:<agent>:<runId>`, `new-session:<agent>`, `file:<path>`, `agent-file:<agent>:<path>` or `size`. Each kind shows only on the places that can host it; the router removes a panel a place can't show. `file:` reads the tree the place shows; `agent-file:` names its agent and also shows on the Inbox, so mail attachments open beside their thread.
+- `panel=` for the context panel: `session:<agent>:<runId>`, `new-session:<agent>`, `activity:<agent>`, `schedule:<agent>`, `files:<agent>`, `file:<path>`, `agent-file:<agent>:<path>` or `size`. Each kind shows only on the places that can host it; the router removes a panel a place can't show. `file:` reads the tree the place shows; `agent-file:` names its agent and also shows on the Inbox, so mail attachments open beside their thread.
+
+**An agent's places.** Activity, Schedule and Files each open two ways: as the page (`/agent/:name/activity`) or in the context panel beside the agent's Chat (`/agent/:name?panel=activity:<name>`). `AGENT_PANEL_KINDS` in `routes.ts` is the one list of them, and `agentPlaceLocation(agent, kind, "page" | "beside-chat")` the one way to build either location; `shell/open-agent-place.ts` navigates to it, and `showsAgentPlace` says whether a location shows one either way. The rail, the command palette (pages), the Chat header's running pill (Activity beside Chat) and each place's header all go through them. `shell/AgentPlaceHeader.svelte` is the header of all three: on the page it carries "Open … beside chat", in the panel "Maximize …".
+
 - `settings=<agent | _all>[/<section>]` for the Settings modal. `_all` is the install-wide scope. Section ids are in `lib/settings-sections.ts`.
 
 `lib/routes.ts` parses and formats URLs and knows nothing of the browser. `lib/router.svelte.ts` holds the location. Legacy URLs redirect by replace (`routes.ts` lists them). An unknown agent or artifact, a settings scope that can't be an agent, or a panel the place can't show is corrected by replace, with a toast where the user should know.
@@ -67,6 +70,8 @@ Any place also takes:
 `shell/Shell.svelte` frames every place: the rail beside the main region at medium and wide widths, and on phones a bottom bar with the rail in a drawer. The main region holds the hub banner (shown while the hub socket is down) and the place that `PlaceHost.svelte` picks from the location. The shell mounts the app-wide dialogs once each: confirm, Settings, the palette, Recent notifications, keyboard shortcuts, feedback, Add to Home Screen and Create agent. `ShellActions.createAgent` is the one way to create an agent.
 
 The context panel (`panel/PanelHost.svelte`) is a resizable column at wide widths, floats over the main region at medium widths, and is a full-screen sheet on phones. `PanelHost` picks the content by panel kind and keeps per-panel state (an open file buffer, a session run) while the frame redraws at another width.
+
+The rail lists each agent with its places in an accordion, one agent open at a time. An agent's name opens its Chat and expands its places; the chevron beside it folds and unfolds them without navigating. Under it, Activity, Schedule and Files open as pages, and each row's trailing panel button opens that place beside the agent's Chat instead. The button shows while the row is hovered or holds focus, always on the row that is current (its page is open or it shows beside that agent's Chat), and always on touch screens; it is a Tab stop but not one of the rows the arrow keys move between, and the phone drawer leaves it out, since the panel is a full-screen sheet there.
 
 The rail's counts: Home is the needs-you count, Inbox the unread items across agents, and an agent's Activity its running count (`lib/running-count.ts`, the same number as the Chat header pill). The installed app's icon badge carries the inbox count where the Badging API exists. `TabTitle.svelte` titles the browser tab.
 

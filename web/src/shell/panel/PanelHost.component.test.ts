@@ -313,17 +313,17 @@ describe("agent places in the context panel", () => {
     await go({ kind: "chat", agent: "atlas" }, { kind: "activity", agent: "atlas" });
     expect(screen.getByRole("heading", { name: "Activity" })).toBeTruthy();
     await userEvent.click(screen.getByRole("button", { name: "Maximize Activity" }));
-    expect(openPlace).toHaveBeenLastCalledWith({ kind: "activity", agent: "atlas" });
+    expect(openPlace).toHaveBeenLastCalledWith({ kind: "activity", agent: "atlas" }, {});
 
     await go({ kind: "chat", agent: "atlas" }, { kind: "schedule", agent: "atlas" });
     expect(screen.getByRole("heading", { name: "Schedule" })).toBeTruthy();
     await userEvent.click(screen.getByRole("button", { name: "Maximize Schedule" }));
-    expect(openPlace).toHaveBeenLastCalledWith({ kind: "schedule", agent: "atlas" });
+    expect(openPlace).toHaveBeenLastCalledWith({ kind: "schedule", agent: "atlas" }, {});
 
     await go({ kind: "chat", agent: "atlas" }, { kind: "files", agent: "atlas" });
     expect(screen.getByRole("heading", { name: "Files" })).toBeTruthy();
     await userEvent.click(screen.getByRole("button", { name: "Maximize Files" }));
-    expect(openPlace).toHaveBeenLastCalledWith({ kind: "files", agent: "atlas" });
+    expect(openPlace).toHaveBeenLastCalledWith({ kind: "files", agent: "atlas" }, {});
   });
 
   it("offers All files in the file panel when viewing a file on an agent's Chat", async () => {
