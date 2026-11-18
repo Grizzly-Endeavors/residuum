@@ -472,9 +472,9 @@ impl CheckpointEngine {
         kind: RepoKind,
         ctx: &CheckpointContext,
     ) -> Result<Option<String>, CheckpointError> {
-        let files = collect_config_files(kind, &self.dest_root(kind))?;
         let guard = self.repo(kind);
         let guard = guard.lock().unwrap_or_else(PoisonError::into_inner);
+        let files = collect_config_files(kind, &self.dest_root(kind))?;
         guard.commit_snapshot(&files, Utc::now(), ctx)
     }
 
@@ -521,9 +521,9 @@ impl CheckpointEngine {
         kind: RepoKind,
         ctx: &CheckpointContext,
     ) -> Result<SnapshotCommit, CheckpointError> {
-        let files = collect_config_files(kind, &self.dest_root(kind))?;
         let guard = self.repo(kind);
         let guard = guard.lock().unwrap_or_else(PoisonError::into_inner);
+        let files = collect_config_files(kind, &self.dest_root(kind))?;
         guard.commit_snapshot_outcome(&files, Utc::now(), ctx)
     }
 
@@ -1263,8 +1263,8 @@ fn commit_tree(
         RepoKind::Team => exclude::is_team_excluded,
         RepoKind::Workspace | RepoKind::AgentConfig | RepoKind::Hub => exclude::is_excluded,
     };
-    let files = collect_tree_files(root, is_excluded);
     let guard = repo.lock().unwrap_or_else(PoisonError::into_inner);
+    let files = collect_tree_files(root, is_excluded);
     guard.commit_snapshot_outcome(&files, Utc::now(), ctx)
 }
 

@@ -13,7 +13,7 @@
 | `residuum agent restore <name> [--checkpoint <id>]` | `POST /api/hub/agents/restore` | The restored agent's state, plus its last error if it failed to start. |
 | `residuum agent start <name>` | `POST /api/hub/agents/<name>/start` | The agent's state afterwards, plus its last error if it failed. |
 | `residuum agent stop <name>` | `POST /api/hub/agents/<name>/stop` | Same. |
-| `residuum agent restart <name>` | `POST /api/hub/agents/<name>/restart` | Same. |
+| `residuum agent restart <name> [--force]` | `POST /api/hub/agents/<name>/restart[?force=true]` | Same. When the agent has a turn in progress and `--force` is not passed, queues the restart for the end of the turn and reports that it will restart after the current turn finishes. |
 | `residuum agent autostart <name> on\|off` | `PATCH /api/hub/agents/<name>` | Whether the agent starts when Residuum starts. |
 
 ## Create

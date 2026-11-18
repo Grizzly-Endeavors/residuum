@@ -1105,4 +1105,53 @@ describe("a snapshot of the turn in flight", () => {
     expect(kinds(store.feed)).toEqual(before);
     expect(store.activeTurnId).toBe("t1");
   });
+
+  it("redraws a file_attachment from the snapshot once without clearing isProcessing", () => {
+    const { store } = setup();
+    const attachmentFrame: ServerMessage = {
+      type: "file_attachment",
+      reply_to: "t1",
+      filename: "plot.png",
+      mime_type: "image/png",
+      size: 512,
+      url: "/api/agents/vex/files/workspace?path=outbox%2Fplot.png",
+      caption: "Live plot",
+    };
+    const turnFrames = [
+      echo("t1", "Plot it"),
+      started("t1"),
+      {
+        type: "tool_call",
+        reply_to: "t1",
+        call: 0,
+        id: "c1",
+        name: "send_message",
+        arguments: { endpoint: "ws", file_path: "outbox/plot.png", message: "Live plot" },
+        server: null,
+      },
+      {
+        type: "tool_result",
+        reply_to: "t1",
+        tool_call_id: "c1",
+        name: "send_message",
+        output: "Message and file 'plot.png' published to endpoint 'ws'",
+        is_error: false,
+      },
+      attachmentFrame,
+    ] satisfies ServerMessage[];
+
+    // Saw it live, then reconnected mid-turn.
+    for (const frame of turnFrames) store.handleMessage(frame);
+    expect(store.isProcessing).toBe(true);
+    store.handleMessage(snapshot(turnFrames));
+
+    expect(kinds(store.feed)).toEqual(["user", "tool-group", "file-attachment"]);
+    expect(store.isProcessing).toBe(true);
+    expect(store.feed[2]).toMatchObject({
+      kind: "file-attachment",
+      filename: "plot.png",
+      caption: "Live plot",
+      turnId: "t1",
+    });
+  });
 });

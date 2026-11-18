@@ -183,6 +183,42 @@ fn relaunch(
 /// just-preserved previous binary — proven to execute, unlike the new one —
 /// so it can supervise the new version's startup and roll back if it never
 /// becomes healthy. See `commands::update_watchdog`.
+///
+/// On Unix, replaces the current process image via `exec()` so the main PID
+/// stays alive across the handoff and service managers (`systemd`, Docker,
+/// `supervisord`) do not treat the handoff as a service exit and kill the
+/// cgroup.
+#[cfg(unix)]
+fn relaunch_with_watchdog(
+    pid_lock: residuum::daemon::PidFileLock,
+    pid_path: &std::path::Path,
+    config_dir: &std::path::Path,
+    pending: &residuum::hub::update::PendingRollback,
+) -> Result<(), FatalError> {
+    let watchdog_args = watchdog_args(pending, std::env::args().skip(1));
+    tracing::info!(
+        pid = std::process::id(),
+        gateway_exe = %pending.gateway_binary.display(),
+        target_version = %pending.target_version,
+        "handing restart off to the update-rollback watchdog in-place"
+    );
+
+    remove_pid_file(pid_path);
+    drop(pid_lock);
+
+    let err = residuum::daemon::exec_gateway_process(
+        &pending.previous_binary(),
+        &watchdog_args,
+        config_dir,
+    );
+    Err(FatalError::Gateway(format!(
+        "failed to exec update-rollback watchdog: {err}"
+    )))
+}
+
+/// Hand a restart off to the update-rollback watchdog on Windows, where a
+/// running process image cannot be replaced in place.
+#[cfg(windows)]
 fn relaunch_with_watchdog(
     pid_lock: residuum::daemon::PidFileLock,
     pid_path: &std::path::Path,

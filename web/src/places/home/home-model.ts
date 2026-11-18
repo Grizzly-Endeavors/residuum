@@ -164,6 +164,9 @@ export function nowLine(input: RowInput): NowLine {
   }
   if (activity.busy) {
     const since = activity.busy_since === null ? "" : ` · ${elapsed(activity.busy_since, now)}`;
+    if (activity.restart_pending === true) {
+      return { text: `Restarting after this turn${since}`, tone: "accent", echo: false };
+    }
     return { text: `Working on a reply${since}`, tone: "accent", echo: false };
   }
   const newest = overview?.live_sessions.at(-1);

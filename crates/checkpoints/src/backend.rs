@@ -251,13 +251,18 @@ impl GitRepo {
         }
     }
 
-    /// Build a tree object from exactly `files`, starting from the empty
-    /// tree.
+    /// Build a tree object from `files`, starting from the empty tree and
+    /// skipping any file that vanished on disk between the directory walk and
+    /// the read.
     fn build_tree(&self, files: &[SnapshotFile]) -> Result<gix::ObjectId, CheckpointError> {
         let empty_tree_id = self.repo.empty_tree().id().detach();
         let mut editor = self.repo.edit_tree(empty_tree_id).map_err(git_err)?;
         for file in files {
-            let data = std::fs::read(&file.abs_path).map_err(io_err)?;
+            let data = match std::fs::read(&file.abs_path) {
+                Ok(data) => data,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(io_err(e)),
+            };
             let blob_id = self.repo.write_blob(data).map_err(git_err)?.detach();
             let kind = if file.executable {
                 EntryKind::BlobExecutable
@@ -1292,5 +1297,43 @@ mod tests {
 
         let diff = repo.file_diff(oid, "a.txt").unwrap().unwrap();
         assert!(diff.contains("+line two"));
+    }
+
+    #[test]
+    fn commit_snapshot_skips_file_removed_after_directory_walk() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = GitRepo::open_or_init(&dir.path().join("workspace.git")).unwrap();
+
+        let files = write_files(
+            dir.path(),
+            &[
+                ("kept.txt", "still here"),
+                ("inbox/agent/item.json", "archived mid-snapshot"),
+            ],
+        );
+        // Simulate `inbox_archive` moving or removing the file after
+        // `collect_tree_files` walked the directory but before `build_tree`
+        // reads each file's bytes.
+        std::fs::remove_file(dir.path().join("inbox/agent/item.json")).unwrap();
+
+        let id = repo
+            .commit_snapshot(
+                &files,
+                Utc::now(),
+                &ctx(CheckpointTrigger::TurnStart, "concurrent archive"),
+            )
+            .expect("vanished file should be skipped, not fail the checkpoint")
+            .expect("remaining file should still be committed");
+        let oid = repo.resolve_commit(&id).unwrap();
+
+        let changes = repo.changed_paths(oid).unwrap();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes.first().unwrap().path, "kept.txt");
+        assert!(
+            repo.file_content_at(oid, "inbox/agent/item.json")
+                .unwrap()
+                .is_none(),
+            "vanished file must not appear in the committed tree"
+        );
     }
 }

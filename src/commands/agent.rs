@@ -39,10 +39,13 @@ pub(super) enum AgentCommand {
         /// Name of the agent to stop
         name: String,
     },
-    /// Restart an agent
+    /// Restart an agent (waits for an active turn to finish unless --force is set)
     Restart {
         /// Name of the agent to restart
         name: String,
+        /// Restart immediately, interrupting any turn in progress
+        #[arg(long)]
+        force: bool,
     },
     /// Turn an agent's start-with-Residuum setting on or off
     Autostart {
@@ -99,6 +102,8 @@ struct AgentSummary {
     role: Option<String>,
     #[serde(default)]
     a2a_visibility: Option<String>,
+    #[serde(default)]
+    restart_pending: bool,
 }
 
 #[derive(Deserialize)]
@@ -160,7 +165,7 @@ async fn execute(command: &AgentCommand, gateway_addr: &str) -> Result<String, F
         AgentCommand::Restore(args) => restore(&client, args).await,
         AgentCommand::Start { name } => transition(&client, name, "start").await,
         AgentCommand::Stop { name } => transition(&client, name, "stop").await,
-        AgentCommand::Restart { name } => transition(&client, name, "restart").await,
+        AgentCommand::Restart { name, force } => restart(&client, name, *force).await,
         AgentCommand::Autostart { name, setting } => autostart(&client, name, *setting).await,
     }
 }
@@ -320,6 +325,34 @@ async fn transition(client: &HubClient, name: &str, action: &str) -> Result<Stri
         )
         .await?;
     tracing::info!(agent = name, action, state = %summary.state, "agent lifecycle request");
+    let mut out = format!("Agent '{}' is {}.", summary.name, summary.state);
+    if let Some(error) = &summary.last_error {
+        _ = write!(out, "\nLast error: {}", error.message);
+    }
+    Ok(out)
+}
+
+async fn restart(client: &HubClient, name: &str, force: bool) -> Result<String, FatalError> {
+    check_name(name)?;
+    let path = if force {
+        format!("{}/restart?force=true", agent_url(name))
+    } else {
+        format!("{}/restart", agent_url(name))
+    };
+    let summary: AgentSummary = client.send(Method::POST, &path, None).await?;
+    tracing::info!(
+        agent = name,
+        force,
+        state = %summary.state,
+        restart_pending = summary.restart_pending,
+        "agent restart request"
+    );
+    if summary.restart_pending {
+        return Ok(format!(
+            "Agent '{}' is busy and will restart after the current turn finishes (pass `--force` to restart immediately).",
+            summary.name
+        ));
+    }
     let mut out = format!("Agent '{}' is {}.", summary.name, summary.state);
     if let Some(error) = &summary.last_error {
         _ = write!(out, "\nLast error: {}", error.message);
@@ -525,14 +558,14 @@ mod tests {
 
     async fn transition_agent(
         State(s): State<Shared>,
+        uri: axum::http::Uri,
         Path((name, action)): Path<(String, String)>,
     ) -> (StatusCode, Json<Value>) {
-        record(
-            &s,
-            "POST",
-            format!("/api/hub/agents/{name}/{action}"),
-            Value::Null,
+        let recorded_path = uri.path_and_query().map_or_else(
+            || format!("/api/hub/agents/{name}/{action}"),
+            |pq| pq.as_str().to_string(),
         );
+        record(&s, "POST", recorded_path, Value::Null);
         match name.as_str() {
             "ghost" => error(StatusCode::NOT_FOUND, "no agent named 'ghost'"),
             "broken" => {
@@ -540,6 +573,11 @@ mod tests {
                 failed["last_error"] =
                     json!({ "message": "bad config", "at": "2026-09-29T10:00:00Z" });
                 (StatusCode::OK, Json(failed))
+            }
+            "busy" if action == "restart" && uri.query() != Some("force=true") => {
+                let mut pending = summary("busy", "running");
+                pending["restart_pending"] = json!(true);
+                (StatusCode::OK, Json(pending))
             }
             _ => {
                 let state = if action == "stop" {
@@ -923,6 +961,7 @@ mod tests {
         execute(
             &AgentCommand::Restart {
                 name: "scout".into(),
+                force: false,
             },
             &addr,
         )
@@ -942,6 +981,50 @@ mod tests {
                 "POST /api/hub/agents/scout/start",
                 "POST /api/hub/agents/scout/stop",
                 "POST /api/hub/agents/scout/restart",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn restart_when_busy_reports_pending_and_force_passes_query() {
+        let (addr, mock) = mock_hub(vec![]).await;
+        let deferred = execute(
+            &AgentCommand::Restart {
+                name: "busy".into(),
+                force: false,
+            },
+            &addr,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            deferred,
+            "Agent 'busy' is busy and will restart after the current turn finishes (pass `--force` to restart immediately)."
+        );
+
+        let forced = execute(
+            &AgentCommand::Restart {
+                name: "busy".into(),
+                force: true,
+            },
+            &addr,
+        )
+        .await
+        .unwrap();
+        assert_eq!(forced, "Agent 'busy' is running.");
+
+        let paths: Vec<String> = mock
+            .lock()
+            .unwrap()
+            .requests
+            .iter()
+            .map(|(m, p, _)| format!("{m} {p}"))
+            .collect();
+        assert_eq!(
+            paths,
+            [
+                "POST /api/hub/agents/busy/restart",
+                "POST /api/hub/agents/busy/restart?force=true",
             ]
         );
     }

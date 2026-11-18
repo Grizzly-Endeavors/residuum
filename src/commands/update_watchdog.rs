@@ -36,11 +36,27 @@ pub(super) struct UpdateWatchdogArgs {
     serve_args: Vec<String>,
 }
 
+/// Outcome of [`start_and_wait`]: either the new process reached readiness and
+/// is returned alive for supervision, or it failed before becoming healthy.
+enum WatchdogStart {
+    Ready(std::process::Child),
+    ProcessExited,
+    TimedOut,
+}
+
 /// Run the watchdog: start the new version, wait up to
 /// [`residuum::daemon::READINESS_TIMEOUT`] for it to report healthy, and
 /// roll back to the previous version if it doesn't.
+///
+/// On Unix, once the new (or rolled-back) gateway process is running, this
+/// watchdog stays alive as its supervisor until the child exits — forwarding
+/// `SIGTERM`/`SIGINT` to it — because `commands::serve::foreground::relaunch`
+/// `exec()`s into this watchdog in-place. Staying alive keeps the original
+/// main PID running for the lifetime of the service so `systemd` (`Type=simple`,
+/// `KillMode=control-group`) and other process supervisors never treat the
+/// update handoff as a service exit.
 #[tracing::instrument(skip_all, fields(target_version = %args.target_version))]
-pub(super) fn run_update_watchdog(args: &UpdateWatchdogArgs) -> Result<(), FatalError> {
+pub(super) async fn run_update_watchdog(args: &UpdateWatchdogArgs) -> Result<(), FatalError> {
     residuum::logging::init_default_tracing();
 
     let config_dir = residuum::config::default_hub_dir()?;
@@ -55,8 +71,8 @@ pub(super) fn run_update_watchdog(args: &UpdateWatchdogArgs) -> Result<(), Fatal
 
     let outcome = start_and_wait(args, &config_dir, &ready_path);
 
-    match outcome {
-        Ok(residuum::daemon::ReadinessOutcome::Ready) => {
+    let active_child = match outcome {
+        Ok(WatchdogStart::Ready(child)) => {
             tracing::info!("new version is healthy; removing the preserved previous binary");
             if let Err(e) = std::fs::remove_file(&args.prev_exe)
                 && e.kind() != std::io::ErrorKind::NotFound
@@ -67,27 +83,29 @@ pub(super) fn run_update_watchdog(args: &UpdateWatchdogArgs) -> Result<(), Fatal
                     "failed to remove the preserved previous binary after a healthy update"
                 );
             }
-            Ok(())
+            child
         }
-        Ok(residuum::daemon::ReadinessOutcome::ProcessExited) => {
+        Ok(WatchdogStart::ProcessExited) => {
             let reason = residuum::daemon::read_startup_error(&config_dir)
                 .unwrap_or_else(|| "the new version exited before starting up".to_string());
-            roll_back(args, &config_dir, &reason)
+            roll_back(args, &config_dir, &reason)?
         }
-        Ok(residuum::daemon::ReadinessOutcome::TimedOut) => roll_back(
+        Ok(WatchdogStart::TimedOut) => roll_back(
             args,
             &config_dir,
             &format!(
                 "did not become healthy within {}s",
                 residuum::daemon::READINESS_TIMEOUT.as_secs()
             ),
-        ),
+        )?,
         Err(e) => roll_back(
             args,
             &config_dir,
             &format!("couldn't start the new version: {e}"),
-        ),
-    }
+        )?,
+    };
+
+    supervise_until_exit(active_child).await
 }
 
 /// Spawn the gateway at `args.gateway_exe` and wait for it to become ready,
@@ -96,7 +114,7 @@ fn start_and_wait(
     args: &UpdateWatchdogArgs,
     config_dir: &std::path::Path,
     ready_path: &std::path::Path,
-) -> std::io::Result<residuum::daemon::ReadinessOutcome> {
+) -> std::io::Result<WatchdogStart> {
     let mut child =
         residuum::daemon::spawn_gateway_process(&args.gateway_exe, &args.serve_args, config_dir)?;
 
@@ -107,18 +125,87 @@ fn start_and_wait(
         || matches!(child.try_wait(), Ok(None)),
     );
 
-    if !matches!(outcome, residuum::daemon::ReadinessOutcome::Ready) {
-        // A hung-but-not-yet-exited new process must not keep the pid lock
-        // or the port held while we roll back and start the old one.
-        if let Err(e) = child.kill() {
-            tracing::debug!(error = %e, "failed to kill the unhealthy new gateway process (it may have already exited)");
+    match outcome {
+        residuum::daemon::ReadinessOutcome::Ready => Ok(WatchdogStart::Ready(child)),
+        residuum::daemon::ReadinessOutcome::ProcessExited => {
+            reap_unhealthy_child(&mut child);
+            Ok(WatchdogStart::ProcessExited)
         }
-        if let Err(e) = child.wait() {
-            tracing::debug!(error = %e, "failed to wait for the unhealthy new gateway process to exit");
+        residuum::daemon::ReadinessOutcome::TimedOut => {
+            reap_unhealthy_child(&mut child);
+            Ok(WatchdogStart::TimedOut)
         }
     }
+}
 
-    Ok(outcome)
+/// Kill and reap an unhealthy gateway child so it cannot keep the PID lock or
+/// HTTP port held while `roll_back` starts the previous binary.
+fn reap_unhealthy_child(child: &mut std::process::Child) {
+    if let Err(e) = child.kill() {
+        tracing::debug!(error = %e, "failed to kill the unhealthy new gateway process (it may have already exited)");
+    }
+    if let Err(e) = child.wait() {
+        tracing::debug!(error = %e, "failed to wait for the unhealthy new gateway process to exit");
+    }
+}
+
+/// Wait for `child` to exit on Unix, forwarding `SIGTERM` and `SIGINT` to it
+/// so stopping the service unit gracefully stops the child gateway before this
+/// supervisor process exits.
+#[cfg(unix)]
+async fn supervise_until_exit(mut child: std::process::Child) -> Result<(), FatalError> {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let child_pid = child.id();
+    let mut sigterm = signal(SignalKind::terminate())
+        .map_err(|e| FatalError::Gateway(format!("failed to register SIGTERM handler: {e}")))?;
+    let mut sigint = signal(SignalKind::interrupt())
+        .map_err(|e| FatalError::Gateway(format!("failed to register SIGINT handler: {e}")))?;
+
+    let mut wait_task = residuum::util::spawn_blocking_in_span(move || child.wait());
+
+    let status = loop {
+        tokio::select! {
+            res = &mut wait_task => {
+                let status = res
+                    .map_err(|e| FatalError::Gateway(format!("watchdog wait task panicked: {e}")))?
+                    .map_err(|e| FatalError::Gateway(format!("failed waiting for gateway process (pid {child_pid}): {e}")))?;
+                break status;
+            }
+            _ = sigterm.recv() => {
+                tracing::info!(child_pid, "forwarding SIGTERM to supervised gateway process");
+                if let Err(e) = residuum::daemon::send_sigterm(child_pid) {
+                    tracing::debug!(child_pid, error = %e, "failed to forward SIGTERM to gateway child");
+                }
+            }
+            _ = sigint.recv() => {
+                tracing::info!(child_pid, "forwarding SIGINT as SIGTERM to supervised gateway process");
+                if let Err(e) = residuum::daemon::send_sigterm(child_pid) {
+                    tracing::debug!(child_pid, error = %e, "failed to forward SIGTERM to gateway child");
+                }
+            }
+        }
+    };
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(FatalError::Gateway(format!(
+            "supervised gateway process (pid {child_pid}) exited with {status}"
+        )))
+    }
+}
+
+/// On Windows, the watchdog was spawned as a separate process rather than
+/// `exec()`d in place, so once the new or restored gateway is up there is
+/// no parent PID contract to hold open.
+#[cfg(windows)]
+#[expect(
+    clippy::unused_async,
+    reason = "matches the async Unix signature called from run_update_watchdog"
+)]
+async fn supervise_until_exit(_child: std::process::Child) -> Result<(), FatalError> {
+    Ok(())
 }
 
 /// Restore the previous binary over `gateway_exe`, record why, and start it
@@ -127,7 +214,7 @@ fn roll_back(
     args: &UpdateWatchdogArgs,
     config_dir: &std::path::Path,
     reason: &str,
-) -> Result<(), FatalError> {
+) -> Result<std::process::Child, FatalError> {
     tracing::warn!(
         reason,
         target_version = %args.target_version,
@@ -157,9 +244,7 @@ fn roll_back(
             FatalError::Gateway(format!(
                 "rollback restored the previous binary but couldn't start it: {e}"
             ))
-        })?;
-
-    Ok(())
+        })
 }
 
 #[cfg(test)]
@@ -219,7 +304,8 @@ mod tests {
             serve_args,
             ..args(gateway_exe.clone(), prev_exe.clone())
         };
-        roll_back(&a, dir.path(), "did not become healthy within 60s").unwrap();
+        let mut child = roll_back(&a, dir.path(), "did not become healthy within 60s").unwrap();
+        child.wait().unwrap();
 
         assert!(
             gateway_exe.exists(),
@@ -246,6 +332,26 @@ mod tests {
         assert!(
             result.is_err(),
             "rollback with no preserved binary must fail visibly, not silently"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn supervise_until_exit_propagates_child_exit_status() {
+        let ok_child = std::process::Command::new("/bin/sh")
+            .args(["-c", "exit 0"])
+            .spawn()
+            .unwrap();
+        assert!(supervise_until_exit(ok_child).await.is_ok());
+
+        let failing_child = std::process::Command::new("/bin/sh")
+            .args(["-c", "exit 42"])
+            .spawn()
+            .unwrap();
+        let err = supervise_until_exit(failing_child).await.unwrap_err();
+        assert!(
+            err.to_string().contains("42"),
+            "error should report the child's exit status: {err}"
         );
     }
 }

@@ -100,6 +100,14 @@ export interface ToolCallRecord {
   server?: string | null;
 }
 
+export interface SentAttachment {
+  filename: string;
+  mime_type: string;
+  size: number;
+  url: string;
+  caption?: string | null;
+}
+
 export interface RecentMessage {
   role: "user" | "assistant" | "tool" | "system";
   content: string;
@@ -116,6 +124,8 @@ export interface RecentMessage {
   images?: ImageAttachment[];
   /** Files the user's message carried, each saved as a companion agent-inbox item. */
   attachments?: MessageAttachment[];
+  /** File attachment delivered to the web UI by a `send_message(endpoint="ws")` tool result. */
+  sent_attachment?: SentAttachment;
   sender?: MessageSender;
   /** The agent that sent this message, for one agent's message to another. */
   agent_sender?: AgentSender;

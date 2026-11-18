@@ -511,7 +511,7 @@ mod tests {
 
     #[tokio::test]
     async fn schedule_action_stores_a_tier_or_explicit_model() {
-        for model in ["large", "anthropic/claude-haiku-4-5"] {
+        for model in ["large", "openai/gpt-4o"] {
             let (result, stored) = schedule_with_model(model).await;
             assert!(!result.unwrap().is_error);
             assert_eq!(stored.first().unwrap().model_tier.as_deref(), Some(model));
@@ -535,6 +535,18 @@ mod tests {
         assert!(
             unknown_stored.is_empty(),
             "nothing is scheduled on an unknown provider"
+        );
+
+        let (missing_key, missing_key_stored) =
+            schedule_with_model("anthropic/claude-haiku-4-5").await;
+        let missing_key_err = missing_key.unwrap_err().to_string();
+        assert!(
+            missing_key_err.contains("anthropic requires an API key"),
+            "{missing_key_err}"
+        );
+        assert!(
+            missing_key_stored.is_empty(),
+            "nothing is scheduled on a keyless provider"
         );
     }
 
