@@ -1,10 +1,9 @@
 //! When a pulse next runs: the one calculation behind the team overview's
 //! `upcoming` and the Schedule place's `next_fire_at`.
 //!
-//! It follows the rules the scheduler applies on its minute ticks (see
-//! [`PulseScheduler::due_pulses`](super::scheduler::PulseScheduler::due_pulses)):
-//! a pulse runs once its schedule has passed since its last run, and only
-//! inside its active hours. All of it is read in the hub's timezone, on the
+//! It asks the same [`Cadence`] the scheduler asks on its minute ticks (see
+//! [`PulseScheduler::due_pulses`](super::scheduler::PulseScheduler::due_pulses)),
+//! so the two can't disagree. All of it is read in the hub's timezone, on the
 //! naive local times the scheduler keeps.
 
 use std::collections::HashMap;
@@ -12,57 +11,51 @@ use std::path::Path;
 
 use chrono::{DateTime, Days, DurationRound as _, NaiveDateTime, NaiveTime, TimeDelta, Utc};
 
-use super::types::{PulseDef, is_within_active_hours, parse_active_hours, parse_schedule_duration};
+use super::cadence::Cadence;
+use super::types::{PulseDef, is_within_active_hours};
 use residuum_bus::PulseFireOutcome;
 use residuum_core::time::local_to_instant;
 
-/// When `pulse` next runs, given when it last ran (`None` if it never has)
-/// and the instant `now`.
+/// When `pulse` next runs, given its anchor (`None` if the scheduler has not
+/// seen it yet) and the instant `now`. See [`Cadence`] for how the anchor
+/// spaces runs.
 ///
-/// That is the first moment at or after the later of `now` and the end of its
-/// schedule that falls inside its active hours. A pulse that has never run
-/// is first seen by the scheduler at `now` (or when its active hours next
-/// open) and runs one schedule duration after that. A pulse that is due already is reported at the start of
-/// the current minute, because the scheduler decides once a minute and a
-/// result that moved with every second would read as a change every time it
-/// was asked for.
+/// That is the first moment at or after the later of `now` and the next
+/// scheduled time that falls inside its active hours. A pulse the scheduler
+/// has not seen is first seen at `now` (or when its active hours next open),
+/// so it runs one schedule later, or on its first listed day after that. A
+/// pulse that is due already is reported at the start of the current minute,
+/// because the scheduler decides once a minute and a result that moved with
+/// every second would read as a change every time it was asked for.
 ///
-/// `None` when the pulse will not run: it is disabled, its schedule or its
-/// active hours can't be read (the scheduler skips it and reports why), or
-/// its active hours are an empty window. Whether the agent's pulse system is
-/// on at all is the caller's to check.
+/// `None` when the pulse will not run: it is disabled, its timing settings
+/// can't be read (the scheduler skips it and reports why), or its active
+/// hours are an empty window. Whether the agent's pulse system is on at all
+/// is the caller's to check.
 #[must_use]
 pub fn next_run_at(
     pulse: &PulseDef,
-    last_run: Option<NaiveDateTime>,
+    anchor: Option<NaiveDateTime>,
     now: DateTime<Utc>,
     tz: chrono_tz::Tz,
 ) -> Option<DateTime<Utc>> {
     if !pulse.enabled {
         return None;
     }
-    let interval = parse_schedule_duration(&pulse.schedule).ok()?;
-    let window = pulse
-        .active_hours
-        .as_deref()
-        .map(parse_active_hours)
-        .transpose()
-        .ok()?;
+    let cadence = Cadence::of(pulse).ok()?;
+    let window = cadence.window();
 
     let this_minute = now.duration_trunc(TimeDelta::minutes(1)).ok()?;
     let now_local = this_minute.with_timezone(&tz).naive_local();
-    let due = match last_run {
-        Some(last) => (last + interval).max(now_local),
-        // The scheduler records a pulse as seen the first time it evaluates it
-        // inside its active hours and runs it one schedule later.
-        None => match window {
-            Some((start, end)) => next_active_moment(now_local, start, end)? + interval,
-            None => now_local + interval,
-        },
+    let anchor = match (anchor, window) {
+        (Some(anchor), _) => anchor,
+        (None, Some((start, end))) => next_active_moment(now_local, start, end)?,
+        (None, None) => now_local,
     };
+    let scheduled = cadence.next_slot(anchor, now_local)?;
     let at = match window {
-        Some((start, end)) => next_active_moment(due, start, end)?,
-        None => due,
+        Some((start, end)) => next_active_moment(scheduled, start, end)?,
+        None => scheduled,
     };
     if at <= now_local {
         return Some(this_minute);
@@ -97,9 +90,11 @@ fn next_active_moment(
 /// What a reader outside the scheduler needs from `pulse_state.json`.
 #[derive(Debug, Default, serde::Deserialize)]
 pub struct RecordedPulseState {
-    /// When each pulse last ran, in the hub's local time.
-    #[serde(default)]
-    pub last_run: HashMap<String, NaiveDateTime>,
+    /// Each pulse's anchor, in the hub's local time (see [`Cadence`]). Older
+    /// files stored these under `last_run`, holding fire times instead; those
+    /// still serve as starting anchors.
+    #[serde(default, alias = "last_run")]
+    pub anchor: HashMap<String, NaiveDateTime>,
     /// The outcome of each pulse's most recent fire that ended without a
     /// session run (see `PulseScheduler::record_fire_outcome`).
     #[serde(default)]
@@ -118,11 +113,11 @@ pub fn load_recorded_state(path: &Path) -> RecordedPulseState {
     .unwrap_or_default()
 }
 
-/// The `last_run` map of the `pulse_state.json` at `path` (see
+/// The anchor of each pulse in the `pulse_state.json` at `path` (see
 /// [`load_recorded_state`]).
 #[must_use]
-pub fn load_last_runs(path: &Path) -> HashMap<String, NaiveDateTime> {
-    load_recorded_state(path).last_run
+pub fn load_anchors(path: &Path) -> HashMap<String, NaiveDateTime> {
+    load_recorded_state(path).anchor
 }
 
 #[cfg(test)]
@@ -135,7 +130,8 @@ mod tests {
         PulseDef {
             name: "p".to_string(),
             enabled: true,
-            schedule: schedule.to_string(),
+            schedule: Some(schedule.to_string()),
+            days: None,
             active_hours: active_hours.map(str::to_string),
             agent: None,
             model_tier: None,
@@ -355,19 +351,19 @@ mod tests {
     fn last_runs_are_read_from_the_state_file_and_a_missing_or_broken_one_is_empty() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("pulse_state.json");
-        assert!(load_last_runs(&path).is_empty(), "no file");
+        assert!(load_anchors(&path).is_empty(), "no file");
 
         std::fs::write(
             &path,
             r#"{"last_run":{"a":"2026-03-01T12:00:00","b":"2026-03-02T01:30:15.250"},"last_output":{"a":"x"}}"#,
         )
         .unwrap();
-        let runs = load_last_runs(&path);
+        let runs = load_anchors(&path);
         assert_eq!(runs.get("a"), Some(&local(1, 12, 0)));
         assert_eq!(runs.len(), 2);
 
         std::fs::write(&path, "{ not json").unwrap();
-        assert!(load_last_runs(&path).is_empty(), "a broken file");
+        assert!(load_anchors(&path).is_empty(), "a broken file");
     }
 
     #[test]
@@ -378,7 +374,7 @@ mod tests {
         let older = load_recorded_state(&path);
         assert!(older.last_fire.is_empty());
         assert_eq!(
-            older.last_run.len(),
+            older.anchor.len(),
             1,
             "the rest of an older file still loads"
         );
@@ -393,5 +389,76 @@ mod tests {
         assert_eq!(fire.status, residuum_bus::PulseFireStatus::Stopped);
         assert_eq!(fire.error, None);
         assert_eq!(fire.at, Utc.with_ymd_and_hms(2026, 3, 1, 12, 0, 5).unwrap());
+    }
+
+    fn on_days(days: &[&str], active_hours: Option<&str>) -> PulseDef {
+        PulseDef {
+            schedule: None,
+            days: Some(days.iter().map(|d| (*d).to_string()).collect()),
+            ..pulse("1h", active_hours)
+        }
+    }
+
+    // 2026-03-08 is a Sunday.
+    #[test]
+    fn a_day_pulse_is_next_at_the_window_start_on_its_next_listed_day() {
+        let sunday = on_days(&["sun"], Some("09:00-10:00"));
+        assert_eq!(
+            next_run_at(
+                &sunday,
+                Some(local(7, 9, 30)),
+                utc(7, 12, 0),
+                chrono_tz::UTC
+            ),
+            Some(utc(8, 9, 0)),
+            "Saturday noon, anchored to Saturday 09:30: next is Sunday 09:00"
+        );
+        assert_eq!(
+            next_run_at(&sunday, Some(local(8, 9, 0)), utc(8, 9, 30), chrono_tz::UTC),
+            Some(utc(15, 9, 0)),
+            "after Sunday's run, the next is a week on"
+        );
+    }
+
+    #[test]
+    fn a_day_pulse_never_seen_is_first_seen_now_and_runs_on_its_next_listed_day() {
+        let sunday = on_days(&["sun"], None);
+        assert_eq!(
+            next_run_at(&sunday, None, utc(7, 12, 0), chrono_tz::UTC),
+            Some(utc(8, 0, 0)),
+            "midnight on the coming Sunday"
+        );
+    }
+
+    #[test]
+    fn a_deferred_weekly_run_keeps_the_weekday_it_was_anchored_to() {
+        let weekly = PulseDef {
+            active_hours: Some("17:00-23:00".to_string()),
+            ..pulse("7d", None)
+        };
+        // Anchored to Sunday 15 at 17:30, the run is due Sunday 22 at 17:30. The
+        // gateway is back Monday 23 at 09:00, outside the window, which
+        // reopens at 17:00 that day.
+        assert_eq!(
+            next_run_at(
+                &weekly,
+                Some(local(15, 17, 30)),
+                utc(23, 9, 0),
+                chrono_tz::UTC
+            ),
+            Some(utc(23, 17, 0)),
+            "the overdue run lands when the window reopens"
+        );
+        // Once it has run, its anchor is Sunday 22 at 17:30, so the next run
+        // is the Sunday after, not Monday.
+        assert_eq!(
+            next_run_at(
+                &weekly,
+                Some(local(22, 17, 30)),
+                utc(23, 17, 1),
+                chrono_tz::UTC
+            ),
+            Some(utc(29, 17, 30)),
+        );
     }
 }

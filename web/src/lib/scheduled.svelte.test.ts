@@ -16,6 +16,7 @@ function pulse(name: string, overrides: Partial<PulseInfo> = {}): PulseInfo {
     name,
     enabled: true,
     schedule: "2h",
+    days: null,
     active_hours: null,
     agent: null,
     model_tier: null,

@@ -23,6 +23,7 @@ function pulse(overrides: Partial<PulseInfo> = {}): PulseInfo {
     name: "inbox_check",
     enabled: true,
     schedule: "2h",
+    days: null,
     active_hours: null,
     agent: null,
     model_tier: null,
@@ -52,8 +53,28 @@ describe("pulseCadence", () => {
     expect(pulseCadence(pulse({ active_hours: "nights" }))).toBe("Every 2 hours, nights");
   });
 
-  it("is null for a pulse with no schedule", () => {
+  it("is null for a pulse with neither a schedule nor days", () => {
     expect(pulseCadence(pulse({ schedule: null }))).toBeNull();
+  });
+
+  it("reads a pulse pinned to weekdays as a weekly cadence", () => {
+    expect(
+      pulseCadence(pulse({ schedule: null, days: ["sun"], active_hours: "17:30-18:30" })),
+    ).toBe("Every Sunday, between 17:30 and 18:30");
+    expect(pulseCadence(pulse({ schedule: null, days: ["Sunday"] }))).toBe(
+      "Every Sunday at midnight",
+    );
+    expect(pulseCadence(pulse({ schedule: null, days: ["mon", "Fri"] }))).toBe(
+      "Every Monday and Friday at midnight",
+    );
+  });
+});
+
+describe("a pulse pinned to weekdays", () => {
+  it("is not reported as failing to load, and counts as scheduled", () => {
+    const weekly = pulse({ schedule: null, days: ["sun"] });
+    expect(pulseNext(weekly, "running", NOW)).not.toBe("Won't run until fixed");
+    expect(pulsesHeld([weekly])).toBe(false);
   });
 });
 

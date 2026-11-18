@@ -156,7 +156,8 @@ async fn build_pulse_infos(
         infos.push(PulseInfo {
             name: pulse.name.clone(),
             enabled: pulse.enabled,
-            schedule: Some(pulse.schedule.clone()),
+            schedule: pulse.schedule.clone(),
+            days: pulse.days.clone(),
             active_hours: pulse.active_hours.clone(),
             agent: pulse.agent.clone(),
             model_tier: pulse.model_tier.as_ref().map(ToString::to_string),
@@ -164,7 +165,7 @@ async fn build_pulse_infos(
                 .then(|| {
                     next_run_at(
                         pulse,
-                        recorded.last_run.get(&pulse.name).copied(),
+                        recorded.anchor.get(&pulse.name).copied(),
                         now,
                         state.tz,
                     )
@@ -204,6 +205,7 @@ async fn build_pulse_infos(
             name: name.to_string(),
             enabled: false,
             schedule: None,
+            days: None,
             active_hours: None,
             agent: None,
             model_tier: None,
@@ -428,7 +430,8 @@ mod tests {
         PulseDef {
             name: name.to_string(),
             enabled: true,
-            schedule: "1h".to_string(),
+            schedule: Some("1h".to_string()),
+            days: None,
             active_hours: None,
             agent: None,
             model_tier: None,
@@ -474,9 +477,9 @@ mod tests {
         }
     }
 
-    fn recorded_runs(last_run: HashMap<String, NaiveDateTime>) -> RecordedPulseState {
+    fn recorded_runs(anchors: HashMap<String, NaiveDateTime>) -> RecordedPulseState {
         RecordedPulseState {
-            last_run,
+            anchor: anchors,
             ..RecordedPulseState::default()
         }
     }
@@ -485,7 +488,7 @@ mod tests {
     async fn infos_at(
         dir: &std::path::Path,
         pulses: &[PulseDef],
-        last_run: &HashMap<String, NaiveDateTime>,
+        anchors: &HashMap<String, NaiveDateTime>,
         pulse_enabled: bool,
     ) -> Vec<PulseInfo> {
         let state = test_state(dir);
@@ -494,7 +497,7 @@ mod tests {
             .and_hms_opt(12, 20, 40)
             .unwrap()
             .and_utc();
-        let recorded = recorded_runs(last_run.clone());
+        let recorded = recorded_runs(anchors.clone());
         build_pulse_infos(pulses, &[], &recorded, (now, pulse_enabled), &state).await
     }
 
@@ -506,7 +509,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_next_fire_time_follows_the_schedule_the_active_hours_and_the_last_run() {
+    async fn the_next_fire_time_follows_the_schedule_the_active_hours_and_the_anchor() {
         let dir = tempfile::tempdir().unwrap();
         let mut disabled = sample_pulse("disabled");
         disabled.enabled = false;
@@ -518,12 +521,12 @@ mod tests {
             quiet,
             disabled,
         ];
-        let last_run = HashMap::from([
+        let anchors = HashMap::from([
             ("recent".to_string(), day_2099(12, 0)),
             ("quiet".to_string(), day_2099(11, 30)),
         ]);
 
-        let infos = infos_at(dir.path(), &pulses, &last_run, true).await;
+        let infos = infos_at(dir.path(), &pulses, &anchors, true).await;
 
         let next: Vec<(&str, Option<String>)> = infos
             .iter()

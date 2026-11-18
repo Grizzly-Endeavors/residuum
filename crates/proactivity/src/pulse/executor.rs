@@ -173,7 +173,8 @@ mod tests {
         PulseDef {
             name: "email_check".to_string(),
             enabled: true,
-            schedule: "30m".to_string(),
+            schedule: Some("30m".to_string()),
+            days: None,
             active_hours: None,
             agent: None,
             model_tier: None,
@@ -327,7 +328,8 @@ mod tests {
         let pulse = PulseDef {
             name: "empty".to_string(),
             enabled: true,
-            schedule: "1h".to_string(),
+            schedule: Some("1h".to_string()),
+            days: None,
             active_hours: None,
             agent: None,
             model_tier: None,

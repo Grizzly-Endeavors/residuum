@@ -329,6 +329,7 @@ function pulseInfo(state: MockState, pulse: MockPulse): PulseInfo {
     name: pulse.name,
     enabled: pulse.enabled,
     schedule: pulse.schedule,
+    days: null,
     active_hours: pulse.activeHours,
     agent: pulse.agent,
     model_tier: pulse.modelTier ?? null,

@@ -13,7 +13,7 @@ use residuum_config::Config;
 use residuum_config::WorkspaceLayout;
 use residuum_core::time::format_rfc3339;
 use residuum_proactivity::actions::store::ActionStore;
-use residuum_proactivity::pulse::next_run::{load_last_runs, next_run_at};
+use residuum_proactivity::pulse::next_run::{load_anchors, next_run_at};
 use residuum_proactivity::pulse::types::load_heartbeat;
 
 /// How many upcoming runs an overview lists.
@@ -121,12 +121,12 @@ fn pulse_runs(
     ) else {
         return Ok(Vec::new());
     };
-    let last_runs = load_last_runs(&layout.pulse_state_json());
+    let anchors = load_anchors(&layout.pulse_state_json());
     Ok(heartbeat
         .pulses
         .iter()
         .filter_map(|pulse| {
-            let at = next_run_at(pulse, last_runs.get(&pulse.name).copied(), now, timezone)?;
+            let at = next_run_at(pulse, anchors.get(&pulse.name).copied(), now, timezone)?;
             Some((at, UpcomingKind::Pulse, pulse.name.clone()))
         })
         .collect())

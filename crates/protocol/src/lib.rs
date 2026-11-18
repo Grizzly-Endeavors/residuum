@@ -438,14 +438,20 @@ pub struct PulseInfo {
     /// `false` for a pulse that failed to load at all (see `problems`) —
     /// there is no real `enabled` value to report for it.
     pub enabled: bool,
+    /// How often the pulse runs, as written. `None` for a pulse that runs
+    /// only on `days`, and for one that failed to load.
     pub schedule: Option<String>,
+    /// The weekdays the pulse runs on, as written (`sun`, `Monday`, ...). `None`
+    /// for a pulse that doesn't pin a day.
+    pub days: Option<Vec<String>>,
     pub active_hours: Option<String>,
     pub agent: Option<String>,
     /// The pulse's `model_tier` as written: a tier or an explicit
     /// `provider/model` id. `None` runs the `small` tier.
     pub model_tier: Option<String>,
-    /// When the pulse next fires, from `pulse::next_run`: the schedule since
-    /// `pulse_state.json`'s last run, moved into `active_hours`. `None` for a
+    /// When the pulse next fires, from `pulse::next_run`: its anchor in
+    /// `pulse_state.json` spaced by its schedule or days, moved into
+    /// `active_hours`. `None` for a
     /// disabled pulse, one whose schedule or active hours can't be read or
     /// never open, and every pulse when the agent's `[pulse]` is off or its
     /// `config.toml` can't be read.
