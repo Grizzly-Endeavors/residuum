@@ -25,6 +25,7 @@ pub fn summary_from_live(info: &SessionInfo) -> SessionSummary {
         started_at: info.started_at,
         completed_at: None,
         episode_id: None,
+        memory_pending: false,
         interrupted: false,
         usage: info.usage,
         // A live run has no outcome yet; `session_completed` carries it when
@@ -75,7 +76,10 @@ pub fn session_event_to_server_message(event: SessionEvent) -> ServerMessage {
             run_id,
             state,
         },
-        SessionEventKind::Completed { status } => completed_frame(address, run_id, status),
+        SessionEventKind::Completed {
+            status,
+            memory_pending,
+        } => completed_frame(address, run_id, status, memory_pending),
         SessionEventKind::MemoryMerged { episode_id } => ServerMessage::SessionMemoryMerged {
             address,
             run_id,
@@ -157,7 +161,12 @@ pub fn session_event_to_server_message(event: SessionEvent) -> ServerMessage {
 }
 
 /// The `SessionCompleted` frame for a run that finished with `status`.
-fn completed_frame(address: String, run_id: String, status: AgentResultStatus) -> ServerMessage {
+fn completed_frame(
+    address: String,
+    run_id: String,
+    status: AgentResultStatus,
+    memory_pending: bool,
+) -> ServerMessage {
     let (status, error, error_details) = match status {
         AgentResultStatus::Completed => (SessionRunStatus::Completed, None, None),
         AgentResultStatus::Cancelled => (SessionRunStatus::Cancelled, None, None),
@@ -171,6 +180,7 @@ fn completed_frame(address: String, run_id: String, status: AgentResultStatus) -
         status,
         error,
         error_details,
+        memory_pending,
     }
 }
 
@@ -236,6 +246,7 @@ mod tests {
                     error: "model down".to_string(),
                     details: None,
                 },
+                memory_pending: true,
             },
         });
         let json = serde_json::to_value(&msg).unwrap();
@@ -247,6 +258,7 @@ mod tests {
                 "run_id": "run-d",
                 "status": "failed",
                 "error": "model down",
+                "memory_pending": true,
             })
         );
     }
@@ -257,7 +269,7 @@ mod tests {
             address: SessionAddress::from("spawned-d-0004"),
             run_id: "run-d4".to_string(),
             kind: SessionEventKind::MemoryMerged {
-                episode_id: "ep-008".to_string(),
+                episode_id: Some("ep-008".to_string()),
             },
         });
         let json = serde_json::to_value(&msg).unwrap();
@@ -268,6 +280,25 @@ mod tests {
                 "address": "spawned-d-0004",
                 "run_id": "run-d4",
                 "episode_id": "ep-008",
+            })
+        );
+    }
+
+    #[test]
+    fn a_merge_with_no_episode_still_becomes_a_session_memory_merged_frame() {
+        let msg = session_event_to_server_message(SessionEvent {
+            address: SessionAddress::from("spawned-d-0005"),
+            run_id: "run-d5".to_string(),
+            kind: SessionEventKind::MemoryMerged { episode_id: None },
+        });
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "type": "session_memory_merged",
+                "address": "spawned-d-0005",
+                "run_id": "run-d5",
+                "episode_id": null,
             })
         );
     }
@@ -313,6 +344,7 @@ mod tests {
                     error: "model down".to_string(),
                     details: Some("connect timeout after 30s".to_string()),
                 },
+                memory_pending: false,
             },
         });
         let json = serde_json::to_value(&msg).unwrap();
@@ -325,6 +357,7 @@ mod tests {
                 "status": "failed",
                 "error": "model down",
                 "error_details": "connect timeout after 30s",
+                "memory_pending": false,
             }),
             "the full cause chain must reach the client alongside the plain message"
         );

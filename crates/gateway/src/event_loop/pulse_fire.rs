@@ -622,7 +622,10 @@ mod tests {
                 SessionEvent {
                     address: address.clone(),
                     run_id: run_id.to_string(),
-                    kind: SessionEventKind::Completed { status },
+                    kind: SessionEventKind::Completed {
+                        status,
+                        memory_pending: false,
+                    },
                 },
             )
             .await

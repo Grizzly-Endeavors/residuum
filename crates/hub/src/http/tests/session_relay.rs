@@ -200,6 +200,7 @@ async fn a_subscribed_session_streams_every_event_tool_frames_included() {
         },
         SessionEventKind::Completed {
             status: AgentResultStatus::Completed,
+            memory_pending: false,
         },
     ];
     for kind in kinds {

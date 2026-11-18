@@ -13,6 +13,7 @@ pub mod conversation_router;
 pub mod fire_stops;
 mod fork_failure;
 pub(crate) mod listener;
+mod merge_tasks;
 pub mod messaging;
 pub(crate) mod owner_session;
 pub mod registry;

@@ -265,7 +265,7 @@ impl WatchState {
                 run_id: event.run_id.clone(),
                 state: *state,
             }),
-            SessionEventKind::Completed { status } => Some(AgentChangeKind::SessionCompleted {
+            SessionEventKind::Completed { status, .. } => Some(AgentChangeKind::SessionCompleted {
                 address: event.address.clone(),
                 run_id: event.run_id.clone(),
                 status: status.clone(),
@@ -619,6 +619,7 @@ mod tests {
                 "run-1",
                 SessionEventKind::Completed {
                     status: AgentResultStatus::Completed,
+                    memory_pending: false,
                 },
             ),
         )
@@ -736,6 +737,7 @@ mod tests {
             },
             SessionEventKind::Completed {
                 status: AgentResultStatus::Completed,
+                memory_pending: false,
             },
         ];
         for kind in events {

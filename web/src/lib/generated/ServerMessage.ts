@@ -348,7 +348,13 @@ error: string | null,
  * expandable "details" toggle as a live `SessionError`. `None` when
  * there's nothing richer to show.
  */
-error_details?: string, } | { "type": "session_memory_merged", 
+error_details?: string, 
+/**
+ * Whether the run's memory merge is still running. A
+ * `SessionMemoryMerged` for the run follows exactly when this is
+ * `true`.
+ */
+memory_pending: boolean, } | { "type": "session_memory_merged", 
 /**
  * Session address.
  */
@@ -358,9 +364,10 @@ address: string,
  */
 run_id: string, 
 /**
- * Episode the run was merged into.
+ * Episode the run was merged into; `None` when the merge produced
+ * no episode (a quiet or short run) or failed.
  */
-episode_id: string, } | { "type": "session_start_failed", 
+episode_id: string | null, } | { "type": "session_start_failed", 
 /**
  * Address the start was given.
  */

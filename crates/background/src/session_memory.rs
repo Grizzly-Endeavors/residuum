@@ -12,6 +12,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 
+use residuum_bus::session::SessionInfo;
 use residuum_bus::{HEARTBEAT_OK, ends_with_sentinel};
 use residuum_config::WorkspaceLayout;
 use residuum_inference::Message;
@@ -286,36 +287,73 @@ pub(crate) async fn complete_session_memory(
     }
 }
 
-/// A finished run's completion memory pipeline with every input owned, so
-/// it can run on its own task after the run has released its address.
-///
-/// Built from the run's resources at teardown; [`Self::run`] does the LLM
-/// and merge work. Nothing here touches the registry or the store.
-pub(crate) struct CompletionMerge {
-    pub(crate) tag: SourceTag,
-    pub(crate) summary: String,
-    pub(crate) transcript: Vec<TranscriptLine>,
-    pub(crate) memory: SessionMemory,
+/// Owned handles on the memory subsystems a run's completion merge writes
+/// through, so the merge can outlive the run's resources.
+#[derive(Clone)]
+pub(crate) struct MergeHandles {
     pub(crate) observer: Arc<Observer>,
     pub(crate) merge_writer: Arc<MemoryMergeWriter>,
     pub(crate) layout: WorkspaceLayout,
     pub(crate) episode_skip_token_floor: usize,
-    pub(crate) tz: Tz,
+}
+
+impl MergeHandles {
+    /// Borrow these handles as the pipeline's environment.
+    fn env(&self, tz: Tz) -> SessionMemoryEnv<'_> {
+        SessionMemoryEnv {
+            observer: &self.observer,
+            merge_writer: &self.merge_writer,
+            layout: &self.layout,
+            episode_skip_token_floor: self.episode_skip_token_floor,
+            tz,
+        }
+    }
+}
+
+/// A finished run's completion memory pipeline with every input owned, so
+/// it can run on its own task after the run has released its address.
+///
+/// Built at teardown; [`Self::run`] does the LLM and merge work. Nothing
+/// here touches the registry or the store.
+pub(crate) struct CompletionMerge {
+    tag: SourceTag,
+    summary: String,
+    transcript: Vec<TranscriptLine>,
+    memory: SessionMemory,
+    handles: MergeHandles,
+    tz: Tz,
 }
 
 impl CompletionMerge {
+    /// The merge of `info`'s run, whose final turn said `summary`.
+    pub(crate) fn for_run(
+        info: &SessionInfo,
+        summary: String,
+        transcript: Vec<TranscriptLine>,
+        memory: SessionMemory,
+        handles: MergeHandles,
+        tz: Tz,
+    ) -> Self {
+        Self {
+            tag: SourceTag::session(
+                info.address.to_string(),
+                info.run_id.clone(),
+                info.category.as_str(),
+            ),
+            summary,
+            transcript,
+            memory,
+            handles,
+            tz,
+        }
+    }
+
     /// Run the pipeline (see [`complete_session_memory`]) and return the
     /// merged episode id, or `None` if the run produced no episode.
     pub(crate) async fn run(self) -> Option<String> {
         let timed: Vec<TimedMessage<'_>> =
             self.transcript.iter().map(TranscriptLine::timed).collect();
-        let env = SessionMemoryEnv {
-            observer: &self.observer,
-            merge_writer: &self.merge_writer,
-            layout: &self.layout,
-            episode_skip_token_floor: self.episode_skip_token_floor,
-            tz: self.tz,
-        };
+        let env = self.handles.env(self.tz);
         complete_session_memory(self.tag, &self.summary, &timed, self.memory, &env).await
     }
 }

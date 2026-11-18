@@ -287,7 +287,7 @@ export function spawnSession(state: MockState, purpose: string): SessionSummary 
 
 /** The note telling a resumed session where its previous run went, as the backend writes it. */
 function resumePointer(prev: SessionSummary): string {
-  return `[Resumed session] Your previous run (${prev.run_id}) has just ended. Retrieve its transcript with memory_get using that run id if useful.`;
+  return `[Resumed session] Your previous run (${prev.run_id}) has ended. Retrieve its transcript with memory_get using that run id if useful.`;
 }
 
 /** Bring a finished session back as a new run, whose first turn reads `messages`. */

@@ -1298,7 +1298,7 @@ async fn publish_resume(
 /// previous run produced.
 fn pointer_note(point: &ResumePoint) -> String {
     format!(
-        "[Resumed session] Your previous run ({}) has just ended. Retrieve its transcript \
+        "[Resumed session] Your previous run ({}) has ended. Retrieve its transcript \
          with memory_get using that run id if useful.",
         point.previous_run_id
     )
