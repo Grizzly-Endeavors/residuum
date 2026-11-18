@@ -1923,7 +1923,10 @@ pulses:
         let path = write_heartbeat(dir.path(), EVENING_SUNDAY);
         let mut scheduler = PulseScheduler::new();
         // Saturday noon, outside the 17:30 window.
-        assert!(due_names(&mut scheduler, at(14, 12, 0), &path).is_empty());
+        assert_eq!(
+            due_names(&mut scheduler, at(14, 12, 0), &path),
+            Vec::<String>::new()
+        );
         assert_eq!(
             due_names(&mut scheduler, at(15, 17, 30), &path),
             vec!["review"],
@@ -1936,7 +1939,10 @@ pulses:
         let dir = tempdir().unwrap();
         let path = write_heartbeat(dir.path(), EVENING_SUNDAY);
         let mut scheduler = PulseScheduler::new();
-        assert!(due_names(&mut scheduler, at(15, 9, 0), &path).is_empty());
+        assert_eq!(
+            due_names(&mut scheduler, at(15, 9, 0), &path),
+            Vec::<String>::new()
+        );
         assert_eq!(
             due_names(&mut scheduler, at(15, 17, 30), &path),
             vec!["review"]
