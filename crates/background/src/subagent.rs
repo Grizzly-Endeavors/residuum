@@ -234,6 +234,16 @@ impl SubAgentResources {
         };
         self
     }
+
+    /// Owned copies of the memory handles the run's completion merge needs.
+    pub(crate) fn merge_handles(&self) -> crate::session_memory::MergeHandles {
+        crate::session_memory::MergeHandles {
+            observer: Arc::clone(&self.observer),
+            merge_writer: Arc::clone(&self.merge_writer),
+            layout: self.layout.clone(),
+            episode_skip_token_floor: self.episode_skip_token_floor,
+        }
+    }
 }
 
 /// Build an isolated `SkillState` for a new sub-agent, cloned from

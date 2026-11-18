@@ -152,6 +152,9 @@
           {#if summary.episode_id}
             <dt>Remembered as</dt>
             <dd class="code">{summary.episode_id}</dd>
+          {:else if summary.memory_pending}
+            <dt>Remembered as</dt>
+            <dd>Saving to memory…</dd>
           {/if}
           <dt>Session</dt>
           <dd class="code">{summary.address}</dd>

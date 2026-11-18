@@ -86,6 +86,7 @@ function turnOf(frame: ServerMessage): string | null {
       // A message posted outside any turn names none.
       return frame.reply_to === "" ? null : frame.reply_to;
     case "post_turn_activity":
+    case "session_memory_merged":
     case "file_attachment":
     case "error":
     case "message_refused":

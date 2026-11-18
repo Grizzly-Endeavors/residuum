@@ -86,7 +86,7 @@ function completeSession(
     sessions.live = sessions.live.filter((s) => s.run_id !== session.run_id);
     session.state = "completed";
     session.completed_at = state.env.clock.iso();
-    session.episode_id = status === "completed" ? "ep-301" : null;
+    session.memory_pending = true;
     sessions.completed.unshift(session);
     state.broadcast({
       type: "session_completed",
@@ -95,7 +95,18 @@ function completeSession(
       status,
       error,
       ...(errorDetails === null ? {} : { error_details: errorDetails }),
-      episode_id: session.episode_id,
+      memory_pending: true,
+    });
+    // The memory merge runs after the run has left the live list.
+    state.env.after(1500, () => {
+      session.episode_id = status === "completed" ? "ep-301" : null;
+      session.memory_pending = false;
+      state.broadcast({
+        type: "session_memory_merged",
+        address: session.address,
+        run_id: session.run_id,
+        episode_id: session.episode_id,
+      });
     });
     if (unread.length > 0)
       resumeRun(state, session, { runIdPrefix: "run-resumed", messages: unread });
@@ -281,9 +292,7 @@ export function spawnSession(state: MockState, purpose: string): SessionSummary 
 
 /** The note telling a resumed session where its previous run went, as the backend writes it. */
 function resumePointer(prev: SessionSummary): string {
-  return prev.episode_id === null
-    ? `[Resumed session] Your previous run (${prev.run_id}) produced no episode — retrieve its transcript with memory_get using that run id if useful.`
-    : `[Resumed session] Your previous run (${prev.run_id}) was merged as episode ${prev.episode_id} — retrieve it with memory_get if useful.`;
+  return `[Resumed session] Your previous run (${prev.run_id}) has ended. Retrieve its transcript with memory_get using that run id if useful.`;
 }
 
 /** Bring a finished session back as a new run, whose first turn reads `messages`. */

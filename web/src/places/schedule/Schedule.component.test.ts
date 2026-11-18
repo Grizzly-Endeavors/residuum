@@ -352,7 +352,7 @@ describe("Schedule", () => {
       run_id: "run-3",
       status: "cancelled",
       error: null,
-      episode_id: null,
+      memory_pending: false,
     });
     await settle();
     expect(screen.queryByRole("button", { name: "Stop Weekly digest" })).toBeNull();

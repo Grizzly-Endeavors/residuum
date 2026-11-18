@@ -761,7 +761,7 @@ mod tests {
                 "completed",
                 &residuum_bus::AgentResultStatus::Completed,
                 vec![Message::user("go"), Message::assistant("done", None)],
-                Some("ep-001".to_string()),
+                false,
             )
             .await
             .unwrap();
@@ -802,11 +802,12 @@ mod tests {
             &info("scheduled-b-0001", "run-b", EventTrigger::Pulse, 60 * 24),
         )
         .await;
-        complete(
-            &state,
-            &info("spawned-c-0001", "run-c", EventTrigger::Agent, 60 * 24 + 5),
-        )
-        .await;
+        let run_c = info("spawned-c-0001", "run-c", EventTrigger::Agent, 60 * 24 + 5);
+        complete(&state, &run_c).await;
+        state
+            .store
+            .finish_memory_merge(&run_c, Some("ep-001".to_string()))
+            .await;
         let live = info(
             "spawned-live-0001",
             "run-live",
@@ -993,7 +994,7 @@ mod tests {
                     .with_id("m-owner-7")
                     .to_history_message(),
                 ],
-                None,
+                false,
             )
             .await
             .unwrap();
@@ -1029,7 +1030,7 @@ mod tests {
                     Message::user("[Resumed session] previous run").as_context(),
                     Message::user("any news?"),
                 ],
-                None,
+                false,
             )
             .await
             .unwrap();
@@ -1074,7 +1075,7 @@ mod tests {
                         },
                     ]),
                 ],
-                None,
+                false,
             )
             .await
             .unwrap();
@@ -1596,7 +1597,6 @@ mod tests {
                 &SessionAddress::from("artifact-wiki-0001"),
                 ResumePoint {
                     previous_run_id: "run-old".to_string(),
-                    previous_episode_id: None,
                     trigger: EventTrigger::Artifact("wiki".to_string()),
                     source_label: "artifact:wiki".to_string(),
                     agent_skill: None,

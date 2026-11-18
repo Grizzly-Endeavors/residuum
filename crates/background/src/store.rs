@@ -64,6 +64,12 @@ pub struct RunRecord {
     /// still kept either way.
     #[serde(default)]
     pub episode_id: Option<String>,
+    /// `true` from the moment the run is recorded as completed until its
+    /// memory merge has finished and [`SessionStore::finish_memory_merge`]
+    /// has written the outcome. A record still set when the process starts
+    /// is merged by startup recovery.
+    #[serde(default)]
+    pub memory_pending: bool,
     /// The run's full message transcript, filled in at completion (empty
     /// until then — the durable record while the run is live is the sibling
     /// `<run_id>.transcript.jsonl` file, appended to by
@@ -126,6 +132,7 @@ impl RunRecord {
             state: "running".to_string(),
             interrupted: false,
             episode_id: None,
+            memory_pending: false,
             transcript: Vec::new(),
             usage: info.usage,
             outcome: None,
@@ -173,6 +180,8 @@ struct RunRecordHeader {
     #[serde(default)]
     episode_id: Option<String>,
     #[serde(default)]
+    memory_pending: bool,
+    #[serde(default)]
     usage: residuum_bus::usage::SessionUsageTotals,
     #[serde(default)]
     outcome: Option<String>,
@@ -204,6 +213,7 @@ impl From<RunRecordHeader> for RunRecord {
             state: header.state,
             interrupted: header.interrupted,
             episode_id: header.episode_id,
+            memory_pending: header.memory_pending,
             transcript: Vec::new(),
             usage: header.usage,
             outcome: header.outcome,
@@ -689,10 +699,11 @@ impl SessionStore {
     }
 
     /// Finalize a run's record: set its terminal state, completion time,
-    /// full transcript, the episode it was merged into (if any), and its
-    /// outcome (`status`) — completed, cancelled, or failed with a reason —
-    /// so a listing or reload can show what actually happened instead of
-    /// just "finished".
+    /// full transcript, its outcome (`status`) — completed, cancelled, or
+    /// failed with a reason — so a listing or reload can show what actually
+    /// happened instead of just "finished", and whether its memory merge is
+    /// still pending (`memory_pending`, see [`Self::finish_memory_merge`]).
+    /// The episode is written by that later call, not here.
     ///
     /// Returns the path the record was written to, or `None` if the write
     /// failed — callers must not report a transcript to exist when it
@@ -703,14 +714,14 @@ impl SessionStore {
         state: &str,
         status: &AgentResultStatus,
         transcript: Vec<Message>,
-        episode_id: Option<String>,
+        memory_pending: bool,
     ) -> Option<PathBuf> {
         let path = self.run_path(&info.run_id, info.started_at);
         let mut record = RunRecord::starting(info);
         record.state = state.to_string();
         record.completed_at = Some(Utc::now());
         record.transcript = transcript;
-        record.episode_id = episode_id;
+        record.memory_pending = memory_pending;
         let (outcome, outcome_error, outcome_error_details) = match status {
             AgentResultStatus::Completed => ("completed", None, None),
             AgentResultStatus::Cancelled => ("cancelled", None, None),
@@ -730,10 +741,33 @@ impl SessionStore {
         }
     }
 
-    /// At startup, run the full completion pipeline — skip check, final
-    /// observation, and merge — for every run left incomplete by a prior
-    /// process exit, from its persisted transcript, then mark it completed.
-    /// Returns the number of runs recovered.
+    /// Record the outcome of a completed run's memory merge: the episode it
+    /// produced, if any, and that the merge is no longer pending.
+    ///
+    /// Best-effort like the other record writes. A failure is logged and
+    /// leaves the record pending, so startup recovery merges it (or finds
+    /// the merge already recorded) on the next start.
+    pub async fn finish_memory_merge(&self, info: &SessionInfo, episode_id: Option<String>) {
+        let path = self.run_path(&info.run_id, info.started_at);
+        let mut record = match read_record(&path).await {
+            Ok(record) => record,
+            Err(e) => {
+                tracing::warn!(run_id = %info.run_id, path = %path.display(), error = %e, "failed to read session run record to record its memory merge");
+                return;
+            }
+        };
+        record.episode_id = episode_id;
+        record.memory_pending = false;
+        if let Err(e) = write_record(&path, &record).await {
+            tracing::warn!(run_id = %info.run_id, path = %path.display(), error = %e, "failed to write session run record with its memory merge");
+        }
+    }
+
+    /// At startup, finish every run that a prior process exit left
+    /// incomplete: a run still live when the process stopped is merged from
+    /// its persisted transcript and marked interrupted, and a completed run
+    /// whose memory merge was still pending is merged the same way. Returns
+    /// the number of runs recovered.
     pub async fn recover_incomplete_runs(
         &self,
         env: &super::session_memory::SessionMemoryEnv<'_>,
@@ -789,7 +823,8 @@ impl SessionStore {
     ///
     /// A run's completion pipeline may have already merged successfully
     /// before the process exited — a crash between that merge and this same
-    /// record being written as `completed` is exactly what leaves it here.
+    /// record being finished (state `completed`, `memory_pending` cleared) is
+    /// exactly what leaves it here.
     /// So this first asks the merge writer whether the run id is already
     /// recorded as merged and, if so, backfills the record's state and
     /// episode id from that instead of running the completion pipeline (and
@@ -814,10 +849,17 @@ impl SessionStore {
                 return false;
             }
         };
-        if record.state == "completed" {
+        if record.state == "completed" && !record.memory_pending {
             return false;
         }
-        tracing::warn!(run_id = %record.run_id, previous_state = %record.state, "recovering run left incomplete by a prior process exit");
+        // A run still live at the process exit is interrupted; a completed
+        // run whose merge was pending only needs its merge finished.
+        let interrupted = record.state != "completed";
+        if interrupted {
+            tracing::warn!(run_id = %record.run_id, previous_state = %record.state, "recovering run left incomplete by a prior process exit");
+        } else {
+            tracing::info!(run_id = %record.run_id, "recovering memory merge left pending by a prior process exit");
+        }
 
         let lines = self
             .read_transcript_lines(&record.run_id, record.started_at)
@@ -835,11 +877,14 @@ impl SessionStore {
             }
         };
 
-        record.state = "completed".to_string();
-        record.completed_at = Some(Utc::now());
-        record.interrupted = true;
         record.episode_id = episode_id;
-        record.transcript = lines.into_iter().map(|line| line.message).collect();
+        record.memory_pending = false;
+        if interrupted {
+            record.state = "completed".to_string();
+            record.completed_at = Some(Utc::now());
+            record.interrupted = true;
+            record.transcript = lines.into_iter().map(|line| line.message).collect();
+        }
         if let Err(e) = write_record(path, &record).await {
             tracing::warn!(path = %path.display(), error = %e, "failed to rewrite recovered session run record");
             return false;
@@ -926,6 +971,15 @@ async fn write_record(path: &Path, record: &RunRecord) -> anyhow::Result<()> {
     let json = serde_json::to_string_pretty(record)?;
     residuum_core::util::fs::atomic_write(path, &json).await?;
     Ok(())
+}
+
+/// Read and parse a run record written by [`write_record`].
+async fn read_record(path: &Path) -> anyhow::Result<RunRecord> {
+    let contents = tokio::fs::read_to_string(path)
+        .await
+        .with_context(|| format!("failed to read session run record at {}", path.display()))?;
+    serde_json::from_str(&contents)
+        .with_context(|| format!("failed to parse session run record at {}", path.display()))
 }
 
 /// One line of a run's `<run_id>.transcript.jsonl`, as read back: the
@@ -1109,7 +1163,7 @@ mod tests {
                 "completed",
                 &AgentResultStatus::Completed,
                 transcript,
-                None,
+                false,
             )
             .await
             .expect("write should succeed");
@@ -1143,7 +1197,7 @@ mod tests {
                 "completed",
                 &AgentResultStatus::Completed,
                 Vec::new(),
-                None,
+                false,
             )
             .await
             .expect("write should succeed");
@@ -1193,7 +1247,7 @@ mod tests {
                 "completed",
                 &AgentResultStatus::Completed,
                 transcript.clone(),
-                None,
+                false,
             )
             .await;
 
@@ -1219,7 +1273,7 @@ mod tests {
                     details: None,
                 },
                 vec![],
-                None,
+                false,
             )
             .await
             .expect("write should succeed");
@@ -1253,7 +1307,7 @@ mod tests {
                     details: Some("connect timeout after 30s: api.example.com:443".to_string()),
                 },
                 vec![],
-                None,
+                false,
             )
             .await
             .expect("write should succeed");
@@ -1311,7 +1365,7 @@ mod tests {
                 "completed",
                 &AgentResultStatus::Cancelled,
                 vec![],
-                None,
+                false,
             )
             .await
             .expect("write should succeed");
@@ -1363,7 +1417,7 @@ mod tests {
                 "completed",
                 &AgentResultStatus::Completed,
                 vec![],
-                None,
+                false,
             )
             .await;
 
@@ -1460,6 +1514,80 @@ mod tests {
             recovered_record.episode_id.is_some(),
             "a substantial recovered transcript should be merged into an episode"
         );
+    }
+
+    #[tokio::test]
+    async fn recover_incomplete_runs_finishes_a_merge_left_pending_by_a_completed_run() {
+        // A run that completed but whose memory merge had not finished when the
+        // process exited is recorded as completed with its merge pending. Recovery
+        // must merge it and clear the pending flag, without marking the run
+        // interrupted, since it finished on its own.
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::new(dir.path().to_path_buf());
+        let mut info = sample_info();
+        info.run_id = "run-merge-pending".to_string();
+        store.begin_run(&info).await;
+        store
+            .append_transcript(
+                &info.run_id,
+                info.started_at,
+                &[
+                    Message::user("investigate the issue"),
+                    Message::assistant("a".repeat(9000), None),
+                ],
+            )
+            .await;
+        store
+            .complete_run(
+                &info,
+                "completed",
+                &AgentResultStatus::Completed,
+                vec![],
+                true,
+            )
+            .await;
+
+        let layout = residuum_config::WorkspaceLayout::new(dir.path());
+        let search_index = std::sync::Arc::new(
+            residuum_memory::search::MemoryIndex::open_or_create(&layout.search_index_dir())
+                .unwrap(),
+        );
+        let merge_writer = residuum_memory::merge_writer::MemoryMergeWriter::new(
+            residuum_memory::reflector::Reflector::disabled(chrono_tz::UTC),
+            layout.clone(),
+            search_index,
+            None,
+            None,
+        );
+        let observer = residuum_memory::observer::Observer::new(
+            Box::new(residuum_memory::testing::MockMemoryProvider::new(
+                r#"{"observations": [{"content": "recovered a finding", "timestamp": "2026-02-21T14:30", "visibility": "background"}]}"#,
+            )),
+            residuum_memory::observer::ObserverConfig::default(),
+        );
+        let env = SessionMemoryEnv {
+            observer: &observer,
+            merge_writer: &merge_writer,
+            layout: &layout,
+            episode_skip_token_floor: 2000,
+            tz: chrono_tz::UTC,
+        };
+        assert_eq!(store.recover_incomplete_runs(&env).await, 1);
+
+        let (record, _) = store.read_run(&info.run_id).await.unwrap().unwrap();
+        assert!(
+            !record.memory_pending,
+            "the merge must no longer be pending"
+        );
+        assert!(
+            record.episode_id.is_some(),
+            "the pending merge must be finished and its episode recorded"
+        );
+        assert!(
+            !record.interrupted,
+            "a run that completed on its own is not interrupted by the merge's recovery"
+        );
+        assert_eq!(record.outcome.as_deref(), Some("completed"));
     }
 
     #[tokio::test]
@@ -1682,14 +1810,50 @@ mod tests {
                 "completed",
                 &AgentResultStatus::Completed,
                 transcript.clone(),
-                Some("ep-001".to_string()),
+                false,
             )
             .await;
 
         let (record, read_transcript) = store.read_run(&info.run_id).await.unwrap().unwrap();
         assert_eq!(record.state, "completed");
-        assert_eq!(record.episode_id.as_deref(), Some("ep-001"));
         assert_eq!(read_transcript.len(), transcript.len());
+    }
+
+    #[tokio::test]
+    async fn finish_memory_merge_records_the_episode_and_clears_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::new(dir.path().to_path_buf());
+        let info = sample_info();
+        store.begin_run(&info).await;
+        store
+            .complete_run(
+                &info,
+                "completed",
+                &AgentResultStatus::Completed,
+                vec![Message::user("hello"), Message::assistant("hi", None)],
+                true,
+            )
+            .await;
+
+        let (pending, _) = store.read_run(&info.run_id).await.unwrap().unwrap();
+        assert!(
+            pending.memory_pending,
+            "a run whose merge is queued is pending"
+        );
+        assert_eq!(pending.episode_id, None);
+
+        store
+            .finish_memory_merge(&info, Some("ep-001".to_string()))
+            .await;
+
+        let (record, transcript) = store.read_run(&info.run_id).await.unwrap().unwrap();
+        assert!(!record.memory_pending);
+        assert_eq!(record.episode_id.as_deref(), Some("ep-001"));
+        assert_eq!(
+            transcript.len(),
+            2,
+            "finishing the merge must keep the transcript"
+        );
     }
 
     #[tokio::test]
@@ -1743,7 +1907,7 @@ mod tests {
                 "completed",
                 &AgentResultStatus::Completed,
                 vec![],
-                None,
+                false,
             )
             .await;
         assert!(

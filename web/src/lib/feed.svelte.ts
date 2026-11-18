@@ -523,6 +523,7 @@ export class FeedStore {
       case "session_started":
       case "session_state_changed":
       case "session_completed":
+      case "session_memory_merged":
       case "session_turn_started":
       case "session_turn_ended":
       case "session_turn_usage":

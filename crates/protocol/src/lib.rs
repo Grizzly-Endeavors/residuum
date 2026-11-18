@@ -178,6 +178,11 @@ pub struct SessionSummary {
     pub completed_at: Option<DateTime<Utc>>,
     /// Episode the run was merged into, if it produced one.
     pub episode_id: Option<String>,
+    /// `true` while a completed run's memory merge is still running, so
+    /// `episode_id` may still arrive (see `SessionMemoryMerged`). `false`
+    /// for a live run.
+    #[serde(default)]
+    pub memory_pending: bool,
     /// `true` when the run was completed at startup because the process
     /// exited before it finished on its own.
     pub interrupted: bool,
@@ -907,7 +912,20 @@ pub enum ServerMessage {
         #[serde(skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         error_details: Option<String>,
-        /// Episode the run was merged into, if it produced one.
+        /// Whether the run's memory merge is still running. A
+        /// `SessionMemoryMerged` for the run follows exactly when this is
+        /// `true`.
+        memory_pending: bool,
+    },
+    /// A finished run's memory merge finished. Sent after
+    /// `SessionCompleted` for every run whose merge was pending.
+    SessionMemoryMerged {
+        /// Session address.
+        address: String,
+        /// Run id.
+        run_id: String,
+        /// Episode the run was merged into; `None` when the merge produced
+        /// no episode (a quiet or short run) or failed.
         episode_id: Option<String>,
     },
     /// A start or a resume of a session the owner started was accepted but

@@ -85,8 +85,6 @@ pub enum AgentChangeKind {
         run_id: String,
         /// How the run's last turn ended.
         status: AgentResultStatus,
-        /// The episode the run was merged into, if it produced one.
-        episode_id: Option<String>,
     },
     /// An outbound A2A task the agent sent was recorded or changed. Sent at
     /// the start of an unreachable streak, when the streak passes the

@@ -381,7 +381,7 @@ export class SessionRun {
           summary.outcome = frame.status;
           summary.error = frame.error;
           summary.error_details = frame.error_details ?? null;
-          summary.episode_id = frame.episode_id;
+          summary.memory_pending = frame.memory_pending;
         }
         // A run that ends mid-turn ends the turn with it: stopped when the
         // user asked, cut off otherwise.
@@ -394,6 +394,14 @@ export class SessionRun {
           frame.status === "failed" ? "error" : "info",
           runOutcomeText(frame.status, frame.error),
         );
+        break;
+      case "session_memory_merged":
+        // Arrives after `session_completed`, once the run's memory merge
+        // has recorded its outcome.
+        if (summary) {
+          summary.episode_id = frame.episode_id;
+          summary.memory_pending = false;
+        }
         break;
       case "session_turn_started":
         this.turnStart = this.items.length;

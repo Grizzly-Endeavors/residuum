@@ -33,6 +33,7 @@ function session(
     started_at: "2026-09-23T12:00:00Z",
     completed_at: null,
     episode_id: null,
+    memory_pending: false,
     interrupted: false,
     usage: {
       input_tokens: 0,

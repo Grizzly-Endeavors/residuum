@@ -46,6 +46,7 @@ function started(address: string): SessionSummary {
     started_at: "2026-03-14T12:00:00Z",
     completed_at: null,
     episode_id: null,
+    memory_pending: false,
     interrupted: false,
     usage: {
       input_tokens: 0,
