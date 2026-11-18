@@ -381,8 +381,11 @@ mod tests {
                     Message::user("investigate"),
                     Message::assistant("found it", None),
                 ],
-                Some("ep-042".to_string()),
+                false,
             )
+            .await;
+        store
+            .finish_memory_merge(&info, Some("ep-042".to_string()))
             .await;
 
         let tool = MemoryGetTool::new(dir.path().join("episodes"), sessions_dir);
@@ -415,7 +418,7 @@ mod tests {
                 "completed",
                 &residuum_bus::AgentResultStatus::Completed,
                 vec![Message::user("one"), Message::assistant("two", None)],
-                None,
+                false,
             )
             .await;
 
@@ -487,7 +490,7 @@ mod tests {
                     Message::user("run it"),
                     Message::tool(long_content.clone(), "c1"),
                 ],
-                None,
+                false,
             )
             .await;
 
