@@ -68,6 +68,8 @@ Any place also takes:
 
 The context panel (`panel/PanelHost.svelte`) is a resizable column at wide widths, floats over the main region at medium widths, and is a full-screen sheet on phones. `PanelHost` picks the content by panel kind and keeps per-panel state (an open file buffer, a session run) while the frame redraws at another width.
 
+**Back to the previous panel.** When a panel opens from inside another panel on the same place (a session opened from Activity, a file from Files, a run from Schedule), the push marks its entry with the address of the panel it replaced (`backUrl` in `history-entry.ts`). `PanelHeader` then shows a Back button before the title, and `router.returnToPanel()` goes `history.back()` to that entry, so unsaved work is asked about as Back asks. The mark survives a reload, since `history.state` does. A replace that changes the panel keeps it while the place stays the same; a replace that closes the panel, or a change of place, drops it. Closing the panel (Close, Esc, or Back on a phone's sheet) is unchanged.
+
 The rail's counts: Home is the needs-you count, Inbox the unread items across agents, and an agent's Activity its running count (`lib/running-count.ts`, the same number as the Chat header pill). The installed app's icon badge carries the inbox count where the Badging API exists. `TabTitle.svelte` titles the browser tab.
 
 ## Installing, code splitting and the service worker

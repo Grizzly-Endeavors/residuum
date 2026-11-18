@@ -3,6 +3,7 @@ import {
   entryAfterPush,
   entryAfterReplace,
   overlayEntryAfter,
+  panelAddress,
   readEntry,
   sameEntry,
   stepsToClose,
@@ -106,6 +107,58 @@ describe("marks when the place changes", () => {
 
   it("drops them on a replace to another place", () => {
     expect(entryAfterReplace({ idx: 3, settings: 3 }, withSettings, files)).toEqual({ idx: 3 });
+  });
+});
+
+describe("the panel a panel replaced", () => {
+  const session: AppLocation = {
+    ...plain,
+    panel: { kind: "session", agent: "scout", runId: "r1" },
+  };
+  const activity: AppLocation = { ...plain, panel: { kind: "activity", agent: "scout" } };
+  const filesActivity = { ...activity, place: { kind: "files", agent: "scout" } } as AppLocation;
+
+  it("is the address of the panel a push replaced, on the same place", () => {
+    expect(entryAfterPush({ idx: 1, panel: 1 }, activity, session)).toEqual({
+      idx: 2,
+      panel: 1,
+      backUrl: panelAddress(activity),
+    });
+  });
+
+  it("is none when the push opened a panel from no panel", () => {
+    expect(entryAfterPush({ idx: 1 }, plain, session)).toEqual({ idx: 2, panel: 2 });
+  });
+
+  it("is none when the push keeps the panel and opens the modal", () => {
+    const modal: AppLocation = { ...activity, settings: { scope: "scout", section: null } };
+    expect(entryAfterPush({ idx: 2, panel: 2 }, activity, modal)).toEqual({
+      idx: 3,
+      panel: 2,
+      settings: 3,
+    });
+  });
+
+  it("is kept by a replace that changes the panel on the same place", () => {
+    expect(entryAfterReplace({ idx: 2, panel: 2, backUrl: "/a" }, session, activity)).toEqual({
+      idx: 2,
+      panel: 2,
+      backUrl: "/a",
+    });
+  });
+
+  it("is dropped by a replace that closes the panel or changes the place", () => {
+    expect(entryAfterReplace({ idx: 2, panel: 2, backUrl: "/a" }, session, plain)).toEqual({
+      idx: 2,
+    });
+    expect(entryAfterReplace({ idx: 2, panel: 2, backUrl: "/a" }, session, filesActivity)).toEqual({
+      idx: 2,
+    });
+  });
+
+  it("is read back as a string and ignored when it is another type", () => {
+    expect(readEntry({ idx: 2, backUrl: "/a" })).toEqual({ idx: 2, backUrl: "/a" });
+    expect(readEntry({ idx: 2, backUrl: 3 })).toEqual({ idx: 2 });
   });
 });
 

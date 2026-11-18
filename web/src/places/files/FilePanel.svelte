@@ -123,9 +123,6 @@
   }
 
   const problemCount = $derived(buffer.diagnostics.length);
-  const canReturnToTree = $derived(
-    source.agent !== null && router.place.kind === "chat" && router.place.agent === source.agent,
-  );
 </script>
 
 <PanelHeader
@@ -142,15 +139,6 @@
 {/snippet}
 
 {#snippet actions()}
-  {#if canReturnToTree && source.agent !== null}
-    {@const agentName = source.agent}
-    <Button
-      variant="quiet"
-      size="sm"
-      icon="folder"
-      onclick={() => void router.openPanel({ kind: "files", agent: agentName })}>All files</Button
-    >
-  {/if}
   {#if buffer.status === "ready"}
     {#if renderMode !== null}
       <Button

@@ -16,6 +16,7 @@ import {
   entryAfterPush,
   entryAfterReplace,
   overlayEntryAfter,
+  panelAddress,
   readEntry,
   sameEntry,
   stepsToClose,
@@ -131,7 +132,7 @@ class Router {
   /** Started for overlay entries only, on a page outside the app's routes: the URL is left alone. */
   private overlaysOnly = false;
   /** The marks of the history entry being shown. */
-  private entry: EntryState = { idx: 0 };
+  private entry = $state.raw<EntryState>({ idx: 0 });
   /** The agent most recently viewed, for places that view none. */
   private lastViewed: string | null = null;
   /** Every agent's name once the list is known; null before. */
@@ -290,6 +291,27 @@ class Router {
    */
   closeItem(): Promise<boolean> {
     return this.close("item");
+  }
+
+  /**
+   * Whether Back returns to the panel this one replaced: the entry below shows
+   * another panel on the same place.
+   */
+  get canReturnToPanel(): boolean {
+    const { backUrl } = this.entry;
+    return (
+      backUrl !== undefined &&
+      this.location.panel !== null &&
+      backUrl !== panelAddress(this.location)
+    );
+  }
+
+  /**
+   * Go Back to the panel this one replaced. It is the browser's Back, so
+   * unsaved work is asked about the way Back asks.
+   */
+  returnToPanel(): void {
+    if (this.canReturnToPanel && this.queued === 0) window.history.back();
   }
 
   /**
