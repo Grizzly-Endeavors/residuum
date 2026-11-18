@@ -388,6 +388,7 @@ mod tests {
                     "started_at": serde_json::to_value(info.started_at).unwrap(),
                     "completed_at": null,
                     "episode_id": null,
+                    "memory_pending": false,
                     "interrupted": false,
                     "usage": {
                         "input_tokens": 0,
