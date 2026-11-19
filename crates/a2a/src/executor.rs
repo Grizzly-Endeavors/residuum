@@ -15,6 +15,7 @@ use futures_util::stream::BoxStream;
 
 use residuum_background::messaging::{AgentMessenger, ConversationSpawn};
 use residuum_background::registry::{SessionRegistry, conversation_session_address};
+use residuum_background::{SessionCloseFlush, SpawnContext};
 use residuum_bus::MessageEvent;
 use residuum_bus::origin::{A2A_ENDPOINT, ConversationContext, ConversationKind, MessageOrigin};
 use residuum_bus::session::SessionState;
@@ -45,6 +46,7 @@ pub struct SessionExecutor {
     card_state: SharedCardState,
     agent_inbox_dir: PathBuf,
     tz: chrono_tz::Tz,
+    spawn_context: Option<tokio::sync::watch::Receiver<Arc<SpawnContext>>>,
 }
 
 impl SessionExecutor {
@@ -68,7 +70,19 @@ impl SessionExecutor {
             card_state,
             agent_inbox_dir,
             tz,
+            spawn_context: None,
         }
+    }
+
+    /// Attach the live [`SpawnContext`] receiver so sibling room-close payloads
+    /// can flush transcript-only completion runs for silent attendees.
+    #[must_use]
+    pub fn with_spawn_context(
+        mut self,
+        spawn_context: Option<tokio::sync::watch::Receiver<Arc<SpawnContext>>>,
+    ) -> Self {
+        self.spawn_context = spawn_context;
+        self
     }
 
     /// The caller identity the auth layer injected for this request, or an
@@ -260,7 +274,7 @@ async fn run_execution(executor: SessionExecutor, ctx: ExecutorContext, tx: Exec
     };
 
     if is_sibling_room_close(&caller, &message) {
-        executor.session_registry.stop(&address);
+        handle_sibling_room_close(&executor, &caller, &context_id, &address, &message).await;
         let update = status_update(&task_id, &context_id, TaskState::Completed, None);
         tx.send(Ok(update)).await.ok();
         return;
@@ -313,6 +327,101 @@ fn is_sibling_room_close(caller: &str, message: &A2aMessage) -> bool {
             .and_then(|m| m.get("residuum.room_close"))
             .and_then(serde_json::Value::as_bool)
             == Some(true)
+}
+
+async fn handle_sibling_room_close(
+    executor: &SessionExecutor,
+    caller: &str,
+    context_id: &str,
+    address: &residuum_bus::SessionAddress,
+    message: &A2aMessage,
+) {
+    let meta = message.metadata.as_ref();
+    let room_id = meta
+        .and_then(|m| m.get("residuum.room_id"))
+        .and_then(serde_json::Value::as_str);
+    let room_name = meta
+        .and_then(|m| m.get("residuum.room_name"))
+        .and_then(serde_json::Value::as_str)
+        .or(room_id)
+        .unwrap_or(context_id);
+    let minutes_md = meta
+        .and_then(|m| m.get("residuum.room_minutes"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.trim().is_empty());
+    let shared_path = meta
+        .and_then(|m| m.get("residuum.room_minutes_path"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.trim().is_empty());
+    let has_unseen = meta
+        .and_then(|m| m.get("residuum.room_has_unseen"))
+        .and_then(serde_json::Value::as_bool)
+        == Some(true);
+    let (caller_slug, _) = caller_display(caller);
+
+    if let Some(markdown) = minutes_md {
+        let title = format!("Meeting minutes: {room_name}");
+        let body = match shared_path {
+            Some(path) => format!("{markdown}\n\n---\nSaved on `{caller_slug}` at `{path}`."),
+            None => markdown.to_owned(),
+        };
+        let source = format!("room:{}", room_id.unwrap_or(context_id));
+        if let Err(err) = residuum_workspace::inbox::add_item(
+            &executor.agent_inbox_dir,
+            residuum_workspace::inbox::NewInboxItem {
+                title: &title,
+                body: &body,
+                source: &source,
+                in_reply_to: None,
+                attachments: &[],
+            },
+            executor.tz,
+        )
+        .await
+        {
+            tracing::warn!(
+                caller,
+                context_id,
+                error = %err,
+                "failed to deliver sibling meeting minutes to agent inbox"
+            );
+        }
+    }
+
+    let unseen = if has_unseen {
+        let text = message
+            .parts
+            .iter()
+            .filter_map(|p| match &p.content {
+                PartContent::Text(t) => Some(t.as_str()),
+                PartContent::Raw(_) | PartContent::Url(_) | PartContent::Data(_) => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        (!text.trim().is_empty()).then_some(text)
+    } else {
+        None
+    };
+
+    let flush = SessionCloseFlush {
+        user_content: unseen,
+        assistant_note: format!("[Meeting wrapped up — \"{room_name}\".]"),
+        bypass_token_floor: true,
+    };
+    if let Some(rx) = &executor.spawn_context {
+        let ctx = Arc::clone(&*rx.borrow());
+        ctx.flush_and_close_conversation(
+            address,
+            format!("a2a:{caller_slug}"),
+            Some(residuum_bus::ConversationTarget {
+                endpoint: A2A_ENDPOINT.to_owned(),
+                conversation_id: format!("{caller}/{context_id}"),
+            }),
+            flush,
+        );
+    } else {
+        executor.session_registry.stop_with_flush(address, flush);
+    }
 }
 
 /// A caller's bare name for display (`laptop` for `sibling:laptop`,
@@ -1294,6 +1403,148 @@ mod tests {
             .await;
         assert_eq!(close_events.len(), 1);
         assert!(stop_token.is_cancelled());
+    }
+
+    async fn test_executor_with_inbox() -> (
+        tempfile::TempDir,
+        PathBuf,
+        SessionExecutor,
+        Arc<SessionRegistry>,
+    ) {
+        use residuum_agent::hop::HopLimits;
+        use residuum_config::A2aConfig;
+        use residuum_skills::{SkillIndex, SkillState};
+
+        use crate::card::{CardRuntime, CardState};
+
+        let bus_handle = residuum_bus::spawn_broker();
+        let registry = Arc::new(SessionRegistry::new());
+        let dir = tempfile::tempdir().unwrap();
+        let inbox_dir = dir.path().join("inbox/agent");
+        tokio::fs::create_dir_all(&inbox_dir).await.unwrap();
+        let store = Arc::new(residuum_background::store::SessionStore::new(
+            dir.path().join("sessions"),
+        ));
+        let messenger = Arc::new(AgentMessenger::new(
+            Arc::clone(&registry),
+            bus_handle.publisher(),
+            store,
+            HopLimits { soft: 8, hard: 32 },
+        ));
+        let card_runtime =
+            CardRuntime::from_config(&A2aConfig::default(), "127.0.0.1:0", "sloane", None);
+        let card_state = CardState::load_or_default(&dir.path().join("card.json"), &card_runtime);
+        let executor = SessionExecutor::new(
+            messenger,
+            Arc::clone(&registry),
+            bus_handle,
+            SkillState::new_shared(SkillIndex::default(), vec![]),
+            card_state,
+            inbox_dir.clone(),
+            chrono_tz::UTC,
+        );
+        (dir, inbox_dir, executor, registry)
+    }
+
+    #[tokio::test]
+    async fn sibling_room_close_delivers_minutes_inbox_and_attaches_unseen_flush() {
+        use futures_util::StreamExt as _;
+        use residuum_bus::EventTrigger;
+        use residuum_bus::session::{SessionCategory, SessionInfo};
+        use tokio_util::sync::CancellationToken;
+
+        let (_dir, inbox_dir, executor, registry) = test_executor_with_inbox().await;
+        let caller = "sibling:aether";
+        let context_id = "room-room_01jcv8k9m2p4q7";
+        let address = SessionExecutor::address_for(caller, context_id);
+        let stop_token = CancellationToken::new();
+        let _interrupt_rx = registry
+            .register(
+                SessionInfo {
+                    address: address.clone(),
+                    run_id: "run-sibling-close-1".to_string(),
+                    category: SessionCategory::External,
+                    trigger: EventTrigger::Conversation,
+                    source_label: "a2a:aether".to_string(),
+                    state: SessionState::Idle,
+                    spawner: None,
+                    depth: 1,
+                    purpose: "room session".to_string(),
+                    agent_skill: None,
+                    model: ModelSelector::MAIN,
+                    resolved_model: None,
+                    conversation_target: None,
+                    started_at: chrono::Utc::now(),
+                    usage: residuum_bus::usage::SessionUsageTotals::default(),
+                    overlap: None,
+                },
+                stop_token.clone(),
+            )
+            .unwrap();
+
+        let mut msg = A2aMessage::new(
+            a2a::Role::User,
+            vec![Part::text("[Owner]: Final decision locked.")],
+        );
+        msg.context_id = Some(context_id.to_string());
+        msg.metadata = Some(HashMap::from([
+            ("residuum.room".to_string(), serde_json::json!(true)),
+            ("residuum.room_close".to_string(), serde_json::json!(true)),
+            (
+                "residuum.room_id".to_string(),
+                serde_json::json!("room_01jcv8k9m2p4q7"),
+            ),
+            (
+                "residuum.room_name".to_string(),
+                serde_json::json!("Ventures WBR"),
+            ),
+            (
+                "residuum.room_has_unseen".to_string(),
+                serde_json::json!(true),
+            ),
+            (
+                "residuum.room_minutes".to_string(),
+                serde_json::json!("# Meeting Minutes\n\n- Approved Q4 plan."),
+            ),
+            (
+                "residuum.room_minutes_path".to_string(),
+                serde_json::json!("team/minutes/2026-11-19-ventures-wbr.md"),
+            ),
+        ]));
+
+        let events: Vec<_> = executor
+            .execute(room_executor_ctx(msg, "task-close-2", context_id, caller))
+            .collect()
+            .await;
+        assert_eq!(
+            events.len(),
+            1,
+            "sibling close must complete in one status update"
+        );
+        assert!(
+            stop_token.is_cancelled(),
+            "sibling close must cancel the live room session stop token"
+        );
+
+        let items = residuum_workspace::inbox::list_items(&inbox_dir)
+            .await
+            .unwrap();
+        assert_eq!(
+            items.len(),
+            1,
+            "sibling close must write meeting minutes to remote agent inbox"
+        );
+        let first = items.first().unwrap();
+        assert_eq!(first.1.title, "Meeting minutes: Ventures WBR");
+        assert!(
+            first.1.body.contains("Approved Q4 plan.")
+                && first
+                    .1
+                    .body
+                    .contains("team/minutes/2026-11-19-ventures-wbr.md"),
+            "remote inbox body must contain minutes markdown and shared path: {}",
+            first.1.body
+        );
     }
 
     fn assert_completed_text(last: Option<&Result<StreamResponse, A2AError>>, expected: &str) {

@@ -7,8 +7,8 @@ use std::sync::atomic::AtomicUsize;
 use anyhow::Context as _;
 
 use crate::fork_failure::ForkFailure;
-use crate::registry::SessionRegistry;
-use crate::runtime::SessionRuntime;
+use crate::registry::{SessionCloseFlush, SessionRegistry, StopWithFlushOutcome};
+use crate::runtime::{SessionRuntime, TranscriptOnlyRunRequest};
 use residuum_agent::context::loading::{load_observations, load_recent_context_narrative};
 use residuum_agent::{HopCounter, RoomRoster, TeamRoster};
 use residuum_bus::session::SessionCategory;
@@ -112,6 +112,71 @@ pub struct SpawnContext {
     /// Optional view of the meeting rooms this agent participates in, giving
     /// forked sessions their `<ROOMS>` prompt block.
     pub room_roster: Option<Arc<dyn RoomRoster>>,
+}
+
+impl SpawnContext {
+    /// Flush any unseen conversation transcript into `address` and close/merge
+    /// the session into episodic memory without running a main-model turn.
+    ///
+    /// - Live session (`Running`/`Idle`/`Queued`/`Forking`): attaches `flush`
+    ///   and cancels `stop_token` so `finish_run` appends the tail and merges.
+    /// - Not live + non-empty `flush.user_content` (e.g. a silent attendee or
+    ///   already-idled-out room session): starts a transcript-only completion
+    ///   run through `Observer` + `MemoryMergeWriter`.
+    /// - Completing + non-empty `flush.user_content`: waits for the in-flight
+    ///   teardown to clear, then records the transcript-only completion run.
+    pub fn flush_and_close_conversation(
+        &self,
+        address: &SessionAddress,
+        source_label: String,
+        conversation_target: Option<residuum_bus::ConversationTarget>,
+        flush: SessionCloseFlush,
+    ) {
+        match self
+            .session_registry
+            .stop_with_flush(address, flush.clone())
+        {
+            StopWithFlushOutcome::StoppedLive => {}
+            StopWithFlushOutcome::NotLive => {
+                let Some(user_content) = flush.user_content.filter(|s| !s.trim().is_empty()) else {
+                    return;
+                };
+                self.session_runtime
+                    .spawn_transcript_only_run(TranscriptOnlyRunRequest {
+                        address: address.clone(),
+                        source_label,
+                        conversation_target,
+                        user_content,
+                        assistant_note: flush.assistant_note,
+                        observer: Arc::clone(&self.observer),
+                        merge_writer: Arc::clone(&self.merge_writer),
+                        layout: self.layout.clone(),
+                    });
+            }
+            StopWithFlushOutcome::Completing => {
+                let Some(user_content) = flush.user_content.filter(|s| !s.trim().is_empty()) else {
+                    return;
+                };
+                let registry = Arc::clone(&self.session_registry);
+                let runtime = Arc::clone(&self.session_runtime);
+                let req = TranscriptOnlyRunRequest {
+                    address: address.clone(),
+                    source_label,
+                    conversation_target,
+                    user_content,
+                    assistant_note: flush.assistant_note,
+                    observer: Arc::clone(&self.observer),
+                    merge_writer: Arc::clone(&self.merge_writer),
+                    layout: self.layout.clone(),
+                };
+                let wait_addr = address.clone();
+                residuum_core::util::spawn_in_span(async move {
+                    registry.wait_until_clear(&wait_addr).await;
+                    runtime.spawn_transcript_only_run(req);
+                });
+            }
+        }
+    }
 }
 
 /// Identity and origin of the session [`build_spawn_resources`] is forking,

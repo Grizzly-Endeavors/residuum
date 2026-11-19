@@ -36,7 +36,9 @@ use super::session_memory::{
 use super::store::{RunTranscriptSink, SessionStore};
 use super::subagent::{SessionTurnIdentity, SubAgentResources, TurnKickoff, execute_subagent};
 use super::types::{SubAgentConfig, truncate_prompt_preview};
-use crate::registry::{DeliverOutcome, ResumePoint, SessionRegistry};
+use crate::registry::{
+    DeliverOutcome, ResumePoint, SessionCloseFlush, SessionRegistry, StopWithFlushOutcome,
+};
 use residuum_bus::session::publish_session_event;
 use residuum_bus::session::{SessionCategory, SessionInfo, SessionState, generate_run_id};
 
@@ -165,6 +167,20 @@ struct RunEnv {
     checkpoints: Arc<residuum_checkpoints::CheckpointEngine>,
     tracing_service: Arc<TracingService>,
     tracing_client_context: Arc<ClientContext>,
+}
+
+/// Parameters for recording and merging a transcript-only conversation run
+/// without invoking the main model (e.g. flushing an unseen Meeting Room
+/// transcript to a silent attendee on `capture_notes` or `archive_room`).
+pub struct TranscriptOnlyRunRequest {
+    pub address: SessionAddress,
+    pub source_label: String,
+    pub conversation_target: Option<ConversationTarget>,
+    pub user_content: String,
+    pub assistant_note: String,
+    pub observer: Arc<residuum_memory::observer::Observer>,
+    pub merge_writer: Arc<residuum_memory::merge_writer::MemoryMergeWriter>,
+    pub layout: residuum_config::WorkspaceLayout,
 }
 
 impl SessionRuntime {
@@ -334,6 +350,68 @@ impl SessionRuntime {
                 );
                 recover_from_panic(&panic_info, &panic_env, msg, mem_extras).await;
             }
+        });
+    }
+
+    /// Record and merge a transcript-only conversation run without executing a
+    /// main-model turn. Registers `Completing` synchronously so any concurrent
+    /// turn delivery waits cleanly behind the episode merge.
+    pub fn spawn_transcript_only_run(&self, req: TranscriptOnlyRunRequest) {
+        let run_id = generate_run_id();
+        let started_at = Utc::now();
+        let info = SessionInfo {
+            address: req.address.clone(),
+            run_id,
+            category: SessionCategory::External,
+            trigger: EventTrigger::Conversation,
+            source_label: req.source_label.clone(),
+            state: SessionState::Completing,
+            spawner: None,
+            depth: residuum_bus::session::MAIN_DEPTH + 1,
+            purpose: truncate_prompt_preview(&req.user_content),
+            agent_skill: None,
+            model: residuum_config::ModelSelector::MAIN,
+            resolved_model: None,
+            conversation_target: req.conversation_target.clone(),
+            started_at,
+            usage: residuum_bus::usage::SessionUsageTotals::default(),
+            overlap: None,
+        };
+
+        if self.registry.register_completing(info.clone()).is_err() {
+            let flush = SessionCloseFlush {
+                user_content: Some(req.user_content.clone()),
+                assistant_note: req.assistant_note.clone(),
+                bypass_token_floor: true,
+            };
+            if self.registry.stop_with_flush(&req.address, flush)
+                == StopWithFlushOutcome::Completing
+            {
+                let runtime_registry = Arc::clone(&self.registry);
+                let runtime_store = Arc::clone(&self.store);
+                let publisher = self.publisher.clone();
+                let tz = self.tz;
+                residuum_core::util::spawn_in_span(async move {
+                    runtime_registry.wait_until_clear(&req.address).await;
+                    complete_transcript_only_after_clear(
+                        runtime_registry,
+                        runtime_store,
+                        publisher,
+                        tz,
+                        req,
+                    )
+                    .await;
+                });
+            }
+            return;
+        }
+
+        let registry = Arc::clone(&self.registry);
+        let store = Arc::clone(&self.store);
+        let publisher = self.publisher.clone();
+        let tz = self.tz;
+        residuum_core::util::spawn_in_span(async move {
+            run_transcript_only_completion(info, req, registry, store, publisher, tz).await;
         });
     }
 
@@ -935,7 +1013,14 @@ async fn run_session(
                         turn_number += 1;
                         let ctx = turn_ctx(&info, resources.as_ref(), &turn_token, &env);
                         let turn_id = format!("{}-t{turn_number}", info.run_id);
-                        run_turn(&ctx, &turn_id, &mut history.messages, kickoff, &mut interrupt_rx).await
+                        Box::pin(run_turn(
+                            &ctx,
+                            &turn_id,
+                            &mut history.messages,
+                            kickoff,
+                            &mut interrupt_rx,
+                        ))
+                        .await
                     }
                     Err(_closed) => semaphore_closed_failure(),
                 }
@@ -1007,7 +1092,7 @@ async fn run_session(
     // once this run has fully left the registry.
     let leftover_messages = drain_pending_interrupts(&mut interrupt_rx);
 
-    finish_run(
+    Box::pin(finish_run(
         &mut info,
         resources.as_ref(),
         RunOutcome {
@@ -1018,7 +1103,7 @@ async fn run_session(
             leftover_messages,
         },
         &env,
-    )
+    ))
     .await;
 }
 
@@ -1134,13 +1219,14 @@ async fn finish_run(
     env: &RunEnv,
 ) {
     let RunOutcome {
-        status,
-        summary,
+        mut status,
+        mut summary,
         memory,
-        history,
+        mut history,
         leftover_messages,
     } = outcome;
 
+    let close_flush = env.registry.take_close_flush(&info.address, &info.run_id);
     info.state = SessionState::Completing;
     transition_state(
         &env.registry,
@@ -1150,11 +1236,24 @@ async fn finish_run(
     )
     .await;
 
+    let bypass_floor = apply_close_flush(
+        info,
+        close_flush,
+        &env.store,
+        &mut history,
+        &mut status,
+        &mut summary,
+    )
+    .await;
+
     // Merge into global memory before recording the run as completed, so a
     // successful merge's episode id lands in the same record. A stopped run
     // merges like any other — stopping is not discarding.
     let episode_id = if let Some(res) = resources {
-        let mem_env = session_memory_env(res, env.tz);
+        let mut mem_env = session_memory_env(res, env.tz);
+        if bypass_floor {
+            mem_env.episode_skip_token_floor = 0;
+        }
         let tag = residuum_memory::types::SourceTag::session(
             info.address.to_string(),
             info.run_id.clone(),
@@ -1197,23 +1296,188 @@ async fn finish_run(
     tracing::info!("session completed");
 
     if !leftover_messages.is_empty() {
-        tracing::warn!(
-            address = %info.address,
-            count = leftover_messages.len(),
-            "message(s) arrived as the run was tearing down; resuming the session as a new run to deliver them"
-        );
-        if let Err(e) = env
-            .messenger
-            .resume_with_pending(&info.address, &point, &leftover_messages)
-            .await
-        {
-            tracing::error!(
-                address = %info.address,
-                error = %e,
-                "failed to resume session to deliver messages queued at teardown"
-            );
-        }
+        resume_leftovers(info, &point, &leftover_messages, env).await;
     }
+}
+
+async fn apply_close_flush(
+    info: &SessionInfo,
+    close_flush: Option<SessionCloseFlush>,
+    store: &SessionStore,
+    history: &mut RunHistory,
+    status: &mut AgentResultStatus,
+    summary: &mut String,
+) -> bool {
+    let Some(flush) = close_flush else {
+        return false;
+    };
+    if let Some(user_text) = flush.user_content.filter(|s| !s.trim().is_empty()) {
+        let pair = vec![
+            residuum_inference::Message::user(user_text),
+            residuum_inference::Message::assistant(flush.assistant_note.clone(), None),
+        ];
+        store
+            .append_transcript(&info.run_id, info.started_at, &pair)
+            .await;
+        history.messages.extend(pair);
+        *summary = flush.assistant_note;
+    } else if summary.is_empty() {
+        *summary = flush.assistant_note;
+    }
+    *status = AgentResultStatus::Completed;
+    flush.bypass_token_floor
+}
+
+async fn resume_leftovers(
+    info: &SessionInfo,
+    point: &ResumePoint,
+    leftover_messages: &[PendingInput],
+    env: &RunEnv,
+) {
+    tracing::warn!(
+        address = %info.address,
+        count = leftover_messages.len(),
+        "message(s) arrived as the run was tearing down; resuming the session as a new run to deliver them"
+    );
+    if let Err(e) = env
+        .messenger
+        .resume_with_pending(&info.address, point, leftover_messages)
+        .await
+    {
+        tracing::error!(
+            address = %info.address,
+            error = %e,
+            "failed to resume session to deliver messages queued at teardown"
+        );
+    }
+}
+
+async fn complete_transcript_only_after_clear(
+    registry: Arc<SessionRegistry>,
+    store: Arc<SessionStore>,
+    publisher: Publisher,
+    tz: chrono_tz::Tz,
+    req: TranscriptOnlyRunRequest,
+) {
+    let info = SessionInfo {
+        address: req.address.clone(),
+        run_id: generate_run_id(),
+        category: SessionCategory::External,
+        trigger: EventTrigger::Conversation,
+        source_label: req.source_label.clone(),
+        state: SessionState::Completing,
+        spawner: None,
+        depth: residuum_bus::session::MAIN_DEPTH + 1,
+        purpose: truncate_prompt_preview(&req.user_content),
+        agent_skill: None,
+        model: residuum_config::ModelSelector::MAIN,
+        resolved_model: None,
+        conversation_target: req.conversation_target.clone(),
+        started_at: Utc::now(),
+        usage: residuum_bus::usage::SessionUsageTotals::default(),
+        overlap: None,
+    };
+    if registry.register_completing(info.clone()).is_err() {
+        registry.stop_with_flush(
+            &req.address,
+            SessionCloseFlush {
+                user_content: Some(req.user_content),
+                assistant_note: req.assistant_note,
+                bypass_token_floor: true,
+            },
+        );
+        return;
+    }
+    run_transcript_only_completion(info, req, registry, store, publisher, tz).await;
+}
+
+async fn run_transcript_only_completion(
+    info: SessionInfo,
+    req: TranscriptOnlyRunRequest,
+    registry: Arc<SessionRegistry>,
+    store: Arc<SessionStore>,
+    publisher: Publisher,
+    tz: chrono_tz::Tz,
+) {
+    publish_session_event(
+        &publisher,
+        &info.address,
+        &info.run_id,
+        SessionEventKind::Started(Box::new(info.clone())),
+    )
+    .await;
+    store.begin_run(&info).await;
+
+    let transcript = vec![
+        residuum_inference::Message::user(req.user_content),
+        residuum_inference::Message::assistant(req.assistant_note.clone(), None),
+    ];
+    store
+        .append_transcript(&info.run_id, info.started_at, &transcript)
+        .await;
+
+    let now = Utc::now();
+    let timed: Vec<TimedMessage<'_>> = transcript
+        .iter()
+        .map(|message| TimedMessage {
+            message,
+            recorded_at: Some(now),
+        })
+        .collect();
+    let mem_env = SessionMemoryEnv {
+        observer: req.observer.as_ref(),
+        merge_writer: req.merge_writer.as_ref(),
+        layout: &req.layout,
+        episode_skip_token_floor: 0,
+        tz,
+    };
+    let tag = residuum_memory::types::SourceTag::session(
+        info.address.to_string(),
+        info.run_id.clone(),
+        info.category.as_str(),
+    );
+    let episode_id = complete_session_memory(
+        tag,
+        &req.assistant_note,
+        &timed,
+        SessionMemory::new(),
+        &mem_env,
+    )
+    .await;
+
+    let point = resume_point(&info, episode_id.clone());
+    registry.record_resume_point(&info.address, point).await;
+
+    let status = AgentResultStatus::Completed;
+    let transcript_path = store
+        .complete_run(
+            &info,
+            SessionState::Completed.as_str(),
+            &status,
+            transcript,
+            episode_id.clone(),
+        )
+        .await;
+
+    let event = build_result_event(
+        &info,
+        status.clone(),
+        req.assistant_note,
+        transcript_path,
+        tz,
+    );
+    if let Err(e) = publisher.publish(topics::Background, event).await {
+        tracing::warn!(error = %e, "failed to publish transcript-only session result to bus");
+    }
+
+    registry.remove(&info.address, &info.run_id);
+    publish_session_event(
+        &publisher,
+        &info.address,
+        &info.run_id,
+        SessionEventKind::Completed { status, episode_id },
+    )
+    .await;
 }
 
 /// Build a [`SessionMemoryEnv`] borrowing from a run's [`SubAgentResources`],

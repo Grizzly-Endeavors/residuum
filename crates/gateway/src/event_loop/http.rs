@@ -242,6 +242,8 @@ pub(crate) struct A2aServingDeps {
     /// The relay tunnel's status, so the agent's card advertises its relay
     /// address while the tunnel is connected.
     pub tunnel_status_rx: tokio::sync::watch::Receiver<residuum_net::tunnel::TunnelStatus>,
+    /// Live spawn context receiver for sibling room-close transcript flushes.
+    pub spawn_context_rx: tokio::sync::watch::Receiver<Arc<residuum_background::SpawnContext>>,
 }
 
 /// Build the agent's A2A server with [`residuum_a2a::agent_a2a_router`]. The
@@ -268,6 +270,7 @@ pub(crate) async fn build_agent_a2a(
         skill_state: deps.skill_state,
         sessions_ready: deps.sessions_ready,
         tunnel_status_rx: deps.tunnel_status_rx,
+        spawn_context: Some(deps.spawn_context_rx),
     })
     .await
     {

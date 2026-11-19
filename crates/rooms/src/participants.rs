@@ -28,6 +28,12 @@ pub const ROOM_METADATA_ID: &str = "residuum.room_id";
 pub const ROOM_METADATA_NAME: &str = "residuum.room_name";
 /// Metadata key sent on archive close cancel hints.
 pub const ROOM_METADATA_CLOSE: &str = "residuum.room_close";
+/// Metadata key carrying markdown meeting minutes on sibling wrap-up.
+pub const ROOM_METADATA_MINUTES: &str = "residuum.room_minutes";
+/// Metadata key carrying the shared minutes path on sibling wrap-up.
+pub const ROOM_METADATA_MINUTES_PATH: &str = "residuum.room_minutes_path";
+/// Metadata key flagging whether `parts` carry unseen room transcript lines.
+pub const ROOM_METADATA_HAS_UNSEEN: &str = "residuum.room_has_unseen";
 
 /// Maximum polling iterations for a non-streaming remote A2A task.
 const MAX_NON_STREAMING_POLLS: usize = 120;
@@ -37,6 +43,8 @@ const POLL_MAX_MS: u64 = 2_000;
 const MAX_ROOM_ATTACHMENT_BYTES: usize = 50 * 1024 * 1024;
 /// Bounded timeout for best-effort sibling room session close notifications.
 const CLOSE_SESSION_TIMEOUT: Duration = Duration::from_secs(5);
+/// Bounded timeout for fire-and-forget external A2A meeting wrap-up delivery.
+const EXTERNAL_WRAPUP_TIMEOUT: Duration = Duration::from_secs(15);
 /// Maximum cached age for A2A agent cards when listing or resolving room
 /// candidates, ensuring recently updated cards appear promptly without
 /// hammering remote endpoints on every render.
@@ -68,6 +76,20 @@ pub struct RoomTurnOutput {
     pub attachments: Vec<RoomAttachment>,
 }
 
+/// Input passed to a local participant when wrapping up a meeting (`capture_notes`
+/// or `archive_room`) so any unseen room transcript is flushed into episodic memory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalRoomWrapUpRequest {
+    /// Room ID (`room_...`).
+    pub room_id: String,
+    /// Room display name.
+    pub room_name: String,
+    /// Formatted unseen transcript tail (`None` when the seat already saw through `end_seq`).
+    pub unseen_transcript: Option<String>,
+    /// Shared team minutes path (`team/minutes/...`).
+    pub shared_minutes_path: String,
+}
+
 /// Inversion-of-control interface implemented by `residuum-gateway` for each
 /// running local agent and registered with [`crate::RoomService`].
 #[async_trait]
@@ -80,9 +102,15 @@ pub trait LocalRoomParticipant: Send + Sync {
     /// or merging the room session.
     async fn cancel_room_turn(&self, room_id: &str) -> Result<(), String>;
 
-    /// Close `external-room-<room_id>` on room archive so normal episode
+    /// Close `external-room-<room_id>` on room archive/delete so normal episode
     /// extraction and memory merging run.
     async fn close_room_session(&self, room_id: &str) -> Result<(), String>;
+
+    /// Flush any unseen transcript tail into `external-room-<room_id>` and
+    /// close/rotate the session without running a `main` model turn.
+    async fn wrap_up_room_session(&self, req: LocalRoomWrapUpRequest) -> Result<(), String> {
+        self.close_room_session(&req.room_id).await
+    }
 
     /// Generate structured markdown meeting minutes using this agent's `main`
     /// provider chain (one-shot completion, no tools, no session history mutation).
@@ -106,6 +134,26 @@ pub struct RemoteRoomTurnRequest {
     pub prompt: String,
 }
 
+/// Input passed to a remote A2A participant when wrapping up a meeting
+/// (`capture_notes` or `archive_room`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteRoomWrapUpRequest {
+    /// Canonical remote seat ID (`a2a:<instance>/<agent>` or `a2a:<name>`).
+    pub seat_id: String,
+    /// Seat kind (`SiblingA2a` vs `ExternalA2a`).
+    pub kind: RoomSeatKind,
+    /// Room ID (`room_...`).
+    pub room_id: String,
+    /// Room display name.
+    pub room_name: String,
+    /// Formatted unseen transcript tail (`None` when the seat already saw through `end_seq`).
+    pub unseen_transcript: Option<String>,
+    /// Generated markdown meeting minutes.
+    pub minutes_markdown: String,
+    /// Shared team minutes path (`team/minutes/...`).
+    pub shared_minutes_path: String,
+}
+
 /// Abstracts remote A2A participant execution for [`crate::RoomService`].
 #[async_trait]
 pub trait RemoteRoomDriver: Send + Sync {
@@ -121,8 +169,19 @@ pub trait RemoteRoomDriver: Send + Sync {
     /// Cancel an in-flight remote turn (`CancelTask`) for `(room_id, seat_id)`.
     async fn cancel_remote_turn(&self, room_id: &str, seat_id: &str) -> Result<(), String>;
 
-    /// Best-effort close notification for a sibling A2A seat on archive.
+    /// Best-effort close notification for a sibling A2A seat on archive/delete.
     async fn close_remote_session(&self, room_id: &str, seat_id: &str) -> Result<(), String>;
+
+    /// Push meeting minutes and unseen transcript wrap-up to a remote A2A seat:
+    /// silent inbox + episode flush for `SiblingA2a`, or a fire-and-forget
+    /// closing message (response discarded) for `ExternalA2a`.
+    async fn wrap_up_remote_session(&self, req: RemoteRoomWrapUpRequest) -> Result<(), String> {
+        if req.kind == RoomSeatKind::SiblingA2a {
+            self.close_remote_session(&req.room_id, &req.seat_id).await
+        } else {
+            Ok(())
+        }
+    }
 }
 
 /// Remote room participant driver backed by [`A2aClientHub`].
@@ -408,6 +467,100 @@ impl A2aRoomDriver {
             .map_err(|e| e.to_string())?;
         Ok(())
     }
+
+    async fn send_sibling_wrap_up(
+        &self,
+        client: &residuum_a2a::client::NegotiatedClient,
+        req: RemoteRoomWrapUpRequest,
+    ) -> Result<(), String> {
+        let has_unseen = req.unseen_transcript.is_some();
+        let body = req
+            .unseen_transcript
+            .unwrap_or_else(|| "[room closed]".to_owned());
+        let mut msg = A2aMessage::new(Role::User, vec![Part::text(body)]);
+        msg.context_id = Some(format!("room-{}", req.room_id));
+        msg.metadata = Some(HashMap::from([
+            (ROOM_METADATA_FLAG.to_owned(), json!(true)),
+            (ROOM_METADATA_ID.to_owned(), json!(req.room_id)),
+            (ROOM_METADATA_NAME.to_owned(), json!(req.room_name)),
+            (ROOM_METADATA_CLOSE.to_owned(), json!(true)),
+            (ROOM_METADATA_HAS_UNSEEN.to_owned(), json!(has_unseen)),
+            (
+                ROOM_METADATA_MINUTES.to_owned(),
+                json!(req.minutes_markdown),
+            ),
+            (
+                ROOM_METADATA_MINUTES_PATH.to_owned(),
+                json!(req.shared_minutes_path),
+            ),
+        ]));
+        let send_req = SendMessageRequest {
+            message: msg,
+            configuration: Some(SendMessageConfiguration {
+                accepted_output_modes: None,
+                task_push_notification_config: None,
+                history_length: None,
+                return_immediately: Some(false),
+            }),
+            metadata: None,
+            tenant: None,
+        };
+        tokio::time::timeout(CLOSE_SESSION_TIMEOUT, client.send_message(&send_req))
+            .await
+            .map_err(|elapsed| {
+                format!(
+                    "timed out wrapping up sibling room session '{}': {elapsed}",
+                    req.seat_id
+                )
+            })?
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    async fn send_external_wrap_up(
+        &self,
+        client: &residuum_a2a::client::NegotiatedClient,
+        req: RemoteRoomWrapUpRequest,
+        open_task_id: Option<String>,
+    ) -> Result<(), String> {
+        let mut text = format!(
+            "[Meeting Room \"{}\" ended — meeting minutes enclosed for your records. No reply is needed.]\n\n## Meeting Minutes\n{}",
+            req.room_name, req.minutes_markdown
+        );
+        if let Some(unseen) = &req.unseen_transcript {
+            _ = write!(text, "\n\n## Remaining Transcript\n{unseen}");
+        }
+        let mut msg = A2aMessage::new(Role::User, vec![Part::text(text)]);
+        msg.context_id = Some(format!("room-{}", req.room_id));
+        msg.task_id = open_task_id;
+        msg.metadata = Some(HashMap::from([
+            (ROOM_METADATA_FLAG.to_owned(), json!(true)),
+            (ROOM_METADATA_ID.to_owned(), json!(req.room_id)),
+            (ROOM_METADATA_NAME.to_owned(), json!(req.room_name)),
+        ]));
+        let send_req = SendMessageRequest {
+            message: msg,
+            configuration: Some(SendMessageConfiguration {
+                accepted_output_modes: None,
+                task_push_notification_config: None,
+                history_length: None,
+                return_immediately: Some(true),
+            }),
+            metadata: None,
+            tenant: None,
+        };
+        let _discarded =
+            tokio::time::timeout(EXTERNAL_WRAPUP_TIMEOUT, client.send_message(&send_req))
+                .await
+                .map_err(|elapsed| {
+                    format!(
+                        "timed out sending external meeting wrap-up to '{}': {elapsed}",
+                        req.seat_id
+                    )
+                })?
+                .map_err(|e| e.to_string())?;
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -548,6 +701,30 @@ impl RemoteRoomDriver for A2aRoomDriver {
             })?
             .map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    async fn wrap_up_remote_session(&self, req: RemoteRoomWrapUpRequest) -> Result<(), String> {
+        let key = (req.room_id.clone(), req.seat_id.clone());
+        let open_task_id = self.open_input_tasks.lock().await.remove(&key);
+        let agent_name = req.seat_id.strip_prefix("a2a:").unwrap_or(&req.seat_id);
+        let (client, _) =
+            tokio::time::timeout(CLOSE_SESSION_TIMEOUT, self.a2a_hub.client_for(agent_name))
+                .await
+                .map_err(|elapsed| {
+                    format!(
+                        "timed out resolving remote A2A client '{}': {elapsed}",
+                        req.seat_id
+                    )
+                })?
+                .map_err(|e| e.to_string())?;
+
+        match req.kind {
+            RoomSeatKind::SiblingA2a => self.send_sibling_wrap_up(&client, req).await,
+            RoomSeatKind::ExternalA2a => {
+                self.send_external_wrap_up(&client, req, open_task_id).await
+            }
+            RoomSeatKind::Local => Ok(()),
+        }
     }
 }
 
@@ -704,10 +881,7 @@ fn extract_parts_text(parts: &[Part]) -> String {
         .join("\n")
 }
 
-/// Format the catch-up prompt for a participant whose `last_seen_seq` is behind
-/// `missed_messages`.
-#[must_use]
-pub(crate) fn format_catchup_prompt(room: &RoomRecord, missed_messages: &[RoomMessage]) -> String {
+fn format_room_header(room: &RoomRecord) -> String {
     let topic = room
         .topic
         .as_deref()
@@ -720,26 +894,39 @@ pub(crate) fn format_catchup_prompt(room: &RoomRecord, missed_messages: &[RoomMe
         .map(|s| s.display_name.as_str())
         .collect::<Vec<_>>()
         .join(", ");
-    let mut out = format!(
-        "[Meeting Room: \"{}\" | Topic: {topic} | Roster: {roster_names}]\n\
-         Messages since your last turn:\n",
+    format!(
+        "[Meeting Room: \"{}\" | Topic: {topic} | Roster: {roster_names}]",
         room.name
+    )
+}
+
+fn append_formatted_room_messages(out: &mut String, messages: &[RoomMessage]) {
+    for msg in messages {
+        _ = writeln!(out, "[{}]: {}", msg.author_name, msg.content);
+        if !msg.attachments.is_empty() {
+            let names = msg
+                .attachments
+                .iter()
+                .map(|a| a.filename.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            _ = writeln!(out, "  [attachments: {names}]");
+        }
+    }
+}
+
+/// Format the catch-up prompt for a participant whose `last_seen_seq` is behind
+/// `missed_messages`.
+#[must_use]
+pub(crate) fn format_catchup_prompt(room: &RoomRecord, missed_messages: &[RoomMessage]) -> String {
+    let mut out = format!(
+        "{}\nMessages since your last turn:\n",
+        format_room_header(room)
     );
     if missed_messages.is_empty() {
         out.push_str("(no new messages)\n");
     } else {
-        for msg in missed_messages {
-            _ = writeln!(out, "[{}]: {}", msg.author_name, msg.content);
-            if !msg.attachments.is_empty() {
-                let names = msg
-                    .attachments
-                    .iter()
-                    .map(|a| a.filename.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                _ = writeln!(out, "  [attachments: {names}]");
-            }
-        }
+        append_formatted_room_messages(&mut out, missed_messages);
     }
     out.push_str(
         "\nYou have been selected to speak next in this room. Reply directly to the room \
@@ -747,6 +934,24 @@ pub(crate) fn format_catchup_prompt(room: &RoomRecord, missed_messages: &[RoomMe
          delegate heavy or multi-step work to a background subagent, e.g. subagent_spawn, instead of running it inline so you do not stall the room).",
     );
     out
+}
+
+/// Format unseen room messages for end-of-meeting wrap-up (`capture_notes` or
+/// `archive_room`). Returns `None` when `unseen_messages` is empty.
+#[must_use]
+pub(crate) fn format_wrapup_transcript(
+    room: &RoomRecord,
+    unseen_messages: &[RoomMessage],
+) -> Option<String> {
+    if unseen_messages.is_empty() {
+        return None;
+    }
+    let mut out = format!(
+        "{}\nMeeting wrapped up. Remaining room transcript:\n",
+        format_room_header(room)
+    );
+    append_formatted_room_messages(&mut out, unseen_messages);
+    Some(out)
 }
 
 #[cfg(test)]
@@ -1451,6 +1656,125 @@ mod tests {
         assert_eq!(
             minimal_cand.role, None,
             "minimal fallback description must map to role None"
+        );
+    }
+
+    #[tokio::test]
+    async fn a2a_driver_wrap_up_pushes_sibling_close_payload_and_external_closing_note() {
+        let captured = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let (addr, srv_task) =
+            spawn_mock_a2a_server(Arc::clone(&captured), MockReplyMode::CompletedTask).await;
+
+        let hub = A2aClientHub::new_shared();
+        hub.register_external(
+            "ops/planner".to_owned(),
+            format!("http://{addr}"),
+            HashMap::new(),
+            AgentSource::Sibling,
+        )
+        .await;
+        hub.register_external(
+            "partner".to_owned(),
+            format!("http://{addr}"),
+            HashMap::new(),
+            AgentSource::Config,
+        )
+        .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let driver = A2aRoomDriver::new(hub, dir.path().to_path_buf());
+
+        driver
+            .wrap_up_remote_session(RemoteRoomWrapUpRequest {
+                seat_id: "a2a:ops/planner".to_owned(),
+                kind: RoomSeatKind::SiblingA2a,
+                room_id: "room_01jcv8k9m2p4q7".to_owned(),
+                room_name: "Kitchen Table".to_owned(),
+                unseen_transcript: Some("[Owner]: Wrap up decision.".to_owned()),
+                minutes_markdown: "# Minutes\n- Done.".to_owned(),
+                shared_minutes_path: "team/minutes/2026-11-19-kitchen-table.md".to_owned(),
+            })
+            .await
+            .unwrap();
+
+        driver
+            .wrap_up_remote_session(RemoteRoomWrapUpRequest {
+                seat_id: "a2a:partner".to_owned(),
+                kind: RoomSeatKind::ExternalA2a,
+                room_id: "room_01jcv8k9m2p4q7".to_owned(),
+                room_name: "Kitchen Table".to_owned(),
+                unseen_transcript: Some("[Owner]: Wrap up decision.".to_owned()),
+                minutes_markdown: "# Minutes\n- Done.".to_owned(),
+                shared_minutes_path: "team/minutes/2026-11-19-kitchen-table.md".to_owned(),
+            })
+            .await
+            .unwrap();
+
+        let reqs = captured.lock().await;
+        assert_wrap_up_rpcs(&reqs);
+        srv_task.abort();
+    }
+
+    fn assert_wrap_up_rpcs(reqs: &[serde_json::Value]) {
+        assert_eq!(reqs.len(), 2, "expected sibling + external wrap-up RPCs");
+
+        let sib_msg = reqs
+            .first()
+            .and_then(|r| r.get("params"))
+            .and_then(|p| p.get("message"))
+            .unwrap();
+        let sib_meta = sib_msg.get("metadata").unwrap();
+        assert_eq!(
+            sib_meta
+                .get(ROOM_METADATA_CLOSE)
+                .and_then(serde_json::Value::as_bool),
+            Some(true),
+            "sibling wrap-up must set residuum.room_close = true"
+        );
+        assert_eq!(
+            sib_meta
+                .get(ROOM_METADATA_HAS_UNSEEN)
+                .and_then(serde_json::Value::as_bool),
+            Some(true),
+            "sibling wrap-up must flag unseen transcript"
+        );
+        assert_eq!(
+            sib_meta
+                .get(ROOM_METADATA_MINUTES)
+                .and_then(serde_json::Value::as_str),
+            Some("# Minutes\n- Done."),
+            "sibling wrap-up must carry minutes markdown"
+        );
+
+        let ext_params = reqs.get(1).and_then(|r| r.get("params")).unwrap();
+        assert_eq!(
+            ext_params
+                .get("configuration")
+                .and_then(|c| c.get("returnImmediately"))
+                .and_then(serde_json::Value::as_bool),
+            Some(true),
+            "external wrap-up must request returnImmediately = true"
+        );
+        let ext_msg = ext_params.get("message").unwrap();
+        assert!(
+            ext_msg
+                .get("metadata")
+                .and_then(|m| m.get(ROOM_METADATA_CLOSE))
+                .is_none(),
+            "external wrap-up must not send internal residuum.room_close flag"
+        );
+        let ext_text = ext_msg
+            .get("parts")
+            .and_then(|p| p.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|part| part.get("text"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        assert!(
+            ext_text.contains("No reply is needed.")
+                && ext_text.contains("# Minutes")
+                && ext_text.contains("[Owner]: Wrap up decision."),
+            "external wrap-up text must carry minutes and unseen transcript: {ext_text}"
         );
     }
 
