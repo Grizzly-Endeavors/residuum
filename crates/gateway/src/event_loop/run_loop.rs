@@ -76,7 +76,10 @@ pub(crate) async fn start_agent(inputs: AgentStartInputs) -> Result<StartedAgent
         &cfg,
         &services,
         &activity,
-        model_call_resources_rx,
+        SpawnWatchReceivers {
+            model_call_resources: model_call_resources_rx,
+            spawn_context: spawn_context_rx.clone(),
+        },
     )
     .await?;
 
@@ -373,6 +376,7 @@ fn a2a_serving_deps(
     core: &GatewayCore,
     parts: &crate::startup::GatewayComponents,
     services: &HubServices,
+    spawn_context_rx: tokio::sync::watch::Receiver<Arc<residuum_background::SpawnContext>>,
 ) -> (A2aServingDeps, tokio::sync::watch::Sender<bool>) {
     let (sessions_ready_tx, sessions_ready_rx) = tokio::sync::watch::channel(false);
     let deps = A2aServingDeps {
@@ -382,6 +386,7 @@ fn a2a_serving_deps(
         bus_handle: core.bus_handle.clone(),
         sessions_ready: sessions_ready_rx,
         tunnel_status_rx: services.tunnel_status_rx.clone(),
+        spawn_context_rx,
     };
     (deps, sessions_ready_tx)
 }
@@ -415,13 +420,18 @@ fn spawn_config_watchers(
 }
 
 /// Spawn the agent's router, chat adapters, A2A serving state, and watchers.
+struct SpawnWatchReceivers {
+    model_call_resources: tokio::sync::watch::Receiver<Arc<web::model::ModelCallResources>>,
+    spawn_context: tokio::sync::watch::Receiver<Arc<residuum_background::SpawnContext>>,
+}
+
 async fn spawn_agent_tasks(
     core: &GatewayCore,
     parts: &crate::startup::GatewayComponents,
     cfg: &Config,
     services: &HubServices,
     activity: &Arc<ActivityTracker>,
-    model_call_resources_rx: tokio::sync::watch::Receiver<Arc<web::model::ModelCallResources>>,
+    watch_rxs: SpawnWatchReceivers,
 ) -> Result<SpawnedHandles, FatalError> {
     let adapter_senders = AdapterSenders {
         publisher: core.publisher.clone(),
@@ -462,7 +472,7 @@ async fn spawn_agent_tasks(
         services,
         activity,
     );
-    let api_states = build_api_states(cfg, parts, core, model_call_resources_rx);
+    let api_states = build_api_states(cfg, parts, core, watch_rxs.model_call_resources);
     let router = build_gateway_app(
         state,
         api_states.config,
@@ -478,7 +488,8 @@ async fn spawn_agent_tasks(
             build: services.control.build,
         },
     );
-    let (a2a_deps, sessions_ready_tx) = a2a_serving_deps(core, parts, services);
+    let (a2a_deps, sessions_ready_tx) =
+        a2a_serving_deps(core, parts, services, watch_rxs.spawn_context);
     let adapters = spawn_adapters(cfg, &adapter_senders, parts.tz, activity);
     let a2a = if cfg.a2a.enabled {
         build_agent_a2a(cfg, a2a_deps).await

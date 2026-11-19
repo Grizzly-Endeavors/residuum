@@ -12,11 +12,11 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tokio::sync::{mpsc, watch};
 
-use residuum_background::SpawnContext;
 use residuum_background::messaging::{
     AgentMessenger, ConversationDeliveryOutcome, ConversationSpawn,
 };
 use residuum_background::registry::SessionRegistry;
+use residuum_background::{SessionCloseFlush, SpawnContext};
 use residuum_bus::origin::{ConversationContext, ConversationKind, MessageOrigin, ROOM_ENDPOINT};
 use residuum_bus::{
     AgentResultStatus, BusHandle, MessageEvent, Publisher, SessionAddress, SessionEvent,
@@ -27,7 +27,10 @@ use residuum_inference::{
     CacheHints, CompletionOptions, ImageData, Message, ResponseFormat, UsageComponent,
     UsageRecorder, build_provider_chain,
 };
-use residuum_rooms::{LocalRoomParticipant, LocalRoomTurnRequest, RoomAttachment, RoomTurnOutput};
+use residuum_rooms::{
+    LocalRoomParticipant, LocalRoomTurnRequest, LocalRoomWrapUpRequest, RoomAttachment,
+    RoomTurnOutput,
+};
 use residuum_workspace::inbox::attachment::{
     MAX_IMAGE_INLINE_SIZE, encode_image_from_file, is_supported_image,
 };
@@ -281,6 +284,29 @@ impl LocalRoomParticipant for GatewayRoomParticipant {
     async fn close_room_session(&self, room_id: &str) -> Result<(), String> {
         let address = room_session_address(room_id);
         self.session_registry.stop(&address);
+        Ok(())
+    }
+
+    async fn wrap_up_room_session(&self, req: LocalRoomWrapUpRequest) -> Result<(), String> {
+        let address = room_session_address(&req.room_id);
+        let ctx = Arc::clone(&*self.spawn_context_rx.borrow());
+        let flush = SessionCloseFlush {
+            user_content: req.unseen_transcript,
+            assistant_note: format!(
+                "[Meeting wrapped up — minutes saved to `{}`.]",
+                req.shared_minutes_path
+            ),
+            bypass_token_floor: true,
+        };
+        ctx.flush_and_close_conversation(
+            &address,
+            format!("room:{}", req.room_name),
+            Some(residuum_bus::ConversationTarget {
+                endpoint: ROOM_ENDPOINT.to_owned(),
+                conversation_id: req.room_id,
+            }),
+            flush,
+        );
         Ok(())
     }
 
@@ -569,6 +595,7 @@ mod tests {
             session_runtime,
             &registry,
             &publisher,
+            Arc::new(Observer::disabled(chrono_tz::UTC)),
             merge_writer,
             &messenger,
         );
@@ -601,6 +628,7 @@ mod tests {
         session_runtime: Arc<SessionRuntime>,
         registry: &Arc<SessionRegistry>,
         publisher: &Publisher,
+        observer: Arc<Observer>,
         merge_writer: Arc<MemoryMergeWriter>,
         messenger: &Arc<AgentMessenger>,
     ) -> Arc<SpawnContext> {
@@ -623,7 +651,7 @@ mod tests {
             publisher: publisher.clone(),
             skill_state: SkillState::new_shared(SkillIndex::default(), vec![]),
             mcp_registry: residuum_mcp::McpRegistry::new_shared(),
-            observer: Arc::new(Observer::disabled(chrono_tz::UTC)),
+            observer,
             merge_writer,
             messenger: Arc::clone(messenger),
             bg_tier_active_index: BackgroundTierActiveIndex::default(),
@@ -851,5 +879,266 @@ mod tests {
             "run_room_turn must return Err when session fork fails: {res:?}"
         );
         h.listener_handle.abort();
+    }
+
+    fn build_enabled_observer_harness_observer() -> Observer {
+        const OBS_JSON: &str = r#"{
+            "observations": [
+                {"content": "Kitchen Table locked deploy plan for Sunday.", "timestamp": "2026-11-19T10:00", "visibility": "background"}
+            ],
+            "narrative": "The crew reviewed benchmark status and locked the Sunday deploy plan."
+        }"#;
+        Observer::new(
+            Box::new(residuum_memory::testing::MockMemoryProvider::new(OBS_JSON)),
+            residuum_memory::observer::ObserverConfig::default(),
+        )
+    }
+
+    async fn build_room_harness_with_observer(
+        server_url: &str,
+    ) -> (RoomTestHarness, Arc<HybridSearcher>, Arc<SessionStore>) {
+        let (dir, layout) = init_test_layout().await;
+        let bus = residuum_bus::spawn_broker();
+        let publisher = bus.publisher();
+        let registry = Arc::new(SessionRegistry::load(layout.resume_points_json()).await);
+        let store = Arc::new(SessionStore::new(layout.sessions_dir()));
+        let messenger = Arc::new(AgentMessenger::new(
+            Arc::clone(&registry),
+            publisher.clone(),
+            Arc::clone(&store),
+            residuum_agent::hop::HopLimits::from(&BackgroundConfig::default()),
+        ));
+        let (_, span_buf) = residuum_core::util::telemetry::SpanBufferLayer::new(
+            &residuum_core::util::telemetry::SpanBufferConfig::default(),
+        );
+        let tracing_service = Arc::new(residuum_tracing_service::TracingService::new(
+            residuum_config::TracingConfig::default(),
+            span_buf,
+        ));
+        let client_context = test_client_context();
+        let session_runtime = Arc::new(SessionRuntime::new(
+            Arc::clone(&registry),
+            Arc::clone(&store),
+            Arc::new(Semaphore::new(4)),
+            &BackgroundConfig::default(),
+            SessionRuntimeHandles {
+                publisher: publisher.clone(),
+                tz: chrono_tz::UTC,
+                messenger: Arc::clone(&messenger),
+                checkpoints: residuum_checkpoints::testing::test_engine(),
+                tracing_service: Arc::clone(&tracing_service),
+                tracing_client_context: Arc::clone(&client_context),
+            },
+        ));
+        let search_index =
+            Arc::new(MemoryIndex::open_or_create(&layout.search_index_dir()).expect("mem index"));
+        let searcher = Arc::new(HybridSearcher::new(
+            Arc::clone(&search_index),
+            None,
+            None,
+            residuum_config::SearchConfig::default(),
+        ));
+        let merge_writer = Arc::new(MemoryMergeWriter::new(
+            Reflector::disabled(chrono_tz::UTC),
+            layout.clone(),
+            search_index,
+            None,
+            None,
+        ));
+        let tool_factory = build_test_tool_factory(&TestInfra {
+            hub_root: dir.path().to_path_buf(),
+            layout: layout.clone(),
+            publisher: publisher.clone(),
+            registry: Arc::clone(&registry),
+            messenger: Arc::clone(&messenger),
+            searcher: Arc::clone(&searcher),
+            tracing_service,
+            client_context,
+        })
+        .await;
+        let spawn_context = build_test_spawn_context(
+            vec![mock_provider_spec(server_url)],
+            &layout,
+            tool_factory,
+            session_runtime,
+            &registry,
+            &publisher,
+            Arc::new(build_enabled_observer_harness_observer()),
+            merge_writer,
+            &messenger,
+        );
+        let listener_handle = spawn_listener(Arc::clone(&spawn_context), &bus)
+            .await
+            .expect("spawn listener");
+        let (_tx, spawn_context_rx) = watch::channel(spawn_context);
+        let participant = GatewayRoomParticipant {
+            agent_messenger: messenger,
+            session_registry: registry,
+            bus_handle: bus,
+            publisher,
+            spawn_context_rx,
+            rooms_root: dir.path().join("rooms"),
+            tz: chrono_tz::UTC,
+        };
+        (
+            RoomTestHarness {
+                _dir: dir,
+                layout,
+                participant,
+                listener_handle,
+            },
+            searcher,
+            store,
+        )
+    }
+
+    #[tokio::test]
+    async fn wrap_up_room_session_merges_early_speaker_tail_and_silent_attendee_episode_without_main_turn()
+     {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "choices": [{ "message": { "role": "assistant", "content": "Mid-meeting update from Mira." } }]
+            })))
+            .mount(&server)
+            .await;
+
+        let (mira_h, mira_search, mira_store) =
+            build_room_harness_with_observer(&server.uri()).await;
+        let (quinn_h, quinn_search, quinn_store) =
+            build_room_harness_with_observer(&server.uri()).await;
+
+        let mut mira_events: Subscriber<SessionEvent> = mira_h
+            .participant
+            .bus_handle
+            .subscribe(topics::Sessions)
+            .await
+            .expect("subscribe mira sessions");
+        let mut quinn_events: Subscriber<SessionEvent> = quinn_h
+            .participant
+            .bus_handle
+            .subscribe(topics::Sessions)
+            .await
+            .expect("subscribe quinn sessions");
+
+        let (tool_tx, _tool_rx) = mpsc::unbounded_channel();
+        mira_h
+            .participant
+            .run_room_turn(LocalRoomTurnRequest {
+                room_id: "room_01jcv8k9m2p4q7".to_owned(),
+                room_name: "Kitchen Table".to_owned(),
+                room_topic: None,
+                prompt: "[Owner]: Mira, status?".to_owned(),
+                attachments: Vec::new(),
+                tool_status_tx: tool_tx,
+            })
+            .await
+            .expect("mira turn");
+
+        mira_h
+            .participant
+            .wrap_up_room_session(LocalRoomWrapUpRequest {
+                room_id: "room_01jcv8k9m2p4q7".to_owned(),
+                room_name: "Kitchen Table".to_owned(),
+                unseen_transcript: Some(
+                    "[Vex]: Final Sunday deploy plan locked with rollback script.".to_owned(),
+                ),
+                shared_minutes_path: "team/minutes/2026-11-19-kitchen-table.md".to_owned(),
+            })
+            .await
+            .expect("mira wrap up");
+
+        quinn_h
+            .participant
+            .wrap_up_room_session(LocalRoomWrapUpRequest {
+                room_id: "room_01jcv8k9m2p4q7".to_owned(),
+                room_name: "Kitchen Table".to_owned(),
+                unseen_transcript: Some(
+                    "[Owner]: Mira, status?\n[Mira]: Mid-meeting update.\n[Vex]: Final Sunday deploy plan locked with rollback script.".to_owned(),
+                ),
+                shared_minutes_path: "team/minutes/2026-11-19-kitchen-table.md".to_owned(),
+            })
+            .await
+            .expect("quinn silent wrap up");
+
+        let mira_ep = await_completed_episode(&mut mira_events).await;
+        let quinn_ep = await_completed_episode(&mut quinn_events).await;
+        assert_eq!(
+            mira_ep.as_deref(),
+            Some("ep-001"),
+            "early speaker must merge ep-001"
+        );
+        assert_eq!(
+            quinn_ep.as_deref(),
+            Some("ep-001"),
+            "silent attendee must merge ep-001"
+        );
+
+        let main_reqs = server.received_requests().await.expect("requests");
+        assert_eq!(
+            main_reqs.len(),
+            1,
+            "wrap_up_room_session must invoke zero main-model completions (only Mira's 1 live turn)"
+        );
+
+        assert_episode_and_search_indexed(&mira_store, &mira_search, "rollback script").await;
+        assert_episode_and_search_indexed(&quinn_store, &quinn_search, "rollback script").await;
+
+        mira_h.listener_handle.abort();
+        quinn_h.listener_handle.abort();
+    }
+
+    async fn await_completed_episode(sub: &mut Subscriber<SessionEvent>) -> Option<String> {
+        wait::guarded("session Completed event", async {
+            loop {
+                if let Ok(Some(ev)) = sub.recv().await
+                    && let SessionEventKind::Completed { status, episode_id } = ev.kind
+                {
+                    assert!(
+                        matches!(status, AgentResultStatus::Completed),
+                        "wrapped-up room session must finish with Completed status, got {status:?}"
+                    );
+                    return episode_id;
+                }
+            }
+        })
+        .await
+    }
+
+    async fn assert_episode_and_search_indexed(
+        store: &SessionStore,
+        searcher: &HybridSearcher,
+        expected_phrase: &str,
+    ) {
+        let runs = store
+            .list_completed_runs(residuum_background::store::RunFilter::default(), None, 10)
+            .await
+            .expect("list completed runs");
+        assert_eq!(runs.runs.len(), 1, "one completed room run must be stored");
+        let (_, transcript) = store
+            .read_run(&runs.runs.first().expect("run").run_id)
+            .await
+            .expect("read run")
+            .expect("run exists");
+        assert!(
+            transcript
+                .iter()
+                .any(|m| m.content.contains(expected_phrase)),
+            "completed run transcript must contain flushed unseen phrase '{expected_phrase}': {transcript:?}"
+        );
+        let hits = searcher
+            .search(
+                expected_phrase,
+                5,
+                &residuum_memory::search::SearchFilters::default(),
+                Some(0.0),
+            )
+            .await
+            .expect("hybrid search");
+        assert!(
+            !hits.results.is_empty(),
+            "flushed unseen room transcript must be indexed into BM25 episode chunks"
+        );
     }
 }

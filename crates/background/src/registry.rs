@@ -68,6 +68,31 @@ impl std::fmt::Display for RegisterError {
 
 impl std::error::Error for RegisterError {}
 
+/// Final transcript messages to append when closing a conversation session
+/// without running another model turn (e.g. Meeting Room capture-notes/archive).
+#[derive(Debug, Clone)]
+pub struct SessionCloseFlush {
+    /// Optional unseen user/conversation transcript tail to append before closing.
+    pub user_content: Option<String>,
+    /// Synthetic assistant acknowledgment appended after `user_content` so
+    /// episode chunk extraction indexes the tail and the run closes cleanly.
+    pub assistant_note: String,
+    /// When `true`, `complete_session_memory` runs with `episode_skip_token_floor = 0`
+    /// so even short meetings produce an episode and observations.
+    pub bypass_token_floor: bool,
+}
+
+/// Outcome of [`SessionRegistry::stop_with_flush`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopWithFlushOutcome {
+    /// Attached the flush payload to the live session and cancelled `stop_token`.
+    StoppedLive,
+    /// The session at `address` is already in `Completing` teardown.
+    Completing,
+    /// No live session is registered at `address`.
+    NotLive,
+}
+
 /// A registered session's bookkeeping: its metadata, the token that cancels
 /// its in-flight turn or idle wait, and the sender half of its interrupt
 /// channel — how a message addressed to this session actually reaches it
@@ -80,6 +105,7 @@ struct SessionEntry {
     /// can interrupt an in-flight turn while keeping the session alive in `Idle`.
     turn_token: CancellationToken,
     interrupt_tx: mpsc::Sender<Interrupt>,
+    close_flush: Option<SessionCloseFlush>,
 }
 
 /// What's needed to resume a completed session as a new run at the same
@@ -223,9 +249,40 @@ impl SessionRegistry {
                 stop_token,
                 turn_token,
                 interrupt_tx,
+                close_flush: None,
             },
         );
         Ok(interrupt_rx)
+    }
+
+    /// Register a transcript-only completion run directly in [`SessionState::Completing`]
+    /// so concurrent deliveries see `DeliverOutcome::Completing` while its
+    /// episode extraction and merge finish.
+    ///
+    /// # Errors
+    /// Returns [`RegisterError`] if `info.address` already names a live run.
+    pub fn register_completing(&self, mut info: SessionInfo) -> Result<(), RegisterError> {
+        let (interrupt_tx, _interrupt_rx) = mpsc::channel(1);
+        let address = info.address.clone();
+        info.state = SessionState::Completing;
+        let mut guard = self.lock();
+        if guard.contains_key(&address) {
+            return Err(RegisterError { address });
+        }
+        let stop_token = CancellationToken::new();
+        stop_token.cancel();
+        let turn_token = stop_token.child_token();
+        guard.insert(
+            address,
+            SessionEntry {
+                info,
+                stop_token,
+                turn_token,
+                interrupt_tx,
+                close_flush: None,
+            },
+        );
+        Ok(())
     }
 
     /// Deliver a message to a live session by address: an interrupt at its
@@ -416,6 +473,44 @@ impl SessionRegistry {
         }
         entry.stop_token.cancel();
         true
+    }
+
+    /// Attach a [`SessionCloseFlush`] to a live session and cancel its
+    /// `stop_token` under the same lock so `finish_run` appends any unseen
+    /// transcript tail and completes without running another model turn.
+    pub fn stop_with_flush(
+        &self,
+        address: &SessionAddress,
+        flush: SessionCloseFlush,
+    ) -> StopWithFlushOutcome {
+        let mut guard = self.lock();
+        let Some(entry) = guard.get_mut(address) else {
+            return StopWithFlushOutcome::NotLive;
+        };
+        if entry.info.state == SessionState::Completing {
+            return StopWithFlushOutcome::Completing;
+        }
+        if entry.info.state == SessionState::Completed {
+            return StopWithFlushOutcome::NotLive;
+        }
+        entry.close_flush = Some(flush);
+        entry.stop_token.cancel();
+        StopWithFlushOutcome::StoppedLive
+    }
+
+    /// Take any [`SessionCloseFlush`] attached to `(address, run_id)` when
+    /// `finish_run` enters teardown.
+    pub(crate) fn take_close_flush(
+        &self,
+        address: &SessionAddress,
+        run_id: &str,
+    ) -> Option<SessionCloseFlush> {
+        let mut guard = self.lock();
+        let entry = guard.get_mut(address)?;
+        if entry.info.run_id != run_id {
+            return None;
+        }
+        entry.close_flush.take()
     }
 
     /// Stop `address`'s turn, but only if one is actually running right now.

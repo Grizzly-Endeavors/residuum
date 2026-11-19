@@ -1,13 +1,14 @@
 //! Meeting rooms coordinator: lifecycle, turn/budget state machine,
 //! archival/minutes generation, and live WebSocket event broadcast.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, PoisonError, RwLock as StdRwLock};
 use std::time::Duration;
 
 use chrono::Utc;
+use futures_util::future::join_all;
 use thiserror::Error;
 use tokio::sync::{Mutex, broadcast, mpsc};
 use tokio::task::JoinHandle;
@@ -23,8 +24,9 @@ use residuum_workspace::team_files::{TeamWriteCoordinator, TeamWriter};
 use crate::agent_view::RoomAgentView;
 use crate::mentions::{parse_agent_baton_mentions, parse_owner_mentions};
 use crate::participants::{
-    A2aRoomDriver, LocalRoomParticipant, LocalRoomTurnRequest, RemoteRoomDriver,
-    RemoteRoomTurnRequest, RoomTurnOutput, format_catchup_prompt,
+    A2aRoomDriver, LocalRoomParticipant, LocalRoomTurnRequest, LocalRoomWrapUpRequest,
+    RemoteRoomDriver, RemoteRoomTurnRequest, RemoteRoomWrapUpRequest, RoomTurnOutput,
+    format_catchup_prompt, format_wrapup_transcript,
 };
 use crate::selector::{SelectorOutcome, SpeakerSelector, SystemOneSpeakerSelector};
 use crate::store::{NewRoomMessage, RoomStore, RoomStoreError};
@@ -929,7 +931,6 @@ impl RoomService {
         let end_seq = stopped.last_seq;
         let started_at = Utc::now();
 
-        self.close_participating_sessions(stopped).await;
         let (markdown, writer) = self.build_minutes_markdown(stopped, slice_messages).await;
         let meeting_id = generate_meeting_id();
         self.store
@@ -942,6 +943,9 @@ impl RoomService {
             .await?;
         let inbox_ref = self
             .deliver_minutes_inbox(stopped, &shared_path, &markdown)
+            .await;
+        let wrapped_seats = self
+            .wrap_up_meeting_participants(stopped, slice_messages, &markdown, &shared_path)
             .await;
 
         let (_, divider_msg) = self
@@ -982,6 +986,9 @@ impl RoomService {
                     if *seen >= end_seq {
                         *seen = divider_msg.seq;
                     }
+                }
+                for seat_id in &wrapped_seats {
+                    rec.last_seen_seq.insert(seat_id.clone(), divider_msg.seq);
                 }
                 rec.meetings.push(meeting_record);
                 rec.last_captured_seq = divider_msg.seq;
@@ -1053,9 +1060,8 @@ impl RoomService {
         self.sync_snapshot(&archived);
         self.emit_record_updated(&archived);
 
-        self.close_participating_sessions(&archived).await;
-
         if !should_generate {
+            self.close_participating_sessions(&archived).await;
             self.clear_fallback_if_available(room_id, &mut archived)
                 .await;
             let minutes_markdown = self.store.read_minutes(room_id).await?;
@@ -1097,6 +1103,9 @@ impl RoomService {
         let inbox_ref = self
             .deliver_minutes_inbox(archived, &shared_path, &markdown)
             .await;
+        let wrapped_seats = self
+            .wrap_up_meeting_participants(archived, tail_messages, &markdown, &shared_path)
+            .await;
 
         let finished_at = Utc::now();
         let meeting_record = RoomMeetingRecord {
@@ -1113,6 +1122,9 @@ impl RoomService {
             .store
             .update_record(room_id, |rec| {
                 rec.updated_at = finished_at;
+                for seat_id in &wrapped_seats {
+                    rec.last_seen_seq.insert(seat_id.clone(), end_seq);
+                }
                 rec.meetings.push(meeting_record);
                 rec.last_captured_seq = archived.last_seq;
                 rec.minutes = RoomMinutesMeta {
@@ -1150,17 +1162,108 @@ impl RoomService {
     async fn close_participating_sessions(&self, record: &RoomRecord) {
         let room_id = record.id.as_str();
         for seat_id in &record.historical_participants {
-            if let Some(local_name) = seat_id.strip_prefix("agent:") {
-                if let Some(info) = self.get_local_agent(local_name)
-                    && let Err(err) = info.participant.close_room_session(room_id).await
-                {
-                    tracing::warn!(room_id, seat_id = %seat_id, error = %err, "failed to close local room session");
-                }
-            } else if self.is_sibling_seat(record, seat_id).await
-                && let Err(err) = self.remote.close_remote_session(room_id, seat_id).await
+            self.close_single_seat_session(record, room_id, seat_id)
+                .await;
+        }
+    }
+
+    async fn close_single_seat_session(&self, record: &RoomRecord, room_id: &str, seat_id: &str) {
+        if let Some(local_name) = seat_id.strip_prefix("agent:") {
+            if let Some(info) = self.get_local_agent(local_name)
+                && let Err(err) = info.participant.close_room_session(room_id).await
             {
-                tracing::warn!(room_id, seat_id = %seat_id, error = %err, "failed to close sibling room session");
+                tracing::warn!(room_id, seat_id = %seat_id, error = %err, "failed to close local room session");
             }
+        } else if self.is_sibling_seat(record, seat_id).await
+            && let Err(err) = self.remote.close_remote_session(room_id, seat_id).await
+        {
+            tracing::warn!(room_id, seat_id = %seat_id, error = %err, "failed to close sibling room session");
+        }
+    }
+
+    async fn wrap_up_meeting_participants(
+        &self,
+        record: &RoomRecord,
+        slice_messages: &[RoomMessage],
+        minutes_markdown: &str,
+        shared_path: &str,
+    ) -> Vec<String> {
+        let room_id = record.id.as_str();
+        let active_ids: HashSet<&str> = record.roster.iter().map(|s| s.seat_id.as_str()).collect();
+        for seat_id in &record.historical_participants {
+            if !active_ids.contains(seat_id.as_str()) {
+                self.close_single_seat_session(record, room_id, seat_id)
+                    .await;
+            }
+        }
+
+        let futures = record.roster.iter().map(|seat| {
+            self.wrap_up_roster_seat(record, seat, slice_messages, minutes_markdown, shared_path)
+        });
+        join_all(futures).await.into_iter().flatten().collect()
+    }
+
+    async fn wrap_up_roster_seat(
+        &self,
+        record: &RoomRecord,
+        seat: &RoomSeat,
+        slice_messages: &[RoomMessage],
+        minutes_markdown: &str,
+        shared_path: &str,
+    ) -> Option<String> {
+        let room_id = record.id.as_str();
+        let last_seen = record
+            .last_seen_seq
+            .get(&seat.seat_id)
+            .copied()
+            .unwrap_or(0);
+        let unseen: Vec<RoomMessage> = slice_messages
+            .iter()
+            .filter(|m| m.seq > last_seen)
+            .cloned()
+            .collect();
+        let unseen_transcript = format_wrapup_transcript(record, &unseen);
+
+        match seat.kind {
+            RoomSeatKind::Local => {
+                let local_name = seat.seat_id.strip_prefix("agent:")?;
+                let info = self.get_local_agent(local_name)?;
+                match info
+                    .participant
+                    .wrap_up_room_session(LocalRoomWrapUpRequest {
+                        room_id: room_id.to_owned(),
+                        room_name: record.name.clone(),
+                        unseen_transcript,
+                        shared_minutes_path: shared_path.to_owned(),
+                    })
+                    .await
+                {
+                    Ok(()) => Some(seat.seat_id.clone()),
+                    Err(err) => {
+                        tracing::warn!(room_id, seat_id = %seat.seat_id, error = %err, "failed to wrap up local room session");
+                        None
+                    }
+                }
+            }
+            RoomSeatKind::SiblingA2a | RoomSeatKind::ExternalA2a => match self
+                .remote
+                .wrap_up_remote_session(RemoteRoomWrapUpRequest {
+                    seat_id: seat.seat_id.clone(),
+                    kind: seat.kind,
+                    room_id: room_id.to_owned(),
+                    room_name: record.name.clone(),
+                    unseen_transcript,
+                    minutes_markdown: minutes_markdown.to_owned(),
+                    shared_minutes_path: shared_path.to_owned(),
+                })
+                .await
+            {
+                Ok(()) => Some(seat.seat_id.clone()),
+                Err(err) => {
+                    tracing::warn!(room_id, seat_id = %seat.seat_id, error = %err, "failed to wrap up remote room session");
+                    None
+                }
+            },
         }
     }
 
@@ -1261,12 +1364,15 @@ impl RoomService {
         shared_path: &str,
         markdown: &str,
     ) -> Option<String> {
-        let mailbox = self.pick_target_mailbox(record)?;
-        let layout = WorkspaceLayout::new(&mailbox.dir);
         let title = format!("Meeting minutes: {}", record.name);
         let body = format!("{markdown}\n\n---\nSaved to `{shared_path}`.");
         let source = format!("room:{}", record.id);
 
+        self.fan_out_minutes_to_local_agent_inboxes(record, &title, &body, &source)
+            .await;
+
+        let mailbox = self.pick_target_mailbox(record)?;
+        let layout = WorkspaceLayout::new(&mailbox.dir);
         let (filename, _) = match inbox::add_item(
             &layout.user_inbox_dir(),
             NewInboxItem {
@@ -1295,6 +1401,48 @@ impl RoomService {
             .ok()
             .map(|r| r.to_string())
             .or_else(|| Some(format!("{}/user/{item_id}", mailbox.agent)))
+    }
+
+    async fn fan_out_minutes_to_local_agent_inboxes(
+        &self,
+        record: &RoomRecord,
+        title: &str,
+        body: &str,
+        source: &str,
+    ) {
+        let mut seen = HashSet::new();
+        for seat in &record.roster {
+            let Some(local_name) = seat.seat_id.strip_prefix("agent:") else {
+                continue;
+            };
+            if !seen.insert(local_name) {
+                continue;
+            }
+            let Some(mailbox) = self.mailboxes.mailbox(local_name) else {
+                continue;
+            };
+            let layout = WorkspaceLayout::new(&mailbox.dir);
+            if let Err(err) = inbox::add_item(
+                &layout.agent_inbox_dir(),
+                NewInboxItem {
+                    title,
+                    body,
+                    source,
+                    in_reply_to: None,
+                    attachments: &[],
+                },
+                mailbox.timezone,
+            )
+            .await
+            {
+                tracing::warn!(
+                    room_id = %record.id,
+                    agent = %mailbox.agent,
+                    error = %err,
+                    "failed to write meeting minutes to attendee agent inbox"
+                );
+            }
+        }
     }
 
     /// Reopen an archived room for further messages.
@@ -2078,6 +2226,7 @@ mod tests {
         recorded_prompts: Mutex<Vec<String>>,
         recorded_attachments: Mutex<Vec<Vec<RoomAttachment>>>,
         recorded_minutes_prompts: Mutex<Vec<String>>,
+        recorded_wrap_ups: Mutex<Vec<LocalRoomWrapUpRequest>>,
         closed_rooms: Mutex<Vec<String>>,
         canceled_rooms: Mutex<Vec<String>>,
         minutes_text: Mutex<Option<String>>,
@@ -2094,6 +2243,7 @@ mod tests {
                 recorded_prompts: Mutex::new(Vec::new()),
                 recorded_attachments: Mutex::new(Vec::new()),
                 recorded_minutes_prompts: Mutex::new(Vec::new()),
+                recorded_wrap_ups: Mutex::new(Vec::new()),
                 closed_rooms: Mutex::new(Vec::new()),
                 canceled_rooms: Mutex::new(Vec::new()),
                 minutes_text: Mutex::new(None),
@@ -2110,6 +2260,7 @@ mod tests {
                 recorded_prompts: Mutex::new(Vec::new()),
                 recorded_attachments: Mutex::new(Vec::new()),
                 recorded_minutes_prompts: Mutex::new(Vec::new()),
+                recorded_wrap_ups: Mutex::new(Vec::new()),
                 closed_rooms: Mutex::new(Vec::new()),
                 canceled_rooms: Mutex::new(Vec::new()),
                 minutes_text: Mutex::new(None),
@@ -2130,6 +2281,7 @@ mod tests {
                 recorded_prompts: Mutex::new(Vec::new()),
                 recorded_attachments: Mutex::new(Vec::new()),
                 recorded_minutes_prompts: Mutex::new(Vec::new()),
+                recorded_wrap_ups: Mutex::new(Vec::new()),
                 closed_rooms: Mutex::new(Vec::new()),
                 canceled_rooms: Mutex::new(Vec::new()),
                 minutes_text: Mutex::new(None),
@@ -2177,6 +2329,12 @@ mod tests {
             Ok(())
         }
 
+        async fn wrap_up_room_session(&self, req: LocalRoomWrapUpRequest) -> Result<(), String> {
+            self.closed_rooms.lock().unwrap().push(req.room_id.clone());
+            self.recorded_wrap_ups.lock().unwrap().push(req);
+            Ok(())
+        }
+
         async fn generate_minutes(&self, prompt: String) -> Result<String, String> {
             self.recorded_minutes_prompts
                 .lock()
@@ -2199,6 +2357,7 @@ mod tests {
     struct MockRemoteDriver {
         candidates: Mutex<Vec<RoomRosterCandidate>>,
         closed_sessions: Mutex<Vec<(String, String)>>,
+        wrapped_sessions: Mutex<Vec<RemoteRoomWrapUpRequest>>,
     }
 
     impl MockRemoteDriver {
@@ -2206,6 +2365,7 @@ mod tests {
             Arc::new(Self {
                 candidates: Mutex::new(Vec::new()),
                 closed_sessions: Mutex::new(Vec::new()),
+                wrapped_sessions: Mutex::new(Vec::new()),
             })
         }
 
@@ -2213,6 +2373,7 @@ mod tests {
             Arc::new(Self {
                 candidates: Mutex::new(candidates),
                 closed_sessions: Mutex::new(Vec::new()),
+                wrapped_sessions: Mutex::new(Vec::new()),
             })
         }
     }
@@ -2251,6 +2412,17 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push((room_id.to_owned(), seat_id.to_owned()));
+            Ok(())
+        }
+
+        async fn wrap_up_remote_session(&self, req: RemoteRoomWrapUpRequest) -> Result<(), String> {
+            if req.kind == RoomSeatKind::SiblingA2a {
+                self.closed_sessions
+                    .lock()
+                    .unwrap()
+                    .push((req.room_id.clone(), req.seat_id.clone()));
+            }
+            self.wrapped_sessions.lock().unwrap().push(req);
             Ok(())
         }
     }
@@ -3151,6 +3323,7 @@ mod tests {
             recorded_prompts: Mutex::new(Vec::new()),
             recorded_attachments: Mutex::new(Vec::new()),
             recorded_minutes_prompts: Mutex::new(Vec::new()),
+            recorded_wrap_ups: Mutex::new(Vec::new()),
             closed_rooms: Mutex::new(Vec::new()),
             canceled_rooms: Mutex::new(Vec::new()),
             minutes_text: Mutex::new(None),
@@ -4010,5 +4183,197 @@ mod tests {
             1,
             "owner message before cancelled turn must still be captured"
         );
+    }
+
+    async fn agent_inbox_count(hub: &TeamHub, agent: &str) -> usize {
+        inbox::list_items_or_empty(&hub.agent_dir(agent).join("inbox/agent"))
+            .await
+            .unwrap()
+            .len()
+    }
+
+    #[tokio::test]
+    async fn meeting_wrap_up_flushes_unseen_tails_and_fans_out_minutes_to_all_attendees() {
+        let hub = TeamHub::new();
+        let store = RoomStore::open(hub.dir.path().join("hub").join("rooms"))
+            .await
+            .unwrap();
+        let mailboxes = Arc::new(StaticMailboxDirectory::for_team_hub(
+            &hub,
+            &["mira", "quinn", "vex"],
+        ));
+        let remote = MockRemoteDriver::with_candidates(vec![
+            RoomRosterCandidate {
+                seat_id: "a2a:ventures/sloane".to_owned(),
+                kind: RoomSeatKind::SiblingA2a,
+                display_name: "Sloane".to_owned(),
+                role: Some("CEO".to_owned()),
+                instance: Some("ventures".to_owned()),
+                online: true,
+            },
+            RoomRosterCandidate {
+                seat_id: "a2a:partner".to_owned(),
+                kind: RoomSeatKind::ExternalA2a,
+                display_name: "Partner".to_owned(),
+                role: Some("Advisor".to_owned()),
+                instance: None,
+                online: true,
+            },
+        ]);
+        let selector = Arc::new(MockSelector::new(true, vec![SelectorOutcome::NoSpeaker]));
+        let service = RoomService::with_drivers(
+            store,
+            selector,
+            Arc::clone(&remote) as Arc<dyn RemoteRoomDriver>,
+            hub.coordinator.clone(),
+            mailboxes,
+        )
+        .await;
+        let mira = MockLocalParticipant::with_replies(
+            "mira",
+            vec![Ok("Mid-meeting research update.".to_owned())],
+        );
+        let quinn = MockLocalParticipant::with_replies("quinn", Vec::new());
+        let vex =
+            MockLocalParticipant::with_replies("vex", vec![Ok("Final infra lock.".to_owned())]);
+        for (name, disp, part) in [
+            ("mira", "Mira", Arc::clone(&mira)),
+            ("quinn", "Quinn", Arc::clone(&quinn)),
+            ("vex", "Vex", Arc::clone(&vex)),
+        ] {
+            service.register_local_agent(LocalRoomAgentInfo {
+                name: name.to_owned(),
+                display_name: disp.to_owned(),
+                role: None,
+                participant: part,
+            });
+        }
+
+        let created = service
+            .create_room(CreateRoomRequest {
+                name: "Kitchen Table".to_owned(),
+                topic: Some("Sunday Standup".to_owned()),
+                seat_ids: vec![
+                    "agent:mira".to_owned(),
+                    "agent:quinn".to_owned(),
+                    "agent:vex".to_owned(),
+                    "a2a:ventures/sloane".to_owned(),
+                    "a2a:partner".to_owned(),
+                ],
+                pinned: true,
+            })
+            .await
+            .unwrap();
+        let room_id = created.room.id.to_string();
+        let mut rx = service.subscribe_events();
+
+        // seq 1: Owner -> seq 2: Mira replies (Mira's last_seen_seq stops before seq 3..=4).
+        service
+            .post_owner_message(
+                &room_id,
+                "@Mira status on benchmark?".to_owned(),
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        wait_until_idle(&mut rx, &room_id, &service).await;
+
+        // seq 3: Owner -> seq 4: Vex replies; Quinn, Sloane, Partner never spoke at all.
+        service
+            .post_owner_message(
+                &room_id,
+                "@Vex lock the deploy plan.".to_owned(),
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        wait_until_idle(&mut rx, &room_id, &service).await;
+
+        service
+            .capture_notes(&room_id, CaptureRoomNotesRequest::default())
+            .await
+            .unwrap();
+
+        assert_wrap_up_fanout(&hub, &service, &room_id, &mira, &quinn, &vex, &remote).await;
+    }
+
+    async fn assert_wrap_up_fanout(
+        hub: &TeamHub,
+        service: &RoomService,
+        room_id: &str,
+        mira: &MockLocalParticipant,
+        quinn: &MockLocalParticipant,
+        vex: &MockLocalParticipant,
+        remote: &MockRemoteDriver,
+    ) {
+        for sister in ["mira", "quinn", "vex"] {
+            assert_eq!(
+                agent_inbox_count(hub, sister).await,
+                1,
+                "{sister} must receive meeting minutes in her agent inbox"
+            );
+        }
+
+        let mira_wrap = mira.recorded_wrap_ups.lock().unwrap().clone();
+        let mira_tail = mira_wrap
+            .first()
+            .and_then(|w| w.unseen_transcript.as_deref())
+            .unwrap_or("");
+        assert!(
+            mira_tail.contains("@Vex lock the deploy plan.")
+                && mira_tail.contains("Final infra lock.")
+                && !mira_tail.contains("status on benchmark?"),
+            "early speaker Mira must receive only messages after her last turn: {mira_tail}"
+        );
+
+        let quinn_wrap = quinn.recorded_wrap_ups.lock().unwrap().clone();
+        let quinn_tail = quinn_wrap
+            .first()
+            .and_then(|w| w.unseen_transcript.as_deref())
+            .unwrap_or("");
+        assert!(
+            quinn_tail.contains("status on benchmark?")
+                && quinn_tail.contains("Mid-meeting research update.")
+                && quinn_tail.contains("Final infra lock."),
+            "silent attendee Quinn must receive the entire standup transcript: {quinn_tail}"
+        );
+
+        let vex_wrap = vex.recorded_wrap_ups.lock().unwrap().clone();
+        assert_eq!(
+            vex_wrap.first().and_then(|w| w.unseen_transcript.as_ref()),
+            None,
+            "final speaker Vex already saw through end_seq and must close with unseen_transcript = None"
+        );
+
+        let remote_wraps = remote.wrapped_sessions.lock().unwrap().clone();
+        assert_eq!(
+            remote_wraps.len(),
+            2,
+            "both SiblingA2a and ExternalA2a roster seats must receive wrap-up payloads"
+        );
+        assert!(
+            remote_wraps.iter().all(|w| {
+                w.unseen_transcript
+                    .as_deref()
+                    .is_some_and(|t| t.contains("Final infra lock."))
+                    && w.minutes_markdown.contains("# Meeting Minutes")
+            }),
+            "remote wrap-up payloads must include full unseen transcript and minutes: {remote_wraps:?}"
+        );
+
+        let rec = service.store().get_record(room_id).await.unwrap();
+        for seat_id in [
+            "agent:mira",
+            "agent:quinn",
+            "agent:vex",
+            "a2a:ventures/sloane",
+            "a2a:partner",
+        ] {
+            assert_eq!(
+                rec.last_seen_seq.get(seat_id).copied(),
+                Some(5),
+                "every wrapped-up roster seat must advance last_seen_seq to divider seq (5)"
+            );
+        }
     }
 }

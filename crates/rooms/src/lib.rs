@@ -17,8 +17,8 @@ pub mod types;
 pub use agent_view::{RoomAgentView, RoomReadResult};
 pub use mentions::{parse_agent_baton_mentions, parse_owner_mentions};
 pub use participants::{
-    A2aRoomDriver, LocalRoomParticipant, LocalRoomTurnRequest, RemoteRoomDriver,
-    RemoteRoomTurnRequest, RoomTurnOutput,
+    A2aRoomDriver, LocalRoomParticipant, LocalRoomTurnRequest, LocalRoomWrapUpRequest,
+    RemoteRoomDriver, RemoteRoomTurnRequest, RemoteRoomWrapUpRequest, RoomTurnOutput,
 };
 pub use selector::{SelectorOutcome, SpeakerSelector, SystemOneSpeakerSelector};
 pub use service::{LocalRoomAgentInfo, RoomEvent, RoomService, RoomServiceError};

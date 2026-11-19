@@ -51,6 +51,9 @@ pub struct AgentA2aState {
     /// address while the tunnel is connected, and follows the tunnel as it
     /// connects and disconnects.
     pub tunnel_status_rx: tokio::sync::watch::Receiver<TunnelStatus>,
+    /// Optional live spawn context for flushing transcript-only sibling room
+    /// completions on `residuum.room_close`.
+    pub spawn_context: Option<tokio::sync::watch::Receiver<Arc<residuum_background::SpawnContext>>>,
 }
 
 /// Aborts the task it holds when dropped, so a task tied to an [`AgentA2a`]
@@ -185,7 +188,8 @@ pub async fn agent_a2a_router(state: AgentA2aState) -> anyhow::Result<AgentA2a> 
         Arc::clone(&card_state),
         state.layout.agent_inbox_dir(),
         state.timezone,
-    );
+    )
+    .with_spawn_context(state.spawn_context);
     let inner = a2a_server::DefaultRequestHandler::new(
         executor,
         DelegatingTaskStore(Arc::clone(&task_store)),
