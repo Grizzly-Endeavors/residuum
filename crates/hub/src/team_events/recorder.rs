@@ -534,6 +534,16 @@ fn scheduled_run_name(run: &LiveRun) -> String {
         .source_label
         .split_once(':')
         .map_or(run.source_label.as_str(), |(_, name)| name);
+    // An action's label carries its id after the last '#' so fork outcomes
+    // resolve exactly; the owner reads the name.
+    let name = match run.trigger {
+        EventTrigger::Action => name.rsplit_once('#').map_or(name, |(name, _)| name),
+        EventTrigger::Pulse
+        | EventTrigger::Agent
+        | EventTrigger::Webhook(_)
+        | EventTrigger::Conversation
+        | EventTrigger::Artifact(_) => name,
+    };
     format!("{kind} \"{name}\"")
 }
 
