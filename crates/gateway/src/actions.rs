@@ -16,11 +16,17 @@ use residuum_proactivity::actions::store::ActionStore;
 /// the bad value; it starts on the first tick after its model resolves (a
 /// fixed `providers.toml`), or the owner cancels it.
 ///
-/// An action is removed from the store only once its spawn request has
-/// actually been published — never before. An action whose publish fails
-/// stays in the store exactly as it was, so it's retried on the next tick
-/// rather than lost; the failure itself is already logged in
-/// [`publish_action_spawn`].
+/// An action whose spawn request is published is marked in flight — not due,
+/// not listed, held out of the persisted file — and the fork's outcome comes
+/// back through `SpawnContext::action_outcome`: a fork that started drops the
+/// action for good; a fork that failed restores it verbatim, so it's retried
+/// on the next tick rather than lost. The fork's own failure notice is
+/// published by the listener, deduplicated. A crash between publish and
+/// report can still drop an in-flight action; that window is the fork
+/// itself, seconds, where before this the loss was certain on every fork
+/// failure. A publish that fails leaves the action in the pending set
+/// exactly as it was (also retried next tick); the failure itself is
+/// already logged in [`publish_action_spawn`].
 pub(super) async fn spawn_due_actions(
     action_store: &Arc<tokio::sync::Mutex<ActionStore>>,
     publisher: &Publisher,
@@ -66,24 +72,77 @@ pub(super) async fn spawn_due_actions(
         return;
     }
 
-    let mut started_ids = Vec::new();
+    let mut started = false;
     for (action, model) in due {
         if publish_action_spawn(&action, model, publisher).await {
-            started_ids.push(action.id.clone());
+            store.mark_in_flight(&action.id);
+            started = true;
         }
     }
 
-    if started_ids.is_empty() {
+    if !started {
         return;
-    }
-
-    for id in &started_ids {
-        store.remove(id);
     }
 
     if let Err(e) = store.save().await {
         tracing::warn!(error = %e, "failed to save action store after spawning due actions");
     }
+}
+
+/// The fork-outcome sink wired into the gateway's `SpawnContext`: keeps a
+/// scheduled action alive across its fork — restored verbatim to retry when
+/// the fork fails, dropped once it starts — and persists the store either
+/// way. `source_label` is the spawn request's `action:<name>#<id>` label;
+/// the id suffix resolves one exact action, so same-named actions can't
+/// clobber each other's outcomes.
+pub(super) fn action_outcome_sink(
+    action_store: &Arc<tokio::sync::Mutex<ActionStore>>,
+) -> residuum_background::ActionOutcomeSink {
+    let store = Arc::clone(action_store);
+    Arc::new(move |source_label, outcome| {
+        let store = Arc::clone(&store);
+        let label = source_label
+            .strip_prefix("action:")
+            .unwrap_or(source_label)
+            .to_string();
+        Box::pin(async move {
+            let mut locked = store.lock().await;
+            let (name, id) = label
+                .rsplit_once('#')
+                .map_or((label.as_str(), None), |(name, id)| {
+                    (name, Some(id.to_string()))
+                });
+            match (outcome, id) {
+                (residuum_background::ActionSpawnOutcome::Started, Some(id)) => {
+                    locked.drop_in_flight_by_id(&id);
+                }
+                (residuum_background::ActionSpawnOutcome::Failed, Some(id)) => {
+                    locked.restore_in_flight_by_id(&id);
+                }
+                (outcome, None) => {
+                    tracing::warn!(
+                        label = %label,
+                        "action spawn label carries no id; falling back to a name match"
+                    );
+                    match outcome {
+                        residuum_background::ActionSpawnOutcome::Started => {
+                            locked.drop_in_flight_by_name(name);
+                        }
+                        residuum_background::ActionSpawnOutcome::Failed => {
+                            locked.restore_in_flight_by_name(name);
+                        }
+                    }
+                }
+            }
+            if let Err(e) = locked.save().await {
+                tracing::warn!(
+                    error = %e,
+                    label = %label,
+                    "failed to save the action store after a fork outcome"
+                );
+            }
+        })
+    })
 }
 
 /// Why a scheduled action's model can't run, which decides what the owner
@@ -144,7 +203,7 @@ async fn publish_action_spawn(
     let spawn_event = SpawnRequestEvent {
         address,
         skill: action.agent.as_deref().map(SkillName::from),
-        source_label: format!("action:{}", action.name),
+        source_label: format!("action:{}#{}", action.name, action.id),
         prompt: action.prompt.clone(),
         context: None,
         source: trigger,
@@ -199,7 +258,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn due_action_is_removed_only_after_a_successful_publish() {
+    async fn due_action_goes_in_flight_only_after_a_successful_publish() {
         let dir = tempfile::tempdir().unwrap();
         let bus_handle = residuum_bus::spawn_broker();
         let mut sub: Subscriber<SpawnRequestEvent> =
@@ -217,12 +276,137 @@ mod tests {
         .await;
 
         let event = next_event("a spawn request", &mut sub).await;
-        assert_eq!(event.source_label, "action:morning digest");
+        assert_eq!(event.source_label, "action:morning digest#action-aaaaaaaa");
 
         let locked = action_store.lock().await;
         assert!(
+            locked.list().is_empty() && locked.in_flight() == 1,
+            "the action must be in flight once its publish actually succeeded, \
+             held there until its fork reports back"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_action_whose_fork_failed_is_restored_to_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let bus_handle = residuum_bus::spawn_broker();
+        let mut sub: Subscriber<SpawnRequestEvent> =
+            bus_handle.subscribe(topics::Background).await.unwrap();
+
+        let mut store = ActionStore::new_empty(dir.path().join("scheduled_actions.json"));
+        let original = due_action("action-aaaaaaaa", "morning digest");
+        store.add(original);
+        let action_store = Arc::new(tokio::sync::Mutex::new(store));
+
+        spawn_due_actions(
+            &action_store,
+            &bus_handle.publisher(),
+            &ModelCatalog::default(),
+        )
+        .await;
+        let _ = next_event("a spawn request", &mut sub).await;
+
+        // The fork failed: the listener reports back by the spawn's
+        // `action:<name>#<id>` label, and the action returns verbatim to the
+        // pending set — the next tick retries it instead of losing it.
+        {
+            let mut locked = action_store.lock().await;
+            assert!(
+                locked.restore_in_flight_by_id("action-aaaaaaaa"),
+                "the failed fork's action must come back"
+            );
+            locked.save().await.unwrap();
+        }
+        drop(sub);
+        spawn_due_actions(&action_store, &Publisher::noop(), &ModelCatalog::default()).await;
+
+        let locked = action_store.lock().await;
+        assert_eq!(locked.in_flight(), 0);
+        assert_eq!(locked.list().len(), 1, "restored to retry on the next tick");
+        let retried = locked.list().first().unwrap();
+        assert_eq!(retried.id, "action-aaaaaaaa", "restored verbatim");
+        assert_eq!(retried.name, "morning digest");
+    }
+
+    #[tokio::test]
+    async fn an_action_whose_fork_started_is_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let bus_handle = residuum_bus::spawn_broker();
+        let mut sub: Subscriber<SpawnRequestEvent> =
+            bus_handle.subscribe(topics::Background).await.unwrap();
+
+        let mut store = ActionStore::new_empty(dir.path().join("scheduled_actions.json"));
+        store.add(due_action("action-aaaaaaaa", "morning digest"));
+        let action_store = Arc::new(tokio::sync::Mutex::new(store));
+
+        spawn_due_actions(
+            &action_store,
+            &bus_handle.publisher(),
+            &ModelCatalog::default(),
+        )
+        .await;
+        let _ = next_event("a spawn request", &mut sub).await;
+
+        let mut locked = action_store.lock().await;
+        assert!(locked.drop_in_flight_by_id("action-aaaaaaaa"));
+        assert_eq!(locked.in_flight(), 0);
+        assert!(
             locked.list().is_empty(),
-            "the action must be removed once its publish actually succeeded"
+            "a started action is gone for good"
+        );
+        locked.save().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn same_named_actions_resolve_by_id_not_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let bus_handle = residuum_bus::spawn_broker();
+        let mut sub: Subscriber<SpawnRequestEvent> =
+            bus_handle.subscribe(topics::Background).await.unwrap();
+
+        let mut store = ActionStore::new_empty(dir.path().join("scheduled_actions.json"));
+        store.add(due_action("action-aaaaaaaa", "check"));
+        store.add(due_action("action-bbbbbbbb", "check"));
+        let action_store = Arc::new(tokio::sync::Mutex::new(store));
+        let sink = action_outcome_sink(&action_store);
+
+        spawn_due_actions(
+            &action_store,
+            &bus_handle.publisher(),
+            &ModelCatalog::default(),
+        )
+        .await;
+        let first = next_event("the first check spawn", &mut sub).await;
+        let second = next_event("the second check spawn", &mut sub).await;
+        assert_ne!(
+            first.source_label, second.source_label,
+            "the id suffix must disambiguate same-named actions"
+        );
+
+        // One fork started, one failed: each outcome must touch exactly its
+        // own action, never its same-named sibling.
+        (sink)(
+            first.source_label.as_str(),
+            residuum_background::ActionSpawnOutcome::Started,
+        )
+        .await;
+        (sink)(
+            second.source_label.as_str(),
+            residuum_background::ActionSpawnOutcome::Failed,
+        )
+        .await;
+
+        let locked = action_store.lock().await;
+        assert_eq!(locked.in_flight(), 0);
+        assert_eq!(
+            locked.list().len(),
+            1,
+            "exactly the failed fork's action is restored to retry"
+        );
+        assert_eq!(
+            locked.list().first().unwrap().id,
+            "action-bbbbbbbb",
+            "resolved by id, not by name"
         );
     }
 
@@ -341,7 +525,7 @@ mod tests {
         )
         .await;
         let event = next_event("the valid action's spawn", &mut spawns).await;
-        assert_eq!(event.source_label, "action:explicit model");
+        assert_eq!(event.source_label, "action:explicit model#action-ffffffff");
         assert_eq!(
             event.model,
             ModelSelector::Explicit("openai/gpt-4o".to_string())

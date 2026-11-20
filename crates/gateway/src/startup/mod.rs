@@ -441,6 +441,7 @@ fn build_startup_spawn_context(inputs: StartupSpawnContextInputs<'_>) -> Arc<Spa
         merge_writer: Arc::clone(inputs.merge_writer),
         messenger: Arc::clone(inputs.messenger),
         bg_tier_active_index: residuum_background::BackgroundTierActiveIndex::default(),
+        action_outcome: Some(crate::actions::action_outcome_sink(inputs.action_store)),
     })
 }
 

@@ -20,6 +20,12 @@ pub struct ActionStore {
     /// reported for each — see [`Self::record_model_problems`]. In memory
     /// only.
     model_problems: HashMap<String, String>,
+    /// Published actions awaiting their fork's outcome, by id. In memory
+    /// only: an in-flight action is not due and not listed, and its fork's
+    /// outcome either drops it (started) or returns it verbatim to
+    /// `actions` (failed) — see `gateway::actions::spawn_due_actions` and
+    /// `SpawnContext::action_outcome`.
+    in_flight: HashMap<String, ScheduledAction>,
 }
 
 impl ActionStore {
@@ -61,6 +67,7 @@ impl ActionStore {
                             actions,
                             path,
                             model_problems: HashMap::new(),
+                            in_flight: HashMap::new(),
                         },
                         rejected,
                         None,
@@ -86,6 +93,7 @@ impl ActionStore {
                             actions: Vec::new(),
                             path,
                             model_problems: HashMap::new(),
+                            in_flight: HashMap::new(),
                         },
                         Vec::new(),
                         Some(moved_to),
@@ -97,6 +105,7 @@ impl ActionStore {
                     actions: Vec::new(),
                     path,
                     model_problems: HashMap::new(),
+                    in_flight: HashMap::new(),
                 },
                 Vec::new(),
                 None,
@@ -169,6 +178,7 @@ impl ActionStore {
             actions: Vec::new(),
             path,
             model_problems: HashMap::new(),
+            in_flight: HashMap::new(),
         }
     }
 
@@ -195,6 +205,100 @@ impl ActionStore {
     #[must_use]
     pub fn list(&self) -> &[ScheduledAction] {
         &self.actions
+    }
+
+    /// Mark a published action in flight: out of `due` and out of `list`
+    /// until its fork reports back through
+    /// [`Self::drop_in_flight_by_id`] or [`Self::restore_in_flight_by_id`].
+    /// Returns `false` when the id is unknown, leaving the store untouched.
+    pub fn mark_in_flight(&mut self, id: &str) -> bool {
+        if let Some(pos) = self.actions.iter().position(|a| a.id == id) {
+            let action = self.actions.remove(pos);
+            debug!(id = %id, name = %action.name, "scheduled action in flight");
+            self.in_flight.insert(id.to_string(), action);
+            true
+        } else {
+            debug!(id = %id, "attempted to mark an action in flight that does not exist in store");
+            false
+        }
+    }
+
+    /// Return the in-flight action with this exact id to the pending set,
+    /// verbatim, so the next tick retries it. Returns whether it was
+    /// restored. This is the primary fork-outcome path: the id resolves one
+    /// exact action, so same-named actions can't clobber each other's
+    /// outcomes the way a name match would.
+    pub fn restore_in_flight_by_id(&mut self, id: &str) -> bool {
+        if let Some(action) = self.in_flight.remove(id) {
+            debug!(id = %id, name = %action.name, "scheduled action's fork failed; restored to retry");
+            self.actions.push(action);
+            true
+        } else {
+            debug!(id = %id, "attempted to restore an in-flight action that does not exist");
+            false
+        }
+    }
+
+    /// Drop the in-flight action with this exact id — its fork started, so
+    /// the action has run its course. Returns whether it was dropped.
+    pub fn drop_in_flight_by_id(&mut self, id: &str) -> bool {
+        if let Some(action) = self.in_flight.remove(id) {
+            debug!(id = %id, name = %action.name, "scheduled action's fork started; dropped");
+            true
+        } else {
+            debug!(id = %id, "attempted to drop an in-flight action that does not exist");
+            false
+        }
+    }
+
+    /// Return every in-flight action named `name` to the pending set,
+    /// verbatim, so the next tick retries it. Returns how many were restored.
+    /// Fallback for spawn labels that carry no id suffix; ids are the
+    /// primary key (see [`Self::restore_in_flight_by_id`]). Actions whose
+    /// forks failed are restored here; a fork that keeps
+    /// failing keeps the action scheduled (the failure notice is deduplicated
+    /// upstream), until the owner fixes the cause or cancels the action.
+    pub fn restore_in_flight_by_name(&mut self, name: &str) -> usize {
+        let restored: Vec<_> = self
+            .in_flight
+            .values()
+            .filter(|a| a.name == name)
+            .cloned()
+            .collect();
+        for action in &restored {
+            self.in_flight.remove(&action.id);
+            self.actions.push(action.clone());
+        }
+        if !restored.is_empty() {
+            debug!(name = %name, count = restored.len(), "scheduled action's fork failed; restored to retry");
+        }
+        restored.len()
+    }
+
+    /// Drop every in-flight action named `name` — its fork started, so the
+    /// action has run its course. Returns how many were dropped.
+    /// Fallback for spawn labels that carry no id suffix; ids are the
+    /// primary key (see [`Self::drop_in_flight_by_id`]).
+    pub fn drop_in_flight_by_name(&mut self, name: &str) -> usize {
+        let dropped: Vec<String> = self
+            .in_flight
+            .values()
+            .filter(|a| a.name == name)
+            .map(|a| a.id.clone())
+            .collect();
+        for id in &dropped {
+            self.in_flight.remove(id);
+        }
+        if !dropped.is_empty() {
+            debug!(name = %name, count = dropped.len(), "scheduled action's fork started; dropped");
+        }
+        dropped.len()
+    }
+
+    /// How many actions are in flight, awaiting their fork's outcome.
+    #[must_use]
+    pub fn in_flight(&self) -> usize {
+        self.in_flight.len()
     }
 
     /// Drain and return all actions whose `run_at` is at or before `now`.
@@ -374,6 +478,36 @@ async fn move_aside_corrupt_file(path: &Path) -> anyhow::Result<PathBuf> {
 mod tests {
     use super::*;
     use chrono::Duration;
+
+    #[test]
+    fn fork_outcomes_key_on_id_and_by_name_stays_the_fallback() {
+        let mut store =
+            ActionStore::new_empty(std::env::temp_dir().join("store-outcome-id-test.json"));
+        let mut first = make_action("action-1", -5);
+        first.name = "duplicate".to_string();
+        let mut second = make_action("action-2", -5);
+        second.name = "duplicate".to_string();
+        store.add(first);
+        store.add(second);
+        assert!(store.mark_in_flight("action-1"));
+        assert!(store.mark_in_flight("action-2"));
+
+        // The id path touches exactly one action, never its same-named twin.
+        assert!(store.drop_in_flight_by_id("action-1"));
+        assert_eq!(store.in_flight(), 1);
+        assert!(store.restore_in_flight_by_id("action-2"));
+        assert_eq!(store.in_flight(), 0);
+        assert_eq!(store.list().len(), 1);
+        assert_eq!(
+            store.list().first().unwrap().id,
+            "action-2",
+            "restored verbatim by id"
+        );
+
+        // The name path remains only for labels that carry no id suffix.
+        assert!(store.mark_in_flight("action-2"));
+        assert_eq!(store.restore_in_flight_by_name("duplicate"), 1);
+    }
 
     fn make_action(id: &str, offset_secs: i64) -> ScheduledAction {
         let now = Utc::now();

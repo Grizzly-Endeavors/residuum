@@ -740,6 +740,7 @@ fn build_spawn_context(
         merge_writer: Arc::clone(&rt.merge_writer),
         messenger: Arc::clone(&rt.agent_messenger),
         bg_tier_active_index: residuum_background::BackgroundTierActiveIndex::default(),
+        action_outcome: Some(crate::actions::action_outcome_sink(&rt.action_store)),
     })
 }
 
