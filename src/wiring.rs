@@ -76,30 +76,38 @@ mod tests {
     /// The asset tests model the real build's layout, so this checks that the
     /// build holds what they model: each plain file, a content-hashed script
     /// and stylesheet under `assets/`, the service worker's version line and
-    /// the app shell's mount point.
+    /// the app shell's mount point. Debug builds read `web/dist/` from disk,
+    /// so a dist built from older web sources fails here while the code is
+    /// fine: `just test` rebuilds a stale dist first, plain `cargo test` does
+    /// not.
     #[test]
     fn the_build_holds_every_plain_file_the_fixture_models() {
+        const REBUILD: &str = "web/dist may be stale or incomplete: rebuild it with `just web-build`, or run the tests with `just test`, which rebuilds it when needed";
         for path in FIXTURE_PLAIN_FILES {
             assert!(
                 web_asset(path).is_some(),
-                "the web build should hold {path}, which the asset tests model"
+                "the web build should hold {path}, which the asset tests model. {REBUILD}"
             );
         }
         for suffix in [".js", ".css"] {
             assert!(
                 WebAssets::iter().any(|path| path.starts_with("assets/") && path.ends_with(suffix)),
-                "the web build should hold a content-hashed {suffix} under assets/, as the fixture models ({FIXTURE_HASHED_JS}, {FIXTURE_HASHED_CSS})"
+                "the web build should hold a content-hashed {suffix} under assets/, as the fixture models ({FIXTURE_HASHED_JS}, {FIXTURE_HASHED_CSS}). {REBUILD}"
             );
         }
-        let worker = web_asset("sw.js").expect("the web build should hold sw.js");
+        let Some(worker) = web_asset("sw.js") else {
+            panic!("the web build should hold sw.js. {REBUILD}");
+        };
         assert!(
             worker.data.starts_with(b"/* residuum-sw "),
-            "the build names the worker's version on its first line"
+            "the build names the worker's version on its first line. {REBUILD}"
         );
-        let shell = web_asset("index.html").expect("the web build should hold index.html");
+        let Some(shell) = web_asset("index.html") else {
+            panic!("the web build should hold index.html. {REBUILD}");
+        };
         assert!(
             String::from_utf8_lossy(&shell.data).contains("id=\"app\""),
-            "index.html should mount the app at #app"
+            "index.html should mount the app at #app. {REBUILD}"
         );
     }
 }

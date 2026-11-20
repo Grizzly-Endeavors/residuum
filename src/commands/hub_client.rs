@@ -17,6 +17,14 @@ const NOT_RUNNING_MESSAGE: &str = "Residuum isn't running. Start it with `residu
 /// the client timeout must exceed that window.
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
 
+/// A client builder for the CLI's requests to the hub on this machine. It
+/// takes no proxy from the environment (`HTTP_PROXY`, `ALL_PROXY`): the hub
+/// is always local, and a proxy would answer in its place with its own error,
+/// or fail every request while the hub is running.
+pub(super) fn local_hub_client() -> reqwest::ClientBuilder {
+    reqwest::Client::builder().no_proxy()
+}
+
 /// Client for the hub's `/api/hub/...` routes on the local gateway address.
 pub(super) struct HubClient {
     addr: String,
@@ -26,7 +34,7 @@ pub(super) struct HubClient {
 impl HubClient {
     /// Build a client for the gateway listening at `addr` (`host:port`).
     pub(super) fn new(addr: &str) -> Result<Self, FatalError> {
-        let http = reqwest::Client::builder()
+        let http = local_hub_client()
             .timeout(REQUEST_TIMEOUT)
             .build()
             .map_err(|e| {

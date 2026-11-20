@@ -116,7 +116,7 @@ pub(super) async fn run_tracing_command(
 // ── Helper ───────────────────────────────────────────────────────────
 
 fn make_client() -> Result<reqwest::Client, FatalError> {
-    reqwest::Client::builder()
+    super::hub_client::local_hub_client()
         .timeout(std::time::Duration::from_secs(10))
         .build()
         .map_err(|e| FatalError::Gateway(format!("failed to build HTTP client: {e}")))
