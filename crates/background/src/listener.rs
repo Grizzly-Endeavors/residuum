@@ -6,8 +6,6 @@
 //! from the request itself; there is no resolution step in between.
 
 use std::collections::HashMap;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 
 use tokio::task::JoinHandle;
@@ -122,9 +120,10 @@ async fn listener_loop(ctx: SpawnContextWatch, mut subscriber: Subscriber<SpawnR
                             );
                         }
                     }
-                    // A stop is not a recovery: a fork failure on record for
-                    // this pulse stays deduplicated.
-                    Ok(SpawnOutcome::FireStopped) => {}
+                    // Neither a stop nor a deferral is a recovery: a fork
+                    // failure on record for this source stays deduplicated
+                    // until a fork actually goes through.
+                    Ok(SpawnOutcome::FireStopped | SpawnOutcome::Deferred) => {}
                     Err(e) => {
                         if let Some((address, resume)) = owner_start {
                             notify_owner_start_failed(&ctx.publisher, &address, resume, &e).await;
@@ -349,9 +348,11 @@ async fn notify_owner_start_failed(
 /// What became of a spawn request that didn't fail.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SpawnOutcome {
-    /// Forked, delivered into the run already live at its address, or
-    /// deferred until the run completing there clears.
+    /// Forked, or delivered into the run already live at its address.
     Accepted,
+    /// Put back on the bus once the run completing at its address clears;
+    /// the listener reports how it went when it picks the request up again.
+    Deferred,
     /// A pulse fire's request whose fire was stopped, or had ended, before
     /// its session was forked: nothing forked.
     FireStopped,
@@ -370,101 +371,86 @@ enum SpawnOutcome {
 /// completing session and both ended up resuming it (see
 /// `AgentMessenger::deferred_resume`), since only one of the two resulting
 /// spawn requests can actually win the fork. A request for an address that
-/// is `completing` is deferred, off the listener's own task so it doesn't
-/// block other addresses' spawns, until the address clears.
-fn handle_spawn_request<'a>(
-    ctx: &'a Arc<SpawnContext>,
+/// is `completing` waits, off the listener's own task so it doesn't block
+/// other addresses' spawns, until the address clears, and then goes back on
+/// the bus (see [`requeue_when_clear`]).
+async fn handle_spawn_request(
+    ctx: &Arc<SpawnContext>,
     event: SpawnRequestEvent,
-) -> Pin<Box<dyn Future<Output = Result<SpawnOutcome, anyhow::Error>> + Send + 'a>> {
-    // Written as a plain fn returning a boxed future, rather than `async
-    // fn`, because the `Completing` branch below recurses into this same
-    // function (via a detached task) — an `async fn` calling itself, even
-    // indirectly through `tokio::spawn`, creates a cyclic `Send`-auto-trait
-    // computation rustc cannot resolve on its own; boxing here gives the
-    // recursive call a concrete, non-opaque type that breaks the cycle.
-    Box::pin(async move {
-        if let Some(existing) = ctx.session_registry.get(&event.address) {
-            match existing.state {
-                SessionState::Completing => {
-                    tracing::info!(
-                        address = %event.address,
-                        "spawn target is completing; deferring until it clears the registry"
-                    );
-                    let ctx = Arc::clone(ctx);
-                    let owner_address =
-                        super::owner_session::is_owner_start(&event).then(|| event.address.clone());
-                    residuum_core::util::spawn_in_span(async move {
-                        ctx.session_registry.wait_until_clear(&event.address).await;
-                        // Re-run the full guard rather than forking directly:
-                        // by the time the wait ends, another spawn/resume for
-                        // this same address may already have won (this
-                        // detached task has no ordering relative to the
-                        // listener's own sequential processing, or to
-                        // another such detached task), so the address could
-                        // be live again, or even back to `completing` once
-                        // more. `handle_spawn_request` re-checks state fresh
-                        // and recurses through this same deferral if so,
-                        // instead of blindly clobbering a run that won the
-                        // race.
-                        let pulse_address = matches!(event.source, EventTrigger::Pulse)
-                            .then(|| event.address.clone());
-                        let source_label = event.source_label.clone();
-                        let resume = ctx.session_registry.resume_point(&event.address).is_some();
-                        if let Err(e) = handle_spawn_request(&ctx, event).await {
-                            if let Some(address) = pulse_address {
-                                publish_pulse_start_failed(
-                                    &ctx.publisher,
-                                    address,
-                                    &source_label,
-                                    &e,
-                                )
-                                .await;
-                            }
-                            if let Some(address) = owner_address {
-                                notify_owner_start_failed(&ctx.publisher, &address, resume, &e)
-                                    .await;
-                            } else {
-                                tracing::warn!(
-                                    error = format!("{e:#}"),
-                                    "failed to fork deferred session resume"
-                                );
-                            }
-                        }
-                    });
-                    return Ok(SpawnOutcome::Accepted);
-                }
-                SessionState::Forking
-                | SessionState::Queued
-                | SessionState::Running
-                | SessionState::Idle => {
-                    // Two concurrent resume attempts for the same address
-                    // (e.g. two messages queued while a session was
-                    // completing, each deferred separately — see
-                    // `AgentMessenger::deferred_resume`) can both observe the
-                    // address as free and both end up publishing a spawn
-                    // request. By the time this second one is processed, the
-                    // first has already won and registered a live run —
-                    // deliver this request's content into that run as a
-                    // message instead of refusing it outright and losing it.
-                    tracing::warn!(
-                        address = %event.address,
-                        state = %existing.state,
-                        "spawn target is already live; delivering this request's input into it \
-                         instead of forking a second run"
-                    );
-                    return deliver_race_guard_content(
-                        &ctx.session_registry,
-                        &ctx.publisher,
-                        ctx.messenger.store(),
-                        event,
-                    )
-                    .map(|()| SpawnOutcome::Accepted);
-                }
-                SessionState::Completed => {}
+) -> Result<SpawnOutcome, anyhow::Error> {
+    if let Some(existing) = ctx.session_registry.get(&event.address) {
+        match existing.state {
+            SessionState::Completing => {
+                tracing::info!(
+                    address = %event.address,
+                    "spawn target is completing; deferring until it clears the registry"
+                );
+                residuum_core::util::spawn_in_span(requeue_when_clear(
+                    Arc::clone(&ctx.session_registry),
+                    ctx.publisher.clone(),
+                    event,
+                ));
+                return Ok(SpawnOutcome::Deferred);
             }
+            SessionState::Forking
+            | SessionState::Queued
+            | SessionState::Running
+            | SessionState::Idle => {
+                // Two concurrent resume attempts for the same address
+                // (e.g. two messages queued while a session was
+                // completing, each deferred separately — see
+                // `AgentMessenger::deferred_resume`) can both observe the
+                // address as free and both end up publishing a spawn
+                // request. By the time this second one is processed, the
+                // first has already won and registered a live run —
+                // deliver this request's content into that run as a
+                // message instead of refusing it outright and losing it.
+                tracing::warn!(
+                    address = %event.address,
+                    state = %existing.state,
+                    "spawn target is already live; delivering this request's input into it \
+                     instead of forking a second run"
+                );
+                return deliver_race_guard_content(
+                    &ctx.session_registry,
+                    &ctx.publisher,
+                    ctx.messenger.store(),
+                    event,
+                )
+                .map(|()| SpawnOutcome::Accepted);
+            }
+            SessionState::Completed => {}
         }
-        fork_and_spawn(ctx, event).await
-    })
+    }
+    fork_and_spawn(ctx, event).await
+}
+
+/// Wait for the run completing at `event`'s address to leave the registry,
+/// then publish `event` again for the listener to handle afresh.
+///
+/// Going back through the listener rather than forking here means the
+/// request gets the same guard and the same failure reporting as any other:
+/// by the time the wait ends, another request for this address may have won
+/// it (this task has no ordering relative to the listener or to other such
+/// tasks), so it may be live or completing again; and a fork that fails
+/// reaches the pulse fire, the owner, the spawner waiting for a result, or
+/// the action's outcome exactly as it would have without the wait.
+async fn requeue_when_clear(
+    registry: Arc<SessionRegistry>,
+    publisher: Publisher,
+    event: SpawnRequestEvent,
+) {
+    registry.wait_until_clear(&event.address).await;
+    let address = event.address.clone();
+    let source_label = event.source_label.clone();
+    if let Err(e) = publisher.publish(topics::Background, event).await {
+        tracing::warn!(
+            address = %address,
+            source = %source_label,
+            error = %e,
+            "couldn't put a deferred spawn request back on the bus; it won't run"
+        );
+    }
 }
 
 /// Deliver a spawn/resume request's content into the run that already won
@@ -1879,20 +1865,15 @@ mod tests {
         let mut failures: Subscriber<SessionStartFailedEvent> =
             bus.subscribe(topics::Sessions).await.unwrap();
         let ctx = spawn_context_without_a_working_provider(&bus).await;
+        let _listener = spawn_listener(Arc::clone(&ctx), &bus).await.unwrap();
         let start = owner_start();
         let address = start.address.clone();
-        let mut previous = sample_live_conversation_info(address.as_ref());
-        previous.run_id = "run-previous".to_string();
-        let _interrupts = ctx
-            .session_registry
-            .register(previous, CancellationToken::new())
-            .unwrap();
-        ctx.session_registry
-            .set_state(&address, SessionState::Completing);
+        let _interrupts = register_completing_run(&ctx.session_registry, &address);
 
-        handle_spawn_request(&ctx, start)
+        let outcome = handle_spawn_request(&ctx, start)
             .await
             .expect("a start at a completing address is deferred, not refused");
+        assert_eq!(outcome, SpawnOutcome::Deferred);
         ctx.session_registry.remove(&address, "run-previous");
 
         let failure = next_event("the deferred owner start's failure", &mut failures).await;
@@ -1905,20 +1886,15 @@ mod tests {
         let mut failures: Subscriber<SessionStartFailedEvent> =
             bus.subscribe(topics::Sessions).await.unwrap();
         let ctx = spawn_context_without_a_working_provider(&bus).await;
+        let _listener = spawn_listener(Arc::clone(&ctx), &bus).await.unwrap();
         let resume = owner_start();
         let address = resume.address.clone();
-        let mut previous = sample_live_conversation_info(address.as_ref());
-        previous.run_id = "run-previous".to_string();
-        let _interrupts = ctx
-            .session_registry
-            .register(previous, CancellationToken::new())
-            .unwrap();
-        ctx.session_registry
-            .set_state(&address, SessionState::Completing);
+        let _interrupts = register_completing_run(&ctx.session_registry, &address);
 
-        handle_spawn_request(&ctx, resume)
+        let outcome = handle_spawn_request(&ctx, resume)
             .await
             .expect("a resume at a completing address is deferred, not refused");
+        assert_eq!(outcome, SpawnOutcome::Deferred);
         // The run finishing records its resume point before it leaves the
         // registry.
         record_finished_owner_run(&ctx.session_registry, &address).await;
@@ -1926,6 +1902,56 @@ mod tests {
 
         let failure = next_event("the deferred owner resume's failure", &mut failures).await;
         assert_is_the_provider_failure(&failure, &address, RESUME);
+    }
+
+    /// Register a run `run-previous` at `address` and put it in
+    /// `Completing`, so a spawn request for the address waits for it. The
+    /// run's interrupt receiver comes back for the test to hold.
+    fn register_completing_run(
+        registry: &SessionRegistry,
+        address: &SessionAddress,
+    ) -> tokio::sync::mpsc::Receiver<Interrupt> {
+        let mut previous = sample_live_conversation_info(address.as_ref());
+        previous.run_id = "run-previous".to_string();
+        let interrupts = registry
+            .register(previous, CancellationToken::new())
+            .unwrap();
+        registry.set_state(address, SessionState::Completing);
+        interrupts
+    }
+
+    #[tokio::test]
+    async fn a_deferred_agent_spawn_that_fails_to_fork_relays_its_failure_to_its_spawner() {
+        let bus = residuum_bus::spawn_broker();
+        let mut main_inbox: Subscriber<MessageEvent> =
+            bus.subscribe(topics::UserMessage).await.unwrap();
+        let ctx = spawn_context_without_a_working_provider(&bus).await;
+        let _listener = spawn_listener(Arc::clone(&ctx), &bus).await.unwrap();
+        let mut by_main = owner_start();
+        by_main.address = SessionAddress::from("spawned-researcher-0a1b");
+        by_main.source_label = "agent:researcher".to_string();
+        by_main.spawner = Some(SessionAddress::from(MAIN_ADDRESS));
+        let address = by_main.address.clone();
+        let _interrupts = register_completing_run(&ctx.session_registry, &address);
+
+        let outcome = handle_spawn_request(&ctx, by_main)
+            .await
+            .expect("a spawn at a completing address is deferred, not refused");
+        assert_eq!(outcome, SpawnOutcome::Deferred);
+        ctx.session_registry.remove(&address, "run-previous");
+
+        let relayed = next_event(
+            "the deferred fork's failure relayed to main",
+            &mut main_inbox,
+        )
+        .await;
+        assert!(
+            relayed
+                .content
+                .contains("[Session Result] spawned-researcher-0a1b — status: failed: "),
+            "the spawner hears that the deferred fork failed: {}",
+            relayed.content
+        );
     }
 
     #[tokio::test]
