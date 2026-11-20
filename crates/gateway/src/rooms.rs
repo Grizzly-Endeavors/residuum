@@ -656,6 +656,7 @@ mod tests {
             messenger: Arc::clone(messenger),
             bg_tier_active_index: BackgroundTierActiveIndex::default(),
             room_roster: None,
+            action_outcome: None,
         })
     }
 
