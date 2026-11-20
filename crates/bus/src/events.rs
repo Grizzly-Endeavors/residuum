@@ -940,7 +940,7 @@ pub enum SessionEventKind {
 }
 
 /// The spawn listener couldn't fork the session a [`SpawnRequestEvent`]
-/// asked for, so no run was registered for it. Published for two
+/// asked for, so no run was registered for it. Published for three
 /// requesters that wait on the session and would otherwise wait forever:
 ///
 /// - a start or a resume of a session the owner started by hand (from the
@@ -951,6 +951,10 @@ pub enum SessionEventKind {
 ///   waiting on by `address`, and only these reach it.
 /// - a pulse fire's session, which the fire follows to show the pulse as
 ///   running in the Schedule place.
+/// - a conversation session ([`EventTrigger::Conversation`]), with
+///   `owner_start: false`, so a caller waiting on a conversation's startup
+///   hears immediately when the fork fails instead of waiting forever for a
+///   [`SessionEventKind::Started`] event.
 ///
 /// Carried on [`super::topics::Sessions`] beside [`SessionEvent`], which needs
 /// a run id a failed fork never has.

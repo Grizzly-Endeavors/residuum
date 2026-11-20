@@ -37,7 +37,9 @@ use super::session_memory::{
 use super::store::{RunTranscriptSink, SessionStore, TranscriptLine};
 use super::subagent::{SessionTurnIdentity, SubAgentResources, TurnKickoff, execute_subagent};
 use super::types::{SubAgentConfig, truncate_prompt_preview};
-use crate::registry::{DeliverOutcome, ResumePoint, SessionRegistry};
+use crate::registry::{
+    DeliverOutcome, ResumePoint, SessionCloseFlush, SessionRegistry, StopWithFlushOutcome,
+};
 use residuum_bus::session::publish_session_event;
 use residuum_bus::session::{SessionCategory, SessionInfo, SessionState, generate_run_id};
 
@@ -152,6 +154,10 @@ pub struct SessionRuntime {
     checkpoints: Arc<residuum_checkpoints::CheckpointEngine>,
     tracing_service: Arc<TracingService>,
     tracing_client_context: Arc<ClientContext>,
+    /// Conversation close-flush tasks (including ones waiting in
+    /// [`SessionRegistry::wait_until_clear`]), drained by [`Self::shutdown`]
+    /// ahead of [`Self::merges`] so no merge is spawned after `merges.drain`.
+    close_tasks: tokio_util::task::TaskTracker,
     /// Memory merges of runs that have already left the registry, drained
     /// by [`Self::shutdown`].
     merges: MergeTasks,
@@ -170,6 +176,22 @@ struct RunEnv {
     tracing_service: Arc<TracingService>,
     tracing_client_context: Arc<ClientContext>,
     merges: MergeTasks,
+}
+
+/// Request to flush any unseen conversation transcript into `address` and
+/// close/merge the session into episodic memory without invoking the main
+/// model.
+#[derive(Debug, Clone)]
+pub struct ConversationCloseFlush {
+    /// Address of the conversation session (`external-...`) to flush and close.
+    pub address: SessionAddress,
+    /// Human-readable source label used when recording a transcript-only run
+    /// (for example `"room:standup"` or `"discord:#general"`).
+    pub source_label: String,
+    /// Optional conversation target carried onto a transcript-only run.
+    pub conversation_target: Option<ConversationTarget>,
+    /// Transcript tail and synthetic assistant acknowledgment to append.
+    pub flush: SessionCloseFlush,
 }
 
 impl SessionRuntime {
@@ -198,6 +220,7 @@ impl SessionRuntime {
             checkpoints: handles.checkpoints,
             tracing_service: handles.tracing_service,
             tracing_client_context: handles.tracing_client_context,
+            close_tasks: tokio_util::task::TaskTracker::new(),
             merges: MergeTasks::default(),
         }
     }
@@ -342,18 +365,118 @@ impl SessionRuntime {
         });
     }
 
-    /// Stop every live session, wait for their runs to finish completing and
-    /// being recorded, then wait for every memory merge still running, so a
-    /// graceful shutdown leaves nothing for startup recovery to pick up.
+    /// Flush any unseen conversation transcript into `req.address` and
+    /// close/merge the session into episodic memory without invoking the main
+    /// model.
     ///
-    /// Both waits share one `timeout`. A session still live at the deadline
+    /// Only conversation sessions (`external-...` with
+    /// [`EventTrigger::Conversation`]) are accepted; any other address or
+    /// session category is logged at `warn` and left untouched.
+    ///
+    /// - Live session (`Forking`, `Queued`, `Running`, or `Idle`): attaches
+    ///   (or merges) `req.flush` and cancels `stop_token` — aborting any
+    ///   in-flight model/tool execution or queued turn — then appends the
+    ///   caller's tail and finalizes the run as `Completed` with
+    ///   `episode_skip_token_floor = 0`.
+    /// - Not live or `Completing` with non-empty `req.flush.user_content`:
+    ///   runs a bounded retry loop tracked by [`Self::shutdown`], inheriting
+    ///   any prior [`ResumePoint`]'s model, skill, spawner, and depth (or
+    ///   recording no resume point when none existed) and merging with
+    ///   `episode_skip_token_floor = 0`.
+    pub(crate) fn flush_and_close_conversation(
+        &self,
+        req: ConversationCloseFlush,
+        make_merge_handles: impl FnOnce() -> MergeHandles,
+    ) {
+        if !req.address.as_ref().starts_with("external-") {
+            tracing::warn!(
+                address = %req.address,
+                "refusing to flush and close a non-conversation session address"
+            );
+            return;
+        }
+        match self
+            .registry
+            .stop_with_flush(&req.address, req.flush.clone())
+        {
+            StopWithFlushOutcome::StoppedLive => return,
+            StopWithFlushOutcome::NotConversation => {
+                tracing::warn!(
+                    address = %req.address,
+                    "refusing to flush and close a non-conversation live session"
+                );
+                return;
+            }
+            StopWithFlushOutcome::NotLive | StopWithFlushOutcome::Completing => {}
+        }
+        let has_tail = req
+            .flush
+            .user_content
+            .as_deref()
+            .is_some_and(|s| !s.trim().is_empty());
+        if !has_tail {
+            return;
+        }
+        let mut merge_handles = make_merge_handles();
+        merge_handles.episode_skip_token_floor = 0;
+        let handles = self.transcript_only_handles();
+        if self.registry.get(&req.address).is_none() {
+            let prior = self.registry.resume_point(&req.address);
+            if let Some(ref p) = prior
+                && !matches!(p.trigger, EventTrigger::Conversation)
+            {
+                tracing::warn!(
+                    address = %req.address,
+                    trigger = p.trigger.as_str(),
+                    "refusing to flush and close a non-conversation resume point"
+                );
+                return;
+            }
+            let info = transcript_only_session_info(&req, prior.as_ref());
+            if self.registry.register_completing(info.clone()).is_ok() {
+                self.spawn_close_task(run_transcript_only_completion(
+                    info,
+                    prior,
+                    req,
+                    merge_handles,
+                    handles,
+                ));
+                return;
+            }
+        }
+        self.spawn_close_task(retry_close_flush(req, merge_handles, handles));
+    }
+
+    fn spawn_close_task<F>(&self, task: F)
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        residuum_core::util::spawn_in_span(self.close_tasks.track_future(task));
+    }
+
+    fn transcript_only_handles(&self) -> TranscriptOnlyHandles {
+        TranscriptOnlyHandles {
+            registry: Arc::clone(&self.registry),
+            store: Arc::clone(&self.store),
+            publisher: self.publisher.clone(),
+            merges: self.merges.clone(),
+            tz: self.tz,
+        }
+    }
+
+    /// Stop every live session, wait for their runs and any tracked
+    /// conversation close-flush tasks to finish completing and being recorded,
+    /// then wait for every memory merge still running, so a graceful shutdown
+    /// leaves nothing for startup recovery to pick up.
+    ///
+    /// All waits share one `timeout`. A session still live at the deadline
     /// stays `running` in the store, and a merge still running stays
     /// `memory_pending`; each is logged at `warn`, and startup recovery
     /// finishes it on the next boot.
     pub async fn shutdown(&self, timeout: Duration) {
         let deadline = tokio::time::Instant::now() + timeout;
         let signalled = self.registry.stop_all();
-        if signalled > 0 {
+        if signalled > 0 || !self.registry.list_live().is_empty() {
             tracing::info!(sessions = signalled, "stopping live sessions for shutdown");
             if tokio::time::timeout_at(deadline, self.registry.wait_until_empty())
                 .await
@@ -367,7 +490,28 @@ impl SessionRuntime {
                 );
             }
         }
+        self.drain_close_tasks(deadline).await;
         self.merges.drain(deadline).await;
+    }
+
+    async fn drain_close_tasks(&self, deadline: tokio::time::Instant) {
+        self.close_tasks.close();
+        if self.close_tasks.is_empty() {
+            return;
+        }
+        tracing::info!(
+            tasks = self.close_tasks.len(),
+            "waiting for conversation close-flush tasks to finish for shutdown"
+        );
+        if tokio::time::timeout_at(deadline, self.close_tasks.wait())
+            .await
+            .is_err()
+        {
+            tracing::warn!(
+                remaining = self.close_tasks.len(),
+                "shutdown timed out waiting for conversation close-flush tasks"
+            );
+        }
     }
 }
 
@@ -909,16 +1053,14 @@ async fn run_session(
     let mut history = RunHistory::new(std::mem::take(&mut config.carried_history));
     let mut memory = SessionMemory::new();
     let chat_note = chat_session_note(&info);
-    let mut kickoff = initial_kickoff(config, chat_note);
-    // Assigned on the loop's first iteration, which always runs at least
-    // once (the run's initial turn), so both are definitely initialized by
-    // the time anything after the loop reads them.
-    let mut status;
-    let mut summary;
+    let mut next_kickoff = Some(initial_kickoff(config, chat_note));
+    let mut status = AgentResultStatus::Cancelled;
+    let mut summary = String::new();
     // Numbers this run's turns, for the turn ids its turn events carry.
     let mut turn_number: u32 = 0;
+    let mut turn_token = acquire_turn_token(&env.registry, &info, &stop_token);
 
-    loop {
+    while let Some(kickoff) = next_kickoff.take() {
         // Registered and ready for this turn but not necessarily able to
         // start it yet — the permit below may or may not be immediately
         // available. Shown as its own state (rather than leaving the run
@@ -928,32 +1070,38 @@ async fn run_session(
         let first_message = history.messages.len();
         (status, summary) = tokio::select! {
             biased;
-            () = stop_token.cancelled() => {
-                tracing::info!("session stopped before its turn started");
-                (AgentResultStatus::Cancelled, String::new())
+            () = turn_token.cancelled() => {
+                let mut cancel_ctx = QueuedCancelCtx {
+                    info: &info,
+                    resources: resources.as_ref(),
+                    env: &env,
+                    stop_token: &stop_token,
+                    history: &mut history,
+                    turn_number: &mut turn_number,
+                };
+                cancelled_queued_turn(&mut cancel_ctx, kickoff).await
             }
             permit = env.semaphore.acquire() => {
                 match permit {
                     Ok(_permit) => {
                         transition_state(&env.registry, &env.publisher, &info, SessionState::Running).await;
                         turn_number += 1;
-                        let ctx = turn_ctx(&info, resources.as_ref(), &stop_token, &env);
+                        let ctx = turn_ctx(&info, resources.as_ref(), &turn_token, &env);
                         let turn_id = format!("{}-t{turn_number}", info.run_id);
-                        run_turn(&ctx, &turn_id, &mut history.messages, kickoff, &mut interrupt_rx).await
+                        Box::pin(run_turn(
+                            &ctx,
+                            &turn_id,
+                            &mut history.messages,
+                            kickoff,
+                            &mut interrupt_rx,
+                        ))
+                        .await
                     }
-                    Err(_closed) => {
-                        tracing::warn!("concurrency semaphore closed before session could acquire a permit");
-                        (
-                            AgentResultStatus::Failed {
-                                error: "gateway is shutting down".to_string(),
-                                details: None,
-                            },
-                            String::new(),
-                        )
-                    }
+                    Err(_closed) => semaphore_closed_failure(),
                 }
             }
         };
+        env.registry.finish_turn_token(&info.address, &info.run_id);
 
         after_turn(
             &info,
@@ -969,11 +1117,11 @@ async fn run_session(
         )
         .await;
 
-        // A cancelled run — whether stopped before its turn started or
-        // mid-turn — skips lingering idle and goes straight to completing,
-        // per the design: stopping a session moves it straight to
-        // `completing`.
-        if matches!(status, AgentResultStatus::Cancelled) {
+        // Session-level stop skips lingering idle and goes straight to
+        // `completing`. A turn-only cancel (`cancel_current_turn`, where
+        // `stop_token` is still live) returns the session to `Idle` — even on
+        // the run's first turn — so subsequent messages reuse the live run.
+        if matches!(status, AgentResultStatus::Cancelled) && stop_token.is_cancelled() {
             tracing::info!("session stopped, skipping idle and completing directly");
             break;
         }
@@ -983,28 +1131,16 @@ async fn run_session(
             idle_secs = idle_timeout.as_secs(),
             "session idle, awaiting further input or timeout"
         );
-        match wait_idle(&stop_token, idle_timeout, &mut interrupt_rx).await {
-            IdleOutcome::Stopped => {
-                // An explicit stop ends the run early whatever its last turn
-                // did, so report it as cancelled; an idle timeout keeps the
-                // last turn's own outcome.
-                tracing::info!("session stopped while idle");
-                status = AgentResultStatus::Cancelled;
-                break;
-            }
-            IdleOutcome::TimedOut => {
-                tracing::debug!("session idle timeout elapsed");
-                break;
-            }
-            IdleOutcome::Woken(msg) => {
-                tracing::info!(from = %msg.from, "session woken by an agent message, starting another turn");
-                kickoff = TurnKickoff::AgentMessage(msg);
-            }
-            IdleOutcome::WokenExternal(msg) => {
-                tracing::info!(msg_id = %msg.id, "session woken by a conversation message, starting another turn");
-                kickoff = TurnKickoff::External(msg);
-            }
-        }
+        next_kickoff = await_next_kickoff(
+            &info,
+            &env.registry,
+            &stop_token,
+            idle_timeout,
+            &mut interrupt_rx,
+            &mut status,
+            &mut turn_token,
+        )
+        .await;
     }
 
     // The run is genuinely ending now (stopped, or timed out with the race
@@ -1015,7 +1151,7 @@ async fn run_session(
     // once this run has fully left the registry.
     let leftover_messages = drain_pending_interrupts(&mut interrupt_rx);
 
-    finish_run(
+    Box::pin(finish_run(
         &mut info,
         resources.as_ref(),
         RunOutcome {
@@ -1026,8 +1162,169 @@ async fn run_session(
             leftover_messages,
         },
         &env,
-    )
+    ))
     .await;
+}
+
+async fn await_next_kickoff(
+    info: &SessionInfo,
+    registry: &SessionRegistry,
+    stop_token: &CancellationToken,
+    idle_timeout: Duration,
+    interrupt_rx: &mut mpsc::Receiver<Interrupt>,
+    status: &mut AgentResultStatus,
+    turn_token: &mut CancellationToken,
+) -> Option<TurnKickoff> {
+    match wait_idle(stop_token, idle_timeout, interrupt_rx).await {
+        IdleOutcome::Stopped => {
+            // An explicit stop ends the run early whatever its last turn did,
+            // so report it as cancelled; an idle timeout keeps the last turn's
+            // own outcome.
+            tracing::info!("session stopped while idle");
+            *status = AgentResultStatus::Cancelled;
+            None
+        }
+        IdleOutcome::TimedOut => {
+            tracing::debug!("session idle timeout elapsed");
+            None
+        }
+        IdleOutcome::Woken(msg) => {
+            tracing::info!(from = %msg.from, "session woken by an agent message, starting another turn");
+            *turn_token = acquire_turn_token(registry, info, stop_token);
+            Some(TurnKickoff::AgentMessage(msg))
+        }
+        IdleOutcome::WokenExternal(msg) => {
+            tracing::info!(msg_id = %msg.id, "session woken by a conversation message, starting another turn");
+            *turn_token = acquire_turn_token(registry, info, stop_token);
+            Some(TurnKickoff::External(msg))
+        }
+    }
+}
+
+/// Obtain the active per-turn cancellation token registered for `info`,
+/// logging a warning if the registry lookup ever misses.
+fn acquire_turn_token(
+    registry: &SessionRegistry,
+    info: &SessionInfo,
+    stop_token: &CancellationToken,
+) -> CancellationToken {
+    if let Some(token) = registry.acquire_turn_token(&info.address, &info.run_id) {
+        return token;
+    }
+    tracing::warn!(
+        address = %info.address,
+        run_id = %info.run_id,
+        "session missing from registry when acquiring turn token; per-turn cancellation cannot reach this turn"
+    );
+    stop_token.child_token()
+}
+
+/// Failure outcome when the concurrency semaphore closes during shutdown.
+fn semaphore_closed_failure() -> (AgentResultStatus, String) {
+    tracing::warn!("concurrency semaphore closed before session could acquire a permit");
+    (
+        AgentResultStatus::Failed {
+            error: "gateway is shutting down".to_string(),
+            details: None,
+        },
+        String::new(),
+    )
+}
+
+struct QueuedCancelCtx<'a> {
+    info: &'a SessionInfo,
+    resources: Option<&'a SubAgentResources>,
+    env: &'a RunEnv,
+    stop_token: &'a CancellationToken,
+    history: &'a mut RunHistory,
+    turn_number: &'a mut u32,
+}
+
+/// Handle a turn cancelled before acquiring a concurrency permit.
+///
+/// - Per-turn cancel (`!stop_token.is_cancelled()`): records the turn's
+///   kickoff messages and `[Stopped]` note in `history` and the session
+///   transcript, publishes `TurnStarted`, `MessageRead` for every delivered
+///   message, and `TurnEnded`, so no kickoff message is lost or left unread
+///   when the session returns to `Idle`.
+/// - Full session stop (`stop_token.is_cancelled()`): if `kickoff` carries
+///   inbound/woken/resumed messages (or a pending `close_flush` is closing the
+///   conversation), appends those kickoff messages and publishes `MessageRead`
+///   without starting a turn, so deferred resumes and queued wakes are never
+///   silently dropped.
+async fn cancelled_queued_turn(
+    ctx: &mut QueuedCancelCtx<'_>,
+    kickoff: TurnKickoff,
+) -> (AgentResultStatus, String) {
+    tracing::info!("session stopped before its turn started");
+    if !ctx.stop_token.is_cancelled() {
+        *ctx.turn_number += 1;
+        let turn_id = format!("{}-t{}", ctx.info.run_id, *ctx.turn_number);
+        publish_session_event(
+            &ctx.env.publisher,
+            &ctx.info.address,
+            &ctx.info.run_id,
+            SessionEventKind::TurnStarted {
+                turn_id: turn_id.clone(),
+            },
+        )
+        .await;
+        if let Some(res) = ctx.resources {
+            res.hop_counter.set(kickoff.hop_count());
+        }
+        let delivered = kickoff.delivered_messages().to_vec();
+        let mut messages = kickoff.into_messages();
+        messages.push(residuum_inference::Message::system(
+            residuum_agent::turn::STOP_NOTE,
+        ));
+        ctx.history.messages.extend(messages.clone());
+        ctx.env
+            .store
+            .append_transcript(&ctx.info.run_id, ctx.info.started_at, &messages)
+            .await;
+        for msg in &delivered {
+            publish_session_event(
+                &ctx.env.publisher,
+                &ctx.info.address,
+                &ctx.info.run_id,
+                msg.read_event(&turn_id),
+            )
+            .await;
+        }
+        publish_session_event(
+            &ctx.env.publisher,
+            &ctx.info.address,
+            &ctx.info.run_id,
+            SessionEventKind::TurnEnded { turn_id },
+        )
+        .await;
+        return (AgentResultStatus::Cancelled, String::new());
+    }
+
+    let has_flush = ctx
+        .env
+        .registry
+        .has_close_flush(&ctx.info.address, &ctx.info.run_id);
+    if kickoff.carries_inbound_messages(&ctx.info.trigger) || has_flush {
+        let turn_id = format!("{}-t{}", ctx.info.run_id, *ctx.turn_number + 1);
+        let delivered = kickoff.delivered_messages().to_vec();
+        let messages = kickoff.into_messages();
+        ctx.history.messages.extend(messages.clone());
+        ctx.env
+            .store
+            .append_transcript(&ctx.info.run_id, ctx.info.started_at, &messages)
+            .await;
+        for msg in &delivered {
+            publish_session_event(
+                &ctx.env.publisher,
+                &ctx.info.address,
+                &ctx.info.run_id,
+                msg.read_event(&turn_id),
+            )
+            .await;
+        }
+    }
+    (AgentResultStatus::Cancelled, String::new())
 }
 
 /// Drain every agent message or conversation message still queued in a run's
@@ -1075,19 +1372,30 @@ async fn finish_run(
     env: &RunEnv,
 ) {
     let RunOutcome {
-        status,
-        summary,
+        mut status,
+        mut summary,
         memory,
-        history,
+        mut history,
         leftover_messages,
     } = outcome;
 
+    let close_flush = env.registry.begin_completing(&info.address, &info.run_id);
     info.state = SessionState::Completing;
-    transition_state(
-        &env.registry,
+    publish_session_event(
         &env.publisher,
+        &info.address,
+        &info.run_id,
+        SessionEventKind::StateChanged(SessionState::Completing),
+    )
+    .await;
+
+    let flushed = apply_close_flush(
         info,
-        SessionState::Completing,
+        close_flush,
+        &env.store,
+        &mut history,
+        &mut status,
+        &mut summary,
     )
     .await;
 
@@ -1097,12 +1405,16 @@ async fn finish_run(
     // record. A stopped run merges like any other — stopping is not
     // discarding.
     let merge = resources.map(|res| {
+        let mut handles = res.merge_handles();
+        if flushed {
+            handles.episode_skip_token_floor = 0;
+        }
         CompletionMerge::for_run(
             info,
             summary.clone(),
             owned_transcript(&history.own_timed()),
             memory,
-            res.merge_handles(),
+            handles,
             env.tz,
         )
     });
@@ -1152,23 +1464,261 @@ async fn finish_run(
     }
 
     if !leftover_messages.is_empty() {
-        tracing::warn!(
+        resume_leftovers(info, &point, &leftover_messages, env).await;
+    }
+}
+
+/// Shared handles for recording a transcript-only completion run.
+struct TranscriptOnlyHandles {
+    registry: Arc<SessionRegistry>,
+    store: Arc<SessionStore>,
+    publisher: Publisher,
+    merges: MergeTasks,
+    tz: chrono_tz::Tz,
+}
+
+fn transcript_only_session_info(
+    req: &ConversationCloseFlush,
+    prior: Option<&ResumePoint>,
+) -> SessionInfo {
+    let preview = req.flush.user_content.as_deref().unwrap_or_default();
+    let trigger = prior.map_or(EventTrigger::Conversation, |p| p.trigger.clone());
+    let source_label = if req.source_label.is_empty() {
+        prior.map(|p| p.source_label.clone()).unwrap_or_default()
+    } else {
+        req.source_label.clone()
+    };
+    SessionInfo {
+        address: req.address.clone(),
+        run_id: generate_run_id(),
+        category: SessionCategory::from_trigger(&trigger),
+        trigger,
+        source_label,
+        state: SessionState::Completing,
+        spawner: prior.and_then(|p| p.spawner.clone()),
+        depth: prior.map_or(residuum_bus::session::MAIN_DEPTH + 1, |p| p.depth),
+        purpose: truncate_prompt_preview(preview),
+        agent_skill: prior.and_then(|p| p.agent_skill.clone()),
+        model: prior.map_or(residuum_config::ModelSelector::MAIN, |p| p.model.clone()),
+        resolved_model: None,
+        conversation_target: req
+            .conversation_target
+            .clone()
+            .or_else(|| prior.and_then(|p| p.conversation_target.clone())),
+        started_at: Utc::now(),
+        usage: residuum_bus::usage::SessionUsageTotals::default(),
+        overlap: None,
+    }
+}
+
+async fn apply_close_flush(
+    info: &SessionInfo,
+    close_flush: Option<SessionCloseFlush>,
+    store: &SessionStore,
+    history: &mut RunHistory,
+    status: &mut AgentResultStatus,
+    summary: &mut String,
+) -> bool {
+    let Some(flush) = close_flush else {
+        return false;
+    };
+    if let Some(user_text) = flush.user_content.filter(|s| !s.trim().is_empty()) {
+        let pair = vec![
+            residuum_inference::Message::user(user_text),
+            residuum_inference::Message::assistant(flush.assistant_note.clone(), None),
+        ];
+        store
+            .append_transcript(&info.run_id, info.started_at, &pair)
+            .await;
+        history.messages.extend(pair);
+        *summary = flush.assistant_note;
+    } else if summary.is_empty() {
+        *summary = flush.assistant_note;
+    }
+    *status = AgentResultStatus::Completed;
+    true
+}
+
+async fn resume_leftovers(
+    info: &SessionInfo,
+    point: &ResumePoint,
+    leftover_messages: &[PendingInput],
+    env: &RunEnv,
+) {
+    tracing::warn!(
+        address = %info.address,
+        count = leftover_messages.len(),
+        "message(s) arrived as the run was tearing down; resuming the session as a new run to deliver them"
+    );
+    if let Err(e) = env
+        .messenger
+        .resume_with_pending(&info.address, point, leftover_messages)
+        .await
+    {
+        tracing::error!(
             address = %info.address,
-            count = leftover_messages.len(),
-            "message(s) arrived as the run was tearing down; resuming the session as a new run to deliver them"
+            error = %e,
+            "failed to resume session to deliver messages queued at teardown"
         );
-        if let Err(e) = env
-            .messenger
-            .resume_with_pending(&info.address, &point, &leftover_messages)
-            .await
+    }
+}
+
+/// Bounded retry loop for closing a conversation when it was `Completing` or
+/// when another run raced onto `req.address` ahead of `register_completing`.
+async fn retry_close_flush(
+    req: ConversationCloseFlush,
+    merge_handles: MergeHandles,
+    handles: TranscriptOnlyHandles,
+) {
+    const MAX_ATTEMPTS: usize = 8;
+
+    for _attempt in 0..MAX_ATTEMPTS {
+        match handles
+            .registry
+            .stop_with_flush(&req.address, req.flush.clone())
         {
-            tracing::error!(
-                address = %info.address,
-                error = %e,
-                "failed to resume session to deliver messages queued at teardown"
-            );
+            StopWithFlushOutcome::StoppedLive => return,
+            StopWithFlushOutcome::NotConversation => {
+                tracing::warn!(
+                    address = %req.address,
+                    "refusing to flush and close a non-conversation session"
+                );
+                return;
+            }
+            StopWithFlushOutcome::Completing => {
+                handles.registry.wait_until_clear(&req.address).await;
+            }
+            StopWithFlushOutcome::NotLive => {
+                let prior = handles.registry.resume_point(&req.address);
+                if let Some(ref p) = prior
+                    && !matches!(p.trigger, EventTrigger::Conversation)
+                {
+                    tracing::warn!(
+                        address = %req.address,
+                        trigger = p.trigger.as_str(),
+                        "refusing to flush and close a non-conversation resume point"
+                    );
+                    return;
+                }
+                let info = transcript_only_session_info(&req, prior.as_ref());
+                if handles.registry.register_completing(info.clone()).is_ok() {
+                    run_transcript_only_completion(info, prior, req, merge_handles, handles).await;
+                    return;
+                }
+            }
         }
     }
+
+    tracing::warn!(
+        address = %req.address,
+        attempts = MAX_ATTEMPTS,
+        dropped_chars = req.flush.user_content.as_ref().map_or(0, String::len),
+        "exhausted retries trying to flush and close conversation session; unseen tail was not recorded"
+    );
+}
+
+async fn run_transcript_only_completion(
+    info: SessionInfo,
+    prior: Option<ResumePoint>,
+    req: ConversationCloseFlush,
+    merge_handles: MergeHandles,
+    handles: TranscriptOnlyHandles,
+) {
+    publish_session_event(
+        &handles.publisher,
+        &info.address,
+        &info.run_id,
+        SessionEventKind::Started(Box::new(info.clone())),
+    )
+    .await;
+    handles.store.begin_run(&info).await;
+
+    let user_content = req.flush.user_content.unwrap_or_default();
+    let assistant_note = req.flush.assistant_note;
+    let tail_messages = vec![
+        residuum_inference::Message::user(user_content),
+        residuum_inference::Message::assistant(assistant_note.clone(), None),
+    ];
+    let mut stored_transcript =
+        Vec::with_capacity(tail_messages.len() + usize::from(prior.is_some()));
+    if let Some(ref prior_point) = prior {
+        stored_transcript.push(
+            residuum_inference::Message::user(super::messaging::pointer_note(prior_point))
+                .as_context(),
+        );
+    }
+    stored_transcript.extend(tail_messages.clone());
+    handles
+        .store
+        .append_transcript(&info.run_id, info.started_at, &stored_transcript)
+        .await;
+
+    let now = Utc::now();
+    let lines: Vec<TranscriptLine> = tail_messages
+        .into_iter()
+        .map(|message| TranscriptLine {
+            message,
+            recorded_at: Some(now),
+        })
+        .collect();
+    let merge = CompletionMerge::for_run(
+        &info,
+        assistant_note.clone(),
+        lines,
+        SessionMemory::new(),
+        merge_handles,
+        handles.tz,
+    );
+
+    if prior.is_some() {
+        handles
+            .registry
+            .record_resume_point(&info.address, resume_point(&info))
+            .await;
+    }
+
+    let status = AgentResultStatus::Completed;
+    let transcript_path = handles
+        .store
+        .complete_run(
+            &info,
+            SessionState::Completed.as_str(),
+            &status,
+            stored_transcript,
+            true,
+        )
+        .await;
+
+    let event = build_result_event(
+        &info,
+        status.clone(),
+        assistant_note,
+        transcript_path,
+        handles.tz,
+    );
+    if let Err(e) = handles.publisher.publish(topics::Background, event).await {
+        tracing::warn!(error = %e, "failed to publish transcript-only session result to bus");
+    }
+
+    handles.registry.remove(&info.address, &info.run_id);
+    publish_session_event(
+        &handles.publisher,
+        &info.address,
+        &info.run_id,
+        SessionEventKind::Completed {
+            status,
+            memory_pending: true,
+        },
+    )
+    .await;
+
+    spawn_memory_merge(
+        &handles.merges,
+        merge,
+        info,
+        Arc::clone(&handles.store),
+        handles.publisher,
+    );
 }
 
 /// Build a [`SessionMemoryEnv`] borrowing from a run's [`SubAgentResources`],
@@ -5388,5 +5938,901 @@ mod tests {
             |info| info.state == SessionState::Running || info.state == SessionState::Idle,
         )
         .await;
+    }
+
+    fn long_idle_runtime(max_concurrent: usize) -> (SessionRuntime, residuum_bus::BusHandle) {
+        let bus_handle = residuum_bus::spawn_broker();
+        let registry = Arc::new(SessionRegistry::new());
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = dir.path().to_path_buf();
+        let store = Arc::new(SessionStore::new(dir_path.clone()).with_tempdir_guard(dir));
+        let messenger = Arc::new(AgentMessenger::new(
+            Arc::clone(&registry),
+            bus_handle.publisher(),
+            Arc::clone(&store),
+            residuum_agent::hop::HopLimits { soft: 8, hard: 32 },
+        ));
+        let runtime = SessionRuntime::new(
+            registry,
+            store,
+            Arc::new(tokio::sync::Semaphore::new(max_concurrent)),
+            IdleTimeouts {
+                scheduled: Duration::from_secs(30),
+                spawned: Duration::from_secs(30),
+                external: Duration::from_secs(30),
+                artifact: Duration::from_secs(30),
+            },
+            SessionRuntimeHandles {
+                publisher: bus_handle.publisher(),
+                tz: chrono_tz::UTC,
+                messenger,
+                checkpoints: test_checkpoints(&dir_path),
+                tracing_service: test_tracing_service(),
+                tracing_client_context: test_tracing_client_context(),
+            },
+        );
+        (runtime, bus_handle)
+    }
+
+    #[tokio::test]
+    async fn cancel_current_turn_cancels_active_turn_and_returns_session_to_idle_for_next_turn() {
+        let (runtime, bus_handle) = long_idle_runtime(2);
+        let mut events: residuum_bus::Subscriber<residuum_bus::SessionEvent> =
+            bus_handle.subscribe(topics::Sessions).await.unwrap();
+
+        let address = SessionAddress::from("external-cancel-turn-0001");
+        let gate = Gate::closed("first turn model call");
+        runtime.spawn(
+            sample_request(address.as_ref()),
+            Some(make_gated_resources("turn two ok", &gate)),
+        );
+        wait_for(&runtime, &address, "session to reach running", |info| {
+            info.state == SessionState::Running
+        })
+        .await;
+        gate.until_held(1).await;
+        let run_id = runtime.registry.get(&address).unwrap().run_id;
+
+        assert!(
+            runtime.registry.cancel_current_turn(&address),
+            "active running turn must be cancellable"
+        );
+        wait_for(
+            &runtime,
+            &address,
+            "session to return to idle after turn-only cancel",
+            |info| info.state == SessionState::Idle,
+        )
+        .await;
+        assert_eq!(
+            runtime.registry.get(&address).unwrap().run_id,
+            run_id,
+            "turn-only cancel must keep the same live run"
+        );
+
+        gate.open_all();
+        assert_eq!(
+            runtime.registry.deliver(
+                &address,
+                Interrupt::AgentMessage(AgentMessageEvent::new(
+                    SessionAddress::from(MAIN_ADDRESS),
+                    "main",
+                    "follow up",
+                    0,
+                )),
+            ),
+            DeliverOutcome::Delivered
+        );
+
+        loop {
+            let ev = next_event("second turn response", &mut events).await;
+            if ev.address == address
+                && let SessionEventKind::Response { content, .. } = ev.kind
+            {
+                assert_eq!(ev.run_id, run_id, "follow-up runs on the same session run");
+                assert_eq!(content, "turn two ok");
+                break;
+            }
+        }
+
+        assert!(runtime.registry.stop(&address));
+        runtime.shutdown(Duration::from_secs(5)).await;
+    }
+
+    fn assert_queued_cancel_history(calls: &std::sync::Mutex<Vec<Vec<String>>>) {
+        let recorded = calls.lock().unwrap();
+        assert_eq!(
+            recorded.len(),
+            2,
+            "model runs for turn 1 and turn 3 only (turn 2 was cancelled while queued)"
+        );
+        let turn_3_prompt = recorded.last().unwrap();
+        assert!(
+            turn_3_prompt.iter().any(|m| m.contains("queued turn 2")),
+            "subsequent turn's history must retain the cancelled queued kickoff: {turn_3_prompt:?}"
+        );
+        assert!(
+            turn_3_prompt
+                .iter()
+                .any(|m| m.contains(residuum_agent::turn::STOP_NOTE)),
+            "subsequent turn's history must retain the stop note: {turn_3_prompt:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_current_turn_while_queued_keeps_established_session_idle() {
+        let (runtime, bus_handle) = long_idle_runtime(1);
+        let mut events: residuum_bus::Subscriber<residuum_bus::SessionEvent> =
+            bus_handle.subscribe(topics::Sessions).await.unwrap();
+
+        let target = SessionAddress::from("external-queued-cancel-0001");
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut resources = make_resources("unused");
+        resources.provider = Box::new(RecordingProvider {
+            response: "reply ok".to_string(),
+            calls: Arc::clone(&calls),
+        });
+        runtime.spawn(sample_request(target.as_ref()), Some(resources));
+        wait_for(&runtime, &target, "target idle after t1", |info| {
+            info.state == SessionState::Idle
+        })
+        .await;
+        let run_id = runtime.registry.get(&target).unwrap().run_id;
+
+        let blocker = SessionAddress::from("spawned-blocker-0001");
+        let gate = Gate::closed("blocker holding sole permit");
+        runtime.spawn(
+            sample_request(blocker.as_ref()),
+            Some(make_gated_resources("blocker done", &gate)),
+        );
+        gate.until_held(1).await;
+
+        assert_eq!(
+            runtime.registry.deliver(
+                &target,
+                Interrupt::AgentMessage(owner_message("msg-queued-t2", "queued turn 2")),
+            ),
+            DeliverOutcome::Delivered
+        );
+        wait_for(&runtime, &target, "target queued behind blocker", |info| {
+            info.state == SessionState::Queued
+        })
+        .await;
+
+        assert!(runtime.registry.cancel_current_turn(&target));
+        wait_for(
+            &runtime,
+            &target,
+            "target idle after queued cancel",
+            |info| info.state == SessionState::Idle,
+        )
+        .await;
+        assert_eq!(runtime.registry.get(&target).unwrap().run_id, run_id);
+
+        gate.open_all();
+        wait_for(&runtime, &blocker, "blocker to release permit", |info| {
+            info.state == SessionState::Idle
+        })
+        .await;
+
+        assert_eq!(
+            runtime.registry.deliver(
+                &target,
+                Interrupt::AgentMessage(owner_message("msg-t3", "turn 3 after queued cancel")),
+            ),
+            DeliverOutcome::Delivered
+        );
+        let mut saw_t2_read = false;
+        let mut saw_t3 = false;
+        while !saw_t3 {
+            let ev = next_event("turn 3 response", &mut events).await;
+            if ev.address == target {
+                if let Some((id, turn_id)) = read_of(&ev.kind)
+                    && id == "msg-queued-t2"
+                {
+                    assert!(turn_id.ends_with("-t2"), "got {turn_id}");
+                    saw_t2_read = true;
+                }
+                if let SessionEventKind::Response { turn_id, content } = ev.kind
+                    && turn_id.ends_with("-t3")
+                {
+                    assert_eq!(content, "reply ok");
+                    saw_t3 = true;
+                }
+            }
+        }
+        assert!(
+            saw_t2_read,
+            "cancelled queued turn must publish MessageRead"
+        );
+        assert_queued_cancel_history(&calls);
+
+        assert!(runtime.registry.stop(&target));
+        runtime.shutdown(Duration::from_secs(5)).await;
+        let (record, _) = runtime.store.read_run(&run_id).await.unwrap().unwrap();
+        assert!(
+            record
+                .transcript
+                .iter()
+                .any(|m| m.content.contains("queued turn 2")),
+            "persisted RunRecord transcript must include the cancelled queued message"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_current_turn_on_first_turn_and_post_deliver_idle_window_preserve_idle_session()
+    {
+        let (runtime, bus_handle) = long_idle_runtime(1);
+        let mut events: residuum_bus::Subscriber<residuum_bus::SessionEvent> =
+            bus_handle.subscribe(topics::Sessions).await.unwrap();
+
+        let blocker = SessionAddress::from("spawned-blocker-first-turn");
+        let gate = Gate::closed("blocker holding sole permit");
+        runtime.spawn(
+            sample_request(blocker.as_ref()),
+            Some(make_gated_resources("blocker done", &gate)),
+        );
+        gate.until_held(1).await;
+
+        // First-turn (`turn_number == 0`) cancel while queued must transition
+        // to `Idle` rather than ending the session as `Cancelled`.
+        let target = SessionAddress::from("external-first-turn-cancel-0001");
+        runtime.spawn(
+            crate::testing::sample_conversation_request(target.as_ref()),
+            Some(make_resources("turn 2 answer")),
+        );
+        wait_for(&runtime, &target, "target queued on initial turn", |info| {
+            info.state == SessionState::Queued
+        })
+        .await;
+        let run_id = runtime.registry.get(&target).unwrap().run_id;
+        assert!(
+            runtime.registry.cancel_current_turn(&target),
+            "initial queued turn must be cancellable"
+        );
+        wait_for(
+            &runtime,
+            &target,
+            "target transitions to Idle rather than Cancelled on turn 0 cancel",
+            |info| info.state == SessionState::Idle,
+        )
+        .await;
+
+        // Post-`deliver` while still `Idle`: cancelling immediately after
+        // `deliver` (before `run_session` wakes) must return `true` and cancel
+        // that queued wake cleanly.
+        assert_eq!(
+            runtime.registry.deliver(
+                &target,
+                Interrupt::AgentMessage(owner_message("msg-post-deliver", "woken while idle")),
+            ),
+            DeliverOutcome::Delivered
+        );
+        assert!(
+            runtime.registry.cancel_current_turn(&target),
+            "cancel_current_turn immediately after deliver while Idle must succeed"
+        );
+
+        gate.open_all();
+        let mut saw_post_deliver_read = false;
+        while !saw_post_deliver_read {
+            let ev = next_event("MessageRead for post-deliver cancelled wake", &mut events).await;
+            if ev.address == target
+                && let Some((id, _)) = read_of(&ev.kind)
+                && id == "msg-post-deliver"
+            {
+                saw_post_deliver_read = true;
+            }
+        }
+        wait_for(
+            &runtime,
+            &target,
+            "target returns to Idle after unwinding post-deliver wake",
+            |info| info.state == SessionState::Idle,
+        )
+        .await;
+        assert_eq!(
+            runtime.registry.get(&target).unwrap().run_id,
+            run_id,
+            "same run stays live across both cancellations"
+        );
+
+        assert!(runtime.registry.stop(&target));
+        runtime.shutdown(Duration::from_secs(5)).await;
+        let (record, _) = runtime.store.read_run(&run_id).await.unwrap().unwrap();
+        assert!(
+            record
+                .transcript
+                .iter()
+                .any(|m| m.content.contains("can you check the build?")),
+            "initial cancelled turn's kickoff must be recorded in transcript"
+        );
+        assert!(
+            record
+                .transcript
+                .iter()
+                .any(|m| m.content.contains("woken while idle")),
+            "post-deliver cancelled wake must be recorded in transcript"
+        );
+    }
+
+    struct TwoToolBatchThenTextProvider {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait]
+    impl residuum_inference::InferenceProvider for TwoToolBatchThenTextProvider {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _options: &CompletionOptions,
+        ) -> Result<InferenceResponse, InferenceError> {
+            if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                Ok(InferenceResponse::new(
+                    String::new(),
+                    vec![
+                        residuum_inference::ToolCall {
+                            id: "call-1".to_string(),
+                            name: "blocking_tool".to_string(),
+                            arguments: serde_json::json!({}),
+                            server: None,
+                        },
+                        residuum_inference::ToolCall {
+                            id: "call-2".to_string(),
+                            name: "blocking_tool".to_string(),
+                            arguments: serde_json::json!({}),
+                            server: None,
+                        },
+                    ],
+                ))
+            } else {
+                Ok(InferenceResponse::new(
+                    "recovered on turn 2".to_string(),
+                    vec![],
+                ))
+            }
+        }
+
+        fn model_name(&self) -> &'static str {
+            "two-tool-batch-then-text"
+        }
+    }
+
+    #[tokio::test]
+    async fn cancel_current_turn_mid_tool_call_keeps_transcript_consistent_across_next_turn() {
+        let (runtime, bus_handle) = long_idle_runtime(2);
+        let mut events: residuum_bus::Subscriber<residuum_bus::SessionEvent> =
+            bus_handle.subscribe(topics::Sessions).await.unwrap();
+
+        let tool_gate = Gate::closed("mid-turn blocking tool");
+        let mut resources = resources_with_provider(Box::new(TwoToolBatchThenTextProvider {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        }));
+        resources
+            .tools
+            .register(Box::new(residuum_agent::testing::BlockingTool::new(
+                &tool_gate,
+            )));
+
+        let address = SessionAddress::from("external-mid-tool-cancel-0001");
+        runtime.spawn(sample_request(address.as_ref()), Some(resources));
+        tool_gate.until_held(1).await;
+        let run_id = runtime.registry.get(&address).unwrap().run_id;
+
+        assert!(
+            runtime.registry.cancel_current_turn(&address),
+            "running turn inside blocking tool must cancel"
+        );
+        wait_for(
+            &runtime,
+            &address,
+            "session returns to Idle after mid-tool cancellation",
+            |info| info.state == SessionState::Idle,
+        )
+        .await;
+
+        assert_eq!(
+            runtime.registry.deliver(
+                &address,
+                Interrupt::AgentMessage(owner_message("msg-followup", "try plain answer")),
+            ),
+            DeliverOutcome::Delivered
+        );
+        loop {
+            let ev = next_event("turn 2 response after mid-tool cancel", &mut events).await;
+            if ev.address == address
+                && let SessionEventKind::Response { content, .. } = ev.kind
+            {
+                assert_eq!(content, "recovered on turn 2");
+                break;
+            }
+        }
+
+        assert!(runtime.registry.stop(&address));
+        runtime.shutdown(Duration::from_secs(5)).await;
+
+        let (record, _) = runtime.store.read_run(&run_id).await.unwrap().unwrap();
+        let roles_and_ids: Vec<(residuum_inference::Role, Option<&str>)> = record
+            .transcript
+            .iter()
+            .map(|m| (m.role, m.tool_call_id.as_deref()))
+            .collect();
+        assert_eq!(
+            roles_and_ids,
+            vec![
+                (residuum_inference::Role::User, None),
+                (residuum_inference::Role::Assistant, None),
+                (residuum_inference::Role::Tool, Some("call-1")),
+                (residuum_inference::Role::Tool, Some("call-2")),
+                (residuum_inference::Role::System, None),
+                (residuum_inference::Role::User, None),
+                (residuum_inference::Role::Assistant, None),
+            ],
+            "cancelled batch must record both tool results + STOP_NOTE before turn 2: {:?}",
+            record.transcript
+        );
+    }
+
+    #[tokio::test]
+    async fn flush_and_close_conversation_during_running_turn_aborts_turn_and_completes_with_tail()
+    {
+        let (runtime, bus_handle) = long_idle_runtime(2);
+        let mut events: residuum_bus::Subscriber<residuum_bus::SessionEvent> =
+            bus_handle.subscribe(topics::Sessions).await.unwrap();
+
+        let address = SessionAddress::from("external-flush-running-0001");
+        let turn_gate = Gate::closed("in-flight model call");
+        let obs_gate = Gate::open("observer");
+        let mut resources = make_gated_resources("never finishes", &turn_gate);
+        resources.observer = Arc::new(residuum_memory::observer::Observer::new(
+            Box::new(GatedProvider::new(&obs_gate, GATED_OBSERVER_RESPONSE)),
+            residuum_memory::observer::ObserverConfig::default(),
+        ));
+        resources.episode_skip_token_floor = 100_000;
+        let merge_handles = resources.merge_handles();
+
+        runtime.spawn(
+            crate::testing::sample_conversation_request(address.as_ref()),
+            Some(resources),
+        );
+        turn_gate.until_held(1).await;
+        let run_id = runtime.registry.get(&address).unwrap().run_id;
+
+        runtime.flush_and_close_conversation(
+            ConversationCloseFlush {
+                address: address.clone(),
+                source_label: "discord:#builds".to_string(),
+                conversation_target: None,
+                flush: SessionCloseFlush {
+                    user_content: Some("unseen closing transcript tail".to_string()),
+                    assistant_note: "conversation closed".to_string(),
+                },
+            },
+            || merge_handles,
+        );
+
+        loop {
+            let ev = next_event("completed event after running flush", &mut events).await;
+            if ev.address == address
+                && let SessionEventKind::Completed {
+                    status,
+                    memory_pending,
+                } = ev.kind
+            {
+                assert!(
+                    matches!(status, AgentResultStatus::Completed),
+                    "flush during running turn closes run as Completed, got {status:?}"
+                );
+                assert!(memory_pending, "merge task must be scheduled");
+                break;
+            }
+        }
+        let episode_id = next_memory_merged(&mut events).await;
+        assert!(
+            episode_id.is_some(),
+            "close flush must bypass token floor and merge an episode"
+        );
+        runtime.shutdown(Duration::from_secs(5)).await;
+
+        let (record, _) = runtime.store.read_run(&run_id).await.unwrap().unwrap();
+        assert!(
+            record
+                .transcript
+                .iter()
+                .any(|m| m.content.contains(residuum_agent::turn::STOP_NOTE)),
+            "aborted in-flight turn records STOP_NOTE before the flushed tail"
+        );
+        assert!(
+            record
+                .transcript
+                .iter()
+                .any(|m| m.content.contains("unseen closing transcript tail")),
+            "flushed tail is appended to the completed run's transcript"
+        );
+    }
+
+    #[tokio::test]
+    async fn flush_and_close_with_no_prior_run_leaves_resume_point_absent() {
+        let (runtime, bus_handle) = long_idle_runtime(2);
+        let mut events: residuum_bus::Subscriber<residuum_bus::SessionEvent> =
+            bus_handle.subscribe(topics::Sessions).await.unwrap();
+
+        let (layout, _noop_observer, merge_writer) = test_memory_extras();
+        let obs_gate = Gate::open("transcript-only observer");
+        let observer = Arc::new(residuum_memory::observer::Observer::new(
+            Box::new(GatedProvider::new(&obs_gate, GATED_OBSERVER_RESPONSE)),
+            residuum_memory::observer::ObserverConfig::default(),
+        ));
+
+        let fresh_addr = SessionAddress::from("external-silent-attendee-0001");
+        runtime.flush_and_close_conversation(
+            ConversationCloseFlush {
+                address: fresh_addr.clone(),
+                source_label: "conversation:silent".to_string(),
+                conversation_target: None,
+                flush: SessionCloseFlush {
+                    user_content: Some("full unseen conversation transcript".to_string()),
+                    assistant_note: "conversation closed".to_string(),
+                },
+            },
+            || MergeHandles {
+                observer: Arc::clone(&observer),
+                merge_writer: Arc::clone(&merge_writer),
+                layout: layout.clone(),
+                episode_skip_token_floor: 0,
+            },
+        );
+        let episode_id = next_memory_merged(&mut events).await;
+        assert!(episode_id.is_some(), "silent attendee tail must merge");
+        assert!(
+            runtime.registry.resume_point(&fresh_addr).is_none(),
+            "transcript-only run on an address with no prior run must not invent a resume point"
+        );
+        runtime.shutdown(Duration::from_secs(5)).await;
+    }
+
+    #[tokio::test]
+    async fn flush_and_close_inherits_existing_resume_point_and_chains_run_pointer() {
+        let (runtime, bus_handle) = long_idle_runtime(2);
+        let mut events: residuum_bus::Subscriber<residuum_bus::SessionEvent> =
+            bus_handle.subscribe(topics::Sessions).await.unwrap();
+
+        let (layout, _noop_observer, merge_writer) = test_memory_extras();
+        let obs_gate = Gate::open("transcript-only observer");
+        let observer = Arc::new(residuum_memory::observer::Observer::new(
+            Box::new(GatedProvider::new(&obs_gate, GATED_OBSERVER_RESPONSE)),
+            residuum_memory::observer::ObserverConfig::default(),
+        ));
+
+        let resumed_addr = SessionAddress::from("external-prior-point-0002");
+        let target = ConversationTarget {
+            endpoint: "discord".to_string(),
+            conversation_id: "chan-9".to_string(),
+        };
+        runtime
+            .registry
+            .record_resume_point(
+                &resumed_addr,
+                ResumePoint {
+                    previous_run_id: "run-prior-42".to_string(),
+                    trigger: EventTrigger::Conversation,
+                    source_label: "discord:#ops".to_string(),
+                    agent_skill: Some(SkillName::from("incident-commander")),
+                    model: residuum_config::ModelSelector::MEDIUM,
+                    spawner: Some(SessionAddress::from("spawned-coord-1")),
+                    depth: 2,
+                    conversation_target: Some(target.clone()),
+                    recorded_at: Utc::now(),
+                },
+            )
+            .await;
+
+        runtime.flush_and_close_conversation(
+            ConversationCloseFlush {
+                address: resumed_addr.clone(),
+                source_label: "discord:#ops".to_string(),
+                conversation_target: None,
+                flush: SessionCloseFlush {
+                    user_content: Some("late closing messages".to_string()),
+                    assistant_note: "archived".to_string(),
+                },
+            },
+            || MergeHandles {
+                observer: Arc::clone(&observer),
+                merge_writer: Arc::clone(&merge_writer),
+                layout: layout.clone(),
+                episode_skip_token_floor: 0,
+            },
+        );
+        let merged_ep = next_memory_merged(&mut events).await;
+        assert!(merged_ep.is_some(), "resumed address tail must merge");
+
+        let updated = runtime
+            .registry
+            .resume_point(&resumed_addr)
+            .expect("existing resume point must be preserved");
+        assert_eq!(updated.model, residuum_config::ModelSelector::MEDIUM);
+        assert_eq!(
+            updated.agent_skill,
+            Some(SkillName::from("incident-commander"))
+        );
+        assert_eq!(
+            updated.spawner,
+            Some(SessionAddress::from("spawned-coord-1"))
+        );
+        assert_eq!(updated.depth, 2);
+        assert_eq!(updated.conversation_target, Some(target));
+        assert_ne!(updated.previous_run_id, "run-prior-42");
+
+        let (tail_record, _) = runtime
+            .store
+            .read_run(&updated.previous_run_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let first_msg = tail_record
+            .transcript
+            .first()
+            .expect("transcript non-empty");
+        assert!(
+            first_msg.context && first_msg.content.contains("run-prior-42"),
+            "transcript-only run chains a context pointer back to run-prior-42: {first_msg:?}"
+        );
+        runtime.shutdown(Duration::from_secs(5)).await;
+    }
+
+    #[tokio::test]
+    async fn flush_and_close_waits_for_completing_serializes_concurrent_flushes_and_tracks_shutdown()
+     {
+        let (runtime, _bus_handle) = long_idle_runtime(2);
+        let (layout, _noop_observer, merge_writer) = test_memory_extras();
+        let obs_gate = Gate::closed("transcript-only observer");
+        let observer = Arc::new(residuum_memory::observer::Observer::new(
+            Box::new(GatedProvider::new(&obs_gate, GATED_OBSERVER_RESPONSE)),
+            residuum_memory::observer::ObserverConfig::default(),
+        ));
+
+        let address = SessionAddress::from("external-completing-race-0001");
+        let mut completing = conversation_winner_info(&address, "run-completing");
+        completing.state = SessionState::Completing;
+        runtime
+            .registry
+            .register(completing, CancellationToken::new())
+            .unwrap();
+
+        for (tail, note) in [
+            ("first unseen tail", "closed 1"),
+            ("second unseen tail", "closed 2"),
+        ] {
+            let observer = Arc::clone(&observer);
+            let merge_writer = Arc::clone(&merge_writer);
+            let layout = layout.clone();
+            runtime.flush_and_close_conversation(
+                ConversationCloseFlush {
+                    address: address.clone(),
+                    source_label: "discord:#builds".to_string(),
+                    conversation_target: None,
+                    flush: SessionCloseFlush {
+                        user_content: Some(tail.to_string()),
+                        assistant_note: note.to_string(),
+                    },
+                },
+                move || MergeHandles {
+                    observer,
+                    merge_writer,
+                    layout,
+                    episode_skip_token_floor: 0,
+                },
+            );
+        }
+
+        // Release the in-flight Completing run; both queued flushes wake and
+        // serialize cleanly without dropping either tail.
+        runtime.registry.remove(&address, "run-completing");
+        obs_gate.until_held(1).await;
+
+        let shutdown = runtime.shutdown(wait::HANG_GUARD * 2);
+        tokio::pin!(shutdown);
+        assert!(
+            shutdown.as_mut().now_or_never().is_none(),
+            "shutdown must wait for tracked close-flush tasks and their merges"
+        );
+
+        obs_gate.open_all();
+        wait::guarded("shutdown to finish both close-flush merges", shutdown).await;
+
+        let runs = runtime
+            .store
+            .list_completed_runs(
+                crate::store::RunFilter {
+                    address: Some(address.as_ref()),
+                    ..Default::default()
+                },
+                None,
+                10,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            runs.runs.len(),
+            2,
+            "neither concurrent close-flush tail may be dropped"
+        );
+        let mut all_text = String::new();
+        for header in &runs.runs {
+            let (full, _) = runtime
+                .store
+                .read_run(&header.run_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                !full.memory_pending && full.episode_id.is_some(),
+                "shutdown must finish every transcript-only merge before returning"
+            );
+            for msg in &full.transcript {
+                all_text.push_str(&msg.content);
+                all_text.push('\n');
+            }
+        }
+        assert!(
+            all_text.contains("first unseen tail") && all_text.contains("second unseen tail"),
+            "both tails must be persisted across the serialized runs: {all_text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn flush_and_close_after_completing_preserves_queued_resume_kickoff() {
+        let (runtime, bus_handle) = long_idle_runtime(1);
+        let mut events: residuum_bus::Subscriber<residuum_bus::SessionEvent> =
+            bus_handle.subscribe(topics::Sessions).await.unwrap();
+
+        // Hold the sole semaphore permit so a newly-spawned resume stays `Queued`.
+        let blocker = SessionAddress::from("spawned-blocker-nit3");
+        let blocker_gate = Gate::closed("blocker holding sole permit");
+        runtime.spawn(
+            sample_request(blocker.as_ref()),
+            Some(make_gated_resources("blocker done", &blocker_gate)),
+        );
+        blocker_gate.until_held(1).await;
+
+        let address = SessionAddress::from("external-completing-nit3");
+        let mut completing = conversation_winner_info(&address, "run-completing");
+        completing.state = SessionState::Completing;
+        runtime
+            .registry
+            .register(completing, CancellationToken::new())
+            .unwrap();
+
+        let (layout, observer, merge_writer) = test_memory_extras();
+        runtime.flush_and_close_conversation(
+            ConversationCloseFlush {
+                address: address.clone(),
+                source_label: "discord:#builds".to_string(),
+                conversation_target: None,
+                flush: SessionCloseFlush {
+                    user_content: Some("closing room tail".to_string()),
+                    assistant_note: "room closed".to_string(),
+                },
+            },
+            move || MergeHandles {
+                observer,
+                merge_writer,
+                layout,
+                episode_skip_token_floor: 0,
+            },
+        );
+
+        // Simulate a deferred resume winning registration at `address` the
+        // instant `run-completing` clears (before `retry_close_flush` polls).
+        let mut resume_req = crate::testing::sample_conversation_request(address.as_ref());
+        resume_req.subagent_config.prompt.clear();
+        resume_req.subagent_config.delivered_messages = vec![owner_message(
+            "msg-deferred-kickoff",
+            "deferred resume kickoff",
+        )];
+        runtime.registry.remove(&address, "run-completing");
+        runtime.spawn(resume_req, Some(make_resources("never runs")));
+
+        let mut saw_read = false;
+        let mut completed_run_id = None;
+        while completed_run_id.is_none() {
+            let ev = next_event("nit3 resume completion", &mut events).await;
+            if ev.address == address {
+                if let Some((id, _)) = read_of(&ev.kind)
+                    && id == "msg-deferred-kickoff"
+                {
+                    saw_read = true;
+                }
+                if matches!(ev.kind, SessionEventKind::Completed { .. }) {
+                    completed_run_id = Some(ev.run_id);
+                }
+            }
+        }
+        assert!(
+            saw_read,
+            "deferred resume's delivered message must still publish MessageRead when flushed while Queued"
+        );
+        let run_id = completed_run_id.unwrap();
+        let (record, _) = runtime.store.read_run(&run_id).await.unwrap().unwrap();
+        assert!(
+            record
+                .transcript
+                .iter()
+                .any(|m| m.content.contains("deferred resume kickoff")),
+            "deferred resume kickoff must be preserved in transcript: {:?}",
+            record.transcript
+        );
+        assert!(
+            record
+                .transcript
+                .iter()
+                .any(|m| m.content.contains("closing room tail")),
+            "close-flush tail must also be preserved in transcript: {:?}",
+            record.transcript
+        );
+
+        blocker_gate.open_all();
+        runtime.shutdown(Duration::from_secs(5)).await;
+    }
+
+    #[tokio::test]
+    async fn flush_and_close_conversation_rejects_non_conversation_sessions() {
+        let (runtime, _bus_handle) = long_idle_runtime(2);
+        let (layout, observer, merge_writer) = test_memory_extras();
+
+        let spawned = SessionAddress::from("spawned-worker-guard-0001");
+        runtime.spawn(
+            sample_request(spawned.as_ref()),
+            Some(make_resources("worker reply")),
+        );
+        wait_for(&runtime, &spawned, "spawned worker to go idle", |info| {
+            info.state == SessionState::Idle
+        })
+        .await;
+
+        let mut webhook_req = sample_request("external-webhook-guard-0001");
+        webhook_req.trigger = EventTrigger::Webhook("github".to_string());
+        webhook_req.spawner = None;
+        let webhook_addr = webhook_req.address.clone();
+        runtime.spawn(webhook_req, Some(make_resources("webhook reply")));
+        wait_for(
+            &runtime,
+            &webhook_addr,
+            "webhook session to go idle",
+            |info| info.state == SessionState::Idle,
+        )
+        .await;
+
+        for addr in [&spawned, &webhook_addr] {
+            let observer = Arc::clone(&observer);
+            let merge_writer = Arc::clone(&merge_writer);
+            let layout = layout.clone();
+            runtime.flush_and_close_conversation(
+                ConversationCloseFlush {
+                    address: addr.clone(),
+                    source_label: "wrong:caller".to_string(),
+                    conversation_target: None,
+                    flush: SessionCloseFlush {
+                        user_content: Some("should be ignored".to_string()),
+                        assistant_note: "ignored".to_string(),
+                    },
+                },
+                move || MergeHandles {
+                    observer,
+                    merge_writer,
+                    layout,
+                    episode_skip_token_floor: 0,
+                },
+            );
+            assert_eq!(
+                runtime.registry.get(addr).unwrap().state,
+                SessionState::Idle,
+                "non-conversation session {addr} must stay untouched in Idle"
+            );
+        }
+
+        runtime.shutdown(Duration::from_secs(5)).await;
     }
 }

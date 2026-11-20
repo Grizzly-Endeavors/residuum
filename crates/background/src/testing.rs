@@ -350,3 +350,72 @@ pub fn test_memory_extras() -> (WorkspaceLayout, Arc<Observer>, Arc<MemoryMergeW
     let observer = Arc::new(Observer::disabled(chrono_tz::UTC));
     (layout, observer, merge_writer)
 }
+
+struct EmptySessionToolFactory;
+
+impl crate::session_tools::SessionToolFactory for EmptySessionToolFactory {
+    fn build(
+        &self,
+        _scope: crate::session_tools::SessionToolScope,
+    ) -> residuum_agent::ToolRegistry {
+        residuum_agent::ToolRegistry::new()
+    }
+}
+
+/// Build a minimal [`crate::SpawnContext`] around `runtime` and memory handles
+/// so integration tests can exercise `SpawnContext` entry points directly.
+///
+/// # Panics
+///
+/// Panics if the shared HTTP client cannot be constructed.
+#[must_use]
+#[expect(
+    clippy::unwrap_used,
+    reason = "test-support helper: a fixture that cannot be built fails the test that asked for it"
+)]
+pub fn test_spawn_context(
+    runtime: Arc<SessionRuntime>,
+    bus_handle: &residuum_bus::BusHandle,
+    layout: WorkspaceLayout,
+    observer: Arc<Observer>,
+    merge_writer: Arc<MemoryMergeWriter>,
+) -> crate::SpawnContext {
+    let registry = Arc::clone(runtime.registry());
+    let store = Arc::new(SessionStore::new(layout.root().join("sessions")));
+    let messenger = Arc::new(AgentMessenger::new(
+        Arc::clone(&registry),
+        bus_handle.publisher(),
+        store,
+        residuum_agent::hop::HopLimits { soft: 8, hard: 32 },
+    ));
+    crate::SpawnContext {
+        background_config: residuum_config::BackgroundConfig::default(),
+        main_provider_specs: Vec::new(),
+        model_catalog: Arc::new(tokio::sync::RwLock::new(
+            residuum_config::ModelCatalog::default(),
+        )),
+        http_client: residuum_inference::SharedHttpClient::new(
+            &residuum_inference::HttpClientConfig::default(),
+        )
+        .unwrap(),
+        max_tokens: 1024,
+        retry_config: residuum_config::RetryConfig::default(),
+        options: CompletionOptions::default(),
+        max_tool_iterations: None,
+        repeat_call_guard: residuum_config::RepeatCallGuardConfig::default(),
+        intermediate_delivery: residuum_agent::context::IntermediateDelivery::default(),
+        layout,
+        role_overrides: std::collections::HashMap::new(),
+        session_tools: Arc::new(EmptySessionToolFactory),
+        session_runtime: runtime,
+        session_registry: registry,
+        publisher: bus_handle.publisher(),
+        skill_state: SkillState::new_shared(SkillIndex::default(), vec![]),
+        mcp_registry: McpRegistry::new_shared(),
+        observer,
+        merge_writer,
+        messenger,
+        bg_tier_active_index: crate::BackgroundTierActiveIndex::default(),
+        action_outcome: None,
+    }
+}
