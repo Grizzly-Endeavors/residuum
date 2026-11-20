@@ -73,7 +73,7 @@ pub(super) async fn run_stop_command(_args: &StopArgs) -> Result<(), FatalError>
 /// Returns `true` if the server accepted the shutdown request.
 async fn try_http_shutdown(gateway_addr: &str) -> bool {
     let url = format!("http://{gateway_addr}/api/hub/shutdown");
-    let client = reqwest::Client::builder()
+    let client = super::hub_client::local_hub_client()
         .timeout(std::time::Duration::from_secs(3))
         .build();
 

@@ -34,7 +34,7 @@ pub(super) async fn run_feedback_command(
         "message": args.message,
         "category": args.category,
     });
-    let client = reqwest::Client::builder()
+    let client = super::hub_client::local_hub_client()
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| FatalError::Gateway(format!("failed to build HTTP client: {e}")))?;

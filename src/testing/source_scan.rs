@@ -1453,6 +1453,33 @@ mod tests {
         );
     }
 
+    /// The root package makes HTTP requests only to the hub on this machine,
+    /// and a client that picks up `HTTP_PROXY` sends them to the proxy
+    /// instead, which can't reach the hub and answers in its place. Every
+    /// client there is built from `local_hub_client`, which turns the proxy off.
+    #[test]
+    fn the_cli_builds_its_hub_clients_without_a_proxy() {
+        const BUILDER: &str = "src/commands/hub_client.rs";
+        let pattern =
+            Regex::new(r"reqwest::Client::(?:new|builder)\(|\bClient::(?:new|builder)\(").unwrap();
+        let mut problems = String::new();
+        for file in crate_sources() {
+            let root_package = file.path.starts_with("src/") || file.path.starts_with("tests/");
+            if !root_package || file.path == BUILDER {
+                continue;
+            }
+            for (number, code) in file.code_lines(false) {
+                if pattern.is_match(code) {
+                    writeln!(problems, "{}:{number}: {}", file.path, code.trim()).unwrap();
+                }
+            }
+        }
+        assert!(
+            problems.is_empty(),
+            "build the root package's HTTP clients with commands::hub_client::local_hub_client, which ignores proxy settings for requests to the local hub.\n{problems}"
+        );
+    }
+
     #[test]
     fn lines_inside_strings_and_block_comments_are_marked() {
         let lines: Vec<String> = [

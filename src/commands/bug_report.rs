@@ -79,7 +79,7 @@ pub(super) async fn run_bug_report_command(
     };
 
     let url = format!("http://{gateway_addr}/api/hub/tracing/bug-report");
-    let client = reqwest::Client::builder()
+    let client = super::hub_client::local_hub_client()
         .timeout(std::time::Duration::from_secs(45))
         .build()
         .map_err(|e| FatalError::Gateway(format!("failed to build HTTP client: {e}")))?;
