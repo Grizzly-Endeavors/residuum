@@ -10,9 +10,11 @@
 # on every commit and pushes authors to commit less often or to route around the
 # hook.
 #
-# Every check runs through check_run, which reports the run to the machine's
-# `check-run` recorder under the check's id (listed in check-runs.toml). Where
-# `check-run` is not installed, check_run runs the command as it is.
+# Each tool this hook runs (the formatters, cargo deny, the script tests) goes
+# through check_run, which reports the run to the machine's `check-run`
+# recorder under the check's id (listed in check-runs.toml). Where `check-run`
+# is not installed, check_run runs the command as it is. The content gates on
+# the staged diff do not go through it.
 #
 # Bypassing this hook with --no-verify is forbidden. If it fails, fix the
 # underlying issue — a hook you route around is a hook that isn't there.

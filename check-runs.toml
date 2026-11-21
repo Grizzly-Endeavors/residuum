@@ -6,11 +6,11 @@ reads = ["src/**", "crates/**", "tests/**", "build.rs", "rustfmt.toml", "rust-to
 
 [checks.rust-clippy]
 kind = "lint"
-reads = ["src/**", "crates/**", "tests/**", "assets/**", ".cargo/**", "build.rs", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "web/src/**", "web/public/**", "web/build/**", "web/index.html", "web/package-lock.json", "web/vite.config.ts", "web/svelte.config.js", "web/app-shell-csp.txt", "clippy.toml"]
+reads = ["src/**", "crates/**", "tests/**", "assets/**", ".cargo/**", "build.rs", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "web/src/**", "web/public/**", "web/build/**", "web/index.html", "web/package-lock.json", "web/vite.config.ts", "web/svelte.config.js", "web/app-shell-csp.txt", "clippy.toml", ".github/workflows/release.yml"]
 
 [checks.rust-clippy-cross]
 kind = "lint"
-reads = ["src/**", "crates/**", "tests/**", "assets/**", ".cargo/**", "build.rs", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "web/src/**", "web/public/**", "web/build/**", "web/index.html", "web/package-lock.json", "web/vite.config.ts", "web/svelte.config.js", "web/app-shell-csp.txt", "clippy.toml"]
+reads = ["src/**", "crates/**", "tests/**", "assets/**", ".cargo/**", "build.rs", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "web/src/**", "web/public/**", "web/build/**", "web/index.html", "web/package-lock.json", "web/vite.config.ts", "web/svelte.config.js", "web/app-shell-csp.txt", "clippy.toml", ".github/workflows/release.yml"]
 
 [checks.rust-doc]
 kind = "lint"
@@ -30,7 +30,7 @@ reads = ["crates/**", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml"]
 
 [checks.rust-types]
 kind = "typecheck"
-reads = ["src/**", "crates/**", "tests/ts_export.rs", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "web/src/lib/generated/**", "scripts/check-generated-types.sh", "scripts/export-generated-types.sh"]
+reads = ["src/**", "crates/**", "tests/ts_export.rs", "assets/**", ".cargo/**", "build.rs", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "web/src/**", "web/public/**", "web/build/**", "web/index.html", "web/package-lock.json", "web/vite.config.ts", "web/svelte.config.js", "web/app-shell-csp.txt", "web/src/lib/generated/**", "scripts/check-generated-types.sh", "scripts/export-generated-types.sh"]
 
 [checks.rust-shear]
 kind = "lint"
@@ -100,10 +100,217 @@ reads = ["scripts/stress-issues*", "scripts/ci-failures*", "scripts/ci-failures-
 kind = "unit"
 reads = ["scripts/affected-packages*", "Cargo.toml", "crates/**/Cargo.toml"]
 
-# Damage levels are Bear's to set; these are proposals from what each part does. The first matching entry wins; no match is level 0.
+[checks.rust-clippy-macos]
+kind = "lint"
+reads = ["src/**", "crates/**", "tests/**", "assets/**", ".cargo/**", "build.rs", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "web/src/**", "web/public/**", "web/build/**", "web/index.html", "web/package-lock.json", "web/vite.config.ts", "web/svelte.config.js", "web/app-shell-csp.txt", "clippy.toml", ".github/workflows/release.yml"]
+
+[checks.rust-test-windows]
+kind = "unit"
+reads = ["src/**", "crates/**", "tests/**", "assets/**", ".cargo/**", "build.rs", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "web/src/**", "web/public/**", "web/build/**", "web/index.html", "web/package-lock.json", "web/vite.config.ts", "web/svelte.config.js", "web/app-shell-csp.txt", ".github/workflows/release.yml"]
+
+[checks.rust-isolation]
+kind = "typecheck"
+reads = ["src/**", "crates/**", "tests/**", "assets/**", ".cargo/**", "build.rs", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "web/src/**", "web/public/**", "web/build/**", "web/index.html", "web/package-lock.json", "web/vite.config.ts", "web/svelte.config.js", "web/app-shell-csp.txt", "scripts/check-crate-isolation.sh"]
+
+[checks.web-e2e-visual]
+kind = "e2e"
+reads = ["web/**", "scripts/with-playwright-container.sh"]
+
+[checks.docker-build]
+kind = "build"
+reads = ["src/**", "crates/**", "tests/**", "assets/**", ".cargo/**", "build.rs", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "web/src/**", "web/public/**", "web/build/**", "web/index.html", "web/package-lock.json", "web/vite.config.ts", "web/svelte.config.js", "web/app-shell-csp.txt", "docker/**", ".dockerignore", "web/**"]
+
+[ci]
+repo = "Grizzly-Endeavors/residuum"
+
+[[ci.steps]]
+workflow = "CI"
+job = "Rust Lint"
+step = "Check formatting"
+check = "rust-fmt"
+
+[[ci.steps]]
+workflow = "CI"
+job = "Rust Lint"
+step = "Clippy"
+check = "rust-clippy"
+
+[[ci.steps]]
+workflow = "CI"
+job = "Rust Lint"
+step = "Rustdoc"
+check = "rust-doc"
+
+[[ci.steps]]
+workflow = "CI"
+job = "Rust Lint"
+step = "Dependency audit"
+check = "rust-deny"
+
+[[ci.steps]]
+workflow = "CI"
+job = "Rust Lint"
+step = "Unused dependencies"
+check = "rust-shear"
+
+[[ci.steps]]
+workflow = "CI"
+job = "Clippy (x86_64-pc-windows-gnu)"
+step = "Clippy"
+check = "rust-clippy-cross"
+
+[[ci.steps]]
+workflow = "CI"
+job = "Rust Tests"
+step = "Build test binaries"
+check = "rust-test"
+
+[[ci.steps]]
+workflow = "CI"
+job = "Rust Tests"
+step = "Tests"
+check = "rust-test"
+
+[[ci.steps]]
+workflow = "CI"
+job = "Rust Tests"
+step = "Pebble tests"
+check = "rust-pebble"
+
+[[ci.steps]]
+workflow = "CI"
+job = "Rust Tests"
+step = "Generated types are up to date"
+check = "rust-types"
+
+[[ci.steps]]
+workflow = "CI"
+job = "Crate Isolation"
+step = "Check the root library and each member crate alone"
+check = "rust-isolation"
+
+[[ci.steps]]
+workflow = "CI"
+job = "Web Checks"
+step = "Web format check"
+check = "web-fmt"
+
+[[ci.steps]]
+workflow = "CI"
+job = "Web Checks"
+step = "Web lint"
+check = "web-lint"
+
+[[ci.steps]]
+workflow = "CI"
+job = "Web Checks"
+step = "Web type check"
+check = "web-typecheck"
+
+[[ci.steps]]
+workflow = "CI"
+job = "Web Checks"
+step = "Web unit tests"
+check = "web-coverage"
+
+[[ci.steps]]
+workflow = "CI"
+job = "Web Checks"
+step = "Build web assets"
+check = "web-build"
+
+[[ci.steps]]
+workflow = "CI"
+job = "Web Tests (Node ${{ matrix.node }})"
+step = "Web unit tests"
+check = "web-test"
+
+[[ci.steps]]
+workflow = "CI"
+job = "Web End-to-End (${{ matrix.shard }}/4)"
+step = "Web end-to-end tests"
+check = "web-e2e-fast"
+
+[[ci.steps]]
+workflow = "CI"
+job = "Web Visual Comparisons"
+step = "Web visual comparisons"
+check = "web-e2e-visual"
+
+[[ci.steps]]
+workflow = "CI"
+job = "Clippy (aarch64-unknown-linux-gnu)"
+step = "Clippy"
+check = "rust-clippy-cross"
+
+[[ci.steps]]
+workflow = "CI"
+job = "Clippy (aarch64-apple-darwin)"
+step = "Clippy"
+check = "rust-clippy-macos"
+
+[[ci.steps]]
+workflow = "CI"
+job = "Tests (Windows)"
+step = "Test"
+check = "rust-test-windows"
+
+[[ci.steps]]
+workflow = "CI"
+job = "Docker Source Image"
+step = "Build docker/Dockerfile"
+check = "docker-build"
+
+[[ci.steps]]
+workflow = "Cross-Platform Checks"
+job = "Clippy (aarch64-unknown-linux-gnu)"
+step = "Clippy"
+check = "rust-clippy-cross"
+
+[[ci.steps]]
+workflow = "Cross-Platform Checks"
+job = "Clippy (aarch64-apple-darwin)"
+step = "Clippy"
+check = "rust-clippy-macos"
+
+[[ci.steps]]
+workflow = "Cross-Platform Checks"
+job = "Tests (Windows)"
+step = "Test"
+check = "rust-test-windows"
+
+[[ci.steps]]
+workflow = "Nightly Stress"
+job = "Rust Stress"
+step = "Build test binaries"
+check = "rust-test"
+
+[[ci.steps]]
+workflow = "Nightly Stress"
+job = "Rust Stress"
+step = "Tests"
+check = "rust-test"
+
+[[ci.steps]]
+workflow = "Nightly Stress"
+job = "Rust Stress"
+step = "Stress"
+check = "rust-stress"
+
+[[ci.steps]]
+workflow = "Nightly Stress"
+job = "Web Stress (${{ matrix.shard }}/4)"
+step = "Web stress"
+check = "web-stress"
+
+# Bear sets the damage levels. The first matching entry wins; a path no entry matches is level 0.
 
 [[areas]]
-paths = ["docs/**", "**/*.test.ts", "**/*.component.test.ts", "tests/**", "crates/*/tests/**", "src/testing/**", "crates/**/testing.rs", "crates/**/testing/**", "crates/**/*_tests.rs", "crates/tools/golden/**", "scripts/**", ".githooks/**", ".github/**", ".cargo/**", "web/e2e/**", "web/mock/**", "web/scripts/**", "web/src/test/**", "web/**/*.md", "*.md", "crates/*/*.md", "justfile", "clippy.toml", "rustfmt.toml", "deny.toml", "rust-toolchain.toml", "check-runs.toml", ".dockerignore"]
+paths = ["scripts/install.sh", ".github/workflows/release.yml", "bundle/install-app.sh"]
+level = 4
+
+[[areas]]
+paths = ["docs/**", "**/*.test.ts", "tests/**", "**/tests/**", "**/tests.rs", "**/test_*.rs", "**/*_support.rs", "**/fake_*.rs", "**/fixture.rs", "**/testdata/**", "src/testing/**", "crates/**/testing.rs", "crates/**/testing/**", "crates/**/*_tests.rs", "crates/tools/golden/**", "scripts/**", ".githooks/**", ".github/**", ".cargo/**", "web/e2e/**", "web/mock/**", "web/scripts/**", "web/src/test/**", "web/**/*.md", "*.md", "crates/*/*.md", "justfile", "clippy.toml", "rustfmt.toml", "deny.toml", "rust-toolchain.toml", "check-runs.toml", ".dockerignore"]
 level = 0
 
 [[areas]]
