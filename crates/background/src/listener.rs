@@ -10,7 +10,9 @@ use std::sync::Arc;
 
 use tokio::task::JoinHandle;
 
-use crate::fork_failure::{owner_start_failure_message, pulse_start_failure_message};
+use crate::fork_failure::{
+    conversation_start_failure_message, owner_start_failure_message, pulse_start_failure_message,
+};
 use crate::messaging::ConversationSpawn;
 use crate::registry::{DeliverOutcome, SessionRegistry};
 use crate::runtime::SessionSpawnRequest;
@@ -99,6 +101,8 @@ async fn listener_loop(ctx: SpawnContextWatch, mut subscriber: Subscriber<SpawnR
                 let trigger = event.source.clone();
                 let pulse_address =
                     matches!(event.source, EventTrigger::Pulse).then(|| event.address.clone());
+                let conv_address = matches!(event.source, EventTrigger::Conversation)
+                    .then(|| event.address.clone());
                 let owner_start = super::owner_session::is_owner_start(&event).then(|| {
                     let resume = ctx.session_registry.resume_point(&event.address).is_some();
                     (event.address.clone(), resume)
@@ -144,6 +148,15 @@ async fn listener_loop(ctx: SpawnContextWatch, mut subscriber: Subscriber<SpawnR
                         if let Some((address, resume)) = owner_start {
                             notify_owner_start_failed(&ctx.publisher, &address, resume, &e).await;
                         } else {
+                            if let Some(address) = conv_address {
+                                publish_conversation_start_failed(
+                                    &ctx.publisher,
+                                    address,
+                                    &source_label,
+                                    &e,
+                                )
+                                .await;
+                            }
                             handle_spawn_failure(
                                 &ctx.publisher,
                                 &mut spawn_failures,
@@ -197,6 +210,31 @@ async fn publish_pulse_start_failed(
     };
     if let Err(e) = publisher.publish(topics::Sessions, event).await {
         tracing::warn!(source = %source_label, error = %e, "failed to publish a pulse session's start failure");
+    }
+}
+
+/// Tell a conversation caller waiting on `address` that its session failed to
+/// fork, so it does not hang waiting for a `Started` event that will never
+/// arrive. Carries a plain-language sentence in `error` and the full cause
+/// chain in `error_details`.
+async fn publish_conversation_start_failed(
+    publisher: &Publisher,
+    address: SessionAddress,
+    source_label: &str,
+    error: &anyhow::Error,
+) {
+    let event = SessionStartFailedEvent {
+        error: conversation_start_failure_message(&address, error),
+        error_details: Some(format!("{error:#}")),
+        address,
+        owner_start: false,
+    };
+    if let Err(e) = publisher.publish(topics::Sessions, event).await {
+        tracing::warn!(
+            source = %source_label,
+            error = %e,
+            "failed to publish a conversation session's start failure"
+        );
     }
 }
 
@@ -2319,5 +2357,108 @@ mod tests {
             registered.resolved_model.as_deref(),
             Some("anthropic/claude-reloaded-model")
         );
+    }
+
+    fn conversation_spawn_request(address: &str) -> SpawnRequestEvent {
+        SpawnRequestEvent {
+            address: SessionAddress::from(address),
+            source_label: "conversation:test".to_string(),
+            source: EventTrigger::Conversation,
+            spawner: None,
+            conversation: Some(residuum_bus::ConversationTarget {
+                endpoint: "test-chat".to_string(),
+                conversation_id: "conv-1".to_string(),
+            }),
+            ..owner_start()
+        }
+    }
+
+    #[tokio::test]
+    async fn conversation_session_start_failure_publishes_session_start_failed_event() {
+        let bus = residuum_bus::spawn_broker();
+        let ctx = spawn_context_without_a_working_provider(&bus).await;
+        let mut failures: Subscriber<SessionStartFailedEvent> =
+            bus.subscribe(topics::Sessions).await.unwrap();
+        let _listener = spawn_listener(Arc::clone(&ctx), &bus).await.unwrap();
+
+        let request = conversation_spawn_request("external-conv-start-fail");
+        let address = request.address.clone();
+
+        bus.publisher()
+            .publish(topics::Background, request)
+            .await
+            .unwrap();
+
+        let failure = next_event("conversation start failure event", &mut failures).await;
+        assert_eq!(failure.address, address);
+        assert!(
+            !failure.owner_start,
+            "conversation start failure must not set owner_start"
+        );
+        assert!(
+            failure.error.contains("external-conv-start-fail"),
+            "plain-language error should name the address: {}",
+            failure.error
+        );
+        assert!(
+            failure.error_details.is_some(),
+            "error_details must carry the underlying cause chain"
+        );
+    }
+
+    #[tokio::test]
+    async fn deferred_conversation_session_start_failure_publishes_session_start_failed_event() {
+        let bus = residuum_bus::spawn_broker();
+        let ctx = spawn_context_without_a_working_provider(&bus).await;
+        let mut failures: Subscriber<SessionStartFailedEvent> =
+            bus.subscribe(topics::Sessions).await.unwrap();
+        let _listener = spawn_listener(Arc::clone(&ctx), &bus).await.unwrap();
+
+        let address = SessionAddress::from("external-conv-deferred-fail");
+        let completing = residuum_bus::session::SessionInfo {
+            address: address.clone(),
+            run_id: "run-completing".to_string(),
+            category: SessionCategory::External,
+            trigger: EventTrigger::Conversation,
+            source_label: "conversation:test".to_string(),
+            state: SessionState::Completing,
+            spawner: None,
+            depth: 1,
+            purpose: "prior".to_string(),
+            agent_skill: None,
+            model: ModelSelector::MEDIUM,
+            resolved_model: None,
+            conversation_target: None,
+            started_at: chrono::Utc::now(),
+            usage: residuum_bus::usage::SessionUsageTotals::default(),
+            overlap: None,
+        };
+        ctx.session_registry
+            .register(completing, tokio_util::sync::CancellationToken::new())
+            .unwrap();
+
+        let request = conversation_spawn_request(address.as_ref());
+        bus.publisher()
+            .publish(topics::Background, request)
+            .await
+            .unwrap();
+
+        // Synchronize with the listener via a sentinel request so the deferred
+        // waiter is registered before we clear the completing entry.
+        let sentinel = conversation_spawn_request("external-conv-sentinel");
+        let sentinel_addr = sentinel.address.clone();
+        bus.publisher()
+            .publish(topics::Background, sentinel)
+            .await
+            .unwrap();
+        let sentinel_fail = next_event("sentinel failure", &mut failures).await;
+        assert_eq!(sentinel_fail.address, sentinel_addr);
+
+        ctx.session_registry.remove(&address, "run-completing");
+
+        let failure = next_event("deferred conversation start failure", &mut failures).await;
+        assert_eq!(failure.address, address);
+        assert!(!failure.owner_start);
+        assert!(failure.error_details.is_some());
     }
 }

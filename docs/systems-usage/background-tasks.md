@@ -11,7 +11,7 @@ A session is a fork of the main agent with its own identity, memory snapshot, an
 - A snapshot of the global observation log and the recent-context narrative, taken at fork time. A session never sees observations merged after it forked.
 - Its source-specific input as the user message: the task prompt (spawned), the pulse or action prompt (scheduled), the webhook payload (webhook), the inbound message — images included — plus any buffered chatter since the conversation's last mention (conversation — see [Conversation Routing](#conversation-routing)), or the artifact's prompt, preceded by a line naming the workbench artifact that started the session and saying its responses go to that artifact, plus any context the artifact sent (artifact — see [Artifact Sessions](#artifact-sessions)). A session resumed by a message to a completed address (see [Messaging](#messaging)) gets that message instead, plus a pointer back to its previous run's episode; any images on that resuming message carry over the same way.
 - The requested skill activated, when one was given. A resumed session keeps the skill its previous run used.
-- The requested model: a tier, or an explicit `provider/model` id (see [Models](#models)).
+- The requested model: `"main"`, a tier, or an explicit `provider/model` id (see [Models](#models)).
 
 **What's excluded:**
 - The main agent's live, unobserved conversation. A session never sees what the user and main agent are currently discussing — the spawning agent writes a task prompt with whatever context the session needs. The one exception is a fork the owner starts with `/multitask` (see [Owner Sessions](#owner-sessions)), which carries that conversation.
@@ -46,7 +46,12 @@ A session run moves through: `forking` → `queued` → `running` → `idle` →
 - **completing** — the idle timeout elapsed, or the session was stopped via `stop_agent`. A completing run no longer accepts messages into itself; one addressed to it is queued for the resume that follows once it clears (see [Messaging](#messaging)).
 - **completed** — the run's final transcript and metadata are recorded in the session store, and the result is delivered. The session is no longer listed by `list_agents`, though its address stays meaningful: a message to it starts a new run at the same address (see [Messaging](#messaging)).
 
-Stopping a session (`stop_agent`) cancels its stop token: a running turn stops immediately — the model call aborts, the tool call in progress is interrupted, and every other tool call in that batch is skipped — with its transcript up to that point intact, rather than being dropped; an idle session skips straight to completing. See [Stopping a Turn](turn-control.md) for exactly what a stop interrupts and how it's recorded. Either way the run is reported as cancelled; a run that simply idles out keeps its last turn's outcome.
+Stopping a session (`stop_agent` / `SessionRegistry::stop`) cancels its outer stop token: a running turn stops immediately — the model call aborts, the tool call in progress is interrupted, and every other tool call in that batch is skipped — with its transcript up to that point intact, rather than being dropped; an idle session skips straight to completing. See [Stopping a Turn](turn-control.md) for exactly what a stop interrupts and how it's recorded. Either way the run is reported as cancelled; a run that simply idles out keeps its last turn's outcome.
+
+Two runtime primitives operate on individual turns and conversation close-out without following a plain session stop:
+
+- **Per-turn cancellation (`SessionRegistry::cancel_current_turn`)** — cancels only the active or queued turn's child token while leaving the session's outer stop token live. Whether the turn was forking, queued behind `max_concurrent`, woken by a delivered message just before leaving `idle`, or actively running a model or tool call, its kickoff message and `[Stopped]` note are recorded in the transcript, any delivered message-read acknowledgement is published, and the session returns to `idle` on the same run rather than moving to `completing`. Calling `cancel_current_turn` when no turn is active or queued (genuinely `idle`, in post-turn bookkeeping with an empty channel, already stopping as a whole, or `completing`/`completed`) returns `false` without touching the session.
+- **Conversation close-flush (`SpawnContext::flush_and_close_conversation`)** — closes a conversation (`external-...` with `EventTrigger::Conversation`) session and merges any unseen conversation tail plus a synthetic assistant acknowledgment into episodic memory without invoking the main model, bypassing `episode_skip_token_floor` (`0`) so short tails still produce an episode. Non-conversation addresses and categories are logged at `warn` and left untouched. When the conversation session is live (`forking`, `queued`, `running`, or `idle`), close-flush cancels its stop token — aborting any in-flight or queued turn while preserving its kickoff and partial transcript — appends the tail, and finalizes the run as `completed` with the caller's assistant note as summary. When the session is `completing` or not live and the flush carries non-empty `user_content`, a shutdown-tracked retry loop waits for any in-flight teardown to clear and records a transcript-only completion run, inheriting `model`, `agent_skill`, `spawner`, and `depth` (and chaining a context pointer to the prior `run_id`) when an existing `ResumePoint` is present, or recording no `ResumePoint` when none existed.
 
 A session's turn loop is unlimited by default, same as the main agent's — see [Tool-Call Limit](turn-control.md#tool-call-limit) for the optional `max_tool_iterations` config and what happens when a turn hits it.
 
@@ -174,7 +179,7 @@ Sends `message` to `to`, delivered per the rules in [Messaging](#messaging) (tea
 |-----------|------|----------|-------|
 | `task` | string | yes | The prompt/instructions for the session. Must not be empty. |
 | `skill` | string | no | Name of a skill to activate as the session's role. Omit to run on the task prompt alone. `"main"` is rejected. |
-| `model` | string | no | A tier (`"small"`, `"medium"`, `"large"`) or an explicit `provider/model` id; see [Models](#models). Default: `"medium"`. A value that is neither, or names a provider that isn't configured, is an `InvalidArguments` error and nothing is spawned. |
+| `model` | string | no | `"main"`, a tier (`"small"`, `"medium"`, `"large"`), or an explicit `provider/model` id; see [Models](#models). Default: `"medium"`. A value that is none of those, or names a provider that isn't configured, is an `InvalidArguments` error and nothing is spawned. |
 
 Available to the main agent and to every session, subject to the depth cap above. Returns the session's address immediately. A session's final result is a **self-report** — it describes what the session believes it did, not a verified outcome. When the task involves something checkable (a file written, a command run, a deployment, an external change), the spawning agent should ask for concrete handles in the task prompt (file paths, commit SHAs, URLs, ticket IDs) and treat the result as unverified until those handles check out.
 
@@ -192,19 +197,20 @@ The owner can also stop a session, or message it, from the web UI (see [Web UI](
 
 ## Models
 
-A session runs on one of the background **tiers**, or on one **explicit model**. Everywhere a session's model is chosen (`subagent_spawn`'s `model`, a pulse's or scheduled action's `model_tier`, `POST /api/agents/{name}/sessions`'s `model`) takes either: `small`, `medium`, or `large` names a tier, and an id of the form `provider/model` names a model. The id uses the format `providers.toml`'s `[models]` uses: `provider` is a `[providers]` entry (`local/qwen3:8b` for an entry named `local`) or a provider type (`anthropic/claude-haiku-4-5`, keyed from that provider's environment variable), and everything after the first `/` is the model name.
+A session runs on `"main"` (the agent's primary model chain), on one of the background **tiers**, or on one **explicit model**. Everywhere a session's model is chosen (`subagent_spawn`'s `model`, a pulse's or scheduled action's `model_tier`, `POST /api/agents/{name}/sessions`'s `model`) takes any of those: `"main"` selects the agent's primary `models.main` chain, `small`, `medium`, or `large` names a tier, and an id of the form `provider/model` names a model. The id uses the format `providers.toml`'s `[models]` uses: `provider` is a `[providers]` entry (`local/qwen3:8b` for an entry named `local`) or a provider type (`anthropic/claude-haiku-4-5`, keyed from that provider's environment variable), and everything after the first `/` is the model name.
 
-| Tier | Default Use | Fallback Chain |
-|------|-------------|----------------|
-| Small | Heartbeat pulses, lightweight checks | Medium → Large → Main |
-| Medium | Default for `subagent_spawn` and scheduled actions | Large → Main |
-| Large | Complex analysis, multi-step reasoning | Main |
+| Selector | Default Use | Chain & Overrides |
+|----------|-------------|-------------------|
+| `main` | Conversation sessions that share the agent's primary persona model | `models.main` failover chain, `main` role overrides, shared `main` failover counter |
+| `small` | Heartbeat pulses, lightweight checks | Medium → Large → Main (`bg_small` overrides) |
+| `medium` | Default for `subagent_spawn` and scheduled actions | Large → Main (`bg_medium` overrides) |
+| `large` | Complex analysis, multi-step reasoning | Main (`bg_large` overrides) |
 
-Model tiers are configured in `[background]` config section (`models.small`, `models.medium`, `models.large`). A tier runs its whole failover chain, and its `bg_small`/`bg_medium`/`bg_large` temperature and thinking overrides apply.
+Model tiers are configured in `[background]` config section (`models.small`, `models.medium`, `models.large`). `"main"` and each tier run their whole failover chain with a shared per-selector failover-transition counter, and apply their matching role temperature and thinking overrides (`main`, `bg_small`, `bg_medium`, `bg_large`).
 
 An explicit model is resolved when its session starts, against the agent's `providers.toml` as of the last config reload, so a provider added there works without a restart. It runs that one model: there is no failover chain behind it, and no `role_overrides` key applies, so the agent's global `temperature` and `thinking` do. Each explicit-model session builds its provider fresh, so a failing explicit model fails that session (its spawner, or the owner for a scheduled one, sees the failure) rather than failing over.
 
-A value that is neither a tier nor a `provider/model` id, or an id whose provider is neither a `[providers]` entry nor a provider type, never silently runs on another model:
+A value that is neither `"main"`, a tier, nor a `provider/model` id, or an id whose provider is neither a `[providers]` entry nor a provider type, never silently runs on another model:
 
 - `subagent_spawn` and `schedule_action` return an `InvalidArguments` error naming the value, and nothing is spawned or scheduled.
 - A pulse fails to load (a bad value) or is skipped (an unknown provider), reported as a HEARTBEAT.yml problem naming the pulse; see [heartbeats.md](heartbeats.md#scheduling-behavior).
