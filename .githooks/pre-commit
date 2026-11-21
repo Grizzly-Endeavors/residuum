@@ -10,9 +10,17 @@
 # on every commit and pushes authors to commit less often or to route around the
 # hook.
 #
+# Every check runs through check_run, which reports the run to the machine's
+# `check-run` recorder under the check's id (listed in check-runs.toml). Where
+# `check-run` is not installed, check_run runs the command as it is.
+#
 # Bypassing this hook with --no-verify is forbidden. If it fails, fix the
 # underlying issue — a hook you route around is a hook that isn't there.
 set -uo pipefail
+
+export CHECK_RUN_STAGE="${CHECK_RUN_STAGE:-commit}"
+# shellcheck source=/dev/null
+if command -v check-run >/dev/null 2>&1 && . "$(check-run shell)"; then :; else check_run() { shift; "$@"; }; fi
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -118,7 +126,7 @@ restage() {
 
 if [ -n "$STAGED_RUST" ]; then
     echo "Formatting..."
-    cargo fmt --all || fail "ERROR: cargo fmt failed."
+    check_run rust-fmt cargo fmt --all || fail "ERROR: cargo fmt failed."
 fi
 
 if [ -n "$STAGED_WEB_FORMAT" ]; then
@@ -131,7 +139,7 @@ if [ -n "$STAGED_WEB_FORMAT" ]; then
     while IFS= read -r file; do
         web_files+=("${file#web/}")
     done <<<"$STAGED_WEB_FORMAT"
-    (cd web && node_modules/.bin/prettier --write --log-level warn -- "${web_files[@]}") \
+    (cd web && check_run web-fmt node_modules/.bin/prettier --write --log-level warn -- "${web_files[@]}") \
         || fail "ERROR: the web formatter failed."
 fi
 
@@ -150,20 +158,20 @@ if [ -n "$STAGED_MANIFEST" ]; then
     command -v cargo-deny >/dev/null 2>&1 \
         || fail "ERROR: cargo-deny is not installed, so the dependency audit of the staged manifest cannot run. Install it with: cargo install --locked cargo-deny"
     echo "Auditing dependencies..."
-    cargo deny check || fail "ERROR: cargo deny found issues."
+    check_run rust-deny cargo deny check || fail "ERROR: cargo deny found issues."
 fi
 
 if [ -n "$STAGED_CI_FAILURES" ]; then
     echo "Checking the CI log parser and the stress issue filer..."
     parser_status=0
-    scripts/ci-failures-test.sh || parser_status=1
-    scripts/stress-issues-test.sh || parser_status=1
+    check_run scripts-ci-failures-test scripts/ci-failures-test.sh || parser_status=1
+    check_run scripts-stress-issues-test scripts/stress-issues-test.sh || parser_status=1
     [ "$parser_status" -eq 0 ] || fail "ERROR: the ci-failures log parser no longer matches a fixture, or the stress issue filer no longer opens the expected issues. The case named above is the one that differs."
 fi
 
 if [ -n "$STAGED_AFFECTED" ]; then
     echo "Checking the package selection script..."
-    scripts/affected-packages-test.sh || fail "ERROR: scripts/affected-packages.sh no longer selects the packages its fixture expects. The case named above is the one that differs."
+    check_run scripts-affected-packages-test scripts/affected-packages-test.sh || fail "ERROR: scripts/affected-packages.sh no longer selects the packages its fixture expects. The case named above is the one that differs."
 fi
 
 # Content gates on the staged diff. These catch the two things clippy cannot:

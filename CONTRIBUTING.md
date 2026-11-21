@@ -80,6 +80,8 @@ Do not bypass the hooks: `--no-verify` is not allowed on `git commit` or `git pu
 - When `web/` changes (Markdown excepted): ESLint, Stylelint, `svelte-check`, and the Vitest tests that import a changed file.
 - It prints which tests it chose, runs every check even after one fails, and ends with a summary.
 
+**Check recording**: when a machine has the `check-run` recorder on `PATH`, both hooks and the `just` recipes that run a check, test suite or build report each run to it under the check's id, with `CHECK_RUN_STAGE` set to `commit`, `push` or `manual` (the default for a recipe run by hand). The ids, their kinds, the paths each check reads and the damage level of each part of the product are in `check-runs.toml`. The hooks call `check_run <id> <command>` and the recipes call `scripts/record-check <id> -- <command>`; with no recorder installed both run the command as it is. A new check gets an id and an entry in `check-runs.toml`.
+
 The hook runs the tests of the code you changed, not the whole suite. When you change something other modules depend on (a shared helper, a trait), run their tests too, or `cargo test --quiet`.
 
 | Stage | Runs on | What it runs |
