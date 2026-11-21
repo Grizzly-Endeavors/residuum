@@ -18,10 +18,18 @@
 # arrays, and arrays expand as ${arr[@]+"${arr[@]}"} so an empty one is safe
 # under set -u.
 #
+# Every check runs through check_run, which reports the run to the machine's
+# `check-run` recorder under the check's id (listed in check-runs.toml). Where
+# `check-run` is not installed, check_run runs the command as it is.
+#
 # Bypassing this hook with --no-verify is forbidden, for a push as for a
 # commit. If it fails, fix the underlying issue — a hook you route around is a
 # hook that isn't there.
 set -uo pipefail
+
+export CHECK_RUN_STAGE="${CHECK_RUN_STAGE:-push}"
+# shellcheck source=/dev/null
+if command -v check-run >/dev/null 2>&1 && . "$(check-run shell)"; then :; else check_run() { shift; "$@"; }; fi
 
 RED='\033[0;31m'
 YELLOW='\033[1;33m'
@@ -128,12 +136,13 @@ FAILED=()
 PASSED=()
 # Names each result after its branch when one push checks several.
 CHECK_SCOPE=""
+# Arguments: the check's id for check_run, its name in the output, the command.
 run_check() {
-    local name="$CHECK_SCOPE$1"
-    shift
+    local id="$1" name="$CHECK_SCOPE$2"
+    shift 2
     echo -e "${BOLD}==> $name${NC}"
     local started=$SECONDS
-    if "$@" </dev/null; then
+    if check_run "$id" "$@" </dev/null; then
         PASSED+=("$name ($((SECONDS - started))s)")
     else
         FAILED+=("$name ($((SECONDS - started))s)")
@@ -695,7 +704,7 @@ shear_check() {
     if [ "$installed" != "$pinned" ]; then
         SHEAR_NOTE="cargo-shear ${installed:-of unknown version} is installed and CI pins ${pinned}, so this check's findings can differ from CI's. Install v${pinned}: cargo install --locked cargo-shear --version ${pinned}"
     fi
-    run_check "cargo shear" cargo_in "$dir" shear --locked --deny-warnings
+    run_check rust-shear "cargo shear" cargo_in "$dir" shear --locked --deny-warnings
 }
 
 run_rust_checks() {
@@ -718,7 +727,7 @@ run_rust_checks() {
             # Vite's output, chunk-size advice included, only matters when the
             # build fails.
             local build_output
-            build_output="$(cd web && npm run build 2>&1)" || {
+            build_output="$(cd web && check_run web-build npm run build 2>&1)" || {
                 echo "$build_output" >&2
                 exit 1
             }
@@ -788,18 +797,18 @@ run_leased_stage() {
     CHANGED_PATHS="$(cat "$stage/changed-paths")" || return 1
     echo "Rust checks build in ${CARGO_TARGET_DIR:-${CARGO_BUILD_TARGET_DIR:-$dir/target}}${CARGO_BUILD_BUILD_DIR:+ (intermediates in $CARGO_BUILD_BUILD_DIR)}."
     plan_rust_tests "$dir"
-    run_check "clippy" cargo_in "$dir" clippy --all-targets --all-features "${CLIPPY_ARGS[@]}" -- -D warnings
-    run_check "unit tests (changed modules, source scans)" run_cargo_test "$dir" "${UNIT_ARGS[@]}"
+    run_check rust-clippy "clippy" cargo_in "$dir" clippy --all-targets --all-features "${CLIPPY_ARGS[@]}" -- -D warnings
+    run_check rust-test "unit tests (changed modules, source scans)" run_cargo_test "$dir" "${UNIT_ARGS[@]}"
     if [ "${#MEMBER_ARGS[@]}" -gt 0 ]; then
-        run_check "member tests (changed crates)" run_cargo_test "$dir" "${MEMBER_ARGS[@]}"
+        run_check rust-test "member tests (changed crates)" run_cargo_test "$dir" "${MEMBER_ARGS[@]}"
     fi
     if [ "${#IT_ARGS[@]}" -gt 0 ]; then
-        run_check "integration modules (changed)" run_cargo_test "$dir" "${IT_ARGS[@]}"
+        run_check rust-test "integration modules (changed)" run_cargo_test "$dir" "${IT_ARGS[@]}"
     fi
     if [ "${#INTEGRATION_ARGS[@]}" -gt 0 ]; then
-        run_check "integration tests (changed)" run_cargo_test "$dir" "${INTEGRATION_ARGS[@]}"
+        run_check rust-test "integration tests (changed)" run_cargo_test "$dir" "${INTEGRATION_ARGS[@]}"
     fi
-    run_check "generated types" generated_types_check "$dir"
+    run_check rust-types "generated types" generated_types_check "$dir"
     {
         for name in ${PASSED[@]+"${PASSED[@]}"}; do
             printf 'passed\t%s\n' "$name"
@@ -867,9 +876,9 @@ run_web_checks() {
         echo -e "${RED}FAILED: installing web dependencies. Skipping the web checks.${NC}" >&2
         return
     fi
-    run_check "web lint (ESLint, style lint)" npm --prefix "$dir/web" run lint
-    run_check "web type check (svelte-check)" npm --prefix "$dir/web" run check
-    run_check "web tests (Vitest, changed files)" web_tests "$dir"
+    run_check web-lint "web lint (ESLint, style lint)" npm --prefix "$dir/web" run lint
+    run_check web-typecheck "web type check (svelte-check)" npm --prefix "$dir/web" run check
+    run_check web-test "web tests (Vitest, changed files)" web_tests "$dir"
 }
 
 if [ "${1:-}" = "$LEASED_STAGE_ARG" ]; then

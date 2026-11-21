@@ -1,0 +1,331 @@
+project = "residuum"
+
+[checks.rust-fmt]
+kind = "format"
+reads = ["src/**", "crates/**", "tests/**", "build.rs", "rustfmt.toml", "rust-toolchain.toml"]
+
+[checks.rust-clippy]
+kind = "lint"
+reads = ["src/**", "crates/**", "tests/**", "assets/**", ".cargo/**", "build.rs", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "web/src/**", "web/public/**", "web/build/**", "web/index.html", "web/package-lock.json", "web/vite.config.ts", "web/svelte.config.js", "web/app-shell-csp.txt", "clippy.toml", ".github/workflows/release.yml"]
+
+[checks.rust-clippy-cross]
+kind = "lint"
+reads = ["src/**", "crates/**", "tests/**", "assets/**", ".cargo/**", "build.rs", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "web/src/**", "web/public/**", "web/build/**", "web/index.html", "web/package-lock.json", "web/vite.config.ts", "web/svelte.config.js", "web/app-shell-csp.txt", "clippy.toml", ".github/workflows/release.yml"]
+
+[checks.rust-doc]
+kind = "lint"
+reads = ["src/**", "crates/**", "tests/**", "assets/**", ".cargo/**", "build.rs", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "web/src/**", "web/public/**", "web/build/**", "web/index.html", "web/package-lock.json", "web/vite.config.ts", "web/svelte.config.js", "web/app-shell-csp.txt"]
+
+[checks.rust-test]
+kind = "unit"
+reads = ["src/**", "crates/**", "tests/**", "assets/**", ".cargo/**", "build.rs", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "web/src/**", "web/public/**", "web/build/**", "web/index.html", "web/package-lock.json", "web/vite.config.ts", "web/svelte.config.js", "web/app-shell-csp.txt", ".github/workflows/release.yml"]
+
+[checks.rust-stress]
+kind = "stress"
+reads = ["src/**", "crates/**", "tests/**", "assets/**", ".cargo/**", "build.rs", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "web/src/**", "web/public/**", "web/build/**", "web/index.html", "web/package-lock.json", "web/vite.config.ts", "web/svelte.config.js", "web/app-shell-csp.txt", ".github/workflows/release.yml"]
+
+[checks.rust-pebble]
+kind = "e2e"
+reads = ["crates/**", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml"]
+
+[checks.rust-types]
+kind = "typecheck"
+reads = ["src/**", "crates/**", "tests/ts_export.rs", "assets/**", ".cargo/**", "build.rs", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "web/src/**", "web/public/**", "web/build/**", "web/index.html", "web/package-lock.json", "web/vite.config.ts", "web/svelte.config.js", "web/app-shell-csp.txt", "web/src/lib/generated/**", "scripts/check-generated-types.sh", "scripts/export-generated-types.sh"]
+
+[checks.rust-shear]
+kind = "lint"
+reads = ["src/**", "crates/**", "tests/**", "build.rs", "Cargo.toml", "Cargo.lock"]
+
+[checks.rust-deny]
+kind = "audit"
+reads = ["Cargo.toml", "Cargo.lock", "deny.toml", "crates/**/Cargo.toml"]
+
+[checks.rust-build]
+kind = "build"
+reads = ["src/**", "crates/**", "tests/**", "assets/**", ".cargo/**", "build.rs", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "web/src/**", "web/public/**", "web/build/**", "web/index.html", "web/package-lock.json", "web/vite.config.ts", "web/svelte.config.js", "web/app-shell-csp.txt"]
+
+[checks.web-fmt]
+kind = "format"
+reads = ["web/src/**", "web/build/**", "web/mock/**", "web/e2e/**", "web/playwright.config.ts", "web/.prettierrc", "web/.prettierignore", "web/package.json"]
+
+[checks.web-lint]
+kind = "lint"
+reads = ["web/src/**", "web/build/**", "web/mock/**", "web/e2e/**", "web/scripts/**", "web/eslint.config.js", "web/stylelint.config.js", "web/package.json", "web/package-lock.json", "web/tsconfig.json", "web/vite.config.ts", "web/svelte.config.js"]
+
+[checks.web-typecheck]
+kind = "typecheck"
+reads = ["web/src/**", "web/build/**", "web/mock/**", "web/e2e/**", "web/package.json", "web/package-lock.json", "web/tsconfig.json", "web/vite.config.ts", "web/svelte.config.js"]
+
+[checks.web-test]
+kind = "unit"
+reads = ["web/src/**", "web/build/**", "web/mock/**", "web/package.json", "web/package-lock.json", "web/tsconfig.json", "web/vite.config.ts", "web/svelte.config.js"]
+
+[checks.web-coverage]
+kind = "unit"
+reads = ["web/src/**", "web/build/**", "web/mock/**", "web/package.json", "web/package-lock.json", "web/tsconfig.json", "web/vite.config.ts", "web/svelte.config.js"]
+
+[checks.web-build]
+kind = "build"
+reads = ["web/src/**", "web/public/**", "web/build/**", "web/index.html", "web/app-shell-csp.txt", "web/package.json", "web/package-lock.json", "web/tsconfig.json", "web/vite.config.ts", "web/svelte.config.js"]
+
+[checks.web-e2e-fast]
+kind = "e2e"
+reads = ["web/**", "scripts/with-e2e-browser.sh", "scripts/with-loopback-network.sh"]
+
+[checks.web-e2e]
+kind = "e2e"
+reads = ["web/**", "scripts/with-e2e-browser.sh", "scripts/with-loopback-network.sh", "scripts/with-playwright-container.sh"]
+
+[checks.web-e2e-webkit]
+kind = "e2e"
+reads = ["web/**", "scripts/with-playwright-container.sh"]
+
+[checks.web-stress]
+kind = "stress"
+reads = ["web/**", "scripts/web-stress.sh", "scripts/with-e2e-browser.sh", "scripts/with-loopback-network.sh"]
+
+[checks.actionlint]
+kind = "lint"
+reads = [".github/workflows/**", ".github/actionlint.yaml"]
+
+[checks.scripts-ci-failures-test]
+kind = "unit"
+reads = ["scripts/ci-failures*", "scripts/ci-failures-fixtures/**", "scripts/stress-issues*"]
+
+[checks.scripts-stress-issues-test]
+kind = "unit"
+reads = ["scripts/stress-issues*", "scripts/ci-failures*", "scripts/ci-failures-fixtures/**"]
+
+[checks.scripts-affected-packages-test]
+kind = "unit"
+reads = ["scripts/affected-packages*", "Cargo.toml", "crates/**/Cargo.toml"]
+
+[checks.rust-clippy-macos]
+kind = "lint"
+reads = ["src/**", "crates/**", "tests/**", "assets/**", ".cargo/**", "build.rs", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "web/src/**", "web/public/**", "web/build/**", "web/index.html", "web/package-lock.json", "web/vite.config.ts", "web/svelte.config.js", "web/app-shell-csp.txt", "clippy.toml", ".github/workflows/release.yml"]
+
+[checks.rust-test-windows]
+kind = "unit"
+reads = ["src/**", "crates/**", "tests/**", "assets/**", ".cargo/**", "build.rs", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "web/src/**", "web/public/**", "web/build/**", "web/index.html", "web/package-lock.json", "web/vite.config.ts", "web/svelte.config.js", "web/app-shell-csp.txt", ".github/workflows/release.yml"]
+
+[checks.rust-isolation]
+kind = "typecheck"
+reads = ["src/**", "crates/**", "tests/**", "assets/**", ".cargo/**", "build.rs", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "web/src/**", "web/public/**", "web/build/**", "web/index.html", "web/package-lock.json", "web/vite.config.ts", "web/svelte.config.js", "web/app-shell-csp.txt", "scripts/check-crate-isolation.sh"]
+
+[checks.web-e2e-visual]
+kind = "e2e"
+reads = ["web/**", "scripts/with-playwright-container.sh"]
+
+[checks.docker-build]
+kind = "build"
+reads = ["src/**", "crates/**", "tests/**", "assets/**", ".cargo/**", "build.rs", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "web/src/**", "web/public/**", "web/build/**", "web/index.html", "web/package-lock.json", "web/vite.config.ts", "web/svelte.config.js", "web/app-shell-csp.txt", "docker/**", ".dockerignore", "web/**"]
+
+[ci]
+repo = "Grizzly-Endeavors/residuum"
+
+[[ci.steps]]
+workflow = "CI"
+job = "Rust Lint"
+step = "Check formatting"
+check = "rust-fmt"
+
+[[ci.steps]]
+workflow = "CI"
+job = "Rust Lint"
+step = "Clippy"
+check = "rust-clippy"
+
+[[ci.steps]]
+workflow = "CI"
+job = "Rust Lint"
+step = "Rustdoc"
+check = "rust-doc"
+
+[[ci.steps]]
+workflow = "CI"
+job = "Rust Lint"
+step = "Dependency audit"
+check = "rust-deny"
+
+[[ci.steps]]
+workflow = "CI"
+job = "Rust Lint"
+step = "Unused dependencies"
+check = "rust-shear"
+
+[[ci.steps]]
+workflow = "CI"
+job = "Clippy (x86_64-pc-windows-gnu)"
+step = "Clippy"
+check = "rust-clippy-cross"
+
+[[ci.steps]]
+workflow = "CI"
+job = "Rust Tests"
+step = "Build test binaries"
+check = "rust-test"
+
+[[ci.steps]]
+workflow = "CI"
+job = "Rust Tests"
+step = "Tests"
+check = "rust-test"
+
+[[ci.steps]]
+workflow = "CI"
+job = "Rust Tests"
+step = "Pebble tests"
+check = "rust-pebble"
+
+[[ci.steps]]
+workflow = "CI"
+job = "Rust Tests"
+step = "Generated types are up to date"
+check = "rust-types"
+
+[[ci.steps]]
+workflow = "CI"
+job = "Crate Isolation"
+step = "Check the root library and each member crate alone"
+check = "rust-isolation"
+
+[[ci.steps]]
+workflow = "CI"
+job = "Web Checks"
+step = "Web format check"
+check = "web-fmt"
+
+[[ci.steps]]
+workflow = "CI"
+job = "Web Checks"
+step = "Web lint"
+check = "web-lint"
+
+[[ci.steps]]
+workflow = "CI"
+job = "Web Checks"
+step = "Web type check"
+check = "web-typecheck"
+
+[[ci.steps]]
+workflow = "CI"
+job = "Web Checks"
+step = "Web unit tests"
+check = "web-coverage"
+
+[[ci.steps]]
+workflow = "CI"
+job = "Web Checks"
+step = "Build web assets"
+check = "web-build"
+
+[[ci.steps]]
+workflow = "CI"
+job = "Web Tests (Node ${{ matrix.node }})"
+step = "Web unit tests"
+check = "web-test"
+
+[[ci.steps]]
+workflow = "CI"
+job = "Web End-to-End (${{ matrix.shard }}/4)"
+step = "Web end-to-end tests"
+check = "web-e2e-fast"
+
+[[ci.steps]]
+workflow = "CI"
+job = "Web Visual Comparisons"
+step = "Web visual comparisons"
+check = "web-e2e-visual"
+
+[[ci.steps]]
+workflow = "CI"
+job = "Clippy (aarch64-unknown-linux-gnu)"
+step = "Clippy"
+check = "rust-clippy-cross"
+
+[[ci.steps]]
+workflow = "CI"
+job = "Clippy (aarch64-apple-darwin)"
+step = "Clippy"
+check = "rust-clippy-macos"
+
+[[ci.steps]]
+workflow = "CI"
+job = "Tests (Windows)"
+step = "Test"
+check = "rust-test-windows"
+
+[[ci.steps]]
+workflow = "CI"
+job = "Docker Source Image"
+step = "Build docker/Dockerfile"
+check = "docker-build"
+
+[[ci.steps]]
+workflow = "Cross-Platform Checks"
+job = "Clippy (aarch64-unknown-linux-gnu)"
+step = "Clippy"
+check = "rust-clippy-cross"
+
+[[ci.steps]]
+workflow = "Cross-Platform Checks"
+job = "Clippy (aarch64-apple-darwin)"
+step = "Clippy"
+check = "rust-clippy-macos"
+
+[[ci.steps]]
+workflow = "Cross-Platform Checks"
+job = "Tests (Windows)"
+step = "Test"
+check = "rust-test-windows"
+
+[[ci.steps]]
+workflow = "Nightly Stress"
+job = "Rust Stress"
+step = "Build test binaries"
+check = "rust-test"
+
+[[ci.steps]]
+workflow = "Nightly Stress"
+job = "Rust Stress"
+step = "Tests"
+check = "rust-test"
+
+[[ci.steps]]
+workflow = "Nightly Stress"
+job = "Rust Stress"
+step = "Stress"
+check = "rust-stress"
+
+[[ci.steps]]
+workflow = "Nightly Stress"
+job = "Web Stress (${{ matrix.shard }}/4)"
+step = "Web stress"
+check = "web-stress"
+
+# Bear sets the damage levels. The first matching entry wins; a path no entry matches is level 0.
+
+[[areas]]
+paths = ["scripts/install.sh", ".github/workflows/release.yml", "bundle/install-app.sh"]
+level = 4
+
+[[areas]]
+paths = ["docs/**", "**/*.test.ts", "tests/**", "**/tests/**", "**/tests.rs", "**/test_*.rs", "**/*_support.rs", "**/fake_*.rs", "**/fixture.rs", "**/testdata/**", "src/testing/**", "crates/**/testing.rs", "crates/**/testing/**", "crates/**/*_tests.rs", "crates/tools/golden/**", "scripts/**", ".githooks/**", ".github/**", ".cargo/**", "web/e2e/**", "web/mock/**", "web/scripts/**", "web/src/test/**", "web/**/*.md", "*.md", "crates/*/*.md", "justfile", "clippy.toml", "rustfmt.toml", "deny.toml", "rust-toolchain.toml", "check-runs.toml", ".dockerignore"]
+level = 0
+
+[[areas]]
+paths = ["crates/config/**", "crates/workspace/**", "crates/memory/**", "crates/checkpoints/**", "crates/core/**", "crates/tools/**", "crates/interfaces/**", "crates/notify/**", "crates/a2a/**", "crates/net/**", "crates/hub/**", "crates/tracing-service/**", "src/daemon.rs", "src/setup_wizard.rs", "src/commands/update*.rs", "src/commands/secret.rs", "src/commands/agent_keys.rs", "src/commands/setup.rs", "src/commands/remote.rs", "src/commands/a2a.rs"]
+level = 4
+
+[[areas]]
+paths = ["crates/agent/**", "crates/background/**", "crates/proactivity/**", "crates/inference/**", "crates/mcp/**", "crates/gateway/**", "src/wiring.rs", "src/lib.rs", "src/main.rs", "build.rs", "Cargo.toml", "Cargo.lock"]
+level = 3
+
+[[areas]]
+paths = ["crates/bus/**", "crates/protocol/**", "crates/skills/**", "src/commands/**", "assets/**", "docker/**", "mac/**", "bundle/**", "web/src/sw/**", "web/src/pairing/**", "web/src/Setup*", "web/src/lib/generated/**", "web/build/**", "web/app-shell-csp.txt"]
+level = 2
+
+[[areas]]
+paths = ["src/logging/**", "web/**"]
+level = 1
+

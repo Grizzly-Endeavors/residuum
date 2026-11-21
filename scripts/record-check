@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# record-check: run a command and report the run to the machine-level `check-run`
+# recorder.
+#
+#   scripts/record-check <check-id> -- <command> [args...]
+#
+# The command runs with this script's stdin, stdout and stderr and its exit
+# status is the script's. Where `check-run` is not on PATH, the command runs on
+# its own and behaves exactly as without this script. The check ids are listed
+# in check-runs.toml.
+set -uo pipefail
+
+if [ "$#" -lt 3 ] || [ "$2" != "--" ]; then
+    echo "usage: record-check <check-id> -- <command> [args...]" >&2
+    exit 2
+fi
+
+if command -v check-run >/dev/null 2>&1; then
+    exec check-run "$@"
+fi
+shift 2
+exec "$@"
