@@ -127,6 +127,11 @@ reads = "playwright"
 [checks.docker-build]
 reads = ["rust-src", "web-app", "docker/**", ".dockerignore", "web/**"]
 
+# The scheduled runs are the audit: a held-out full run that measures what the blocking checks let through.
+# Its cost is outside the score, and a failure after a pass is counted as an escape.
+[audit]
+events = ["schedule"]
+
 [ci]
 steps = [
   { workflow = "CI", job = "Rust Lint", step = "Check formatting", check = "rust-fmt" },
