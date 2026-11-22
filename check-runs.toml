@@ -152,6 +152,9 @@ steps = [
   { workflow = "Nightly Stress", job = "Web Stress (${{ matrix.shard }}/4)", step = "Web stress", check = "web-stress" },
 ]
 
+# Steps that only prepare for checks: installs, toolchain and runtime setup, target and cache setup, web assets built so Rust can compile.
+setup = ["Install *", "Setup *", "Add target", "Build web assets", "Cache *", "Post Cache *"]
+
 # Bear sets the damage levels. The first matching entry wins; a path no entry matches is level 0.
 
 [[areas]]
