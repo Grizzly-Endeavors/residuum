@@ -4,8 +4,10 @@ project = "residuum"
 # Defaults: the kind comes from the words in the check id (a `gate-` prefix is a
 # gate), and reads is the top-level directory the check ran in. An entry gives
 # only the keys that differ: a `kind` the id does not reveal, and a `reads` list
-# narrower than the directory. A `reads` item naming a key of [paths] stands for
-# that list. CI steps below are matched to the same ids.
+# narrower than the directory, and a `ceiling`, the worst damage level the check
+# can catch (a `format` check is capped at 0 without one). A `reads` item naming
+# a key of [paths] stands for that list. CI steps below are matched to the same
+# ids.
 
 [paths]
 rust-src = ["src/**", "crates/**", "tests/**", "assets/**", ".cargo/**", "build.rs", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml"]
@@ -27,6 +29,7 @@ reads = ["rust-src", "web-app", "clippy.toml", ".github/workflows/release.yml"]
 reads = ["rust-src", "web-app", "clippy.toml", ".github/workflows/release.yml"]
 
 [checks.rust-doc]
+ceiling = 0
 kind = "lint"
 reads = ["rust-src", "web-app"]
 
@@ -41,9 +44,11 @@ kind = "e2e"
 reads = ["crates/**", "manifests", "rust-toolchain.toml"]
 
 [checks.rust-types]
+ceiling = 2
 reads = ["src/**", "crates/**", "tests/ts_export.rs", "assets/**", ".cargo/**", "build.rs", "manifests", "rust-toolchain.toml", "web-app", "web/src/lib/generated/**", "scripts/check-generated-types.sh", "scripts/export-generated-types.sh"]
 
 [checks.rust-shear]
+ceiling = 0
 kind = "lint"
 reads = ["src/**", "crates/**", "tests/**", "build.rs", "manifests"]
 
@@ -92,13 +97,16 @@ kind = "lint"
 reads = [".github/workflows/**", ".github/actionlint.yaml"]
 
 [checks.scripts-ci-failures-test]
+ceiling = 0
 reads = ["ci-failures"]
 
 [checks.scripts-stress-issues-test]
+ceiling = 0
 kind = "unit"
 reads = "ci-failures"
 
 [checks.scripts-affected-packages-test]
+ceiling = 0
 reads = ["scripts/affected-packages*", "Cargo.toml", "crates/**/Cargo.toml"]
 
 [checks.rust-clippy-macos]
@@ -112,6 +120,7 @@ kind = "typecheck"
 reads = ["rust-src", "web-app", "scripts/check-crate-isolation.sh"]
 
 [checks.web-e2e-visual]
+ceiling = 1
 kind = "e2e"
 reads = "playwright"
 
@@ -166,18 +175,21 @@ paths = ["docs/**", "**/*.test.ts", "tests/**", "**/tests/**", "**/tests.rs", "*
 level = 0
 
 [[areas]]
-paths = ["crates/config/**", "crates/workspace/**", "crates/memory/**", "crates/checkpoints/**", "crates/core/**", "crates/tools/**", "crates/interfaces/**", "crates/notify/**", "crates/a2a/**", "crates/net/**", "crates/hub/**", "crates/tracing-service/**", "src/daemon.rs", "src/setup_wizard.rs", "src/commands/update*.rs", "src/commands/secret.rs", "src/commands/agent_keys.rs", "src/commands/setup.rs", "src/commands/remote.rs", "src/commands/a2a.rs"]
+paths = ["crates/checkpoints/src/engine.rs", "crates/checkpoints/src/backend.rs", "crates/core/src/util/fs.rs", "crates/config/src/secrets.rs", "crates/config/src/agent_keys/**", "crates/tracing-service/src/sanitize.rs", "crates/tools/src/exec.rs", "crates/hub/src/web/workspace.rs", "crates/hub/src/provision.rs", "crates/hub/src/update.rs", "src/commands/update*.rs", "crates/net/src/pairing/**", "crates/a2a/src/auth.rs"]
 level = 4
 
 [[areas]]
-paths = ["crates/agent/**", "crates/background/**", "crates/proactivity/**", "crates/inference/**", "crates/mcp/**", "crates/gateway/**", "src/wiring.rs", "src/lib.rs", "src/main.rs", "build.rs", "Cargo.toml", "Cargo.lock"]
+paths = ["crates/inference/src/retry.rs", "crates/inference/src/failover.rs", "crates/inference/src/attempt.rs", "crates/inference/src/pricing.rs", "crates/inference/src/usage_record.rs", "crates/inference/src/providers/**", "crates/agent/src/turn.rs", "crates/agent/src/core.rs", "crates/agent/src/context/**", "crates/agent/src/prefix_watch.rs", "crates/agent/src/tool_result_store.rs", "crates/agent/src/subconscious/**", "crates/background/src/runtime.rs", "crates/background/src/subagent.rs", "crates/background/src/messaging.rs", "crates/proactivity/**", "crates/memory/src/merge_writer.rs", "crates/memory/src/episode_store.rs", "crates/memory/src/log_store.rs", "crates/memory/src/recent_messages.rs", "crates/workspace/src/team_files.rs", "crates/tools/src/write.rs", "crates/tools/src/edit.rs", "crates/tools/src/path_policy.rs", "crates/interfaces/src/outbound.rs", "crates/interfaces/src/reply_targets.rs", "crates/a2a/src/client/**", "crates/net/src/cross_site.rs"]
 level = 3
 
 [[areas]]
-paths = ["crates/bus/**", "crates/protocol/**", "crates/skills/**", "src/commands/**", "assets/**", "docker/**", "mac/**", "bundle/**", "web/src/sw/**", "web/src/pairing/**", "web/src/Setup*", "web/src/lib/generated/**", "web/build/**", "web/app-shell-csp.txt"]
+paths = ["crates/tracing-service/**", "crates/hub/src/overview/**", "src/logging/**"]
+level = 1
+
+[[areas]]
+paths = ["crates/**", "src/**", "build.rs", "Cargo.toml", "Cargo.lock", "assets/**", "docker/**", "mac/**", "bundle/**", "web/src/sw/**", "web/src/pairing/**", "web/src/Setup*", "web/src/lib/generated/**", "web/build/**", "web/app-shell-csp.txt"]
 level = 2
 
 [[areas]]
-paths = ["src/logging/**", "web/**"]
+paths = ["web/**"]
 level = 1
-
