@@ -38,10 +38,11 @@ fail() {
 # ACMR, not ACM: a renamed file that was also edited is staged as R, and it must
 # still be formatted and checked.
 STAGED_RUST="$(git diff --cached --name-only --diff-filter=ACMR -- '*.rs')"
-# Cargo.lock belongs here alongside the manifests: a lockfile-only commit is a
+# The files the dependency audit reads: every Cargo.toml, at any depth, the
+# lockfile and deny.toml. Cargo.lock belongs here: a lockfile-only commit is a
 # dependency bump, which is the change most likely to pull in a new advisory.
-# Matching on '*.toml' alone would let it through the gate unaudited.
-STAGED_MANIFEST="$(git diff --cached --name-only --diff-filter=ACMR -- '*.toml' 'Cargo.lock')"
+# Other .toml files (check-runs.toml, rustfmt.toml) are not audit input.
+STAGED_MANIFEST="$(git diff --cached --name-only --diff-filter=ACMR -- ':(glob)**/Cargo.toml' 'Cargo.lock' 'deny.toml')"
 # The staged web files Prettier formats: the globs of the "format" script in
 # web/package.json, which is what CI's format check covers. Formatting a file
 # outside them (vite.config.ts, the README) would churn files nobody checks.

@@ -1,307 +1,156 @@
 project = "residuum"
 
+# Entries under [checks.*] are exceptions to what the recorder works out itself.
+# Defaults: the kind comes from the words in the check id (a `gate-` prefix is a
+# gate), and reads is the top-level directory the check ran in. An entry gives
+# only the keys that differ: a `kind` the id does not reveal, and a `reads` list
+# narrower than the directory. A `reads` item naming a key of [paths] stands for
+# that list. CI steps below are matched to the same ids.
+
+[paths]
+rust-src = ["src/**", "crates/**", "tests/**", "assets/**", ".cargo/**", "build.rs", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml"]
+web-app = ["web/src/**", "web/public/**", "web/build/**", "web/index.html", "web/package-lock.json", "web/vite.config.ts", "web/svelte.config.js", "web/app-shell-csp.txt"]
+web-src = ["web/src/**", "web/build/**", "web/mock/**"]
+web-config = ["web/package.json", "web/package-lock.json", "web/tsconfig.json", "web/vite.config.ts", "web/svelte.config.js"]
+e2e-browser = ["scripts/with-e2e-browser.sh", "scripts/with-loopback-network.sh"]
+playwright = ["web/**", "scripts/with-playwright-container.sh"]
+manifests = ["Cargo.toml", "Cargo.lock"]
+ci-failures = ["scripts/ci-failures*", "scripts/ci-failures-fixtures/**", "scripts/stress-issues*"]
+
 [checks.rust-fmt]
-kind = "format"
 reads = ["src/**", "crates/**", "tests/**", "build.rs", "rustfmt.toml", "rust-toolchain.toml"]
 
 [checks.rust-clippy]
-kind = "lint"
-reads = ["src/**", "crates/**", "tests/**", "assets/**", ".cargo/**", "build.rs", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "web/src/**", "web/public/**", "web/build/**", "web/index.html", "web/package-lock.json", "web/vite.config.ts", "web/svelte.config.js", "web/app-shell-csp.txt", "clippy.toml", ".github/workflows/release.yml"]
+reads = ["rust-src", "web-app", "clippy.toml", ".github/workflows/release.yml"]
 
 [checks.rust-clippy-cross]
-kind = "lint"
-reads = ["src/**", "crates/**", "tests/**", "assets/**", ".cargo/**", "build.rs", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "web/src/**", "web/public/**", "web/build/**", "web/index.html", "web/package-lock.json", "web/vite.config.ts", "web/svelte.config.js", "web/app-shell-csp.txt", "clippy.toml", ".github/workflows/release.yml"]
+reads = ["rust-src", "web-app", "clippy.toml", ".github/workflows/release.yml"]
 
 [checks.rust-doc]
 kind = "lint"
-reads = ["src/**", "crates/**", "tests/**", "assets/**", ".cargo/**", "build.rs", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "web/src/**", "web/public/**", "web/build/**", "web/index.html", "web/package-lock.json", "web/vite.config.ts", "web/svelte.config.js", "web/app-shell-csp.txt"]
+reads = ["rust-src", "web-app"]
 
 [checks.rust-test]
-kind = "unit"
-reads = ["src/**", "crates/**", "tests/**", "assets/**", ".cargo/**", "build.rs", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "web/src/**", "web/public/**", "web/build/**", "web/index.html", "web/package-lock.json", "web/vite.config.ts", "web/svelte.config.js", "web/app-shell-csp.txt", ".github/workflows/release.yml"]
+reads = ["rust-src", "web-app", ".github/workflows/release.yml"]
 
 [checks.rust-stress]
-kind = "stress"
-reads = ["src/**", "crates/**", "tests/**", "assets/**", ".cargo/**", "build.rs", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "web/src/**", "web/public/**", "web/build/**", "web/index.html", "web/package-lock.json", "web/vite.config.ts", "web/svelte.config.js", "web/app-shell-csp.txt", ".github/workflows/release.yml"]
+reads = ["rust-src", "web-app", ".github/workflows/release.yml"]
 
 [checks.rust-pebble]
 kind = "e2e"
-reads = ["crates/**", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml"]
+reads = ["crates/**", "manifests", "rust-toolchain.toml"]
 
 [checks.rust-types]
-kind = "typecheck"
-reads = ["src/**", "crates/**", "tests/ts_export.rs", "assets/**", ".cargo/**", "build.rs", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "web/src/**", "web/public/**", "web/build/**", "web/index.html", "web/package-lock.json", "web/vite.config.ts", "web/svelte.config.js", "web/app-shell-csp.txt", "web/src/lib/generated/**", "scripts/check-generated-types.sh", "scripts/export-generated-types.sh"]
+reads = ["src/**", "crates/**", "tests/ts_export.rs", "assets/**", ".cargo/**", "build.rs", "manifests", "rust-toolchain.toml", "web-app", "web/src/lib/generated/**", "scripts/check-generated-types.sh", "scripts/export-generated-types.sh"]
 
 [checks.rust-shear]
 kind = "lint"
-reads = ["src/**", "crates/**", "tests/**", "build.rs", "Cargo.toml", "Cargo.lock"]
+reads = ["src/**", "crates/**", "tests/**", "build.rs", "manifests"]
 
 [checks.rust-deny]
-kind = "audit"
-reads = ["Cargo.toml", "Cargo.lock", "deny.toml", "crates/**/Cargo.toml"]
+reads = ["manifests", "deny.toml", "crates/**/Cargo.toml"]
 
 [checks.rust-build]
-kind = "build"
-reads = ["src/**", "crates/**", "tests/**", "assets/**", ".cargo/**", "build.rs", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "web/src/**", "web/public/**", "web/build/**", "web/index.html", "web/package-lock.json", "web/vite.config.ts", "web/svelte.config.js", "web/app-shell-csp.txt"]
+reads = ["rust-src", "web-app"]
 
 [checks.web-fmt]
-kind = "format"
-reads = ["web/src/**", "web/build/**", "web/mock/**", "web/e2e/**", "web/playwright.config.ts", "web/.prettierrc", "web/.prettierignore", "web/package.json"]
+reads = ["web-src", "web/e2e/**", "web/playwright.config.ts", "web/.prettierrc", "web/.prettierignore", "web/package.json"]
 
 [checks.web-lint]
-kind = "lint"
-reads = ["web/src/**", "web/build/**", "web/mock/**", "web/e2e/**", "web/scripts/**", "web/eslint.config.js", "web/stylelint.config.js", "web/package.json", "web/package-lock.json", "web/tsconfig.json", "web/vite.config.ts", "web/svelte.config.js"]
+reads = ["web-src", "web/e2e/**", "web/scripts/**", "web/eslint.config.js", "web/stylelint.config.js", "web-config"]
 
 [checks.web-typecheck]
-kind = "typecheck"
-reads = ["web/src/**", "web/build/**", "web/mock/**", "web/e2e/**", "web/package.json", "web/package-lock.json", "web/tsconfig.json", "web/vite.config.ts", "web/svelte.config.js"]
+reads = ["web-src", "web/e2e/**", "web-config"]
 
 [checks.web-test]
-kind = "unit"
-reads = ["web/src/**", "web/build/**", "web/mock/**", "web/package.json", "web/package-lock.json", "web/tsconfig.json", "web/vite.config.ts", "web/svelte.config.js"]
+reads = ["web-src", "web-config"]
 
 [checks.web-coverage]
 kind = "unit"
-reads = ["web/src/**", "web/build/**", "web/mock/**", "web/package.json", "web/package-lock.json", "web/tsconfig.json", "web/vite.config.ts", "web/svelte.config.js"]
+reads = ["web-src", "web-config"]
 
 [checks.web-build]
-kind = "build"
-reads = ["web/src/**", "web/public/**", "web/build/**", "web/index.html", "web/app-shell-csp.txt", "web/package.json", "web/package-lock.json", "web/tsconfig.json", "web/vite.config.ts", "web/svelte.config.js"]
+reads = ["web/src/**", "web/public/**", "web/build/**", "web/index.html", "web/app-shell-csp.txt", "web-config"]
 
 [checks.web-e2e-fast]
 kind = "e2e"
-reads = ["web/**", "scripts/with-e2e-browser.sh", "scripts/with-loopback-network.sh"]
+reads = ["web/**", "e2e-browser"]
 
 [checks.web-e2e]
 kind = "e2e"
-reads = ["web/**", "scripts/with-e2e-browser.sh", "scripts/with-loopback-network.sh", "scripts/with-playwright-container.sh"]
+reads = ["web/**", "e2e-browser", "scripts/with-playwright-container.sh"]
 
 [checks.web-e2e-webkit]
 kind = "e2e"
-reads = ["web/**", "scripts/with-playwright-container.sh"]
+reads = "playwright"
 
 [checks.web-stress]
-kind = "stress"
-reads = ["web/**", "scripts/web-stress.sh", "scripts/with-e2e-browser.sh", "scripts/with-loopback-network.sh"]
+reads = ["web/**", "scripts/web-stress.sh", "e2e-browser"]
 
 [checks.actionlint]
 kind = "lint"
 reads = [".github/workflows/**", ".github/actionlint.yaml"]
 
 [checks.scripts-ci-failures-test]
-kind = "unit"
-reads = ["scripts/ci-failures*", "scripts/ci-failures-fixtures/**", "scripts/stress-issues*"]
+reads = ["ci-failures"]
 
 [checks.scripts-stress-issues-test]
 kind = "unit"
-reads = ["scripts/stress-issues*", "scripts/ci-failures*", "scripts/ci-failures-fixtures/**"]
+reads = "ci-failures"
 
 [checks.scripts-affected-packages-test]
-kind = "unit"
 reads = ["scripts/affected-packages*", "Cargo.toml", "crates/**/Cargo.toml"]
 
 [checks.rust-clippy-macos]
-kind = "lint"
-reads = ["src/**", "crates/**", "tests/**", "assets/**", ".cargo/**", "build.rs", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "web/src/**", "web/public/**", "web/build/**", "web/index.html", "web/package-lock.json", "web/vite.config.ts", "web/svelte.config.js", "web/app-shell-csp.txt", "clippy.toml", ".github/workflows/release.yml"]
+reads = ["rust-src", "web-app", "clippy.toml", ".github/workflows/release.yml"]
 
 [checks.rust-test-windows]
-kind = "unit"
-reads = ["src/**", "crates/**", "tests/**", "assets/**", ".cargo/**", "build.rs", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "web/src/**", "web/public/**", "web/build/**", "web/index.html", "web/package-lock.json", "web/vite.config.ts", "web/svelte.config.js", "web/app-shell-csp.txt", ".github/workflows/release.yml"]
+reads = ["rust-src", "web-app", ".github/workflows/release.yml"]
 
 [checks.rust-isolation]
 kind = "typecheck"
-reads = ["src/**", "crates/**", "tests/**", "assets/**", ".cargo/**", "build.rs", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "web/src/**", "web/public/**", "web/build/**", "web/index.html", "web/package-lock.json", "web/vite.config.ts", "web/svelte.config.js", "web/app-shell-csp.txt", "scripts/check-crate-isolation.sh"]
+reads = ["rust-src", "web-app", "scripts/check-crate-isolation.sh"]
 
 [checks.web-e2e-visual]
 kind = "e2e"
-reads = ["web/**", "scripts/with-playwright-container.sh"]
+reads = "playwright"
 
 [checks.docker-build]
-kind = "build"
-reads = ["src/**", "crates/**", "tests/**", "assets/**", ".cargo/**", "build.rs", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "web/src/**", "web/public/**", "web/build/**", "web/index.html", "web/package-lock.json", "web/vite.config.ts", "web/svelte.config.js", "web/app-shell-csp.txt", "docker/**", ".dockerignore", "web/**"]
+reads = ["rust-src", "web-app", "docker/**", ".dockerignore", "web/**"]
 
 [ci]
-repo = "Grizzly-Endeavors/residuum"
-
-[[ci.steps]]
-workflow = "CI"
-job = "Rust Lint"
-step = "Check formatting"
-check = "rust-fmt"
-
-[[ci.steps]]
-workflow = "CI"
-job = "Rust Lint"
-step = "Clippy"
-check = "rust-clippy"
-
-[[ci.steps]]
-workflow = "CI"
-job = "Rust Lint"
-step = "Rustdoc"
-check = "rust-doc"
-
-[[ci.steps]]
-workflow = "CI"
-job = "Rust Lint"
-step = "Dependency audit"
-check = "rust-deny"
-
-[[ci.steps]]
-workflow = "CI"
-job = "Rust Lint"
-step = "Unused dependencies"
-check = "rust-shear"
-
-[[ci.steps]]
-workflow = "CI"
-job = "Clippy (x86_64-pc-windows-gnu)"
-step = "Clippy"
-check = "rust-clippy-cross"
-
-[[ci.steps]]
-workflow = "CI"
-job = "Rust Tests"
-step = "Build test binaries"
-check = "rust-test"
-
-[[ci.steps]]
-workflow = "CI"
-job = "Rust Tests"
-step = "Tests"
-check = "rust-test"
-
-[[ci.steps]]
-workflow = "CI"
-job = "Rust Tests"
-step = "Pebble tests"
-check = "rust-pebble"
-
-[[ci.steps]]
-workflow = "CI"
-job = "Rust Tests"
-step = "Generated types are up to date"
-check = "rust-types"
-
-[[ci.steps]]
-workflow = "CI"
-job = "Crate Isolation"
-step = "Check the root library and each member crate alone"
-check = "rust-isolation"
-
-[[ci.steps]]
-workflow = "CI"
-job = "Web Checks"
-step = "Web format check"
-check = "web-fmt"
-
-[[ci.steps]]
-workflow = "CI"
-job = "Web Checks"
-step = "Web lint"
-check = "web-lint"
-
-[[ci.steps]]
-workflow = "CI"
-job = "Web Checks"
-step = "Web type check"
-check = "web-typecheck"
-
-[[ci.steps]]
-workflow = "CI"
-job = "Web Checks"
-step = "Web unit tests"
-check = "web-coverage"
-
-[[ci.steps]]
-workflow = "CI"
-job = "Web Checks"
-step = "Build web assets"
-check = "web-build"
-
-[[ci.steps]]
-workflow = "CI"
-job = "Web Tests (Node ${{ matrix.node }})"
-step = "Web unit tests"
-check = "web-test"
-
-[[ci.steps]]
-workflow = "CI"
-job = "Web End-to-End (${{ matrix.shard }}/4)"
-step = "Web end-to-end tests"
-check = "web-e2e-fast"
-
-[[ci.steps]]
-workflow = "CI"
-job = "Web Visual Comparisons"
-step = "Web visual comparisons"
-check = "web-e2e-visual"
-
-[[ci.steps]]
-workflow = "CI"
-job = "Clippy (aarch64-unknown-linux-gnu)"
-step = "Clippy"
-check = "rust-clippy-cross"
-
-[[ci.steps]]
-workflow = "CI"
-job = "Clippy (aarch64-apple-darwin)"
-step = "Clippy"
-check = "rust-clippy-macos"
-
-[[ci.steps]]
-workflow = "CI"
-job = "Tests (Windows)"
-step = "Test"
-check = "rust-test-windows"
-
-[[ci.steps]]
-workflow = "CI"
-job = "Docker Source Image"
-step = "Build docker/Dockerfile"
-check = "docker-build"
-
-[[ci.steps]]
-workflow = "Cross-Platform Checks"
-job = "Clippy (aarch64-unknown-linux-gnu)"
-step = "Clippy"
-check = "rust-clippy-cross"
-
-[[ci.steps]]
-workflow = "Cross-Platform Checks"
-job = "Clippy (aarch64-apple-darwin)"
-step = "Clippy"
-check = "rust-clippy-macos"
-
-[[ci.steps]]
-workflow = "Cross-Platform Checks"
-job = "Tests (Windows)"
-step = "Test"
-check = "rust-test-windows"
-
-[[ci.steps]]
-workflow = "Nightly Stress"
-job = "Rust Stress"
-step = "Build test binaries"
-check = "rust-test"
-
-[[ci.steps]]
-workflow = "Nightly Stress"
-job = "Rust Stress"
-step = "Tests"
-check = "rust-test"
-
-[[ci.steps]]
-workflow = "Nightly Stress"
-job = "Rust Stress"
-step = "Stress"
-check = "rust-stress"
-
-[[ci.steps]]
-workflow = "Nightly Stress"
-job = "Web Stress (${{ matrix.shard }}/4)"
-step = "Web stress"
-check = "web-stress"
+steps = [
+  { workflow = "CI", job = "Rust Lint", step = "Check formatting", check = "rust-fmt" },
+  { workflow = "CI", job = "Rust Lint", step = "Clippy", check = "rust-clippy" },
+  { workflow = "CI", job = "Rust Lint", step = "Rustdoc", check = "rust-doc" },
+  { workflow = "CI", job = "Rust Lint", step = "Dependency audit", check = "rust-deny" },
+  { workflow = "CI", job = "Rust Lint", step = "Unused dependencies", check = "rust-shear" },
+  { workflow = "CI", job = "Clippy (x86_64-pc-windows-gnu)", step = "Clippy", check = "rust-clippy-cross" },
+  { workflow = "CI", job = "Rust Tests", step = "Build test binaries", check = "rust-test" },
+  { workflow = "CI", job = "Rust Tests", step = "Tests", check = "rust-test" },
+  { workflow = "CI", job = "Rust Tests", step = "Pebble tests", check = "rust-pebble" },
+  { workflow = "CI", job = "Rust Tests", step = "Generated types are up to date", check = "rust-types" },
+  { workflow = "CI", job = "Crate Isolation", step = "Check the root library and each member crate alone", check = "rust-isolation" },
+  { workflow = "CI", job = "Web Checks", step = "Web format check", check = "web-fmt" },
+  { workflow = "CI", job = "Web Checks", step = "Web lint", check = "web-lint" },
+  { workflow = "CI", job = "Web Checks", step = "Web type check", check = "web-typecheck" },
+  { workflow = "CI", job = "Web Checks", step = "Web unit tests", check = "web-coverage" },
+  { workflow = "CI", job = "Web Checks", step = "Build web assets", check = "web-build" },
+  { workflow = "CI", job = "Web Tests (Node ${{ matrix.node }})", step = "Web unit tests", check = "web-test" },
+  { workflow = "CI", job = "Web End-to-End (${{ matrix.shard }}/4)", step = "Web end-to-end tests", check = "web-e2e-fast" },
+  { workflow = "CI", job = "Web Visual Comparisons", step = "Web visual comparisons", check = "web-e2e-visual" },
+  { workflow = "CI", job = "Clippy (aarch64-unknown-linux-gnu)", step = "Clippy", check = "rust-clippy-cross" },
+  { workflow = "CI", job = "Clippy (aarch64-apple-darwin)", step = "Clippy", check = "rust-clippy-macos" },
+  { workflow = "CI", job = "Tests (Windows)", step = "Test", check = "rust-test-windows" },
+  { workflow = "CI", job = "Docker Source Image", step = "Build docker/Dockerfile", check = "docker-build" },
+  { workflow = "Cross-Platform Checks", job = "Clippy (aarch64-unknown-linux-gnu)", step = "Clippy", check = "rust-clippy-cross" },
+  { workflow = "Cross-Platform Checks", job = "Clippy (aarch64-apple-darwin)", step = "Clippy", check = "rust-clippy-macos" },
+  { workflow = "Cross-Platform Checks", job = "Tests (Windows)", step = "Test", check = "rust-test-windows" },
+  { workflow = "Nightly Stress", job = "Rust Stress", step = "Build test binaries", check = "rust-test" },
+  { workflow = "Nightly Stress", job = "Rust Stress", step = "Tests", check = "rust-test" },
+  { workflow = "Nightly Stress", job = "Rust Stress", step = "Stress", check = "rust-stress" },
+  { workflow = "Nightly Stress", job = "Web Stress (${{ matrix.shard }}/4)", step = "Web stress", check = "web-stress" },
+]
 
 # Bear sets the damage levels. The first matching entry wins; a path no entry matches is level 0.
 
