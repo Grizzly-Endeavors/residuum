@@ -11,16 +11,23 @@ project = "residuum"
 
 [paths]
 rust-src = ["src/**", "crates/**", "tests/**", "assets/**", ".cargo/**", "build.rs", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml"]
-web-app = ["web/src/**", "web/public/**", "web/build/**", "web/index.html", "web/package-lock.json", "web/vite.config.ts", "web/svelte.config.js", "web/app-shell-csp.txt"]
+# What a build of the library and binary targets compiles: no integration tests.
+rust-build-src = ["src/**", "crates/**", "assets/**", ".cargo/**", "build.rs", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml"]
+# Repository files the Rust tests read beyond the Rust sources: hub's update test embeds release.yml, and the source and manifest scans read ci.yml and run affected-packages.sh.
+rust-test-files = [".github/workflows/release.yml", ".github/workflows/ci.yml", "scripts/affected-packages.sh"]
+# What `vite build` reads to produce web/dist, which the Rust build embeds; vite.config.ts imports the mock plugin and src/test/guard.ts.
+web-app = ["web/src/**", "web/public/**", "web/build/**", "web/mock/**", "web/index.html", "web/package.json", "web/package-lock.json", "web/tsconfig.json", "web/vite.config.ts", "web/svelte.config.js", "web/app-shell-csp.txt"]
 web-src = ["web/src/**", "web/build/**", "web/mock/**"]
 web-config = ["web/package.json", "web/package-lock.json", "web/tsconfig.json", "web/vite.config.ts", "web/svelte.config.js"]
-e2e-browser = ["scripts/with-e2e-browser.sh", "scripts/with-loopback-network.sh"]
-playwright = ["web/**", "scripts/with-playwright-container.sh"]
+# The Playwright suite through scripts/with-e2e-browser.sh, which falls back to the Playwright container.
+web-e2e = ["web/src/**", "web/public/**", "web/build/**", "web/mock/**", "web/index.html", "web/package.json", "web/package-lock.json", "web/tsconfig.json", "web/vite.config.ts", "web/svelte.config.js", "web/app-shell-csp.txt", "web/e2e/**", "web/playwright.config.ts", "scripts/with-e2e-browser.sh", "scripts/with-loopback-network.sh", "scripts/with-playwright-container.sh"]
+# The Playwright suite run straight in the Playwright container.
+web-e2e-container = ["web/src/**", "web/public/**", "web/build/**", "web/mock/**", "web/index.html", "web/package.json", "web/package-lock.json", "web/tsconfig.json", "web/vite.config.ts", "web/svelte.config.js", "web/app-shell-csp.txt", "web/e2e/**", "web/playwright.config.ts", "scripts/with-playwright-container.sh"]
 manifests = ["Cargo.toml", "Cargo.lock"]
 ci-failures = ["scripts/ci-failures*", "scripts/ci-failures-fixtures/**", "scripts/stress-issues*"]
 
 [checks.rust-fmt]
-reads = ["src/**", "crates/**", "tests/**", "build.rs", "rustfmt.toml", "rust-toolchain.toml"]
+reads = ["src/**", "crates/**", "tests/**", "build.rs", "Cargo.toml", "rustfmt.toml", "rust-toolchain.toml"]
 
 [checks.rust-clippy]
 reads = ["rust-src", "web-app", "clippy.toml", ".github/workflows/release.yml"]
@@ -28,69 +35,81 @@ reads = ["rust-src", "web-app", "clippy.toml", ".github/workflows/release.yml"]
 [checks.rust-clippy-cross]
 reads = ["rust-src", "web-app", "clippy.toml", ".github/workflows/release.yml"]
 
+[checks.rust-clippy-macos]
+reads = ["rust-src", "web-app", "clippy.toml", ".github/workflows/release.yml"]
+
 [checks.rust-doc]
 ceiling = 0
 kind = "lint"
-reads = ["rust-src", "web-app"]
+reads = ["rust-build-src", "web-app"]
 
 [checks.rust-test]
-reads = ["rust-src", "web-app", ".github/workflows/release.yml"]
+reads = ["rust-src", "web-app", "rust-test-files"]
+
+[checks.rust-test-windows]
+reads = ["rust-src", "web-app", "rust-test-files"]
 
 [checks.rust-stress]
-reads = ["rust-src", "web-app", ".github/workflows/release.yml"]
+reads = ["rust-src", "web-app", "rust-test-files", "scripts/stress-tests.sh"]
 
 [checks.rust-pebble]
 kind = "e2e"
-reads = ["crates/**", "manifests", "rust-toolchain.toml"]
+reads = ["crates/**", "assets/**", "web/src/styles/tokens.css", "manifests", "rust-toolchain.toml"]
 
 [checks.rust-types]
 ceiling = 2
-reads = ["src/**", "crates/**", "tests/ts_export.rs", "assets/**", ".cargo/**", "build.rs", "manifests", "rust-toolchain.toml", "web-app", "web/src/lib/generated/**", "scripts/check-generated-types.sh", "scripts/export-generated-types.sh"]
+reads = ["src/**", "crates/**", "tests/ts_export.rs", "assets/**", ".cargo/**", "build.rs", "manifests", "rust-toolchain.toml", "web-app", "scripts/check-generated-types.sh", "scripts/export-generated-types.sh"]
 
 [checks.rust-shear]
 ceiling = 0
-kind = "lint"
 reads = ["src/**", "crates/**", "tests/**", "build.rs", "manifests"]
 
 [checks.rust-deny]
 reads = ["manifests", "deny.toml", "crates/**/Cargo.toml"]
 
 [checks.rust-build]
-reads = ["rust-src", "web-app"]
+reads = ["rust-build-src", "web-app", "scripts/build-binary.sh"]
+
+[checks.rust-isolation]
+kind = "typecheck"
+reads = ["rust-build-src", "web-app", ".github/workflows/release.yml", "scripts/check-crate-isolation.sh"]
 
 [checks.web-fmt]
-reads = ["web-src", "web/e2e/**", "web/playwright.config.ts", "web/.prettierrc", "web/.prettierignore", "web/package.json"]
+reads = ["web-src", "web/e2e/**", "web/scripts/**", "web/playwright.config.ts", "web/.prettierrc", "web/.prettierignore", "web/package.json", "web/package-lock.json"]
 
 [checks.web-lint]
-reads = ["web-src", "web/e2e/**", "web/scripts/**", "web/eslint.config.js", "web/stylelint.config.js", "web-config"]
+reads = ["web-src", "web/e2e/**", "web/scripts/**", "web/playwright.config.ts", "web/eslint.config.js", "web/stylelint.config.js", "web-config"]
 
 [checks.web-typecheck]
-reads = ["web-src", "web/e2e/**", "web-config"]
+reads = ["web-src", "web/e2e/**", "web/scripts/**", "web/playwright.config.ts", "web-config"]
 
 [checks.web-test]
-reads = ["web-src", "web-config"]
+reads = ["web-src", "web/scripts/**", "web/app-shell-csp.txt", "web-config"]
 
 [checks.web-coverage]
 kind = "unit"
-reads = ["web-src", "web-config"]
+reads = ["web-src", "web/scripts/**", "web/app-shell-csp.txt", "web-config"]
 
 [checks.web-build]
-reads = ["web/src/**", "web/public/**", "web/build/**", "web/index.html", "web/app-shell-csp.txt", "web-config"]
+reads = "web-app"
 
 [checks.web-e2e-fast]
-kind = "e2e"
-reads = ["web/**", "e2e-browser"]
+reads = "web-e2e"
 
 [checks.web-e2e]
-kind = "e2e"
-reads = ["web/**", "e2e-browser", "scripts/with-playwright-container.sh"]
+reads = "web-e2e"
 
 [checks.web-e2e-webkit]
-kind = "e2e"
-reads = "playwright"
+reads = "web-e2e-container"
+
+# Runs only in CI, in a job that is continue-on-error and outside the CI gate: nothing waits on it.
+[checks.web-e2e-visual]
+ceiling = 1
+blocks = false
+reads = "web-e2e-container"
 
 [checks.web-stress]
-reads = ["web/**", "scripts/web-stress.sh", "e2e-browser"]
+reads = ["web-e2e", "scripts/web-stress.sh"]
 
 [checks.actionlint]
 kind = "lint"
@@ -109,23 +128,8 @@ reads = "ci-failures"
 ceiling = 0
 reads = ["scripts/affected-packages*", "Cargo.toml", "crates/**/Cargo.toml"]
 
-[checks.rust-clippy-macos]
-reads = ["rust-src", "web-app", "clippy.toml", ".github/workflows/release.yml"]
-
-[checks.rust-test-windows]
-reads = ["rust-src", "web-app", ".github/workflows/release.yml"]
-
-[checks.rust-isolation]
-kind = "typecheck"
-reads = ["rust-src", "web-app", "scripts/check-crate-isolation.sh"]
-
-[checks.web-e2e-visual]
-ceiling = 1
-kind = "e2e"
-reads = "playwright"
-
 [checks.docker-build]
-reads = ["rust-src", "web-app", "docker/**", ".dockerignore", "web/**"]
+reads = ["rust-build-src", "web-app", "docker/Dockerfile", ".dockerignore"]
 
 # The scheduled runs are the audit: a held-out full run that measures what the blocking checks let through.
 # Its cost is outside the score, and a failure after a pass is counted as an escape.
@@ -157,6 +161,7 @@ steps = [
   { workflow = "CI", job = "Clippy (aarch64-apple-darwin)", step = "Clippy", check = "rust-clippy-macos" },
   { workflow = "CI", job = "Tests (Windows)", step = "Test", check = "rust-test-windows" },
   { workflow = "CI", job = "Docker Source Image", step = "Build docker/Dockerfile", check = "docker-build" },
+  { workflow = "CI", job = "Actionlint", step = "Lint workflows", check = "actionlint" },
   { workflow = "Cross-Platform Checks", job = "Clippy (aarch64-unknown-linux-gnu)", step = "Clippy", check = "rust-clippy-cross" },
   { workflow = "Cross-Platform Checks", job = "Clippy (aarch64-apple-darwin)", step = "Clippy", check = "rust-clippy-macos" },
   { workflow = "Cross-Platform Checks", job = "Tests (Windows)", step = "Test", check = "rust-test-windows" },
@@ -171,30 +176,34 @@ setup = ["Install *", "Setup *", "Add target", "Build web assets", "Cache *", "P
 
 # Bear sets the damage levels. The first matching entry wins; a path no entry matches is level 0.
 
+# Installs and updates on the user's machine, and the release workflow that publishes what they install.
 [[areas]]
 paths = ["scripts/install.sh", ".github/workflows/release.yml", "bundle/install-app.sh"]
 level = 4
 
 [[areas]]
-paths = ["docs/**", "**/*.test.ts", "tests/**", "**/tests/**", "**/tests.rs", "**/test_*.rs", "**/*_support.rs", "**/fake_*.rs", "**/fixture.rs", "**/testdata/**", "src/testing/**", "crates/**/testing.rs", "crates/**/testing/**", "crates/**/*_tests.rs", "crates/tools/golden/**", "scripts/**", ".githooks/**", ".github/**", ".cargo/**", "web/e2e/**", "web/mock/**", "web/scripts/**", "web/src/test/**", "web/**/*.md", "*.md", "crates/*/*.md", "justfile", "clippy.toml", "rustfmt.toml", "deny.toml", "rust-toolchain.toml", "check-runs.toml", ".dockerignore"]
+paths = ["docs/**", "**/*.test.ts", "tests/**", "**/tests/**", "**/tests.rs", "**/test_*.rs", "**/*_support.rs", "**/fake_*.rs", "**/fixture.rs", "**/testdata/**", "src/testing/**", "crates/**/testing.rs", "crates/**/testing/**", "crates/**/*_tests.rs", "crates/tools/golden/**", "mac/ResiduumTests/**", "scripts/**", ".githooks/**", ".github/**", "web/e2e/**", "web/mock/**", "web/scripts/**", "web/src/test/**", "web/eslint.config.js", "web/stylelint.config.js", "web/.prettierrc", "web/.prettierignore", "web/playwright.config.ts", "web/**/*.md", "*.md", "crates/*/*.md", "justfile", "clippy.toml", "rustfmt.toml", "deny.toml", "check-runs.toml"]
 level = 0
 
+# Files inside the level-4 globs below that render, word or shape and decide nothing.
 [[areas]]
-paths = ["crates/checkpoints/src/engine.rs", "crates/checkpoints/src/backend.rs", "crates/core/src/util/fs.rs", "crates/config/src/secrets.rs", "crates/config/src/agent_keys/**", "crates/tracing-service/src/sanitize.rs", "crates/tools/src/exec.rs", "crates/hub/src/web/workspace.rs", "crates/hub/src/provision.rs", "crates/hub/src/update.rs", "src/commands/update*.rs", "crates/net/src/pairing/**", "crates/a2a/src/auth.rs"]
+paths = ["crates/net/src/pairing/qr.rs", "crates/net/src/pairing/error.rs", "crates/net/src/pairing/types.rs", "crates/tracing-service/src/otel.rs"]
+level = 2
+
+# Irreversible: deleting or overwriting user data, storing or sending secrets, deciding who may reach or drive an agent, and the manifests that build that code.
+[[areas]]
+paths = ["Cargo.toml", "Cargo.lock", "crates/a2a/Cargo.toml", "crates/checkpoints/Cargo.toml", "crates/config/Cargo.toml", "crates/core/Cargo.toml", "crates/hub/Cargo.toml", "crates/interfaces/Cargo.toml", "crates/net/Cargo.toml", "crates/tools/Cargo.toml", "crates/tracing-service/Cargo.toml", "crates/checkpoints/src/engine.rs", "crates/checkpoints/src/backend.rs", "crates/core/src/util/fs.rs", "crates/hub/src/web/workspace.rs", "crates/hub/src/provision.rs", "crates/tools/src/write.rs", "crates/tools/src/edit.rs", "crates/config/src/secrets.rs", "crates/config/src/agent_keys/**", "crates/tools/src/exec.rs", "crates/tracing-service/src/**", "crates/hub/src/update.rs", "src/commands/update*.rs", "crates/net/src/pairing/**", "crates/hub/src/http/pairing.rs", "crates/hub/src/http/artifacts_origin.rs", "crates/hub/src/web/cloud_sign_in.rs", "crates/net/src/cross_site.rs", "crates/core/src/util/secret_compare.rs", "crates/a2a/src/auth.rs", "crates/a2a/src/keys.rs", "crates/net/src/remote_access/siblings/keys.rs", "crates/interfaces/src/teams/auth.rs", "crates/interfaces/src/webhook.rs", "crates/interfaces/src/chat_state.rs"]
 level = 4
 
+# Spends paid model usage unattended, or loses an agent's memory or conversations without being irreversible.
 [[areas]]
-paths = ["crates/inference/src/retry.rs", "crates/inference/src/failover.rs", "crates/inference/src/attempt.rs", "crates/inference/src/pricing.rs", "crates/inference/src/usage_record.rs", "crates/inference/src/providers/**", "crates/agent/src/turn.rs", "crates/agent/src/core.rs", "crates/agent/src/context/**", "crates/agent/src/prefix_watch.rs", "crates/agent/src/tool_result_store.rs", "crates/agent/src/subconscious/**", "crates/background/src/runtime.rs", "crates/background/src/subagent.rs", "crates/background/src/messaging.rs", "crates/proactivity/**", "crates/memory/src/merge_writer.rs", "crates/memory/src/episode_store.rs", "crates/memory/src/log_store.rs", "crates/memory/src/recent_messages.rs", "crates/workspace/src/team_files.rs", "crates/tools/src/write.rs", "crates/tools/src/edit.rs", "crates/tools/src/path_policy.rs", "crates/interfaces/src/outbound.rs", "crates/interfaces/src/reply_targets.rs", "crates/a2a/src/client/**", "crates/net/src/cross_site.rs"]
+paths = ["crates/agent/Cargo.toml", "crates/background/Cargo.toml", "crates/gateway/Cargo.toml", "crates/inference/Cargo.toml", "crates/memory/Cargo.toml", "crates/workspace/Cargo.toml", "crates/inference/src/retry.rs", "crates/inference/src/failover.rs", "crates/inference/src/attempt.rs", "crates/inference/src/pricing.rs", "crates/inference/src/usage_record.rs", "crates/inference/src/providers/**", "crates/agent/src/turn.rs", "crates/agent/src/core.rs", "crates/agent/src/auto_mode.rs", "crates/agent/src/context/**", "crates/agent/src/prefix_watch.rs", "crates/agent/src/tool_result_store.rs", "crates/agent/src/subconscious/**", "crates/background/src/runtime.rs", "crates/background/src/subagent.rs", "crates/background/src/messaging.rs", "crates/gateway/src/event_loop/pulse.rs", "crates/gateway/src/event_loop/pulse_fire.rs", "crates/gateway/src/pulse_fires.rs", "crates/proactivity/**", "crates/memory/src/observer/**", "crates/memory/src/reflector/**", "crates/memory/src/merge_writer.rs", "crates/memory/src/episode_store.rs", "crates/memory/src/log_store.rs", "crates/memory/src/recent_messages.rs", "crates/workspace/src/team_files.rs", "crates/tools/src/path_policy.rs", "crates/interfaces/src/outbound.rs", "crates/interfaces/src/reply_targets.rs", "crates/a2a/src/client/**"]
 level = 3
 
 [[areas]]
-paths = ["crates/tracing-service/**", "crates/hub/src/overview/**", "src/logging/**"]
+paths = ["crates/hub/src/overview/**", "src/logging/format.rs", "web/src/styles/**", "web/public/icons/**", "web/public/favicon.svg"]
 level = 1
 
 [[areas]]
-paths = ["crates/**", "src/**", "build.rs", "Cargo.toml", "Cargo.lock", "assets/**", "docker/**", "mac/**", "bundle/**", "web/src/sw/**", "web/src/pairing/**", "web/src/Setup*", "web/src/lib/generated/**", "web/build/**", "web/app-shell-csp.txt"]
+paths = ["crates/**", "src/**", "build.rs", "assets/**", "docker/**", "mac/**", "bundle/**", "web/**", ".dockerignore", ".cargo/**", "rust-toolchain.toml"]
 level = 2
-
-[[areas]]
-paths = ["web/**"]
-level = 1
