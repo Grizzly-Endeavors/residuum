@@ -207,6 +207,10 @@ impl OllamaClient {
             "sending ollama completion request"
         );
 
+        let request_json = serde_json::to_string(request)
+            .map(crate::http::without_credential_placeholders)
+            .map_err(|e| InferenceError::Parse(format!("failed to serialize request: {e}")))?;
+
         let client = if sink.is_some() {
             self.http.streaming_client()
         } else {
@@ -214,7 +218,8 @@ impl OllamaClient {
         };
         let mut req_builder = client
             .post(format!("{}/api/chat", self.base_url))
-            .json(request);
+            .body(request_json)
+            .header("content-type", "application/json");
         if let Some(key) = &self.api_key {
             req_builder = req_builder.header("Authorization", format!("Bearer {key}"));
         }

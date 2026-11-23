@@ -476,6 +476,7 @@ impl OpenAiClient {
     ) -> Result<InferenceResponse, FailedRequest> {
         let timeout_secs = self.http.timeout_secs();
         let request_json = serde_json::to_string(request)
+            .map(crate::http::without_credential_placeholders)
             .map_err(|e| InferenceError::Parse(format!("failed to serialize request: {e}")))?;
 
         debug!(model = %request.model, "sending openai completion request");
