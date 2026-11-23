@@ -227,6 +227,30 @@ pub(crate) fn log_api_error(
 /// strings are left alone: a base64-looking word in a message is kept.
 const INLINE_MEDIA_MIN_LEN: usize = 256;
 
+/// Prefix of an `OpenShell` credential placeholder. Inside an `OpenShell`
+/// sandbox a secret reads as `openshell:resolve:env:<NAME>`; the gateway swaps
+/// it for the real value only in request headers, and refuses (403) any
+/// request whose body carries one. Once a placeholder lands in conversation
+/// history (an agent printed its env, say) every later model call would be
+/// refused and the agent would be dead until its history was wiped.
+const OPENSHELL_PLACEHOLDER: &str = "openshell:resolve:";
+
+/// What a placeholder prefix becomes in a request body: same text to a
+/// reader, inert to the gateway's scan.
+const OPENSHELL_PLACEHOLDER_INERT: &str = "openshell-placeholder:";
+
+/// `request_json` with every `OpenShell` credential placeholder made inert, so
+/// one that reached the conversation can't brick every later request. The
+/// prefix holds no JSON special characters, so a plain text replace keeps the
+/// JSON valid. Text without a placeholder comes back unchanged.
+pub(crate) fn without_credential_placeholders(request_json: String) -> String {
+    if request_json.contains(OPENSHELL_PLACEHOLDER) {
+        request_json.replace(OPENSHELL_PLACEHOLDER, OPENSHELL_PLACEHOLDER_INERT)
+    } else {
+        request_json
+    }
+}
+
 /// A request body as JSON text for a diagnostic log, with every inline media
 /// payload (a base64 image, or a `data:` URL holding one) replaced by its
 /// size: a failed request with images would otherwise write megabytes of
@@ -274,6 +298,29 @@ fn is_inline_media(text: &str) -> bool {
 mod tests {
     use super::*;
     use crate::test_support::{ScriptedServer, Step};
+
+    #[test]
+    fn credential_placeholders_in_a_body_are_made_inert() {
+        let body = serde_json::json!({
+            "messages": [{"role": "tool", "content": "FIREWORKS_API_KEY=openshell:resolve:env:FIREWORKS_API_KEY"}]
+        })
+        .to_string();
+        let scrubbed = without_credential_placeholders(body);
+        assert!(!scrubbed.contains("openshell:resolve:"), "{scrubbed}");
+        let value: serde_json::Value = serde_json::from_str(&scrubbed).expect("still JSON");
+        assert_eq!(
+            value.pointer("/messages/0/content"),
+            Some(&serde_json::json!(
+                "FIREWORKS_API_KEY=openshell-placeholder:env:FIREWORKS_API_KEY"
+            ))
+        );
+    }
+
+    #[test]
+    fn bodies_without_placeholders_pass_through_unchanged() {
+        let body = r#"{"messages":[{"content":"openshell is fine; resolve: too"}]}"#.to_string();
+        assert_eq!(without_credential_placeholders(body.clone()), body);
+    }
 
     #[test]
     fn logged_requests_leave_out_inline_media() {
