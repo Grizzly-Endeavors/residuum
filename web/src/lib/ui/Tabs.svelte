@@ -3,15 +3,11 @@
   import Badge from "./Badge.svelte";
   import type { TabItem } from "./types";
 
-  // A tab list and the one panel it controls. Arrow keys move between tabs
-  // and select the one they land on; Home and End jump to the ends.
   interface Props {
-    /** Names the tab list for assistive technology. */
     label: string;
     tabs: readonly TabItem<T>[];
     selected: T;
     onchange?: (selected: T) => void;
-    /** The panel's content for the selected tab. */
     children: Snippet<[T]>;
   }
 

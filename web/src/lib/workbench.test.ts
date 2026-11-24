@@ -76,7 +76,6 @@ describe("resolveArtifactsOrigin", () => {
       ok: false,
       reason: NO_SECURE_ORIGIN_REASON,
     });
-    // A relay announcing another UI origin doesn't make this one its UI.
     expect(resolveArtifactsOrigin(info(), proxied)).toEqual({
       ok: false,
       reason: NO_SECURE_ORIGIN_REASON,

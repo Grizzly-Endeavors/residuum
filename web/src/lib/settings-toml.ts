@@ -1,22 +1,3 @@
-// ── Settings TOML/JSON Parse & Diff ──────────────────────────────────
-//
-// Parsing raw config text into structured form state (for display), and
-// diffing two structured snapshots into the JSON patch shape the server's
-// `PATCH /api/config/patch`, `/api/providers/patch`, and `/api/mcp/patch`
-// endpoints expect. The form never rebuilds a whole file from its own
-// state — only the fields it diffs as changed are sent, so anything the
-// form doesn't model (comments, unmodeled sections/keys, HTTP MCP server
-// fields untouched by the edit) survives on the server.
-//
-// Patch value conventions (mirrored by `crates/config/src/patch.rs` and
-// `crates/workspace/src/mcp_patch.rs`):
-//   - a nested object recurses into (or creates) the matching TOML/JSON table
-//   - `null` removes that key, or a whole named entry (provider/webhook/MCP
-//     server) when the value is a whole entry rather than a single field
-//   - `{"$inline": {...}}` sets a model-role key to a TOML inline table
-//     (used for `temperature`/`thinking` overrides)
-//   - anything else is a plain scalar or array value
-
 import { parse as parseToml } from "smol-toml";
 import type {
   McpServerEntry,
@@ -28,8 +9,6 @@ import type {
   RoleOverrides,
 } from "./types";
 
-// ── Config form fields (config.toml) ─────────────────────────────────
-
 export interface WebhookFormEntry {
   name: string;
   secret: string;
@@ -38,7 +17,6 @@ export interface WebhookFormEntry {
   content_fields: string;
 }
 
-/** The five rates of a `[pricing]` entry, in the order the Settings form shows them. */
 export const PRICE_RATES = [
   "input",
   "output",
@@ -49,7 +27,6 @@ export const PRICE_RATES = [
 
 export type PriceRate = (typeof PRICE_RATES)[number];
 
-/** One `[pricing."provider/model"]` override. The rates are text, as every form keeps numbers. */
 export interface PriceFormEntry {
   name: string;
   input: string;
@@ -63,21 +40,16 @@ export interface ConfigFields {
   timezone: string;
   timeout_secs: string;
   max_tokens: string;
-  // gateway
   gateway_bind: string;
   gateway_port: string;
-  // pulse
   pulse_enabled: boolean;
-  // subconscious
   subconscious_enabled: boolean;
   subconscious_mid_turn: boolean;
   subconscious_every_n_iterations: string;
   subconscious_max_transcript_tokens: string;
   subconscious_learning: boolean;
   subconscious_learning_cooldown_minutes: string;
-  // learning fallback
   learning_nudge_after_turns: string;
-  // background
   bg_max_concurrent: string;
   bg_idle_timeout_scheduled_minutes: string;
   bg_idle_timeout_spawned_minutes: string;
@@ -87,37 +59,30 @@ export interface ConfigFields {
   bg_subagent_depth_cap: string;
   bg_hop_soft_limit: string;
   bg_hop_hard_limit: string;
-  // retry
   retry_max_retries: string;
   retry_initial_delay_ms: string;
   retry_max_delay_ms: string;
   retry_backoff_multiplier: string;
-  // agent
   agent_modify_mcp: boolean;
   agent_modify_channels: boolean;
   agent_max_tool_iterations: string;
   agent_repeat_call_guard_enabled: boolean;
   agent_repeat_call_steer_after: string;
   agent_repeat_call_stop_after: string;
-  // idle
   idle_timeout_minutes: string;
   idle_channel: string;
-  // memory observation
   observer_threshold_tokens: string;
   reflector_threshold_tokens: string;
   observer_cooldown_secs: string;
   observer_force_threshold_tokens: string;
-  // memory search
   search_vector_weight: string;
   search_text_weight: string;
   search_min_score: string;
   search_candidate_multiplier: string;
   search_temporal_decay: boolean;
   search_temporal_decay_half_life_days: string;
-  // model parameters
   temperature: string;
   thinking: string;
-  // integrations
   discord_token: string;
   discord_respond_to_others: boolean;
   discord_context_messages: string;
@@ -138,34 +103,25 @@ export interface ConfigFields {
   a2a_public_url: string;
   a2a_visibility: string;
   webhooks: WebhookFormEntry[];
-  // hub pricing, for estimated costs
   pricing: PriceFormEntry[];
-  // cloud
   cloud_enabled: boolean;
   cloud_token: string;
   cloud_relay_url: string;
-  // push
   push_contact: string;
-  // decision model (hub)
   system_one_provider: string;
   system_one_model: string;
   system_one_url: string;
   system_one_api_key: string;
   system_one_keep_alive: string;
-  // auto mode (agent)
   auto_mode_enabled: boolean;
   auto_mode_deny: string[];
   auto_mode_allow: string[];
   auto_mode_threshold: string;
-  // tracing
   tracing_log_level: string;
   tracing_auto_error_reporting: boolean;
   tracing_sanitize_content: boolean;
-  // skills
   skills_dirs: string[];
-  // tools
   tools_path: string[];
-  // web search
   ws_backend: string;
   ws_brave_api_key: string;
   ws_tavily_api_key: string;
@@ -278,7 +234,6 @@ export function defaultConfigFields(): ConfigFields {
   };
 }
 
-// Helper to safely read nested TOML values
 function str(v: unknown): string {
   if (v == null) return "";
   if (typeof v === "object") {
@@ -310,11 +265,6 @@ function parseTomlTable(raw: string): Record<string, unknown> {
   }
 }
 
-/**
- * Merge the hub's config document into the agent's, section by section. The
- * hub and the agent each own some keys of `[a2a]` and `[background]`; every
- * other key belongs to exactly one of the two files.
- */
 function mergeConfigDocs(
   hub: Record<string, unknown>,
   agent: Record<string, unknown>,
@@ -329,11 +279,6 @@ function mergeConfigDocs(
   return merged;
 }
 
-/**
- * Parse the agent's `config.toml` and the hub's `config.toml` into the one
- * flat form the Settings page edits. Saving splits the changes back out by
- * owner — see [`splitConfigPatch`].
- */
 export function parseConfigToml(raw: string, hubRaw = ""): ConfigFields {
   const fields = defaultConfigFields();
   const doc = mergeConfigDocs(parseTomlTable(hubRaw), parseTomlTable(raw));
@@ -563,8 +508,6 @@ export function parseConfigToml(raw: string, hubRaw = ""): ConfigFields {
   return fields;
 }
 
-// ── Providers (providers.toml) ───────────────────────────────────────
-
 export interface ProvidersFormState {
   providers: SettingsProviderEntry[];
   models: SettingsModelAssignments;
@@ -601,13 +544,11 @@ export function defaultModels(): SettingsModelAssignments {
   };
 }
 
-/** A provider's `models` table: each model's settings, by the model's name. */
 function parseProviderModels(raw: unknown): SettingsProviderModel[] {
   if (!isTable(raw)) return [];
   return Object.entries(raw).map(([name, model]) => ({ name, images: imagesOf(model) }));
 }
 
-/** A model's image setting, from the `input` list in its table. */
 function imagesOf(model: unknown): ModelImageInput {
   if (!isTable(model) || !Array.isArray(model.input)) return "";
   return stringList(model.input).includes("image") ? "image" : "text";
@@ -676,14 +617,12 @@ export function parseProvidersToml(raw: string): ProvidersFormState {
   return result;
 }
 
-/** Model values can be a string, array (failover), or inline table. Show first entry for form. */
 function modelStr(v: unknown): string {
   if (Array.isArray(v)) return v.length > 0 ? String(v[0]) : "";
   if (v == null) return "";
   if (typeof v === "object") {
     const obj = v as Record<string, unknown>;
     if ("model" in obj) {
-      // Inline table form: { model = "...", temperature = ..., thinking = "..." }
       return modelStr(obj.model);
     }
     return JSON.stringify(v);
@@ -691,13 +630,11 @@ function modelStr(v: unknown): string {
   return String(v as string | number | boolean);
 }
 
-/** Keep the failover models after the first one, which the form doesn't show, from a list or an inline table's `model` list. */
 function keepFallbacks(v: unknown, key: string, fallbacks: Record<string, string[]>): void {
   const list = isTable(v) ? v.model : v;
   if (Array.isArray(list) && list.length > 1) fallbacks[key] = list.slice(1).map(String);
 }
 
-/** Extract temperature/thinking overrides from an inline table model assignment. */
 function extractOverrides(v: unknown, key: string, overrides: Record<string, RoleOverrides>): void {
   if (v == null || typeof v !== "object" || Array.isArray(v)) return;
   const obj = v as Record<string, unknown>;
@@ -712,16 +649,6 @@ function extractOverrides(v: unknown, key: string, overrides: Record<string, Rol
   }
 }
 
-// ── MCP (mcp.json) ──────────────────────────────────────────────────
-
-/**
- * Parse `mcp.json` into form entries, representing each server's transport
- * truthfully. Mirrors the backend loader's transport resolution
- * (`crates/workspace/src/config.rs`): `type` takes priority over `transport`;
- * `"streamable-http"`/`"http"` is HTTP, everything else (including a
- * missing field) is stdio. An HTTP server's URL falls back to `command`
- * for display, matching the loader.
- */
 export function parseMcpJson(raw: string): McpServerEntry[] {
   if (!raw.trim()) return [];
   try {
@@ -750,9 +677,6 @@ export function parseMcpJson(raw: string): McpServerEntry[] {
   }
 }
 
-// ── Diff helpers ───────────────────────────────────────────────────────
-
-/** Split a comma-separated user input into a cleaned string list (no empties). */
 function commaList(raw: string): string[] {
   return raw
     .split(",")
@@ -760,7 +684,6 @@ function commaList(raw: string): string[] {
     .filter(Boolean);
 }
 
-/** Parse a numeric form field the way a bare TOML literal would: a float if it has a decimal point, else an int. */
 function formText(raw: unknown): string {
   if (typeof raw === "string") return raw;
   return typeof raw === "number" ? String(raw) : "";
@@ -774,7 +697,6 @@ export function jsonEqual(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
-/** Nest `value` into `root` at `path`, creating intermediate objects as needed. */
 function setPath(root: Record<string, unknown>, path: readonly string[], value: unknown): void {
   let node = root;
   for (let i = 0; i < path.length - 1; i++) {
@@ -799,7 +721,6 @@ export type FieldSpec =
   | { key: keyof ConfigFields; path: readonly string[]; kind: "stringArray" }
   | { key: keyof ConfigFields; path: readonly string[]; kind: "commaList" };
 
-/** Canonicalize a raw form value into the JSON shape it patches to, or `null` when it should be absent (empty/default). */
 function canonField(spec: FieldSpec, raw: unknown): unknown {
   switch (spec.kind) {
     case "string": {
@@ -810,8 +731,6 @@ function canonField(spec: FieldSpec, raw: unknown): unknown {
       const s = (raw as string | undefined) ?? "";
       return !s || s === spec.default ? null : s;
     }
-    // A number input bound with `bind:value` hands back a number once the user
-    // types in it, so read the field as text either way.
     case "number": {
       const s = formText(raw);
       return s.trim() ? numberLiteral(s) : null;
@@ -835,7 +754,6 @@ function canonField(spec: FieldSpec, raw: unknown): unknown {
   }
 }
 
-/** Every scalar and list field of `ConfigFields`, with the key it saves to. The one map diffing and error placement share. */
 export const CONFIG_FIELD_MAP: readonly FieldSpec[] = [
   { key: "timezone", path: ["timezone"], kind: "string" },
   { key: "timeout_secs", path: ["timeout_secs"], kind: "number" },
@@ -1145,7 +1063,6 @@ function diffWebhookFields(
   return out;
 }
 
-/** Diff a named collection (webhooks/providers/mcp servers), keyed by name. */
 function diffNamedCollection<T extends { name: string }>(
   baseline: readonly T[],
   current: readonly T[],
@@ -1184,12 +1101,6 @@ function diffNamedCollection<T extends { name: string }>(
   return { patch, touched };
 }
 
-/**
- * A rate as the price it saves: null while the box is empty, and for a value
- * that isn't a finite price of 0 or more. A null in the patch removes the key,
- * so an entry left incomplete is refused by the hub's validation rather than
- * saved with an old rate still in it.
- */
 function priceRate(raw: string): number | null {
   const trimmed = raw.trim();
   if (trimmed === "") return null;
@@ -1225,7 +1136,6 @@ export function diffConfigFields(
   );
   if (touched) patch.webhooks = webhooksPatch;
 
-  // A changed price writes all five rates, so the entry on disk is never a mix of old and new.
   const { patch: pricingPatch, touched: pricingTouched } = diffNamedCollection(
     baseline.pricing,
     current.pricing,
@@ -1237,9 +1147,6 @@ export function diffConfigFields(
   return patch;
 }
 
-// ── Hub / agent ownership of config fields ──────────────────────────
-
-/** Top-level sections that live in the hub's `config.toml`. */
 const HUB_SECTIONS: ReadonlySet<string> = new Set([
   "timezone",
   "gateway",
@@ -1250,13 +1157,11 @@ const HUB_SECTIONS: ReadonlySet<string> = new Set([
   "pricing",
 ]);
 
-/** Keys of shared sections (`[a2a]`, `[background]`) that live in the hub's `config.toml`. */
 const HUB_SECTION_KEYS: Readonly<Record<string, ReadonlySet<string>>> = {
   a2a: new Set(["enabled", "port", "public_url"]),
   background: new Set(["max_concurrent", "hop_soft_limit", "hop_hard_limit"]),
 };
 
-/** Which `config.toml` a key path saves to: the hub's or the agent's. */
 export function configFieldOwner(path: readonly string[]): "hub" | "agent" {
   const [section, key] = path;
   if (section === undefined) return "agent";
@@ -1265,10 +1170,6 @@ export function configFieldOwner(path: readonly string[]): "hub" | "agent" {
   return hubKeys !== undefined && key !== undefined && hubKeys.has(key) ? "hub" : "agent";
 }
 
-/**
- * Split a config patch (from `diffConfigFields`) into the part for the
- * hub's `config.toml` and the part for the agent's.
- */
 export function splitConfigPatch(patch: Record<string, unknown>): {
   hub: Record<string, unknown>;
   agent: Record<string, unknown>;
@@ -1294,19 +1195,6 @@ export function splitConfigPatch(patch: Record<string, unknown>): {
   return { hub, agent };
 }
 
-// ── Model role assignments (providers.toml `[models]` / `[background.models]`) ──
-
-/**
- * Build the JSON patch value for a model-role assignment: a plain string
- * when there's no override, or `{"$inline": {...}}` when `temperature` or
- * `thinking` overrides the role's default. `null` clears the role.
- *
- * `fallbacks` are the failover models after `modelValue`; the role is written
- * as the whole list so a change to the first model keeps them. `$inline` holds
- * scalars only, so a list with overrides is written as the table's own keys:
- * the server turns what was there into that table and removes an override
- * left `null`.
- */
 export function modelRoleJson(
   modelValue: string,
   overrides?: RoleOverrides,
@@ -1365,14 +1253,12 @@ function diffModels(
   }
 }
 
-/** The `input` list a model's image setting writes. */
 function inputList(images: ModelImageInput): string[] | null {
   if (images === "image") return ["text", "image"];
   if (images === "text") return ["text"];
   return null;
 }
 
-/** A provider's models as the patch value of its `models` table: a model with no setting has no entry. */
 function providerModelsJson(models: readonly SettingsProviderModel[]): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const model of models) {
@@ -1382,7 +1268,6 @@ function providerModelsJson(models: readonly SettingsProviderModel[]): Record<st
   return out;
 }
 
-/** What changed among a provider's models; a model whose setting was cleared is removed. */
 function diffProviderModels(
   base: readonly SettingsProviderModel[],
   current: readonly SettingsProviderModel[],
@@ -1455,8 +1340,6 @@ export function diffProviders(
   return patch;
 }
 
-// ── MCP servers (mcp.json) ───────────────────────────────────────────
-
 function mcpServerToJson(srv: McpServerEntry): Record<string, unknown> {
   const transport = srv.transport ?? "stdio";
   const out: Record<string, unknown> = { type: transport };
@@ -1472,11 +1355,6 @@ function mcpServerToJson(srv: McpServerEntry): Record<string, unknown> {
   return out;
 }
 
-/**
- * Diff a server's `env` or `headers` key by key. A patch merges an object into
- * the table that is there, so a variable the form no longer has has to be
- * named as `null`; sending the rest alone would leave it in the file.
- */
 function diffStringMap(
   base: Record<string, string>,
   current: Record<string, string>,

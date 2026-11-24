@@ -157,8 +157,6 @@ describe("test controls", () => {
 
       await control("teammate-message?agent=atlas");
 
-      // The teammate's message is announced with its sender, then the turn it starts: no person
-      // started it, the reply streams in and arrives whole, and it ends.
       const announced = await socket.nextOfType("user_message");
       const turnId = announced.turn_id;
       expect(announced).toMatchObject({
@@ -187,7 +185,6 @@ describe("test controls", () => {
       await socket.settled();
       expect(harness.hub.agents.get("atlas")?.unread).toBe(0);
 
-      // History holds both messages under the turn's id.
       const [message, reply] = (await recentMessages("atlas")).slice(-2);
       expect(message).toMatchObject({ role: "user", turn_id: turnId });
       expect(reply).toMatchObject({ role: "assistant", turn_id: turnId });
@@ -208,7 +205,6 @@ describe("test controls", () => {
       });
 
     beforeEach(async () => {
-      // No waiting: the turn runs to its end at once.
       await post("delays", { scale: 0 });
     });
 
@@ -272,7 +268,6 @@ describe("test controls", () => {
       socket.send({ type: "send_message", id: "m1", content: "hello there" });
       await socket.nextOfType("turn_started");
 
-      // However long the page takes, the turn stays where simulated time left it.
       const meanwhile = await socket.settled();
       expect(meanwhile.map((frame) => frame.type)).not.toContain("turn_ended");
 
@@ -294,8 +289,6 @@ describe("test controls", () => {
       expect(stepped.next).not.toBeNull();
       expect(Date.parse(stepped.next ?? "")).toBeGreaterThanOrEqual(Date.parse(stepped.now));
       const after = (await post("time/step")).body as { now: string };
-      // The step reached the time the next timer was due. This harness's clock
-      // follows the wall clock too, so it may read a little later.
       expect(Date.parse(after.now)).toBeGreaterThanOrEqual(Date.parse(stepped.next ?? ""));
     });
 

@@ -1,5 +1,3 @@
-//! File writing tool for the agent.
-
 use async_trait::async_trait;
 use serde_json::Value;
 
@@ -12,26 +10,13 @@ use residuum_inference::ToolDefinition;
 use residuum_inference::{ToolError, ToolResult};
 use residuum_workspace::team_files::{TeamFiles, TeamPathGuard};
 
-/// Tool that writes content to files, enforcing read-before-overwrite.
 pub struct WriteTool {
     tracker: SharedFileTracker,
     policy: SharedPathPolicy,
     diagnostics_paths: DiagnosticsPaths,
-    /// Set only for main's own tool registry — see `ConfigWriteWatch`'s doc
-    /// comment for why a session's registry never gets one.
     config_watch: Option<ConfigWriteWatch>,
 }
 
-/// Resolve a tool's `path` argument (absolute or workspace-relative) against
-/// the agent's workspace root, instead of the process's current directory,
-/// which is shared across every agent hosted in the same process.
-/// `Path::join` already replaces the base when `path` is absolute, so this
-/// is correct either way. `diagnostics_paths.workspace_dir` is reused here
-/// rather than adding a separate workspace-root field, since every file
-/// tool already carries it.
-///
-/// A relative path starting with `team/` addresses the shared team directory
-/// when the agent belongs to a team (`team` is `Some`).
 pub(super) fn resolve(
     diagnostics_paths: &DiagnosticsPaths,
     team: Option<&TeamFiles>,
@@ -43,8 +28,6 @@ pub(super) fn resolve(
     }
 }
 
-/// Refuse a write target that the namespace reserves: a `team` entry inside
-/// the agent's own directory.
 pub(super) fn check_reserved_target(
     team: Option<&TeamFiles>,
     file_path: &std::path::Path,
@@ -57,13 +40,6 @@ pub(super) fn check_reserved_target(
     }
 }
 
-/// Take the team write lock for `file_path` and verify it is unchanged since
-/// this tool set last read it, when the path is a team file. `Ok(None)` for
-/// an agent-private path, which is written as it always was.
-///
-/// # Errors
-/// Returns the tool-facing message when a teammate, the user, or an outside
-/// change modified the file since it was read.
 pub(super) async fn lock_team_target(
     team: Option<&TeamFiles>,
     tracker: &super::file_tracker::SharedFileTracker,
@@ -80,11 +56,6 @@ pub(super) async fn lock_team_target(
     Ok(Some((team.clone(), guard)))
 }
 
-/// Write `content` to a team file under its lock and remember the resulting
-/// stamp so this tool set's next write to it isn't mistaken for a conflict.
-///
-/// # Errors
-/// Returns the underlying write error.
 pub(super) async fn commit_team_write(
     tracker: &super::file_tracker::SharedFileTracker,
     team: &TeamFiles,
@@ -101,8 +72,6 @@ pub(super) async fn commit_team_write(
 }
 
 impl WriteTool {
-    /// The success result for a write of `content` to `file_path`, after
-    /// noting the write for config-reload tracking and appending diagnostics.
     fn write_succeeded(
         &self,
         path: &str,
@@ -117,9 +86,6 @@ impl WriteTool {
         ToolResult::success(output)
     }
 
-    /// Create a new `WriteTool` with shared file tracker, path policy, and
-    /// the directories needed to recognize a strictly-parsed file for
-    /// post-write diagnostics.
     #[must_use]
     pub fn new(
         tracker: SharedFileTracker,
@@ -134,8 +100,6 @@ impl WriteTool {
         }
     }
 
-    /// Attach a config-write watch so a write to a recognized config path
-    /// marks the reload it triggers for later delivery back to the agent.
     #[must_use]
     pub fn with_config_watch(mut self, config_watch: ConfigWriteWatch) -> Self {
         self.config_watch = Some(config_watch);
@@ -189,9 +153,6 @@ impl Tool for WriteTool {
                 ToolError::InvalidArguments("missing required 'content' argument".to_string())
             })?;
 
-        // `path` (the model's argument) resolves against the workspace root,
-        // not the process's current directory — see `resolve`'s doc comment.
-        // A `team/` prefix resolves into the shared team directory.
         let team = self.policy.read().await.team().cloned();
         let file_path = resolve(&self.diagnostics_paths, team.as_ref(), path);
 
@@ -199,12 +160,10 @@ impl Tool for WriteTool {
             return Ok(ToolResult::error(reason));
         }
 
-        // Enforce write-scoping policy
         if let Err(reason) = self.policy.read().await.check_write(&file_path) {
             return Ok(ToolResult::error(reason));
         }
 
-        // Enforce read-before-overwrite for existing files
         let resolved_str = file_path.to_string_lossy();
         if file_path.exists() && !self.tracker.lock().await.has_been_read(&resolved_str) {
             return Ok(ToolResult::error(format!(
@@ -212,8 +171,6 @@ impl Tool for WriteTool {
             )));
         }
 
-        // A team file is written under its per-path lock, only if nobody
-        // changed it since this tool set read it.
         let team_lock = match lock_team_target(team.as_ref(), &self.tracker, &file_path).await {
             Ok(lock) => lock,
             Err(message) => return Ok(ToolResult::error(message)),
@@ -233,7 +190,6 @@ impl Tool for WriteTool {
             };
         }
 
-        // Create parent directories if needed
         if let Some(parent) = file_path.parent()
             && !parent.as_os_str().is_empty()
             && let Err(e) = tokio::fs::create_dir_all(parent).await
@@ -246,7 +202,6 @@ impl Tool for WriteTool {
 
         match tokio::fs::write(&file_path, file_content).await {
             Ok(()) => {
-                // Record in tracker — the agent knows the content since it just wrote it
                 self.tracker.lock().await.record_read(&resolved_str);
                 Ok(self.write_succeeded(path, &file_path, file_content))
             }
@@ -255,11 +210,6 @@ impl Tool for WriteTool {
     }
 }
 
-/// Append diagnostics for the file just written to `output`, one per line,
-/// so the agent can fix a mistake in a strictly-parsed file on its next
-/// turn. The write itself already happened — a diagnostic never blocks it,
-/// only reports it. No-op if `file_path` isn't one of the files
-/// `residuum_core::diagnostics` understands, or if it has none to report.
 pub(super) fn append_diagnostics(
     output: &mut String,
     file_path: &std::path::Path,
@@ -292,13 +242,10 @@ mod tests {
     use crate::file_tracker::FileTracker;
     use crate::path_policy::PathPolicy;
 
-    /// Create a permissive policy rooted at `/tmp` (allows all test writes).
     fn permissive_policy() -> SharedPathPolicy {
         PathPolicy::new_shared()
     }
 
-    /// Directories that don't correspond to any real strictly-parsed file,
-    /// so ordinary write tests get no diagnostics.
     fn no_diagnostics_paths() -> DiagnosticsPaths {
         DiagnosticsPaths {
             config_dir: std::path::PathBuf::from("/tmp/residuum-test-config-unused"),
@@ -367,7 +314,6 @@ mod tests {
         tokio::fs::write(&file_path, "old content").await.unwrap();
 
         let (tool, tracker) = make_tool_with_tracker();
-        // Pre-record the read
         tracker
             .lock()
             .await
@@ -406,7 +352,6 @@ mod tests {
             result.output.contains("has not been read"),
             "error should mention read requirement"
         );
-        // Verify file unchanged
         let contents = tokio::fs::read_to_string(&file_path).await.unwrap();
         assert_eq!(contents, "original", "file should be unchanged");
     }
@@ -536,9 +481,6 @@ mod tests {
 
     #[tokio::test]
     async fn relative_path_resolves_against_workspace_root_not_process_cwd() {
-        // The process's current directory here is the crate root (however
-        // `cargo test` was invoked), not the workspace dir below — so this
-        // only passes if the relative path is joined against it.
         let workspace = tempfile::tempdir().unwrap();
         let diagnostics_paths = DiagnosticsPaths {
             config_dir: workspace.path().join("config-unused"),

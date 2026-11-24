@@ -3,13 +3,6 @@ import { expectNoAxeViolations } from "../support/axe";
 import { expect, test } from "../support/fixtures";
 import { expectPaletteOpen, expectSettingsOpen } from "../support/lazy";
 
-/**
- * Creating agents and running their lifecycle from Home: the Create agent
- * dialog (a sheet on phones) from Home's New agent, the rail's "+" and the
- * palette, a board row's menu, delete with Undo, and Recently deleted. The scenario has
- * atlas and scout running, drifter stopped and brittle failed.
- */
-
 function board(page: Page): Locator {
   return page.getByRole("table", { name: "Agents" });
 }
@@ -24,12 +17,10 @@ function createDialog(page: Page): Locator {
   return page.getByRole("dialog", { name: "Create an agent" });
 }
 
-/** A toast saying `text`, polite or an alert. */
 function toast(page: Page, text: string): Locator {
   return page.locator("[data-overlay-host]").getByText(text, { exact: true });
 }
 
-/** The rail, opened in its drawer on a phone. */
 async function openRail(page: Page, isMobile: boolean): Promise<Locator> {
   if (isMobile) {
     await page
@@ -40,11 +31,6 @@ async function openRail(page: Page, isMobile: boolean): Promise<Locator> {
   return page.getByRole("navigation", { name: "Places and agents" });
 }
 
-/**
- * Open an agent's "…" menu on the board. The trigger is ready once it is
- * enabled and closed; before that a click lands on a row the board is still
- * drawing, or opens nothing because a dialog that was closing still covers it.
- */
 async function openMenu(page: Page, agent: string): Promise<Locator> {
   const trigger = board(page).getByRole("button", { name: `Manage ${agent}` });
   await expect(trigger).toBeEnabled();
@@ -55,7 +41,6 @@ async function openMenu(page: Page, agent: string): Promise<Locator> {
   return menu;
 }
 
-/** Path and query of the page's URL, decoded. */
 function address(page: Page): string {
   const url = new URL(page.url());
   return decodeURIComponent(`${url.pathname}${url.search}`);
@@ -89,7 +74,6 @@ test("New agent creates an agent that joins the board and the rail", async ({ pa
   const rail = await openRail(page, isMobile);
   const railRow = rail.getByRole("link", { name: /^research-buddy\b/ });
   await expect(railRow).toBeVisible();
-  // Beside the main region, the new agent's rail row takes focus.
   if (!isMobile) await expect(railRow).toBeFocused();
 });
 
@@ -167,7 +151,6 @@ test("a name the rules refuse is flagged as it is typed, and nothing is created"
   await expect(board(page).getByRole("link")).toHaveCount(4);
 });
 
-/** The state word a board row shows, in the table's column or on the phone's card. */
 function stateWord(row: Locator, word: string): Locator {
   return row.getByText(word, { exact: true }).filter({ visible: true });
 }
@@ -207,11 +190,9 @@ test("a row's menu opens the agent's chat and its settings", async ({ page }) =>
   await page.goto("/home");
   await (await openMenu(page, "scout")).getByRole("menuitem", { name: "Settings" }).click();
   await expect.poll(() => address(page)).toMatch(/^\/home\?settings=scout/);
-  // The modal's code loads the first time it opens, so Esc waits for the modal to be there.
   const settings = await expectSettingsOpen(page);
   await page.keyboard.press("Escape");
   await expect.poll(() => address(page)).toBe("/home");
-  // The board is out of reach until the modal has gone.
   await expect(settings).toBeHidden();
 
   await (await openMenu(page, "scout")).getByRole("menuitem", { name: "Open chat" }).click();

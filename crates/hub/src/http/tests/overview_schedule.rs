@@ -1,11 +1,3 @@
-//! `upcoming` and `outbound_problems` of the overview, against the fake
-//! directory's agents: `scout` (running) and `quiet` (stopped). Both are read
-//! from files placed where an agent's own would be, and a running agent's
-//! follow the changes its watcher reports.
-//!
-//! Times in the files are in 2099, so that what a test expects does not
-//! depend on the day it runs.
-
 use std::fmt::Write as _;
 
 use chrono::{DateTime, Duration as TimeDelta, TimeZone as _};
@@ -24,8 +16,6 @@ fn at_2099(month: u32, day: u32, hour: u32, minute: u32) -> DateTime<Utc> {
         .unwrap()
 }
 
-/// `HEARTBEAT.yml` of `agent`, with a pulse for each of `(name, schedule,
-/// active hours)`.
 fn write_pulses(h: &Harness, agent: &str, pulses: &[(&str, &str, Option<&str>)]) {
     let mut yaml = String::from("pulses:\n");
     for (name, schedule, active_hours) in pulses {
@@ -42,7 +32,6 @@ fn write_pulses(h: &Harness, agent: &str, pulses: &[(&str, &str, Option<&str>)])
     std::fs::write(h.agent_dir(agent).join("HEARTBEAT.yml"), yaml).unwrap();
 }
 
-/// `pulse_state.json` of `agent`: when each `(pulse, local time)` last ran.
 fn write_pulse_state(h: &Harness, agent: &str, last_runs: &[(&str, &str)]) {
     let last_run: serde_json::Map<String, Value> = last_runs
         .iter()
@@ -55,15 +44,12 @@ fn write_pulse_state(h: &Harness, agent: &str, last_runs: &[(&str, &str)]) {
     .unwrap();
 }
 
-/// The `config.toml` of `agent`.
 fn write_config(h: &Harness, agent: &str, toml: &str) {
     let dir = h.agent_dir(agent).join("config");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("config.toml"), toml).unwrap();
 }
 
-/// `scheduled_actions.json` of `agent`, holding an action for each
-/// `(name, run_at)`.
 fn write_actions(h: &Harness, agent: &str, actions: &[(&str, DateTime<Utc>)]) {
     let actions: Vec<ScheduledAction> = actions
         .iter()
@@ -86,7 +72,6 @@ fn write_actions(h: &Harness, agent: &str, actions: &[(&str, DateTime<Utc>)]) {
     .unwrap();
 }
 
-/// What `upcoming` of `agent` says, as `kind:name@at` for each run.
 async fn upcoming_of(h: &Harness, agent: &str) -> Vec<String> {
     overview_of(h, agent).await["upcoming"]
         .as_array()
@@ -121,7 +106,6 @@ fn outbound_task(id: &str, remote: &str, unreachable_since: Option<DateTime<Utc>
     }
 }
 
-/// `a2a/outbound.json` of `agent`, holding `tasks`.
 fn write_outbound(h: &Harness, agent: &str, tasks: &[TrackedTask]) {
     let tasks: serde_json::Map<String, Value> = tasks
         .iter()
@@ -136,7 +120,6 @@ fn write_outbound(h: &Harness, agent: &str, tasks: &[TrackedTask]) {
     .unwrap();
 }
 
-/// Say that the tracker of `agent` recorded a change to `task`.
 fn task_changed(h: &Harness, agent: &str, task: &TrackedTask) {
     changed(
         h,
@@ -152,8 +135,6 @@ fn problem_ids(overview: &AgentOverview) -> Vec<&str> {
         .map(|problem| problem.task_id.as_str())
         .collect()
 }
-
-// ---- upcoming ---------------------------------------------------------------
 
 #[tokio::test]
 async fn a_run_pushed_past_the_active_hours_is_listed_for_when_they_open() {
@@ -405,7 +386,6 @@ async fn a_running_agents_upcoming_follows_the_changes_its_watcher_reports() {
         ["digest", "weekly"]
     );
 
-    // The pulse ran: its next run moves.
     write_pulse_state(&h, "scout", &[("digest", "2099-01-01T11:00:00")]);
     changed(
         &h,
@@ -415,7 +395,6 @@ async fn a_running_agents_upcoming_follows_the_changes_its_watcher_reports() {
     let ran = next_overview(&mut frames).await;
     assert_eq!(ran.upcoming[0].at, "2099-01-01T12:00:00Z");
 
-    // The pulse system is switched off in the settings.
     write_config(&h, "scout", "[pulse]\nenabled = false\n");
     changed(
         &h,
@@ -431,7 +410,6 @@ async fn a_running_agents_upcoming_follows_the_changes_its_watcher_reports() {
         ["weekly"]
     );
 
-    // A change that moves nothing sends nothing.
     changed(
         &h,
         "scout",
@@ -439,8 +417,6 @@ async fn a_running_agents_upcoming_follows_the_changes_its_watcher_reports() {
     );
     expect_no_frame(&mut frames).await;
 }
-
-// ---- outbound problems --------------------------------------------------------
 
 #[tokio::test(start_paused = true)]
 async fn an_unreachable_task_is_a_problem_once_its_streak_passes_the_threshold_and_until_it_ends() {
@@ -452,13 +428,11 @@ async fn an_unreachable_task_is_a_problem_once_its_streak_passes_the_threshold_a
     let mut frames = h.overview.subscribe();
     let since = Utc::now() - TimeDelta::minutes(11);
 
-    // The streak has only just started: nothing to tell.
     let mut laptop = outbound_task("task-1", "laptop", Some(Utc::now()));
     write_outbound(&h, "scout", &[laptop.clone()]);
     task_changed(&h, "scout", &laptop);
     expect_no_frame(&mut frames).await;
 
-    // The tracker announces that it passed the threshold.
     laptop.first_unreachable_at = Some(since);
     laptop.unreachable_notified = true;
     laptop.last_status_text = Some("Reading the papers".to_string());
@@ -471,7 +445,6 @@ async fn an_unreachable_task_is_a_problem_once_its_streak_passes_the_threshold_a
     assert_eq!(listed.status_text.as_deref(), Some("Reading the papers"));
     assert_eq!(listed.unreachable_since, since);
 
-    // The agent answers: the streak ends.
     laptop.first_unreachable_at = None;
     laptop.unreachable_notified = false;
     write_outbound(&h, "scout", &[laptop.clone()]);
@@ -479,7 +452,6 @@ async fn an_unreachable_task_is_a_problem_once_its_streak_passes_the_threshold_a
     let actual_6 = &next_overview(&mut frames).await.outbound_problems;
     assert!(actual_6.is_empty(), "expected {actual_6:?} to be empty");
 
-    // The streak starts again and the user stops watching the task.
     laptop.first_unreachable_at = Some(since);
     write_outbound(&h, "scout", &[laptop.clone()]);
     task_changed(&h, "scout", &laptop);
@@ -527,8 +499,6 @@ async fn the_longest_unreachable_task_is_listed_first_and_a_reachable_or_closed_
 async fn a_task_becomes_a_problem_when_its_streak_passes_the_threshold_with_no_event_to_say_so() {
     let h = Harness::new();
     let _tracker = h.track_overview();
-    // The streak passes the threshold in a second, and nothing is published
-    // about it: the tracker is still waiting for its next failed poll.
     let crossing = Utc::now() + TimeDelta::seconds(1);
     let since = crossing - UNREACHABLE_NOTICE_AFTER;
     write_outbound(
@@ -559,15 +529,10 @@ async fn a_task_becomes_a_problem_when_its_streak_passes_the_threshold_with_no_e
     );
 }
 
-/// Wait until the wall clock is past `at`. The crossings these tests check
-/// are wall-clock times, so the clock passing one is the event itself.
 async fn until_past(at: DateTime<Utc>) {
     wait::until_true("the wall clock to pass the crossing", || Utc::now() > at).await;
 }
 
-/// Wait until the overview has nothing pending: no frame due and no notice
-/// threshold waited for. Every frame the changes so far called for has then
-/// been sent.
 async fn nothing_pending(h: &Harness) {
     wait::until("the overview to have nothing pending", || async {
         h.overview.next_due().await.is_none().then_some(())
@@ -593,8 +558,6 @@ async fn a_task_that_ends_its_streak_before_the_threshold_never_becomes_a_proble
     write_outbound(&h, "scout", &[task.clone()]);
     task_changed(&h, "scout", &task);
 
-    // Past the old crossing, with nothing left pending: a frame the crossing
-    // had called for would have gone out by now.
     until_past(crossing).await;
     nothing_pending(&h).await;
     assert!(

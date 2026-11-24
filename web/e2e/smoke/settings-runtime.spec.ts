@@ -2,11 +2,6 @@ import type { Locator, Page } from "@playwright/test";
 import { expectNoAxeViolations } from "../support/axe";
 import { expect, test } from "../support/fixtures";
 
-/**
- * The agent's Memory, Schedule and Runtime sections: each one's field changed,
- * saved, read back through Reload from disk, and scanned at both sizes.
- */
-
 const overlay = { within: "[data-overlay-host]" } as const;
 const saveBar = (page: Page): Locator => page.getByRole("region", { name: "Unsaved changes" });
 const saved = (page: Page): Locator =>
@@ -34,7 +29,6 @@ test("Memory: a threshold is saved, read back from disk, and the reviewing setti
   await expect(page.getByLabel("Start summarizing at")).toHaveValue("30000");
   await expect(page.getByText("tokens").first()).toBeVisible();
 
-  // The reviewing settings sit dimmed until Review replies is on.
   await expect(page.getByLabel("Look in every")).toBeDisabled();
   await page.getByRole("switch", { name: "Review replies" }).click();
   await expect(page.getByLabel("Look in every")).toBeEnabled();
@@ -138,7 +132,6 @@ test("Runtime: a refused save names the problem and keeps the number staged", as
 test("a stopped agent's Memory, Schedule and Runtime stay editable, with nothing asking to start it", async ({
   page,
 }) => {
-  // The chat behind the modal offers Start on drifter's state card; the sections don't.
   const settings = page.getByRole("dialog", { name: "Settings" });
   for (const section of ["memory", "schedule", "runtime"]) {
     await page.goto(`/agent/drifter?settings=drifter/${section}`);

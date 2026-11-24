@@ -1,9 +1,3 @@
-//! Batch aggregator wiring for the macOS notification channel.
-//!
-//! The debounce-window batching logic itself lives in
-//! [`crate::batch_aggregator`], shared with the Windows channel;
-//! this module just spawns it with the macOS bridge.
-
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 

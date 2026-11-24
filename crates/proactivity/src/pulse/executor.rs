@@ -1,47 +1,14 @@
-//! Pulse task builder: converts a pulse definition into a spawn request.
-
 use residuum_bus::session::{MAIN_DEPTH, generate_address};
 use residuum_bus::{EventTrigger, HEARTBEAT_OK, HEARTBEAT_URGENT, PulseOverlap, SpawnRequestEvent};
 
 use super::script::{ScriptRun, prompt_section};
 use super::types::PulseDef;
 
-/// A pulse's `context_from` target resolved to its stored output, for
-/// injection into the firing pulse's prompt. Built by the caller (see
-/// the gateway's `handle_pulse_tick`) from
-/// `PulseScheduler`'s persisted `last_output` map — single-hop only, so
-/// `output` is always that pulse's own stored output, never resolved
-/// through a `context_from` chain.
 pub struct PulseContext {
-    /// Name of the pulse named by this pulse's `context_from`.
     pub source_pulse: String,
-    /// The source pulse's last delivered output, or `None` if it has never
-    /// delivered one (never fired, or fired but never completed with
-    /// deliverable output).
     pub output: Option<String>,
 }
 
-/// Build a `SpawnRequestEvent` from a pulse definition.
-///
-/// Every pulse runs as a `scheduled` session: `agent: None` runs on the
-/// pulse prompt alone, `agent: Some(name)` activates that skill as the
-/// session's role. `agent: "main"` is rejected at load time (see
-/// `validate_pulse`) and never reaches this function.
-///
-/// The model comes from the pulse's own `model_tier` (a tier or an explicit
-/// model), defaulting to the `small` tier.
-///
-/// `overlap` is `Some` when the caller found this pulse's previous run still
-/// live in the session registry — the new run still starts normally, this
-/// only tags it so the overlap is visible in the Schedule place and on the
-/// run itself in the session panel (see the gateway's pulse event loop).
-///
-/// `context` is `Some` when `pulse.context_from` names another pulse — see
-/// [`PulseContext`] — and is folded into the prompt by `build_pulse_prompt`.
-///
-/// `scripts` lines up with `pulse.tasks`: each task's script run, already
-/// finished, whose output (or failure) joins that task's section of the
-/// prompt. Empty when the pulse has no scripts.
 #[must_use]
 pub fn build_pulse_execution(
     pulse: &PulseDef,
@@ -88,14 +55,6 @@ pub fn build_pulse_execution(
     }
 }
 
-/// Build the prompt string for a pulse check.
-///
-/// `context` — resolved from `pulse.context_from` by the caller — is folded
-/// in as its own section naming the source pulse, whether or not it had
-/// output to give: a `None` `context.output` (the source pulse doesn't
-/// exist, or has never delivered output) still says so explicitly rather
-/// than silently omitting the section, so the run isn't left guessing
-/// whether context injection is even configured.
 fn build_pulse_prompt(
     pulse: &PulseDef,
     context: Option<&PulseContext>,
@@ -144,9 +103,6 @@ fn build_pulse_prompt(
     parts.join("\n\n")
 }
 
-/// Build the `## Context from <pulse>` section for a pulse that sets
-/// `context_from`, framing the injected text as another pulse's own past
-/// output rather than something this run should treat as an instruction.
 fn build_context_section(context: &PulseContext) -> String {
     match &context.output {
         Some(output) => format!(
@@ -195,8 +151,6 @@ mod tests {
         }
     }
 
-    // ── build_pulse_execution tests ─────────────────────────────────────
-
     #[test]
     fn execution_no_agent_has_no_skill() {
         let pulse = sample_pulse();
@@ -226,8 +180,6 @@ mod tests {
         );
         assert_eq!(spawn_event.source_label, "pulse:email_check");
         assert!(matches!(spawn_event.source, EventTrigger::Pulse));
-        // A pulse that names no tier runs small, whether or not it
-        // names a skill — the tier is the pulse's own setting.
         assert_eq!(spawn_event.model, residuum_config::ModelSelector::SMALL);
     }
 
@@ -345,8 +297,6 @@ mod tests {
         );
     }
 
-    // ── context_from injection ──────────────────────────────────────────
-
     #[test]
     fn no_context_means_no_context_section() {
         let prompt = build_pulse_prompt(&sample_pulse(), None, &[]);
@@ -401,8 +351,6 @@ mod tests {
         assert!(spawn_event.prompt.contains("collector"));
         assert!(spawn_event.prompt.contains("Found 3 overnight alerts."));
     }
-
-    // ── task scripts ────────────────────────────────────────────────────
 
     #[test]
     fn script_output_is_appended_to_its_own_tasks_prompt() {

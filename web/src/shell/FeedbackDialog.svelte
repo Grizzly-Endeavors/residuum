@@ -6,9 +6,6 @@
   import type { Choice } from "../lib/ui";
   import type { FeedbackTab } from "./shell-actions";
 
-  // Feedback and bug reports for the maintainer. Each kind keeps its draft
-  // while the dialog is closed or the other kind is chosen, until it is sent.
-
   interface Props {
     open: boolean;
     tab: FeedbackTab;
@@ -39,7 +36,6 @@
   let copy = $state<"idle" | "copied" | "failed">("idle");
   let copyTimer: ReturnType<typeof setTimeout> | undefined;
 
-  // A new opening, or the other kind, starts without the last result.
   $effect(() => {
     void tab;
     if (!open) return;

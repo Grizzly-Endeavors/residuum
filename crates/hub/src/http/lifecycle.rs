@@ -1,5 +1,3 @@
-//! `/api/hub/agents...` and `/api/hub/status`: agent lifecycle and hub status.
-
 use std::sync::Arc;
 
 use axum::Router;
@@ -20,7 +18,6 @@ use residuum_background::team::{
     Actor, AgentState, AgentSummary, CreateAgentRequest, LifecycleError,
 };
 
-/// What the lifecycle and status routes read.
 #[derive(Clone)]
 pub(super) struct LifecycleState {
     pub directory: Arc<dyn AgentDirectory>,
@@ -30,7 +27,6 @@ pub(super) struct LifecycleState {
     pub build: residuum_core::build_info::BuildInfo,
 }
 
-/// The agent list, create, per-agent lifecycle, stop-all, and status routes.
 pub(super) fn routes(state: LifecycleState) -> Router {
     Router::new()
         .route("/api/hub/agents", get(list_agents).post(create_agent))
@@ -48,7 +44,6 @@ pub(super) fn routes(state: LifecycleState) -> Router {
         .with_state(state)
 }
 
-/// Parse a JSON request body, or say in plain words why it can't be used.
 pub(super) fn parse_body<T: DeserializeOwned>(body: &Bytes) -> Result<T, String> {
     serde_json::from_slice(body)
         .map_err(|e| format!("the request body isn't valid for this route: {e}"))
@@ -61,13 +56,10 @@ fn summary_response(result: Result<AgentSummary, LifecycleError>) -> Response {
     }
 }
 
-/// `GET /api/hub/agents` — every agent, sorted by name, with their activity
-/// and the names whose stop has begun.
 async fn list_agents(State(state): State<LifecycleState>) -> Json<AgentListResponse> {
     Json(AgentListResponse::of(state.directory.as_ref()))
 }
 
-/// `POST /api/hub/agents` — create and start an agent.
 async fn create_agent(State(state): State<LifecycleState>, body: Bytes) -> Response {
     let request: CreateAgentRequest = match parse_body(&body) {
         Ok(request) => request,
@@ -79,7 +71,6 @@ async fn create_agent(State(state): State<LifecycleState>, body: Bytes) -> Respo
     }
 }
 
-/// `GET /api/hub/agents/deleted` — deleted agents that can be restored.
 async fn list_deleted_agents(State(state): State<LifecycleState>) -> Response {
     match state.directory.list_deleted().await {
         Ok(agents) => Json(DeletedAgentListResponse { agents }).into_response(),
@@ -87,7 +78,6 @@ async fn list_deleted_agents(State(state): State<LifecycleState>) -> Response {
     }
 }
 
-/// `POST /api/hub/agents/restore` — restore a deleted agent.
 async fn restore_agent(State(state): State<LifecycleState>, body: Bytes) -> Response {
     let request: RestoreAgentRequest = match parse_body(&body) {
         Ok(request) => request,
@@ -99,7 +89,6 @@ async fn restore_agent(State(state): State<LifecycleState>, body: Bytes) -> Resp
     }
 }
 
-/// `DELETE /api/hub/agents/{name}` — checkpoint, stop, and remove an agent.
 async fn delete_agent(State(state): State<LifecycleState>, Path(name): Path<String>) -> Response {
     match state.directory.delete(&name, Actor::User).await {
         Ok(outcome) => Json(outcome).into_response(),
@@ -107,12 +96,10 @@ async fn delete_agent(State(state): State<LifecycleState>, Path(name): Path<Stri
     }
 }
 
-/// `POST /api/hub/agents/{name}/start`.
 async fn start_agent(State(state): State<LifecycleState>, Path(name): Path<String>) -> Response {
     summary_response(state.directory.start(&name).await)
 }
 
-/// `POST /api/hub/agents/{name}/stop`.
 async fn stop_agent(State(state): State<LifecycleState>, Path(name): Path<String>) -> Response {
     summary_response(state.directory.stop(&name).await)
 }
@@ -123,7 +110,6 @@ struct RestartParams {
     force: bool,
 }
 
-/// `POST /api/hub/agents/{name}/restart`.
 async fn restart_agent(
     State(state): State<LifecycleState>,
     Path(name): Path<String>,
@@ -162,7 +148,6 @@ async fn restart_agent(
     }
 }
 
-/// `PATCH /api/hub/agents/{name}` — change autostart and/or A2A visibility.
 async fn patch_agent(
     State(state): State<LifecycleState>,
     Path(name): Path<String>,
@@ -181,7 +166,6 @@ async fn patch_agent(
     summary_response(state.directory.patch(&name, patch).await)
 }
 
-/// One agent that `stop-all` could not stop.
 #[derive(Serialize)]
 struct StopFailure {
     name: String,
@@ -222,7 +206,6 @@ async fn stop_all(State(state): State<LifecycleState>) -> Response {
         .into_response()
 }
 
-/// `GET /api/hub/status` — version, uptime, tunnel, and agent counts.
 async fn hub_status(
     State(state): State<LifecycleState>,
     parts: axum::http::request::Parts,

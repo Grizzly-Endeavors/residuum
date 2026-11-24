@@ -1,5 +1,3 @@
-//! Telegram long-polling message handler and command dispatch.
-
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -28,23 +26,16 @@ use residuum_workspace::inbox::attachment::FinalizedAttachment;
 use super::groups::{addressed_text, group_label};
 use super::{ENDPOINT, TelegramState};
 
-/// How long each `getUpdates` call is asked to hold open when there is nothing new.
 const LONG_POLL_SECS: u32 = 30;
 
-/// Total timeout for every Bot API request. It must exceed `LONG_POLL_SECS`, or every
-/// empty poll is cut client-side. It is also generous because file uploads (up to 50 MB)
-/// share this client.
 const HTTP_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// Shared gateway references threaded through telegram message dispatch.
 struct TelegramContext<'a> {
     state: &'a TelegramState,
-    /// The bot's `@username`, without the `@`, for spotting mentions in groups.
     bot_username: &'a str,
     bot_id: UserId,
     publisher: &'a Publisher,
     inbox_dir: &'a Path,
-    /// Main's saved conversation, which `/multitask` forks.
     main_conversation: &'a Path,
     reload_tx: &'a residuum_bus::control::ReloadSender,
     command_tx: &'a tokio::sync::mpsc::Sender<ServerCommand>,
@@ -53,7 +44,6 @@ struct TelegramContext<'a> {
     tz: chrono_tz::Tz,
 }
 
-/// Metadata for a Telegram file attachment.
 struct AttachmentMeta<'a> {
     file_id: &'a str,
     filename: &'a str,
@@ -61,15 +51,6 @@ struct AttachmentMeta<'a> {
     content_type: Option<String>,
 }
 
-/// Run the Telegram long-polling loop.
-///
-/// Connects to the Telegram API, verifies the bot token, then enters an
-/// infinite polling loop that dispatches messages to the agent. Returns
-/// cleanly when the shutdown signal fires.
-///
-/// # Errors
-/// Returns an error if the initial `get_me` verification or the bus
-/// subscription fails.
 pub(super) async fn run_telegram_polling(
     token: &str,
     state: Arc<TelegramState>,
@@ -84,11 +65,6 @@ pub(super) async fn run_telegram_polling(
     let command_tx = senders.command;
     let stop_tx = senders.stop;
     let session_registry = senders.session_registry;
-    // TCP keepalive detects silently-dropped connections (e.g. NAT timeout);
-    // pool_idle_timeout evicts stale connections before they poison the pool.
-    // Without these, long-poll requests reuse dead connections indefinitely.
-    // teloxide's default total timeout (17 s) is shorter than the long poll, so it
-    // must be replaced here.
     let http_client = teloxide_core::net::default_reqwest_settings()
         .timeout(HTTP_TIMEOUT)
         .tcp_keepalive(Duration::from_mins(1))
@@ -99,10 +75,6 @@ pub(super) async fn run_telegram_polling(
     let inbox_dir = layout.agent_inbox_dir();
     let main_conversation = layout.recent_messages_json();
 
-    // Verify the bot token is valid. A network blip or a momentary API
-    // error here used to leave the adapter dead until a config reload;
-    // retry with backoff instead, and let a shutdown signal cut retries
-    // short.
     let me = tokio::select! {
         result = crate::boot_retry::retry_connect(&publisher, "Telegram", || bot.get_me()) => {
             match result {
@@ -204,7 +176,6 @@ async fn handle_update(bot: &Bot, update: UpdateKind, ctx: &TelegramContext<'_>)
         forget_migrated_group(ctx.state, msg.chat.id, new_id).await;
         return;
     }
-    // Skip messages without a sender (channel posts) and bots' own.
     let Some(ref from) = msg.from else {
         return;
     };
@@ -214,7 +185,6 @@ async fn handle_update(bot: &Bot, update: UpdateKind, ctx: &TelegramContext<'_>)
     dispatch_message(bot, &msg, from, ctx).await;
 }
 
-/// Keep the saved group list in step with the bot being added or removed.
 async fn track_group_membership(state: &TelegramState, change: &ChatMemberUpdated) {
     let chat = &change.chat;
     if !(chat.is_group() || chat.is_supergroup()) {
@@ -251,8 +221,6 @@ async fn forget_migrated_group(state: &TelegramState, old: ChatId, new: ChatId) 
     }
 }
 
-/// Aborts the outbound subscriber when the polling loop exits, so a
-/// restarted adapter never leaves a second subscriber delivering duplicates.
 struct OutboundTask(tokio::task::JoinHandle<()>);
 
 impl Drop for OutboundTask {
@@ -261,12 +229,6 @@ impl Drop for OutboundTask {
     }
 }
 
-/// Register slash commands with the Telegram API so users see autocomplete.
-///
-/// Mirrors the Discord `register_slash_commands` pattern.
-///
-/// # Errors
-/// Returns an error if the Telegram `setMyCommands` API call fails.
 async fn register_commands(bot: &Bot) -> anyhow::Result<()> {
     let commands: Vec<BotCommand> = all_commands()
         .map(|info| BotCommand::new(info.name, info.help))
@@ -277,10 +239,6 @@ async fn register_commands(bot: &Bot) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Dispatch a single incoming message: commands, text, or attachments.
-///
-/// Every private message is handled; group messages only when addressed to
-/// the bot (see [`super::groups`]).
 async fn dispatch_message(
     bot: &Bot,
     msg: &teloxide_core::types::Message,
@@ -318,7 +276,6 @@ async fn dispatch_message(
             None => (cmd_text, None),
         };
 
-        // Strip @botname suffix from commands (e.g. /help@mybot)
         let cmd_name = cmd_name.split_once('@').map_or(cmd_name, |(name, _)| name);
 
         if matches!(standing, Standing::Owner) {
@@ -335,7 +292,6 @@ async fn dispatch_message(
         return;
     }
 
-    // Build content with attachment metadata and collect inline images
     let mut content = text;
     let mut images: Vec<ImageData> = Vec::new();
     let mut attachments: Vec<MessageAttachment> = Vec::new();
@@ -348,7 +304,6 @@ async fn dispatch_message(
         attachments.push(finalized.attachment);
     }
 
-    // Skip empty messages (no text, no attachments processed)
     if content.is_empty() {
         tracing::debug!(sender = %build_sender_name(from), chat_id = %chat_id, "telegram message had no content, dropping");
         return;
@@ -400,9 +355,6 @@ async fn dispatch_message(
     }
 }
 
-/// A message the bot has decided to act on: where it happened, its text
-/// (mention stripped), its conversation identity, and any unmentioned
-/// chatter buffered since it was last addressed there.
 struct Addressed {
     location: String,
     text: String,
@@ -411,11 +363,6 @@ struct Addressed {
     context: Option<String>,
 }
 
-/// Where a message was sent and its text (or caption), if it is meant for
-/// the agent. Private chats are also recorded, and the first one claims
-/// ownership; addressed groups are recorded so the agent can post there
-/// later. An unaddressed group message is buffered as context instead, and
-/// `None` is returned.
 async fn addressed_to_agent(
     msg: &teloxide_core::types::Message,
     from: &teloxide_core::types::User,
@@ -468,8 +415,6 @@ async fn addressed_to_agent(
     })
 }
 
-/// Hold an unaddressed group message as context for the next time the bot is
-/// addressed in that chat; empty messages (e.g. attachment-only) are dropped.
 fn buffer_unmentioned(
     ctx: &TelegramContext<'_>,
     chat_key: &str,
@@ -489,8 +434,6 @@ fn buffer_unmentioned(
     );
 }
 
-/// Decide whether the sender may use the bot. Refused senders are told why
-/// and get `None`.
 async fn admit_sender(
     bot: &Bot,
     chat_id: ChatId,
@@ -514,7 +457,6 @@ async fn admit_sender(
     }
 }
 
-/// Make the sender the owner if nobody is yet; only called for private chats.
 async fn claim_owner_if_unset(
     state: &TelegramState,
     from: &teloxide_core::types::User,
@@ -540,7 +482,6 @@ async fn send_reply(bot: &Bot, chat_id: ChatId, text: &str) {
     }
 }
 
-/// Build a display name from a Telegram user.
 fn build_sender_name(user: &teloxide_core::types::User) -> String {
     match &user.last_name {
         Some(last) => format!("{} {last}", user.first_name),
@@ -548,7 +489,6 @@ fn build_sender_name(user: &teloxide_core::types::User) -> String {
     }
 }
 
-/// Handle a Telegram /command.
 async fn handle_command(
     bot: &Bot,
     chat_id: ChatId,
@@ -633,8 +573,6 @@ fn video_as_meta(video: &Video) -> AttachmentMeta<'_> {
     }
 }
 
-/// Extract and process all attachment types from a Telegram message, one
-/// result per attachment that was saved.
 async fn process_attachments(
     bot: &Bot,
     msg: &teloxide_core::types::Message,
@@ -671,9 +609,6 @@ async fn process_attachments(
     finalized
 }
 
-/// Download a Telegram file, append attachment metadata to the content string,
-/// and return the saved attachment. `None` when the file could not be saved;
-/// the failure is already in the content.
 async fn handle_attachment(
     bot: &Bot,
     content: &mut String,
@@ -714,7 +649,6 @@ async fn handle_attachment(
             }
         };
 
-    // Two-step Telegram download: get_file → download_file
     let download_result: Result<SavedAttachment, String> = async {
         let file = bot
             .get_file(teloxide_core::types::FileId(meta.file_id.to_string()))
@@ -898,7 +832,6 @@ mod tests {
     #[tokio::test]
     async fn group_mention_carries_the_chatter_since_the_last_mention() {
         let mut h = harness(true, 10).await;
-        // Claim the owner via a DM first, so the group sender is a non-owner.
         deliver(&h, &telegram_message(dm_json(1, 111, "Bear", "hi"))).await;
         next_user_message(&mut h, "dm published").await;
 
@@ -926,7 +859,6 @@ mod tests {
             )),
         )
         .await;
-        // Events arrive in publish order, so a published chatter would come before the mention.
         let event = next_user_message(&mut h, "mention published").await;
         assert_eq!(
             event.content, "can you look?",

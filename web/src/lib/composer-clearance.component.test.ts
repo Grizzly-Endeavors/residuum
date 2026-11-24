@@ -15,7 +15,6 @@ class ManualObserver {
 
 const VIEWPORT = 900;
 
-/** An element whose top the test moves. */
 function composerAt(top: number): { el: HTMLElement; moveTo: (top: number) => void } {
   let current = top;
   const el = document.createElement("form");
@@ -61,7 +60,6 @@ describe("composerClearance", () => {
     const { el, moveTo } = composerAt(790);
     const release = composerClearance.track(el);
 
-    // Typing grew it: its top is higher up.
     moveTo(700);
     ManualObserver.instances[0]?.notify();
     expect(composerClearance.px).toBe(200);

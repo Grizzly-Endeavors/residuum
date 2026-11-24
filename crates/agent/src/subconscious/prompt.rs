@@ -1,20 +1,9 @@
-//! Prompt construction for the subconscious classifier LLM call.
-
 use super::{EvalPhase, TurnScratch};
 use residuum_inference::{Message, Role};
 
-/// User-customizable check guidance — default when `SUBCONSCIOUS.md` is absent.
-///
-/// The workspace bootstrap writes this same content to disk so users can
-/// customise it without recompiling. The format spec is always appended by code.
 pub(super) const DEFAULT_SUBCONSCIOUS_PROMPT: &str =
     include_str!("../../../../assets/workspace-bootstrap/SUBCONSCIOUS.md");
 
-/// Output format spec — always appended by code, never stored in editable files.
-///
-/// Injected unconditionally so editing `SUBCONSCIOUS.md` cannot break JSON
-/// parsing. Structural requirements are enforced by structured output mode
-/// (JSON schema); this spec covers semantic field guidance only.
 pub(super) const FORMAT_SPEC: &str = r#"Report findings using these fields:
 - "kind": "violation" if the agent acted against an instruction, "omission" if it failed to do something it should have
 - "severity": "act" only when the problem needs correction right now (e.g. an unsaved user preference); "note" when the agent just needs to know for next time
@@ -27,11 +16,6 @@ look useful: an empty array is a success, not a failure to find something. Only
 report a problem a reasonable reviewer would clearly flag, and never report the
 same problem twice."#;
 
-/// Format guidance for the `learnings` array — appended only at end-of-turn
-/// triage when the learning loop is enabled.
-///
-/// Learn signals are durable observations worth remembering, distinct from the
-/// corrective findings above; they are handed to a background `learner` agent.
 pub(super) const LEARN_FORMAT_SPEC: &str = r#"Separately, use the "learnings" array to surface durable learnable signals from this turn — things worth remembering, distinct from the corrective findings above. Each learning has these fields:
 - "summary": one or two sentences capturing the signal, specific enough to act on without re-reading the transcript
 - "signal_type": "preference" for a user preference, correction, expressed frustration, or a working-style cue; "recovery" when the agent hit an error or obstacle and had to work around it or find a non-obvious solution
@@ -39,10 +23,6 @@ pub(super) const LEARN_FORMAT_SPEC: &str = r#"Separately, use the "learnings" ar
 Do not duplicate a corrective finding as a learning, and do not manufacture a
 signal just to fill the array."#;
 
-/// JSON schema for the subconscious response, used with structured output mode.
-///
-/// When `include_learnings` is set, the schema also requires a `learnings`
-/// array (end-of-turn triage with the learning loop enabled).
 #[must_use]
 pub(super) fn subconscious_response_schema(include_learnings: bool) -> serde_json::Value {
     let mut properties = serde_json::json!({
@@ -91,14 +71,8 @@ pub(super) fn subconscious_response_schema(include_learnings: bool) -> serde_jso
     })
 }
 
-/// Maximum characters of a tool result included in the transcript.
-///
-/// Tool output dominates transcript size but rarely matters for judging the
-/// agent's behavior; a prefix is enough for the classifier to see what the
-/// agent acted on.
 const MAX_TOOL_RESULT_CHARS: usize = 1_000;
 
-/// Format a single turn message for the classifier transcript.
 fn format_message(msg: &Message) -> String {
     let role = msg.role.as_str();
     let call_part = msg
@@ -138,10 +112,6 @@ fn format_message(msg: &Message) -> String {
     parts.join("\n")
 }
 
-/// Format the turn transcript, dropping the oldest messages to fit the token cap.
-///
-/// The tail is kept because the most recent behavior is what the classifier
-/// judges; a dropped head is announced so the model knows context is missing.
 pub(super) fn format_turn_transcript(transcript: &[Message], max_tokens: usize) -> String {
     let formatted: Vec<String> = transcript.iter().map(format_message).collect();
 
@@ -165,7 +135,6 @@ pub(super) fn format_turn_transcript(transcript: &[Message], max_tokens: usize) 
     }
 }
 
-/// The phase-specific question posed to the classifier.
 fn phase_question(phase: EvalPhase) -> &'static str {
     match phase {
         EvalPhase::MidTurn => {
@@ -183,10 +152,6 @@ fn phase_question(phase: EvalPhase) -> &'static str {
     }
 }
 
-/// Render the steering already applied this turn as triage context.
-///
-/// Returned with a leading blank line so it follows the phase question
-/// directly; an empty scratch produces an empty string (no section).
 fn format_prior_steering(prior: &TurnScratch) -> String {
     if prior.is_empty() {
         return String::new();
@@ -223,17 +188,6 @@ fn format_prior_steering(prior: &TurnScratch) -> String {
     out
 }
 
-/// Build the evaluation prompt for the classifier model.
-///
-/// Injects the format spec alongside the user-customizable policy so the
-/// format requirement cannot be lost by editing the disk file. `prior` carries
-/// the steering the mid-turn watch already applied, so the end-of-turn pass can
-/// triage rather than re-classify from scratch.
-///
-/// The user message runs transcript, phase question, steering. Within a turn the
-/// transcript grows between calls until the token cap starts dropping its head,
-/// so putting it first leaves the earlier transcript as a shared prefix. The
-/// phase question is fixed per phase and the steering grows, so both follow it.
 pub(super) fn build_eval_prompt(
     policy: &str,
     identity: &str,
@@ -308,7 +262,6 @@ mod tests {
 
     #[test]
     fn format_message_truncation_respects_char_boundaries() {
-        // Multi-byte characters straddling the cut must not panic.
         let msg = Message::tool("é".repeat(3_000), "call_1");
         let formatted = format_message(&msg);
         assert!(formatted.contains("truncated"), "should truncate");

@@ -33,8 +33,6 @@ use residuum::gateway::web::scheduled::{ScheduledApiState, scheduled_api_router}
 use residuum::hub::AgentFiles;
 use residuum::hub::overview::upcoming;
 
-/// `HEARTBEAT.yml` in `dir`, with a pulse for each of `(name, schedule,
-/// active hours)`.
 fn write_pulses(dir: &Path, pulses: &[(&str, &str, Option<&str>)]) {
     let mut yaml = String::from("pulses:\n");
     for (name, schedule, active_hours) in pulses {
@@ -51,7 +49,6 @@ fn write_pulses(dir: &Path, pulses: &[(&str, &str, Option<&str>)]) {
     std::fs::write(dir.join("HEARTBEAT.yml"), yaml).unwrap();
 }
 
-/// `pulse_state.json` in `dir`: when each `(pulse, local time)` last ran.
 fn write_pulse_state(dir: &Path, last_runs: &[(&str, &str)]) {
     let last_run: serde_json::Map<String, Value> = last_runs
         .iter()
@@ -64,15 +61,12 @@ fn write_pulse_state(dir: &Path, last_runs: &[(&str, &str)]) {
     .unwrap();
 }
 
-/// The `config.toml` of the agent in `dir`.
 fn write_config(dir: &Path, toml: &str) {
     let config = dir.join("config");
     std::fs::create_dir_all(&config).unwrap();
     std::fs::write(config.join("config.toml"), toml).unwrap();
 }
 
-/// The Schedule place's routes over the agent in `dir`, as its gateway builds
-/// them.
 fn scheduled_endpoint(dir: &Path, tz: chrono_tz::Tz) -> axum::Router {
     scheduled_api_router(ScheduledApiState {
         registry: Arc::new(SessionRegistry::new()),
@@ -86,7 +80,6 @@ fn scheduled_endpoint(dir: &Path, tz: chrono_tz::Tz) -> axum::Router {
     })
 }
 
-/// `GET /api/scheduled/pulses` of `endpoint`.
 async fn pulses_listed(endpoint: &axum::Router) -> Value {
     let response = tower::ServiceExt::oneshot(
         endpoint.clone(),
@@ -107,8 +100,6 @@ async fn pulses_listed(endpoint: &axum::Router) -> Value {
     serde_json::from_slice(&bytes).unwrap()
 }
 
-/// The upcoming runs the overview lists for the agent `quiet` in `files`, as
-/// of now, in the form the overview sends them.
 async fn upcoming_of(files: &AgentFiles) -> Value {
     let read = upcoming::read("quiet", files, Utc::now()).await;
     serde_json::to_value(read.runs).unwrap()
@@ -118,10 +109,6 @@ fn instant(text: &Value) -> DateTime<chrono::FixedOffset> {
     DateTime::parse_from_rfc3339(text.as_str().unwrap()).unwrap()
 }
 
-/// Check that each pulse the endpoint gives a next time is in `upcoming` at
-/// that time, and that a pulse it gives none is not there. A pulse that has
-/// never run is counted from now for both, each read at its own moment, so
-/// they may be a minute tick apart.
 fn assert_same_next_times(listed: &Value, upcoming: &Value) {
     for pulse in listed.as_array().unwrap() {
         let name = pulse["name"].as_str().unwrap();

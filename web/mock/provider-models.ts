@@ -1,7 +1,6 @@
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import type { Diagnostic } from "../src/lib/types";
 
-/** The models each provider type offers, as the mock's model listing answers. */
 export const PROVIDER_MODELS: Readonly<Record<string, readonly { id: string; name: string }[]>> = {
   anthropic: [
     { id: "claude-opus-4-6", name: "Claude Opus 4.6" },
@@ -35,7 +34,6 @@ export const PROVIDER_MODELS: Readonly<Record<string, readonly { id: string; nam
   ],
 };
 
-/** The model roles of `providers.toml` the mock checks. The search index model isn't in the lists. */
 const ROLE_PATHS: readonly (readonly string[])[] = [
   ["models", "main"],
   ["models", "default"],
@@ -60,18 +58,12 @@ function tableAt(doc: Table, path: readonly string[]): Table | null {
   return isTable(at) ? at : null;
 }
 
-/** A model a role names that its provider doesn't offer, and how to put an offered one in its place. */
 interface Unoffered {
   path: string;
   message: string;
   replace: () => void;
 }
 
-/**
- * Each model a role names, as `provider/model`, that the mock's list for its
- * provider's type leaves out. A provider is a `[providers]` entry or a type
- * named directly; one the mock has no list for is never checked.
- */
 function unofferedModels(doc: Table): Unoffered[] {
   const providers = tableAt(doc, ["providers"]) ?? {};
   const found: Unoffered[] = [];
@@ -79,7 +71,6 @@ function unofferedModels(doc: Table): Unoffered[] {
     const holder = tableAt(doc, path.slice(0, -1));
     const key = path[path.length - 1] ?? "";
     const value = holder?.[key];
-    // A role is a model, a failover list, or an inline table whose `model` is either.
     const owner = isTable(value) ? value : holder;
     const ownKey = isTable(value) ? "model" : key;
     const named = owner?.[ownKey];
@@ -117,12 +108,6 @@ function parsed(text: string): Table | null {
   }
 }
 
-/**
- * The models a `providers.toml` assigns that their provider doesn't offer, as
- * problems on the role's key path (`models.main`). The mock's stand-in for a
- * check the backend makes when the agent starts; text that doesn't parse has
- * none, since its syntax error is the problem.
- */
 export function modelProblems(providersToml: string): Diagnostic[] {
   const doc = parsed(providersToml);
   if (doc === null) return [];
@@ -133,7 +118,6 @@ export function modelProblems(providersToml: string): Diagnostic[] {
   }));
 }
 
-/** `providersToml` with every model its provider doesn't offer replaced by the provider's first one. */
 export function offeredModelsOnly(providersToml: string): string {
   const doc = parsed(providersToml);
   if (doc === null) return providersToml;

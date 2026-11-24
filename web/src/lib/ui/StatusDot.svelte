@@ -1,14 +1,9 @@
 <script lang="ts">
   import type { StatusDotState } from "./types";
 
-  // An agent's state as a mark. Each state has its own shape as well as its
-  // own color: a filled dot running, a ring stopped, a turning ring starting
-  // (clockwise) or stopping (backwards), a triangle failed.
   interface Props {
     state: StatusDotState;
-    /** A running agent that is busy with a turn: the dot turns blue and pulses. */
     working?: boolean;
-    /** The state in words. Without it the mark is decorative and the words must sit beside it. */
     label?: string;
   }
 

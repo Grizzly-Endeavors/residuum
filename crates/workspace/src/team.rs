@@ -1,6 +1,3 @@
-//! Team layer bootstrapping: the shared `team/` directory every agent on the
-//! hub reads from, and each agent's role page in the team wiki.
-
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -17,53 +14,29 @@ const DEFAULT_WIKI_LOG: &str = include_str!("../../../assets/team-bootstrap/wiki
 const DEFAULT_WIKI_AGENTS_INDEX: &str =
     include_str!("../../../assets/team-bootstrap/wiki/agents/index.md");
 
-/// The first agent's `HEARTBEAT.yml`: the built-in pulses including
-/// `wiki_lint`, which checks the shared team wiki and so belongs to exactly
-/// one agent.
 const FIRST_AGENT_HEARTBEAT: &str = concat!(
     include_str!("../../../assets/workspace-bootstrap/heartbeat/base.yml"),
     include_str!("../../../assets/workspace-bootstrap/heartbeat/wiki-lint.yml"),
     include_str!("../../../assets/workspace-bootstrap/heartbeat/starters.yml"),
 );
 
-/// The created-agent `HEARTBEAT.yml`: the same built-in pulses without
-/// `wiki_lint`.
 const CREATED_AGENT_HEARTBEAT: &str = concat!(
     include_str!("../../../assets/workspace-bootstrap/heartbeat/base.yml"),
     include_str!("../../../assets/workspace-bootstrap/heartbeat/starters.yml"),
 );
 
-/// Description written to a role page whose agent has not described its
-/// role yet.
 const ROLE_PLACEHOLDER: &str = "Role not described yet; this agent fills it in.";
 
-/// The `HEARTBEAT.yml` for the first agent (onboarding): the built-in
-/// pulses, including `wiki_lint`.
 #[must_use]
 pub fn first_agent_heartbeat() -> &'static str {
     FIRST_AGENT_HEARTBEAT
 }
 
-/// The `HEARTBEAT.yml` template for created agents: the first agent's
-/// built-in pulses without `wiki_lint`, so exactly one agent lints the
-/// shared wiki. `memory_tending` stays, since it files each agent's own
-/// memory into the wiki.
 #[must_use]
 pub fn created_agent_heartbeat() -> &'static str {
     CREATED_AGENT_HEARTBEAT
 }
 
-/// Create the team directory tree and write the team defaults that are
-/// missing: `AGENTS.md`, `USER.md`, the wiki index and log, and the agent
-/// roster index. Existing files are never modified.
-///
-/// When `user_name` is provided and `USER.md` does not yet exist, the
-/// default content is personalised with the name; `timezone` is added the
-/// same way.
-///
-/// # Errors
-/// Returns `FatalError::Workspace` if a directory cannot be created or a
-/// default file cannot be written.
 #[tracing::instrument(skip_all, fields(team = %team.root().display()))]
 pub async fn ensure_team(
     team: &TeamPaths,
@@ -84,22 +57,6 @@ pub async fn ensure_team(
     Ok(())
 }
 
-/// Create the agent's role page `team/wiki/agents/<name>.md`, add its entry
-/// to `team/wiki/agents/index.md`, and append a line to `team/wiki/log.md`.
-///
-/// `description` is the one-line role; without one the page carries a
-/// placeholder the agent replaces itself. Does nothing when the page
-/// already exists, since the agent maintains it. Returns whether the page
-/// was created.
-///
-/// # Errors
-/// Returns `FatalError::Workspace` if the page, the index, or the log
-/// cannot be written.
-///
-/// The page, the roster index, and the log are written under `coordinator`'s
-/// path locks, with the agent recorded as their writer, so agents starting
-/// at the same time neither lose each other's entries nor bypass the team
-/// write checks. `coordinator` must guard `team`.
 pub async fn ensure_agent_role_page(
     team: &TeamPaths,
     coordinator: &TeamWriteCoordinator,
@@ -110,13 +67,6 @@ pub async fn ensure_agent_role_page(
     ensure_agent_role_page_as(team, coordinator, &writer, name, name, description).await
 }
 
-/// [`ensure_agent_role_page`] with `writer` recorded as the last writer of
-/// the page, the index, and the log instead of the agent itself: the creator
-/// of a new agent, or the user, when they are the one making the page.
-///
-/// # Errors
-/// Returns `FatalError::Workspace` if the page, the index, or the log
-/// cannot be written.
 pub async fn ensure_agent_role_page_as(
     team: &TeamPaths,
     coordinator: &TeamWriteCoordinator,
@@ -133,15 +83,6 @@ pub async fn ensure_agent_role_page_as(
     create_role_page(team, coordinator, writer, name, label, &role, &content).await
 }
 
-/// Recreate the role page of a restored agent from the text it had when the
-/// agent was deleted, with its roster entry and a log line. The roster entry
-/// carries the page's `description`, or the placeholder when the text has
-/// none. Does nothing when the page already exists. Returns whether the page
-/// was created.
-///
-/// # Errors
-/// Returns `FatalError::Workspace` if the page, the index, or the log
-/// cannot be written.
 pub async fn restore_agent_role_page(
     team: &TeamPaths,
     coordinator: &TeamWriteCoordinator,
@@ -203,9 +144,6 @@ async fn create_role_page(
             ))
         })?;
 
-    // Index entry first, page second: a crash between the two leaves an
-    // index entry that the retry skips (it checks for the link) before
-    // writing the page.
     add_index_entry(index_guard, writer, name, label, role).await?;
     page_guard
         .commit(writer, content.as_bytes())
@@ -219,19 +157,6 @@ async fn create_role_page(
     Ok(true)
 }
 
-/// Remove the agent's role page `team/wiki/agents/<name>.md` and its entry
-/// in `team/wiki/agents/index.md`, and append a line to `team/wiki/log.md`.
-///
-/// Takes the same `coordinator` path locks as [`ensure_agent_role_page`] and
-/// records `writer` (whoever is deleting the agent) as the last writer of
-/// each file it touches. Every piece that is already gone is skipped, so a
-/// retry after a partial removal finishes the job. Returns whether anything
-/// was removed; nothing is logged when nothing was. `coordinator` must guard
-/// `team`.
-///
-/// # Errors
-/// Returns `FatalError::Workspace` if the page cannot be removed or the
-/// index or log cannot be rewritten.
 pub async fn remove_agent_role_page(
     team: &TeamPaths,
     coordinator: &TeamWriteCoordinator,
@@ -284,8 +209,6 @@ pub async fn remove_agent_role_page(
     Ok(true)
 }
 
-/// Drop the roster index lines that link to the agent's page. Returns
-/// whether any line was removed.
 async fn remove_index_entry(
     index: &TeamPathGuard,
     writer: &TeamWriter,
@@ -338,8 +261,6 @@ fn role_page_content(label: &str, role: &str) -> String {
     )
 }
 
-/// Append `- [name](/agents/name.md) — role` to the roster index unless a
-/// link to the page is already there.
 async fn add_index_entry(
     index: &TeamPathGuard,
     writer: &TeamWriter,
@@ -381,7 +302,6 @@ async fn add_index_entry(
         })
 }
 
-/// Append the role page's `edit` entry to the wiki log.
 async fn append_log_line(
     log: &TeamPathGuard,
     writer: &TeamWriter,
@@ -396,7 +316,6 @@ async fn append_log_line(
     .await
 }
 
-/// Append an `edit` entry describing `what` to the wiki log.
 async fn append_log_entry(
     log: &TeamPathGuard,
     writer: &TeamWriter,
@@ -431,7 +350,6 @@ async fn append_log_entry(
         })
 }
 
-/// Build USER.md content from optional name and timezone.
 fn build_user_content(user_name: Option<&str>, timezone: Option<&str>) -> String {
     let name = user_name.filter(|n| !n.is_empty());
     let tz = timezone.filter(|t| !t.is_empty());
@@ -452,20 +370,14 @@ fn build_user_content(user_name: Option<&str>, timezone: Option<&str>) -> String
     out
 }
 
-/// Collapse whitespace (including newlines) so a description stays on one
-/// line in frontmatter and in the index.
 fn single_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// A YAML double-quoted scalar. JSON string syntax is valid YAML, and it
-/// escapes everything that could break the frontmatter.
 fn yaml_quoted(text: &str) -> String {
     serde_json::to_string(text).unwrap_or_else(|_| "\"\"".to_string())
 }
 
-/// `name` as a YAML scalar: plain when it can only be read as a string,
-/// quoted when YAML would read it as a number, boolean, or null.
 fn yaml_scalar(name: &str) -> String {
     let reads_as_string = name.starts_with(|c: char| c.is_ascii_lowercase())
         && !matches!(
@@ -485,11 +397,6 @@ async fn exists(path: &Path) -> Result<bool, FatalError> {
         .map_err(|e| FatalError::Workspace(format!("failed to check {}: {e}", path.display())))
 }
 
-/// Write `content` to `path` if it does not exist yet.
-///
-/// Agents starting at the same time each run this against a fresh team
-/// layer, so losing the race to create the file is not an error: the winner's
-/// copy is the file.
 async fn write_if_missing(path: &Path, content: &str) -> Result<(), FatalError> {
     if !exists(path).await? && write_new(path, content).await? {
         tracing::debug!(path = %path.display(), "wrote team default");
@@ -497,8 +404,6 @@ async fn write_if_missing(path: &Path, content: &str) -> Result<(), FatalError> 
     Ok(())
 }
 
-/// Create `path` and write `content`. Returns `false`, leaving the file
-/// alone, when it already exists.
 async fn write_new(path: &Path, content: &str) -> Result<bool, FatalError> {
     let write_error = |e: std::io::Error| {
         FatalError::Workspace(format!("failed to write {}: {e}", path.display()))

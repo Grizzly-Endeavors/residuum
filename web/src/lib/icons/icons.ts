@@ -1,8 +1,3 @@
-/**
- * The icon set, drawn on a 24-unit grid. Icon.svelte strokes every shape at
- * 1.6 units with round caps and joins; a `solid` shape is filled instead.
- */
-
 export type IconShape = (
   | { readonly path: string }
   | { readonly circle: readonly [cx: number, cy: number, r: number] }
@@ -12,7 +7,6 @@ export type IconShape = (
 ) & { readonly solid?: true };
 
 const DRAWINGS = {
-  // ── Places and navigation ─────────────────────────────────────────
   home: [
     { path: "M4 11 12 4.5 20 11" },
     { path: "M6.5 9.5v10h11v-10" },
@@ -69,7 +63,6 @@ const DRAWINGS = {
   collapse: [{ path: "M9 4v5H4M15 4v5h5M15 20v-5h5M9 20v-5H4" }],
   panel: [{ rect: [3.5, 4.5, 17, 15, 2] }, { path: "M14.5 4.5v15" }],
 
-  // ── Actions ───────────────────────────────────────────────────────
   plus: [{ path: "M12 5v14M5 12h14" }],
   close: [{ path: "M6.5 6.5l11 11M17.5 6.5l-11 11" }],
   check: [{ path: "m5 12.5 4.5 4.5L19 7.5" }],
@@ -115,7 +108,6 @@ const DRAWINGS = {
     { path: "m4 4 16 16" },
   ],
 
-  // ── Things and states ─────────────────────────────────────────────
   warning: [{ path: "M12 4 21 19.5H3z" }, { path: "M12 10v4.5M12 17.2v.3" }],
   info: [{ circle: [12, 12, 8.5] }, { path: "M12 11v5.5M12 7.8v.3" }],
   help: [

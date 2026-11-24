@@ -1,19 +1,3 @@
-//! Tolerant TOML parsing: an unknown key (e.g. one removed in a newer
-//! version, or a typo) is skipped with a notice instead of failing the
-//! whole file, while every `#[serde(deny_unknown_fields)]` struct in
-//! `deserialize` keeps catching it. A type error on a *known* key, or any
-//! other parse failure, is still fatal.
-
-/// Parse `contents` into `T`, dropping any top-level-reported unknown key
-/// and retrying until it parses or a non-"unknown field" error remains.
-///
-/// Returns the parsed value and one human-readable notice per key that was
-/// dropped, naming the key so the user can decide whether to remove it
-/// (e.g. a setting removed in a newer release) or fix a typo.
-///
-/// # Errors
-/// Returns a human-readable error string for anything other than an
-/// unknown field: invalid TOML syntax, or a type error on a known field.
 pub(super) fn parse_tolerating_unknown_keys<T: serde::de::DeserializeOwned>(
     contents: &str,
     file_label: &str,
@@ -54,19 +38,6 @@ pub(super) fn parse_tolerating_unknown_keys<T: serde::de::DeserializeOwned>(
     }
 }
 
-/// Remove the unknown key at `span` from `text` and return the edited text.
-///
-/// `span` points at the key's identifier text (not the whole line), as
-/// reported by `toml::de::Error::span`. Two shapes are handled:
-/// - A table header (`[section]` or `[[section]]`): the whole block, from
-///   that header up to (not including) the next header line or EOF, is
-///   removed.
-/// - A scalar `key = value` on its own line: just that line is removed.
-///
-/// Returns `None` if the line can't be safely deleted on its own — an
-/// inline table (`{`) or unbalanced brackets on the line, which could mean
-/// the value continues onto other lines — rather than risk corrupting
-/// content that isn't the unknown key.
 fn remove_unknown_key(text: &str, span: std::ops::Range<usize>) -> Option<String> {
     let line_start = text.get(..span.start)?.rfind('\n').map_or(0, |i| i + 1);
     let line_end = text
@@ -87,9 +58,6 @@ fn remove_unknown_key(text: &str, span: std::ops::Range<usize>) -> Option<String
     remove_range(text, line_start, line_end)
 }
 
-/// Find the end of a table block starting after `header_line_end`: the
-/// start of the next line whose trimmed content opens a new table header,
-/// or the end of the text if there is none.
 fn find_block_end(text: &str, header_line_end: usize) -> Option<usize> {
     let mut pos = header_line_end;
     loop {
@@ -110,8 +78,6 @@ fn find_block_end(text: &str, header_line_end: usize) -> Option<usize> {
     }
 }
 
-/// Remove `text[start..end]` plus the newline immediately following `end`,
-/// if any, so the deleted block doesn't leave a blank line behind.
 fn remove_range(text: &str, start: usize, end: usize) -> Option<String> {
     let tail = text.get(end..)?;
     let after = if tail.starts_with('\n') { end + 1 } else { end };

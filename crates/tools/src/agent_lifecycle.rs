@@ -1,10 +1,3 @@
-//! Teammate lifecycle tools: `agent_create` and `agent_delete`.
-//!
-//! Both call the hub's [`residuum_background::team::TeamDirectory`] as the calling agent,
-//! so the host publishes the event that names it, which becomes a toast and a
-//! team event. Neither has an approval gate: the user sees what happened and
-//! can restore a deleted agent from its checkpoint.
-
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
@@ -18,8 +11,6 @@ use residuum_inference::ToolDefinition;
 use residuum_agent::Tool;
 use residuum_inference::{ToolError, ToolResult};
 
-/// How an agent's tools reach the hub: the directory, and the name the hub
-/// knows this agent by.
 #[derive(Clone)]
 pub struct LifecycleAccess {
     directory: DirectoryHandle,
@@ -27,7 +18,6 @@ pub struct LifecycleAccess {
 }
 
 impl LifecycleAccess {
-    /// Access to `directory` on behalf of the agent named `agent`.
     #[must_use]
     pub fn new(directory: DirectoryHandle, agent: impl Into<String>) -> Self {
         Self {
@@ -60,8 +50,6 @@ fn lifecycle_error_text(error: &LifecycleError, action: &str) -> String {
     }
 }
 
-/// What the creating agent is told about the new agent: where to reach it,
-/// or, when it failed to start, that it exists but isn't running.
 fn created_text(summary: &AgentSummary) -> String {
     let name = summary.label();
     if summary.state == AgentState::Failed {
@@ -79,16 +67,12 @@ fn created_text(summary: &AgentSummary) -> String {
     )
 }
 
-/// Tool that creates a new teammate agent.
 pub struct AgentCreateTool {
     access: LifecycleAccess,
     hop_counter: HopCounter,
 }
 
 impl AgentCreateTool {
-    /// Create the tool for the agent `access` names. `hop_counter` is the
-    /// calling turn's, so the new agent's first message continues the
-    /// creator's message chain.
     #[must_use]
     pub fn new(access: LifecycleAccess, hop_counter: HopCounter) -> Self {
         Self {
@@ -167,8 +151,6 @@ impl Tool for AgentCreateTool {
             creator_hop: self.hop_counter.outgoing(),
         };
         let by = Actor::Agent(self.access.agent.clone());
-        // Its own task: cancelling this turn must not drop the creation
-        // half-way through writing the new agent's directory.
         let created =
             residuum_core::util::spawn_in_span(async move { directory.create(request, by).await })
                 .await
@@ -183,13 +165,11 @@ impl Tool for AgentCreateTool {
     }
 }
 
-/// Tool that deletes a teammate agent.
 pub struct AgentDeleteTool {
     access: LifecycleAccess,
 }
 
 impl AgentDeleteTool {
-    /// Create the tool for the agent `access` names.
     #[must_use]
     pub fn new(access: LifecycleAccess) -> Self {
         Self { access }
@@ -240,11 +220,6 @@ impl Tool for AgentDeleteTool {
         let name = args.name;
 
         if name == self.access.agent {
-            // Deleting stops this agent, which cancels the turn running this
-            // call. Awaiting the delete here would drop it half-way, after the
-            // agent stopped and before its directory was checkpointed and
-            // removed. A detached task finishes the delete on its own; a
-            // failure reaches the user as a hub notice (see `AgentHost`).
             let told = format!(
                 "Deleting yourself now. You are stopped as soon as this call returns; your files are checkpointed first, and the user can restore you from Recently deleted on the web UI's Home or with `residuum agent restore {name}`."
             );

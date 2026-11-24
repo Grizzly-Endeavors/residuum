@@ -1,30 +1,15 @@
-//! Waiting on events, under one hang guard.
-//!
-//! Every wait here ends when the thing it waits for happens. [`HANG_GUARD`]
-//! is there only so a test that would otherwise hang fails with a message
-//! naming what it was waiting for; it is not a measure of how long anything
-//! should take, so nothing in a test should ever need a shorter one.
-
 use std::fmt::{Debug, Display};
 use std::future::{Future, IntoFuture};
 use std::time::Duration;
 
 use tokio::sync::{broadcast, mpsc, watch};
 
-/// The suite's one deadline: how long a wait runs before the test is taken to
-/// have hung.
 pub const HANG_GUARD: Duration = Duration::from_secs(60);
 
-/// How often [`until`] checks its condition.
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 
-/// How many of the last items seen a failed [`next_where`] reports.
 const SEEN_IN_FAILURE: usize = 5;
 
-/// Await `fut`, failing the test if it hangs.
-///
-/// # Panics
-/// Panics, naming `what`, when `fut` is still pending after [`HANG_GUARD`].
 #[expect(
     clippy::panic,
     reason = "test-support helper: a hung wait fails the test that called it"
@@ -38,10 +23,6 @@ pub async fn guarded<F: IntoFuture>(what: impl Display, fut: F) -> F::Output {
     }
 }
 
-/// Poll `check` until it returns `Some`.
-///
-/// For state that has no channel or watch to wait on. A condition that has
-/// one should use [`watch_until`] or [`next_where`] instead.
 pub async fn until<T, F, Fut>(what: impl Display, mut check: F) -> T
 where
     F: FnMut() -> Fut,
@@ -58,13 +39,6 @@ where
     .await
 }
 
-/// [`until`], but a hang also reports what `report` says: the state the wait
-/// last saw, or logs from the processes it was waiting on, so the failure can
-/// be diagnosed without reproducing it.
-///
-/// # Panics
-/// Panics, naming `what` and adding `report()`, when `check` still returns
-/// `None` after [`HANG_GUARD`].
 #[expect(
     clippy::panic,
     reason = "test-support helper: a hung wait fails the test that called it"
@@ -97,16 +71,10 @@ where
     }
 }
 
-/// Poll `check` until it holds.
 pub async fn until_true(what: impl Display, mut check: impl FnMut() -> bool) {
     until(&what, || std::future::ready(check().then_some(()))).await;
 }
 
-/// Wait until the watched value satisfies `pred`, and return it.
-///
-/// # Panics
-/// Panics when the sender goes away first, or when nothing satisfies `pred`
-/// within [`HANG_GUARD`].
 #[expect(
     clippy::panic,
     reason = "test-support helper: a wait that can't complete fails the test that called it"
@@ -124,7 +92,6 @@ pub async fn watch_until<T: Clone>(
     }
 }
 
-/// A receiving end a test can wait on.
 #[expect(
     async_fn_in_trait,
     reason = "test-support helper: tests await it on their own task, so no caller needs a `Send` bound on the future"
@@ -132,10 +99,8 @@ pub async fn watch_until<T: Clone>(
 pub trait Recv {
     type Item;
 
-    /// The next item, waiting for one; `None` once the sender is gone.
     async fn recv_next(&mut self) -> Option<Self::Item>;
 
-    /// The next item if one is already queued.
     fn try_next(&mut self) -> Option<Self::Item>;
 }
 
@@ -163,8 +128,6 @@ impl<T> Recv for mpsc::UnboundedReceiver<T> {
     }
 }
 
-/// A lagged receiver missed messages, so a test reading it can't conclude
-/// anything from what it saw: it fails instead.
 #[expect(
     clippy::panic,
     reason = "test-support helper: a receiver that missed messages fails the test reading it"
@@ -195,11 +158,6 @@ impl<T: Clone> Recv for broadcast::Receiver<T> {
     }
 }
 
-/// The next item `rx` receives.
-///
-/// # Panics
-/// Panics when the sender goes away first, or when nothing arrives within
-/// [`HANG_GUARD`].
 #[expect(
     clippy::panic,
     reason = "test-support helper: a wait that can't complete fails the test that called it"
@@ -211,12 +169,6 @@ pub async fn next<R: Recv>(what: impl Display, rx: &mut R) -> R::Item {
     }
 }
 
-/// The first item `rx` receives that satisfies `pred`. Items before it are
-/// skipped, so unlike [`next_where`] this needs no `Debug` on the item.
-///
-/// # Panics
-/// Panics when the sender goes away first, or when nothing matching arrives
-/// within [`HANG_GUARD`].
 #[expect(
     clippy::panic,
     reason = "test-support helper: a wait that can't complete fails the test that called it"
@@ -238,12 +190,6 @@ pub async fn next_matching<R: Recv>(
     .await
 }
 
-/// Receive until an item satisfies `pred`. Returns everything received, the
-/// match last, so a test can also check what came before it.
-///
-/// # Panics
-/// Panics, listing the last items received, when the sender goes away first
-/// or when nothing matching arrives within [`HANG_GUARD`].
 #[expect(
     clippy::panic,
     reason = "test-support helper: a wait that can't complete fails the test that called it"
@@ -283,8 +229,6 @@ where
     }
 }
 
-/// Everything already queued on `rx`, without waiting. Meaningful only after
-/// a sync point that proves everything the test cares about has been sent.
 pub fn drain<R: Recv>(rx: &mut R) -> Vec<R::Item> {
     std::iter::from_fn(|| rx.try_next()).collect()
 }

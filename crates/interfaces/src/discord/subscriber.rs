@@ -1,5 +1,3 @@
-//! Discord bus subscriber — translates typed bus events to Discord messages.
-
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -25,7 +23,6 @@ struct DiscordOutbound {
     state: Arc<DiscordState>,
 }
 
-/// Receives events from the bus and delivers them to Discord.
 pub(super) async fn run_discord_subscriber(
     subs: crate::BaseSubscribers,
     http: Arc<Http>,
@@ -90,7 +87,6 @@ impl ChatOutbound for DiscordOutbound {
                 }
                 tokio::select! {
                     () = tokio::time::sleep(tokio::time::Duration::from_secs(TYPING_INTERVAL_SECS)) => {}
-                    // Resolves with an error once the sender is dropped at turn end.
                     _ = stop_rx.changed() => break,
                 }
             }
@@ -115,10 +111,6 @@ impl ChatOutbound for DiscordOutbound {
     }
 }
 
-/// Parse a conversation id into a Discord channel id, or `None` if it isn't
-/// one — silently skipped by the typing indicator, which is purely
-/// cosmetic; unlike a message delivery failure, there's nothing here worth
-/// notifying the owner about.
 fn parse_channel_id(conversation_id: &str) -> Option<ChannelId> {
     match conversation_id.parse::<u64>() {
         Ok(n) if n != 0 => Some(ChannelId::new(n)),
@@ -126,7 +118,6 @@ fn parse_channel_id(conversation_id: &str) -> Option<ChannelId> {
     }
 }
 
-/// Send `content` in chunks, stopping at the first failure.
 async fn send_chunks(
     http: &Http,
     channel_id: ChannelId,

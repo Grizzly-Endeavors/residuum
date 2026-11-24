@@ -9,14 +9,10 @@ use residuum_config::ProviderKind;
 
 use super::openai::OpenAiDialect;
 
-/// Response header carrying the prompt tokens served from cache.
 const CACHED_PROMPT_TOKENS_HEADER: &str = "fireworks-cached-prompt-tokens";
 
-/// Request header that pins requests to a replica holding a warm cache.
 const SESSION_AFFINITY_HEADER: &str = "x-session-affinity";
 
-/// The dialect Fireworks speaks, with `session_affinity` as the value of the
-/// `x-session-affinity` header when there is one.
 pub(crate) fn dialect(session_affinity: Option<String>) -> OpenAiDialect {
     OpenAiDialect {
         provider: ProviderKind::Fireworks,
@@ -31,7 +27,6 @@ pub(crate) fn dialect(session_affinity: Option<String>) -> OpenAiDialect {
     }
 }
 
-/// Parse the Fireworks cached-prompt-token header, logging a malformed value.
 fn cached_prompt_tokens(headers: &reqwest::header::HeaderMap) -> Option<u32> {
     let raw = headers.get(CACHED_PROMPT_TOKENS_HEADER)?;
     let parsed = raw.to_str().ok().and_then(|v| v.trim().parse::<u32>().ok());

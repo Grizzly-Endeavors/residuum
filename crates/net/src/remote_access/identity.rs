@@ -1,13 +1,8 @@
-//! Identity is local: the user and slug an install enrolled as, and the check
-//! that what the relay announces agrees with it.
-
 use super::store::LocalIdentity;
 use super::types::Hostnames;
 
-/// Why a `Connected` frame was refused.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum IdentityError {
-    /// The relay says this tunnel belongs to someone else than the stored identity.
     #[error(
         "the relay says this instance is {announced_instance} of {announced_user}, but it was set up as {stored_instance} of {stored_user}"
     )]
@@ -17,19 +12,12 @@ pub(crate) enum IdentityError {
         stored_user: String,
         stored_instance: String,
     },
-    /// The relay announced host names other than the ones derived locally.
     #[error("the relay announced host names that differ from the ones derived from {base_domain}")]
     HostsDiffer { base_domain: String },
-    /// The user or slug isn't a valid name.
     #[error("the relay announced a user or instance name that isn't valid")]
     InvalidName,
 }
 
-/// Check what the relay announced against the stored identity (when there is
-/// one) and the host names derived from `base_domain`.
-///
-/// # Errors
-/// Returns why the announcement is refused.
 pub(crate) fn verify_announcement(
     stored: Option<&LocalIdentity>,
     base_domain: &str,
@@ -67,13 +55,10 @@ fn normalized(hosts: &Hostnames) -> Hostnames {
     }
 }
 
-/// A username as the relay and the pin service accept it: 3-32 characters of
-/// `a-z`, `0-9` and inner `-`.
 pub(crate) fn is_valid_user(user: &str) -> bool {
     (3..=32).contains(&user.len()) && is_dns_label(user)
 }
 
-/// An instance slug: 1-24 characters of `a-z`, `0-9` and inner `-`.
 pub(crate) fn is_valid_slug(slug: &str) -> bool {
     (1..=24).contains(&slug.len()) && is_dns_label(slug)
 }

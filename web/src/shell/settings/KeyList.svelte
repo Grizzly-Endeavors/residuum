@@ -1,19 +1,11 @@
 <script lang="ts" generics="T extends { id?: string; name: string }">
   import type { Snippet } from "svelte";
 
-  // The rows of a saved list in Saved keys and Agent-to-agent: each is a
-  // name, what to know about it beside and under the name, and the action
-  // that removes it at the end. The list never shows a value.
-
   interface Props {
-    /** Names the list for assistive technology. */
     label: string;
     items: readonly T[];
-    /** Beside the name: an environment variable, a badge, when it was made. */
     mark?: Snippet<[T]>;
-    /** Under the name: what it is for. An empty line shows nothing. */
     note?: (item: T) => string;
-    /** The row's action, an icon button. */
     action: Snippet<[T]>;
   }
 

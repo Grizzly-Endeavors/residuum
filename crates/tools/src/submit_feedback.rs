@@ -1,7 +1,3 @@
-//! `submit_feedback` tool — lets the agent send short, free-form
-//! feedback when it notices confusion, usability problems, or
-//! patterns in its own behavior that seem off.
-
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -16,7 +12,6 @@ use super::require_str;
 use residuum_agent::Tool;
 use residuum_inference::{ToolError, ToolResult};
 
-/// Built-in tool that submits a feedback message through the tracing service.
 pub(crate) struct SubmitFeedbackTool {
     service: Arc<TracingService>,
     build: BuildInfo,

@@ -1,12 +1,6 @@
-//! Generic subscriber loop for notification channels.
-
 use super::channels::NotificationChannel;
 use residuum_bus::{NotificationEvent, Subscriber};
 
-/// Run a subscriber loop that delivers `NotificationEvent`s to a channel.
-///
-/// Delivery errors are logged but do not stop the loop.
-/// The function returns when the subscriber closes.
 #[tracing::instrument(skip_all, fields(channel = %channel.name()))]
 pub async fn run_notify_subscriber(
     mut subscriber: Subscriber<NotificationEvent>,
@@ -52,10 +46,6 @@ mod tests {
     use residuum_bus::{NotificationEvent, NotifyName, spawn_broker, topics};
 
     use super::run_notify_subscriber;
-
-    // -----------------------------------------------------------------------
-    // MockChannel
-    // -----------------------------------------------------------------------
 
     struct MockChannel {
         delivered: Arc<Mutex<Vec<NotificationEvent>>>,
@@ -112,10 +102,6 @@ mod tests {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Tests
-    // -----------------------------------------------------------------------
-
     #[tokio::test]
     async fn notification_events_are_delivered() {
         let handle = spawn_broker();
@@ -163,7 +149,6 @@ mod tests {
         let loop_task =
             residuum_core::util::spawn_in_span(run_notify_subscriber(sub, Box::new(channel)));
 
-        // First notification — delivery will fail
         pub_.publish(
             topics::Notification(topic_name.clone()),
             make_notification_event(),
@@ -173,10 +158,8 @@ mod tests {
 
         processed.notified().await;
 
-        // Now allow delivery to succeed
         should_fail.store(false, Ordering::SeqCst);
 
-        // Second notification — delivery should succeed
         pub_.publish(topics::Notification(topic_name), make_notification_event())
             .await
             .unwrap();

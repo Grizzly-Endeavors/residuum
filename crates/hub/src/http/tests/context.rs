@@ -1,8 +1,3 @@
-//! Tests for `/api/agents/{name}/context`, against the fake directory's
-//! agents in every state. The snapshot is written to the agent's workspace
-//! the way the agent saves it after a turn, so the route reads what a real
-//! agent would have left.
-
 use residuum_agent::context::{ContextBreakdown, ContextSnapshot};
 
 use super::*;
@@ -21,7 +16,6 @@ fn snapshot() -> ContextSnapshot {
     }
 }
 
-/// Write `contents` where `name`'s agent saves its context breakdown.
 async fn write_breakdown(h: &Harness, name: &str, contents: &str) {
     let path = WorkspaceLayout::new(h.agent_dir(name)).context_breakdown_json();
     tokio::fs::create_dir_all(path.parent().unwrap())

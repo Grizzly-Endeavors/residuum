@@ -7,33 +7,18 @@
   import { swipeToDismiss } from "./overlay/swipe";
   import type { ModalFrame } from "./types";
 
-  // The base every modal overlay is drawn on: Dialog, Sheet, Drawer, and
-  // surfaces with their own card such as the palette and the Settings modal.
-  // It is controlled: it asks to close through `onclose`, and closes when the
-  // owner sets `open` false.
-
   interface Props {
     open: boolean;
-    /** `center` hangs below the top edge (dialogs), `top` hangs higher (the palette), `bottom` is a sheet, `left` a drawer, `viewer` is centered in the view with room for a picture. */
     frame?: ModalFrame;
-    /** A centered layer fills the screen at phone width. */
     fullscreenOnPhone?: boolean;
-    /** Filling the screen on a phone, stop above the bottom bar (`[data-bottom-bar]`), which stays in reach. */
     keepBottomBar?: boolean;
-    /** The card's width, for the centered frames. */
     width?: string;
     role?: "dialog" | "alertdialog";
     label?: string;
     labelledby?: string;
     describedby?: string;
-    /** What takes focus on open: a selector's match, or false for the card itself. By default `[data-autofocus]`, else the first control. */
     initialFocus?: string | false;
-    /**
-     * Push an overlay entry, so Back closes the layer. Turn it off for a layer
-     * whose URL parameter is its entry, such as the Settings modal.
-     */
     historyEntry?: boolean;
-    /** The user asked to close it: Esc, the scrim, a swipe, or Back. */
     onclose: () => void;
     class?: string;
     children: Snippet;
@@ -151,7 +136,6 @@
   }
 
   .ui-modal {
-    /* Quiet buttons hover to stone-4 on the stone-3 card. */
     --ui-quiet-hover: var(--color-stone-4);
 
     position: relative;
@@ -170,13 +154,10 @@
       outline: none;
     }
 
-    /* Set by the swipe while the card follows a finger. */
     &:global([data-swiping]) {
       transition: none;
     }
   }
-
-  /* ── Centered: dialogs ─────────────────────────────────────────────── */
 
   .ui-modal-layer:is([data-frame="center"], [data-frame="top"]) {
     padding: 14vh max(var(--space-16), var(--safe-right)) max(var(--space-16), var(--safe-bottom))
@@ -190,7 +171,6 @@
     }
   }
 
-  /* A search whose results grow downward starts higher and stops short of the bottom. */
   .ui-modal-layer[data-frame="top"] {
     padding-top: 12vh;
 
@@ -198,8 +178,6 @@
       max-height: min(540px, 72vh);
     }
   }
-
-  /* ── Viewer: a picture, centered in the view with a margin all round ── */
 
   .ui-modal-layer[data-frame="viewer"] {
     justify-content: center;
@@ -214,8 +192,6 @@
     }
   }
 
-  /* ── Bottom: sheets ────────────────────────────────────────────────── */
-
   .ui-modal-layer[data-frame="bottom"] {
     justify-content: flex-end;
 
@@ -227,8 +203,6 @@
       animation: ui-sheet-in var(--duration-base) var(--ease-out);
     }
   }
-
-  /* ── Left: drawers ─────────────────────────────────────────────────── */
 
   .ui-modal-layer[data-frame="left"] {
     align-items: flex-start;

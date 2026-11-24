@@ -1,9 +1,6 @@
-//! Subconscious classifier and learning-loop settings.
-
 use super::super::deserialize::{LearningConfigFile, SubconsciousConfigFile};
 use super::super::types::{LearningConfig, SubconsciousSettings};
 
-/// Resolve subconscious settings from TOML section (opt-in, default disabled).
 pub(super) fn resolve_subconscious_settings(
     section: Option<&SubconsciousConfigFile>,
 ) -> SubconsciousSettings {
@@ -31,7 +28,6 @@ pub(super) fn resolve_subconscious_settings(
     settings
 }
 
-/// Resolve the activity-triggered learning fallback config (turn-count nudge).
 pub(super) fn resolve_learning_config(section: Option<&LearningConfigFile>) -> LearningConfig {
     let mut cfg = LearningConfig::default();
     if let Some(s) = section

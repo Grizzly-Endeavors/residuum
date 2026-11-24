@@ -1,5 +1,3 @@
-//! Discord server channels: labels, @mention handling, and listing for the agent.
-
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -15,12 +13,10 @@ use super::DiscordState;
 /// Most servers listed in `list_conversations`; Discord's page size.
 const MAX_GUILDS: u64 = 200;
 
-/// `"#builds (Eng Team)"`.
 fn channel_label(channel: &str, guild: &str) -> String {
     format!("#{channel} ({guild})")
 }
 
-/// Server channels the bot can post plain messages into.
 fn is_text_channel(channel: &GuildChannel) -> bool {
     matches!(
         channel.kind,
@@ -32,7 +28,6 @@ fn is_text_channel(channel: &GuildChannel) -> bool {
     )
 }
 
-/// Message text with the bot's own mention removed; other mentions are kept.
 pub(super) fn strip_bot_mention(content: &str, bot_id: UserId) -> String {
     content
         .replace(&format!("<@{bot_id}> "), "")
@@ -43,7 +38,6 @@ pub(super) fn strip_bot_mention(content: &str, bot_id: UserId) -> String {
         .to_string()
 }
 
-/// Human-readable location of a server channel, fetched once and then cached.
 pub(super) async fn guild_channel_label(
     state: &DiscordState,
     http: &Http,
@@ -73,14 +67,11 @@ pub(super) async fn guild_channel_label(
             state.cache_label(channel_id, label.clone());
             label
         }
-        // Not cached, so a transient failure is retried on the next message.
         (Some(channel), None) => format!("#{channel}"),
         _ => "a server channel".to_string(),
     }
 }
 
-/// The conversations Discord can reach: saved DMs plus every text channel in
-/// the servers the bot is a member of.
 pub(super) struct DiscordConversations {
     pub(super) state: Arc<DiscordState>,
     pub(super) http: Arc<Http>,

@@ -1,10 +1,3 @@
-//! Persisted chat interface state: who owns the bot and how to reach each conversation.
-//!
-//! Each chat interface (Teams, Discord, Telegram) keeps one of these in its own
-//! file in the workspace. The owner is learned from the first direct message
-//! and kept so it survives restarts; conversation references let the agent
-//! post into a chat later without having just heard from it.
-
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -15,17 +8,13 @@ use serde::{Deserialize, Serialize};
 use residuum_bus::conversations::KnownConversation;
 use residuum_bus::origin::ConversationKind;
 
-/// A conversation reference for interfaces that reach a chat by its ID alone
-/// (Discord channels, Telegram chats); the ID is the store key.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ChatRef {
     pub(crate) kind: ConversationKind,
-    /// Human-readable location, e.g. `"direct message"`.
     pub(crate) label: String,
 }
 
 impl ChatRef {
-    /// The reference for a 1:1 chat between `person` and the bot.
     pub(crate) fn direct_message(person: &str) -> Self {
         Self {
             kind: ConversationKind::Personal,
@@ -34,12 +23,10 @@ impl ChatRef {
     }
 }
 
-/// How a 1:1 chat is labelled in `list_conversations`.
 pub(crate) fn direct_message_label(person: &str) -> String {
     format!("direct message with {person}")
 }
 
-/// A stored conversation reference that can describe itself to the agent.
 pub(crate) trait ConversationRecord {
     fn kind(&self) -> ConversationKind;
     fn label(&self) -> &str;
@@ -55,25 +42,20 @@ impl ConversationRecord for ChatRef {
     }
 }
 
-/// The person the bot answers to by default.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Owner {
-    /// The platform's ID for the owner, stable across every chat they are in.
     #[serde(alias = "aad_object_id")]
     pub(crate) user_id: String,
     pub(crate) name: String,
-    /// Conversation ID of the owner's direct message with the bot.
     pub(crate) dm_conversation_id: String,
 }
 
-/// Who sent a message, relative to the bot's owner.
 pub(crate) enum Standing {
     Owner,
     Other { owner: Option<Owner> },
 }
 
 impl Standing {
-    /// What to tell someone who is not allowed to use the bot.
     pub(crate) fn refusal(&self) -> Option<String> {
         match self {
             Self::Owner => None,
@@ -104,10 +86,6 @@ impl<C> Default for StoredState<C> {
     }
 }
 
-/// In-memory copy of one interface's state, written through to disk on change.
-///
-/// `C` is the interface's conversation reference: whatever it needs to post
-/// into that conversation later.
 pub(crate) struct ChatStateStore<C> {
     path: PathBuf,
     state: tokio::sync::Mutex<StoredState<C>>,
@@ -117,18 +95,6 @@ impl<C> ChatStateStore<C>
 where
     C: Clone + PartialEq + Serialize + DeserializeOwned,
 {
-    /// Load the store from `path`; a missing file starts empty.
-    ///
-    /// A file that exists but fails to parse is moved aside (best-effort)
-    /// rather than left to keep the adapter dead until someone manually
-    /// fixes it — the store starts fresh instead, and the returned
-    /// `Option<String>` names what happened for the caller to surface as
-    /// a notice. A read failure other than "not found" (permissions, a
-    /// bad mount) is still a hard error — that's not a corrupt-content
-    /// problem this can self-heal.
-    ///
-    /// # Errors
-    /// Returns an error if the file exists but cannot be read.
     pub(crate) async fn load(path: PathBuf) -> anyhow::Result<(Self, Option<String>)> {
         let (state, notice) = match tokio::fs::read_to_string(&path).await {
             Ok(contents) => match serde_json::from_str(&contents) {
@@ -155,9 +121,6 @@ where
         ))
     }
 
-    /// Move a corrupt chat-state file aside (best-effort) and describe
-    /// what happened, so a fresh, empty store can take its place instead
-    /// of leaving the interface dead until someone fixes the file by hand.
     async fn recover_from_corrupt_file(
         path: &std::path::Path,
         parse_err: &serde_json::Error,
@@ -196,7 +159,6 @@ where
         self.state.lock().await.owner.clone()
     }
 
-    /// Where `sender_id` stands relative to the owner.
     pub(crate) async fn standing_of(&self, sender_id: Option<&str>) -> Standing {
         let owner = self.owner().await;
         match (&owner, sender_id) {
@@ -205,8 +167,6 @@ where
         }
     }
 
-    /// The sender's standing if they may use the bot, or the refusal to send
-    /// them: only the owner is admitted unless `respond_to_others` is on.
     pub(crate) async fn admit(
         &self,
         sender_id: Option<&str>,
@@ -219,10 +179,6 @@ where
         }
     }
 
-    /// Record the owner if none is set yet. Returns whether this call set it.
-    ///
-    /// # Errors
-    /// Returns an error if the new owner cannot be written to disk.
     pub(crate) async fn claim_owner(&self, owner: Owner) -> anyhow::Result<bool> {
         let mut state = self.state.lock().await;
         if state.owner.is_some() {
@@ -242,7 +198,6 @@ where
             .cloned()
     }
 
-    /// Every stored conversation, as the agent sees it in `list_conversations`.
     pub(crate) async fn known_conversations(&self) -> Vec<KnownConversation>
     where
         C: ConversationRecord,
@@ -260,10 +215,6 @@ where
             .collect()
     }
 
-    /// Insert or update a conversation reference, writing only when it changed.
-    ///
-    /// # Errors
-    /// Returns an error if the change cannot be written to disk.
     pub(crate) async fn remember(
         &self,
         conversation_id: &str,
@@ -279,10 +230,6 @@ where
         self.persist(&state).await
     }
 
-    /// Forget a conversation the bot was removed from.
-    ///
-    /// # Errors
-    /// Returns an error if the change cannot be written to disk.
     pub(crate) async fn forget(&self, conversation_id: &str) -> anyhow::Result<()> {
         let mut state = self.state.lock().await;
         if state.conversations.remove(conversation_id).is_none() {

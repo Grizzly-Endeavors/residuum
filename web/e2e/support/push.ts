@@ -1,13 +1,3 @@
-/**
- * A push service for specs, since none answers in a test browser: the
- * browser's `PushManager` hands out a subscription the mock accepts, kept in
- * local storage so a reload finds it, and notifications are allowed.
- *
- * With `registration: true`, for the dev server, which runs no worker, the
- * page also gets a stand-in service worker registration when it has none,
- * which the app reads push from as a build reads its own worker's. Nothing is
- * ever shown through it: a push reaches a build's worker through `deliverPush`.
- */
 import type { BrowserContext, Page, Worker } from "@playwright/test";
 import { MOCK_VAPID_PUBLIC_KEY } from "../../mock/push";
 import { expect } from "./fixtures";
@@ -82,23 +72,14 @@ export async function fakePushService(
   );
 }
 
-/** How long the worker has to show the notification for a push before the delivery is called failed. */
 const SHOWN_TIMEOUT_MS = 10_000;
 
-/** The page's service worker, which Playwright reports once it has attached to it. */
 async function serviceWorkerOf(context: BrowserContext): Promise<Worker> {
   return context.serviceWorkers()[0] ?? (await context.waitForEvent("serviceworker"));
 }
 
-/**
- * Have the worker note when its next `showNotification` has settled, which is
- * when the browser has stored the notification and put it on display. The
- * call itself is left as it was. `pushSettled` turns true then, and the caller
- * waits on it with a bound.
- */
 function watchNextShown(worker: Worker): Promise<void> {
   return worker.evaluate(() => {
-    // The worker's globals, which the page's types don't have.
     const scope = self as unknown as {
       registration: ServiceWorkerRegistration;
       pushShown: Promise<void>;
@@ -164,7 +145,6 @@ export async function deliverPush(page: Page, payload: unknown): Promise<void> {
   await worker.evaluate(() => (self as unknown as { pushShown: Promise<void> }).pushShown);
 }
 
-/** The notifications the page's service worker is showing. */
 export function shownNotifications(
   page: Page,
 ): Promise<{ title: string; body: string; tag: string; target: unknown }[]> {

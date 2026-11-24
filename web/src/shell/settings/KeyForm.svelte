@@ -2,18 +2,10 @@
   import type { Snippet } from "svelte";
   import { Button } from "../../lib/ui";
 
-  // The form that adds an entry to a saved list: its fields, then Cancel and
-  // the button that adds it. It acts at once, so the button names the action
-  // ("Save key", "Create key") instead of saying "Save changes".
-
   interface Props {
-    /** Names the form for assistive technology. */
     label: string;
-    /** The button that adds the entry. */
     submitLabel: string;
-    /** The entry is being added: the button shows a spinner and Cancel is off. */
     saving: boolean;
-    /** Whether the fields hold enough to add the entry. */
     ready: boolean;
     onsubmit: () => void;
     oncancel: () => void;

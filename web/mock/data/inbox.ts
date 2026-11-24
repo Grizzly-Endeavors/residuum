@@ -1,7 +1,6 @@
 import type { MockClock } from "../env";
 import type { UserInboxItem } from "../state";
 
-/** The sample inbox: one unread item and one read item. */
 export function createInboxItems(clock: MockClock): UserInboxItem[] {
   return [
     {
@@ -25,7 +24,6 @@ export function createInboxItems(clock: MockClock): UserInboxItem[] {
   ];
 }
 
-/** The sample archive: one item the user archived a week ago. */
 export function createArchivedInboxItems(clock: MockClock): UserInboxItem[] {
   return [
     {

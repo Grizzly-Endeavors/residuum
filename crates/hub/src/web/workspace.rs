@@ -1,5 +1,3 @@
-//! Workspace file browser API endpoints.
-
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
@@ -16,13 +14,8 @@ use residuum_workspace::version::{modified_unix_ms, version_token};
 
 use super::ConfigApiState;
 
-/// Maximum size for a workspace text or raw read or write, in bytes (8 MiB).
-/// The `PUT /api/agents/{name}/workspace/file` and `PUT /api/agents/{name}/workspace/raw` routes' request
-/// body limits are raised to match, so an over-limit write is refused before
-/// the handler even runs.
 pub(crate) const TEXT_FILE_LIMIT_BYTES: usize = 8 * 1024 * 1024;
 
-/// A single entry in a workspace directory listing.
 #[derive(Serialize)]
 pub(super) struct WorkspaceEntry {
     pub name: String,
@@ -32,26 +25,22 @@ pub(super) struct WorkspaceEntry {
     pub version: String,
 }
 
-/// Query parameters for `GET /api/agents/{name}/workspace/files` (directory listing).
 #[derive(Deserialize)]
 pub(super) struct FilesQuery {
     pub path: Option<String>,
 }
 
-/// Query parameters for `GET /api/agents/{name}/workspace/file` (single file read).
 #[derive(Deserialize)]
 pub(super) struct FileQuery {
     pub path: String,
 }
 
-/// Request body for `PUT /api/agents/{name}/workspace/file`.
 #[derive(Deserialize)]
 pub(super) struct WriteFileRequest {
     pub path: String,
     pub content: String,
 }
 
-/// Request body for `POST /api/agents/{name}/workspace/validate`.
 #[derive(Deserialize)]
 pub(super) struct ValidateFileRequest {
     pub path: String,
@@ -79,15 +68,10 @@ pub(super) struct WriteResponse {
     pub version: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub diagnostics: Vec<residuum_core::diagnostics::Diagnostic>,
-    /// The checkpoint taken before a raw overwrite. Absent for a text write,
-    /// which takes none.
     #[serde(default, flatten, skip_serializing_if = "UndoRefs::is_empty")]
     pub undo: UndoRefs,
 }
 
-/// One checkpoint taken before a destructive action, and the repository
-/// that holds it. Workspace paths live in `workspace`; `team/...` paths in
-/// `team`. Restoring a path from the wrong repository finds nothing.
 #[derive(Debug, Serialize)]
 #[cfg_attr(test, derive(Deserialize))]
 pub(super) struct CheckpointRef {
@@ -95,12 +79,6 @@ pub(super) struct CheckpointRef {
     pub checkpoint_repo: residuum_checkpoints::RepoKind,
 }
 
-/// The checkpoints a destructive action recorded, flattened into its
-/// response. One checkpoint (the common case, including every agent-only
-/// path) is `checkpoint_id` + `checkpoint_repo`. An action that touched both
-/// the agent directory and the team directory (a move between them) lists
-/// both under `checkpoints` instead. `checkpoint_id` is `null` when none
-/// could be recorded; the action still ran and the UI should not offer Undo.
 #[derive(Debug, Default, Serialize)]
 #[cfg_attr(test, derive(Deserialize))]
 pub(super) struct UndoRefs {
@@ -142,7 +120,6 @@ struct ConditionalWriteError {
     current_version: Option<String>,
 }
 
-/// Query parameters for `DELETE /api/agents/{name}/workspace/file`.
 #[derive(Deserialize)]
 pub(super) struct DeleteFileQuery {
     pub path: String,
@@ -150,32 +127,25 @@ pub(super) struct DeleteFileQuery {
     pub recursive: bool,
 }
 
-/// Response from `DELETE /api/agents/{name}/workspace/file`.
 #[derive(Debug, Serialize)]
 #[cfg_attr(test, derive(Deserialize))]
 pub(super) struct DeleteResponse {
     pub deleted: bool,
-    /// The checkpoint holding the deleted path as it was, and the repository
-    /// it belongs to. `checkpoint_id` is `None` when it could not be
-    /// recorded; the delete still succeeded, and the UI should not offer Undo.
     #[serde(flatten)]
     pub undo: UndoRefs,
 }
 
-/// Request body for `POST /api/agents/{name}/workspace/dir`.
 #[derive(Deserialize)]
 pub(super) struct MkdirRequest {
     pub path: String,
 }
 
-/// Response from `POST /api/agents/{name}/workspace/dir`.
 #[derive(Debug, Serialize)]
 #[cfg_attr(test, derive(Deserialize))]
 pub(super) struct MkdirResponse {
     pub created: bool,
 }
 
-/// Request body for `POST /api/agents/{name}/workspace/move`.
 #[derive(Deserialize)]
 pub(super) struct MoveRequest {
     pub from: String,
@@ -184,27 +154,17 @@ pub(super) struct MoveRequest {
     pub overwrite: bool,
 }
 
-/// Response from `POST /api/agents/{name}/workspace/move`.
 #[derive(Debug, Serialize)]
 #[cfg_attr(test, derive(Deserialize))]
 pub(super) struct MoveResponse {
     pub moved: bool,
-    /// The moved file's new version. `None` for a moved directory, since
-    /// version tokens are file-specific.
     pub version: Option<String>,
-    /// Diagnostics for the moved file's content at its new name, if `to` is
-    /// one of the strictly-parsed files `residuum_core::diagnostics` understands
-    /// (most relevantly, a move that lands on `HEARTBEAT.yml`). Empty for a
-    /// directory or an unrecognized file — the move always succeeds either way.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub diagnostics: Vec<residuum_core::diagnostics::Diagnostic>,
-    /// The checkpoint(s) taken before the move: one per repository the move
-    /// touched (the source's and the destination's, when they differ).
     #[serde(default, flatten, skip_serializing_if = "UndoRefs::is_empty")]
     pub undo: UndoRefs,
 }
 
-/// Canonicalize the workspace root directory.
 pub(super) async fn canonicalize_workspace_root(
     workspace_dir: &Path,
 ) -> Result<PathBuf, (StatusCode, String)> {
@@ -216,16 +176,6 @@ pub(super) async fn canonicalize_workspace_root(
     })
 }
 
-/// Resolve and validate a path relative to the workspace directory for
-/// reading.
-///
-/// Canonicalizes both the workspace root and the joined path, then verifies
-/// the result is still inside the workspace. Returns 403 if the path
-/// escapes the workspace boundary, 404 if it doesn't exist.
-///
-/// `label` is the path as the client addressed it, which differs from
-/// `relative` for a `team/...` path (relative to the team directory), so
-/// errors name what the client sent.
 pub(super) async fn validate_workspace_path(
     workspace_dir: &Path,
     relative: &str,
@@ -255,29 +205,18 @@ pub(super) async fn validate_workspace_path(
     Ok(canonical_target)
 }
 
-/// A namespace path placed on disk: the directory it is relative to, the
-/// remainder, and, for a path in the team directory, the team view its
-/// writes go through.
 pub(super) struct Located {
-    /// The workspace directory, or the team directory for a `team/...` path.
     pub base: PathBuf,
-    /// The path relative to `base`, `/`-separated. Empty for `base` itself.
     pub rel: String,
-    /// The path as the client addressed it (`team/...` for team files).
     pub label: String,
-    /// `Some` when the path is in the team directory.
     pub team: Option<TeamFiles>,
 }
 
 impl Located {
-    /// Resolve the path for reading: it must exist and stay inside its base.
     pub(super) async fn existing(&self) -> Result<PathBuf, (StatusCode, String)> {
         validate_workspace_path(&self.base, &self.rel, &self.label).await
     }
 
-    /// Resolve the path for writing (it need not exist yet). Refuses the team
-    /// directory itself, and any spot inside a `team` entry of the workspace
-    /// directory, which the namespace reserves for the team prefix.
     async fn for_write(&self, state: &ConfigApiState) -> Result<PathBuf, (StatusCode, String)> {
         self.refuse_team_root()?;
         let resolved = resolve_labeled_path_for_write(&self.base, &self.rel, &self.label).await?;
@@ -290,8 +229,6 @@ impl Located {
         Ok(resolved)
     }
 
-    /// The team directory itself can't be written, moved, or deleted through
-    /// the file API.
     fn refuse_team_root(&self) -> Result<(), (StatusCode, String)> {
         if self.team.is_some() && self.rel.is_empty() {
             return Err((
@@ -303,26 +240,12 @@ impl Located {
         Ok(())
     }
 
-    /// Take the team write lock for `path` when it is a team path.
     async fn lock(&self, path: &Path) -> Option<(TeamFiles, TeamPathGuard)> {
         let team = self.team.as_ref()?;
         Some((team.clone(), team.coordinator().lock(path).await))
     }
 }
 
-/// Resolve a path relative to the workspace directory for writing.
-///
-/// Unlike `validate_workspace_path`, the target need not exist yet, and
-/// neither do its parent directories: this walks up from the target's
-/// parent to the nearest ancestor that does exist, canonicalizes *that*,
-/// and re-appends the missing segments. That keeps the escape check intact
-/// — canonicalization always happens on a path segment that is actually on
-/// disk, so a symlink planted inside the workspace can't walk a
-/// still-nonexistent path outside it — while letting the caller create the
-/// missing parent directories afterward.
-///
-/// `label` is the path as the client addressed it, used in errors (see
-/// [`validate_workspace_path`]).
 async fn resolve_labeled_path_for_write(
     workspace_dir: &Path,
     relative: &str,
@@ -362,9 +285,6 @@ async fn resolve_labeled_path_for_write(
     Ok(resolved)
 }
 
-/// Walk up from `start` until an existing directory is found, returning its
-/// canonical path and the segment names that don't exist yet (nearest
-/// first).
 async fn nearest_existing_ancestor(
     start: &Path,
     relative: &str,
@@ -415,12 +335,6 @@ async fn nearest_existing_ancestor(
     Ok((canonical, missing))
 }
 
-/// Returns true if the path names one of the agent's own identity files.
-///
-/// Checks the file name only (ignores any leading directory components) so that
-/// identity files nested inside subdirectories are also recognised. The team
-/// layer's `AGENTS.md` and `USER.md` are identified by resolved path instead,
-/// see [`is_identity_target`].
 fn is_identity_file(relative: &str) -> bool {
     const IDENTITY_FILES: &[&str] = &["SOUL.md", "HEARTBEAT.yml"];
 
@@ -432,9 +346,6 @@ fn is_identity_file(relative: &str) -> bool {
     IDENTITY_FILES.contains(&file_name)
 }
 
-/// Returns true if `resolved` (an absolute path a write, delete or move
-/// touched) is an identity file: one of the agent's own, or the team's
-/// `AGENTS.md` / `USER.md`, whatever path they were reached through.
 async fn is_identity_target(state: &ConfigApiState, relative: &str, resolved: &Path) -> bool {
     if is_identity_file(relative) {
         return true;
@@ -509,7 +420,6 @@ pub(super) async fn api_workspace_files(
         }
     }
 
-    // The team directory appears as a `team` folder at the top of the tree.
     if relative.is_empty()
         && let Some(team_root) = state.team_mount()
         && !entries
@@ -527,7 +437,6 @@ pub(super) async fn api_workspace_files(
         });
     }
 
-    // Sort: directories first, then alphabetically within each group.
     entries.sort_by(|a, b| {
         let a_is_dir = a.entry_type == "directory";
         let b_is_dir = b.entry_type == "directory";
@@ -537,11 +446,6 @@ pub(super) async fn api_workspace_files(
     Ok(Json(entries))
 }
 
-/// Build a `WorkspaceEntry` for one directory entry.
-///
-/// Returns `Ok(None)` if the entry disappeared between listing the
-/// directory and statting it — a benign race with a concurrent delete, not
-/// an error the caller should surface.
 async fn workspace_entry(
     name: String,
     entry: &tokio::fs::DirEntry,
@@ -645,13 +549,10 @@ pub(super) async fn api_workspace_file_read(
     Ok(response)
 }
 
-/// A header's value as `&str`, `None` if absent or not valid UTF-8.
 fn header_str(headers: &HeaderMap, name: HeaderName) -> Option<&str> {
     headers.get(name)?.to_str().ok()
 }
 
-/// Build a `412 Precondition Failed` response with the conditional-write
-/// error body: `{ "error": "...", "current_version": "<version>" | null }`.
 fn precondition_failed(error: String, current_version: Option<String>) -> Response {
     (
         StatusCode::PRECONDITION_FAILED,
@@ -663,10 +564,6 @@ fn precondition_failed(error: String, current_version: Option<String>) -> Respon
         .into_response()
 }
 
-/// Check `If-Match`/`If-None-Match` against the file currently at
-/// `target_path`. Returns `Ok(Some(response))` with a `412` when the
-/// precondition fails, `Ok(None)` when the write may proceed (including
-/// when neither header is present, which is unconditional).
 async fn check_conditional_write(
     target_path: &Path,
     headers: &HeaderMap,
@@ -708,20 +605,11 @@ async fn check_conditional_write(
     Ok(None)
 }
 
-/// Diagnostics for `bytes` about to be written to workspace-relative
-/// `relative`, if it's one of the strictly-parsed files `residuum_core::diagnostics`
-/// understands. Never blocks the write — a strictly-parsed file with a
-/// problem (invalid `HEARTBEAT.yml`, say) is still saved, and the caller
-/// reports these diagnostics alongside the save so the problem is visible
-/// rather than accepted silently. Empty means either `relative` isn't one of
-/// these files, or its content has nothing to report.
 fn diagnose_write_content(
     state: &ConfigApiState,
     relative: &str,
     bytes: &[u8],
 ) -> Vec<residuum_core::diagnostics::Diagnostic> {
-    // A team file is recognized by where it really is, which the workspace-
-    // relative spelling can't say.
     let located = state.locate(relative);
     let team_path = located
         .team
@@ -731,9 +619,6 @@ fn diagnose_write_content(
     let paths = state.diagnostics_paths();
 
     let Ok(text) = std::str::from_utf8(bytes) else {
-        // Every file this module understands is text (YAML/TOML/JSON/MD), so
-        // non-UTF-8 content on a recognized path is itself worth reporting,
-        // even though there's no parser to run on bytes that aren't text.
         return if residuum_a2a::diagnostics_dispatch::is_recognized(path, &paths) {
             vec![residuum_core::diagnostics::Diagnostic::error(
                 "content is not valid UTF-8 text",
@@ -746,17 +631,6 @@ fn diagnose_write_content(
     residuum_a2a::diagnostics_dispatch::diagnose(path, text, &paths).unwrap_or_default()
 }
 
-/// `POST /api/agents/{name}/workspace/validate` — diagnostics for `content` as if it were
-/// saved to `path`, without writing anything.
-///
-/// `path` is resolved the same way a write would resolve it: against the app
-/// config directory for `config.toml`/`providers.toml`, against the
-/// workspace root for `config/channels.toml`, `config/mcp.json`,
-/// `config/a2a.json`, and by filename alone for `HEARTBEAT.yml` and a skill
-/// `SKILL.md`. Empty diagnostics means either the content is clean or
-/// `path` isn't one of these files — this endpoint never errors on an
-/// unrecognized path, since the editor calls it on every debounced
-/// keystroke and most files have nothing to check.
 pub(super) async fn api_workspace_validate(
     State(state): State<ConfigApiState>,
     Json(req): Json<ValidateFileRequest>,
@@ -765,27 +639,14 @@ pub(super) async fn api_workspace_validate(
     Json(ValidateFileResponse { diagnostics })
 }
 
-/// Send the workspace reload signal if `resolved` (reached as `relative`) is
-/// an identity file. Every write path that can leave an identity file's content changed —
-/// text write, raw write, delete, and either side of a move — applies this
-/// one function rather than repeating the check.
 async fn signal_identity_reload(relative: &str, resolved: &Path, state: &ConfigApiState) {
     if is_identity_target(state, relative, resolved).await
         && let Some(tx) = &state.reload_tx
     {
-        // Best-effort: receiver may have been dropped during shutdown.
         tx.send(ReloadSignal::Workspace).ok();
     }
 }
 
-/// Write `bytes` to workspace-relative `relative`: blocked-path check, the
-/// conditional-write precondition, an atomic write that creates missing
-/// parent directories, and the identity-file reload signal. Shared by the
-/// text and raw write endpoints; size limits are checked by the caller
-/// before this runs, since the two endpoints report the limit against a
-/// different unit (`content` characters vs. body bytes). Diagnostics for a
-/// strictly-parsed file are computed and reported alongside the save, never
-/// blocking it — see [`diagnose_write_content`].
 async fn write_workspace_bytes(
     state: &ConfigApiState,
     relative: &str,
@@ -805,8 +666,6 @@ async fn write_workspace_bytes(
     let located = state.locate(relative);
     let target_path = located.for_write(state).await?;
 
-    // A team file is written under its per-path lock, so the precondition
-    // below and the write can't interleave with an agent's write.
     let team_lock = located.lock(&target_path).await;
 
     if let Some(conflict) = check_conditional_write(&target_path, headers).await? {
@@ -1005,12 +864,6 @@ pub(super) async fn api_workspace_raw_write(
     write_workspace_bytes(&state, &query.path, &body, &headers, undo).await
 }
 
-/// Checkpoint the repository each of `paths` lives in before a destructive
-/// workspace API action (delete, overwrite, move/rename): the workspace
-/// repository for an agent path, the team repository for a `team/...` path,
-/// both for an action that spans the two. Never blocks or fails the action —
-/// see `residuum_checkpoints`. Names the checkpoints that were recorded and the
-/// repository holding each.
 async fn checkpoint_before_destructive_action(
     state: &ConfigApiState,
     paths: &[&Located],
@@ -1109,8 +962,6 @@ pub(super) async fn api_workspace_delete(
         };
         return Err((StatusCode::BAD_REQUEST, format!("{what} cannot be deleted")));
     }
-    // A team path is deleted under its per-path lock, and the deletion is
-    // recorded so an agent that wrote there earlier learns who removed it.
     let team_lock = located.lock(&path).await;
 
     let metadata = tokio::fs::metadata(&path).await.map_err(|e| {
@@ -1296,13 +1147,6 @@ async fn ready_move_destination(
     Ok(Some(aside))
 }
 
-/// A same-directory temp path to move an existing destination aside to
-/// before it's cleared, so a failure between clearing it and completing the
-/// incoming rename never destroys data. Named like
-/// [`residuum_core::util::fs::atomic_write`]'s temp files so
-/// [`residuum_workspace::access::is_blocked_path`] (via
-/// [`residuum_core::util::fs::is_atomic_write_temp`]) hides it from listings and the
-/// change feed for the brief window it exists.
 fn aside_path_for(path: &Path) -> Result<PathBuf, (StatusCode, String)> {
     let dir = path.parent().ok_or_else(|| {
         (
@@ -1323,10 +1167,6 @@ fn aside_path_for(path: &Path) -> Result<PathBuf, (StatusCode, String)> {
     Ok(dir.join(format!(".{filename}.{suffix:08x}.residuum-tmp")))
 }
 
-/// Remove whatever [`ready_move_destination`] moved aside, now that the
-/// incoming rename onto its original path has succeeded. A failure here
-/// only strands a hidden temp file — the move itself already succeeded —
-/// so it's logged rather than turned into an error response.
 async fn cleanup_aside(aside: &Path) {
     let metadata = match tokio::fs::metadata(aside).await {
         Ok(m) => m,
@@ -1345,10 +1185,6 @@ async fn cleanup_aside(aside: &Path) {
     }
 }
 
-/// Restore what [`ready_move_destination`] moved aside, because the
-/// incoming rename onto its original path failed. Logged at `error` rather
-/// than `warn`: if this rename-back itself fails, the original destination
-/// is stranded at `aside` and needs manual recovery.
 async fn restore_aside(aside: &Path, to_path: &Path) {
     if let Err(e) = tokio::fs::rename(aside, to_path).await {
         tracing::error!(
@@ -1360,9 +1196,6 @@ async fn restore_aside(aside: &Path, to_path: &Path) {
     }
 }
 
-/// Take the write locks for the team paths a move touches. When the move's
-/// source and destination are both team paths they are locked in path order
-/// (and once, if they are the same path).
 async fn lock_move_paths(
     from: &Located,
     from_path: &Path,
@@ -1388,10 +1221,6 @@ async fn lock_move_paths(
     (from.lock(from_path).await, to.lock(to_path).await)
 }
 
-/// Record a completed move against the coordinator: the source is gone
-/// (removed by the user), and a file now sits at the destination (written by
-/// the user), so an agent whose view of either path is stale learns who
-/// changed it.
 async fn record_team_move(
     from: Option<&(TeamFiles, TeamPathGuard)>,
     to: Option<&(TeamFiles, TeamPathGuard)>,
@@ -1441,8 +1270,6 @@ pub(super) async fn api_workspace_move(
     let from_path = from_located.existing().await?;
     let to_located = state.locate(to_relative);
     let to_path = to_located.for_write(&state).await?;
-    // Team paths on either side are held under their per-path locks for the
-    // whole move, taken in a fixed order so two moves can't deadlock.
     let (from_lock, to_lock) =
         lock_move_paths(&from_located, &from_path, &to_located, &to_path).await;
     let from_metadata = tokio::fs::metadata(&from_path).await.map_err(|e| {
@@ -1466,10 +1293,6 @@ pub(super) async fn api_workspace_move(
         diagnostics = diagnose_write_content(&state, to_relative, &bytes);
     }
 
-    // Moving a path onto itself is a no-op success, not a 409: the
-    // "destination already exists" check would otherwise see the source
-    // file, and an `overwrite: true` move would delete it out from under
-    // itself before the rename that was supposed to preserve it.
     if to_path == from_path {
         let version = from_metadata
             .is_file()
@@ -1623,7 +1446,6 @@ mod tests {
         }
     }
 
-    /// Deserialize a handler's JSON response body.
     async fn response_json<T: serde::de::DeserializeOwned>(response: Response) -> T {
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
@@ -1646,8 +1468,6 @@ mod tests {
         tokio::fs::write(ws_dir.join("skills").join("research.md"), "skill content")
             .await
             .unwrap();
-        // Create Residuum's own database file to verify filtering; a
-        // same-named file elsewhere would not be blocked.
         tokio::fs::create_dir(ws_dir.join("memory")).await.unwrap();
         tokio::fs::write(ws_dir.join("memory").join("vectors.db"), "binary data")
             .await
@@ -1655,7 +1475,6 @@ mod tests {
 
         let state = make_state(ws_dir.clone());
 
-        // List root
         let entries = api_workspace_files(Query(FilesQuery { path: None }), State(state.clone()))
             .await
             .unwrap();
@@ -1670,7 +1489,6 @@ mod tests {
             );
         }
 
-        // Residuum's own database file is filtered out of the directory it's in.
         let memory_entries = api_workspace_files(
             Query(FilesQuery {
                 path: Some("memory".to_string()),
@@ -1682,7 +1500,6 @@ mod tests {
         let memory_names: Vec<&str> = memory_entries.0.iter().map(|e| e.name.as_str()).collect();
         assert!(!memory_names.contains(&"vectors.db"));
 
-        // Read a file
         let response = api_workspace_file_read(
             Query(FileQuery {
                 path: "SOUL.md".to_string(),
@@ -1697,7 +1514,6 @@ mod tests {
             .unwrap();
         assert_eq!(&body[..], b"# Soul");
 
-        // Write a file
         let write_response = api_workspace_file_write(
             State(state.clone()),
             HeaderMap::new(),
@@ -1716,13 +1532,11 @@ mod tests {
         assert!(write_result.saved);
         assert_ne!(write_result.version, "");
 
-        // Verify write persisted
         let updated_content = tokio::fs::read_to_string(ws_dir.join("SOUL.md"))
             .await
             .unwrap();
         assert_eq!(updated_content, "# Updated Soul");
 
-        // List subdirectory
         let subdir_entries = api_workspace_files(
             Query(FilesQuery {
                 path: Some("skills".to_string()),
@@ -1745,7 +1559,6 @@ mod tests {
         tokio::fs::create_dir_all(&ws_dir).await.unwrap();
         let state = make_state(ws_dir.clone());
 
-        // Write a new file that does not exist yet
         let response = api_workspace_file_write(
             State(state.clone()),
             HeaderMap::new(),
@@ -1763,7 +1576,6 @@ mod tests {
             .unwrap();
         assert_eq!(content, "# New File");
 
-        // Path traversal via write for new file should be rejected
         let traversal_result = api_workspace_file_write(
             State(state.clone()),
             HeaderMap::new(),
@@ -2097,10 +1909,6 @@ mod tests {
 
         let state = make_state(ws_dir.clone());
 
-        // Malformed YAML is saved, not rejected — the pulse scheduler hot-reloads
-        // this file every tick and simply won't pick up broken YAML on its next
-        // tick, so the write still succeeds and reports the problem instead of
-        // silently discarding the edit.
         let response = api_workspace_file_write(
             State(state.clone()),
             HeaderMap::new(),
@@ -2119,7 +1927,6 @@ mod tests {
             "invalid YAML should produce a diagnostic"
         );
 
-        // The on-disk file reflects the write, invalid content and all.
         let saved = tokio::fs::read_to_string(ws_dir.join("HEARTBEAT.yml"))
             .await
             .unwrap();
@@ -2128,7 +1935,6 @@ mod tests {
             "the write should have happened"
         );
 
-        // Valid YAML has no diagnostics.
         let ok_response = api_workspace_file_write(
             State(state),
             HeaderMap::new(),
@@ -2147,8 +1953,6 @@ mod tests {
             "valid HEARTBEAT.yml should have no diagnostics"
         );
     }
-
-    // ── Validate ─────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn validate_reports_diagnostics_without_writing() {
@@ -2222,8 +2026,6 @@ mod tests {
             response.diagnostics
         );
     }
-
-    // ── Raw read/write ──────────────────────────────────────────────
 
     #[tokio::test]
     async fn raw_roundtrip_is_byte_identical_for_arbitrary_binary_content() {
@@ -2461,8 +2263,6 @@ mod tests {
             "the write should have happened"
         );
     }
-
-    // ── Delete ───────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn delete_file_succeeds() {
@@ -2727,8 +2527,6 @@ mod tests {
         assert_eq!(rx.recv().await, Some(ReloadSignal::Workspace));
     }
 
-    // ── Mkdir ────────────────────────────────────────────────────────
-
     #[tokio::test]
     async fn mkdir_creates_nested_directories() {
         let dir = tempfile::tempdir().unwrap();
@@ -2806,8 +2604,6 @@ mod tests {
         .unwrap_err();
         assert_eq!(err.0, StatusCode::FORBIDDEN);
     }
-
-    // ── Move ─────────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn move_file_renames_and_returns_a_new_version() {
@@ -2993,7 +2789,6 @@ mod tests {
                 .unwrap(),
             "new-content"
         );
-        // No stray aside temp file left behind in the parent directory.
         let mut entries = tokio::fs::read_dir(&ws_dir).await.unwrap();
         let mut names = Vec::new();
         while let Some(e) = entries.next_entry().await.unwrap() {
@@ -3043,8 +2838,6 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        // Simulates the incoming rename failing after the destination was
-        // cleared: the original data must come back exactly as it was.
         restore_aside(&aside, &to_path).await;
 
         assert!(!aside.exists(), "the aside path should be gone");
@@ -3074,7 +2867,6 @@ mod tests {
         assert!(!aside.exists(), "the aside path should be cleaned up");
     }
 
-    /// A workspace whose `memory/` holds a search index next to ordinary notes.
     async fn workspace_with_memory_index(dir: &Path) -> PathBuf {
         let ws_dir = dir.join("workspace");
         tokio::fs::create_dir_all(ws_dir.join("memory/.index"))

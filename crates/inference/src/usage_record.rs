@@ -1,10 +1,3 @@
-//! Durable per-attempt usage records: every model call's attempts, attributed
-//! to the component that made the call and the model that answered.
-//!
-//! Records are JSON lines appended to one file per UTC month in the agent's
-//! workspace ([`WorkspaceLayout::usage_records_dir`], `YYYY-MM.jsonl`). The
-//! files only grow; a line torn by a crash mid-append is skipped on read.
-
 use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
 
@@ -17,38 +10,23 @@ use crate::error::InferenceError;
 use crate::types::{AttemptOutcome, AttemptUsage, InferenceProvider, InferenceResponse, Usage};
 use residuum_config::WorkspaceLayout;
 
-/// Provider name recorded for an attempt whose provider did not say which
-/// provider it was.
 const UNKNOWN_PROVIDER: &str = "unknown";
 
-/// Serializes every append in the process, so records from concurrent calls
-/// (the main turn, sessions, memory and the subconscious all call models at
-/// once) never interleave inside one line, whichever recorder wrote them.
 static APPEND_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// What made a model call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UsageComponent {
-    /// A main-agent turn.
     Main,
-    /// A session run's turn; `kind` is what started the run (`pulse`,
-    /// `action`, `agent`, `webhook`, `conversation`, `artifact`).
     Session { kind: String },
-    /// Observation extraction, for the main agent or a finished session run.
     Observer,
-    /// Observation log compression.
     Reflector,
-    /// The subconscious classifier, mid-turn or at the end of a turn.
     Subconscious,
-    /// The Auto Mode decision model.
     SystemOne,
-    /// A one-shot model call made through the web model endpoint.
     WebModel,
 }
 
 impl UsageComponent {
-    /// Every component's [`name`](Self::name), for checking a filter against.
     pub const NAMES: [&str; 7] = [
         "main",
         "session",
@@ -59,7 +37,6 @@ impl UsageComponent {
         "web_model",
     ];
 
-    /// The component's name without its details, as records are filtered by.
     #[must_use]
     pub fn name(&self) -> &'static str {
         match self {
@@ -74,37 +51,25 @@ impl UsageComponent {
     }
 }
 
-/// One attempt of one model call, as stored.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UsageRecord {
-    /// When the call finished.
     pub recorded_at: DateTime<Utc>,
-    /// What made the call.
     pub component: UsageComponent,
-    /// The session run id the call belongs to, or the artifact a web model
-    /// call was made for; `None` for the agent's own conversation and memory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation: Option<String>,
-    /// The provider the attempt went to.
     pub provider: String,
-    /// The model the attempt asked for.
     pub model: String,
-    /// How the attempt ended.
     pub outcome: AttemptOutcome,
-    /// Token usage the attempt reported; `None` when it reported none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
 }
 
-/// Writes and reads one agent workspace's usage records. Cheap to clone and
-/// to build from a layout wherever a call is made.
 #[derive(Debug, Clone)]
 pub struct UsageRecorder {
     dir: PathBuf,
 }
 
 impl UsageRecorder {
-    /// The recorder for the workspace at `layout`.
     #[must_use]
     pub fn new(layout: &WorkspaceLayout) -> Self {
         Self {
@@ -112,11 +77,6 @@ impl UsageRecorder {
         }
     }
 
-    /// Record every attempt of one finished model call made through
-    /// `provider`, successful or not.
-    ///
-    /// Never fails the call: a record that can't be written is logged at
-    /// `warn` and dropped.
     pub async fn record_call(
         &self,
         component: &UsageComponent,
@@ -129,7 +89,6 @@ impl UsageRecorder {
             .await;
     }
 
-    /// Record `attempts`, in order, as made now.
     pub async fn record_attempts(
         &self,
         component: &UsageComponent,
@@ -185,16 +144,6 @@ impl UsageRecorder {
         }
     }
 
-    /// Load the records made in `from..to`, optionally only those of the
-    /// component named `component` (see [`UsageComponent::name`]), oldest
-    /// file first.
-    ///
-    /// A line that doesn't parse (one torn by a crash mid-append, even one cut
-    /// inside a multi-byte character) is skipped with a `warn`; a month with no
-    /// file has no records.
-    ///
-    /// # Errors
-    /// Returns an error when a month's file exists but can't be read.
     pub async fn load(
         &self,
         from: DateTime<Utc>,
@@ -235,8 +184,6 @@ impl UsageRecorder {
         self.dir.join(month_file_name(at.year(), at.month()))
     }
 
-    /// The `(year, month)` of every month file in the records directory,
-    /// oldest first; none when the directory doesn't exist yet.
     async fn months_on_disk(&self) -> anyhow::Result<Vec<(i32, u32)>> {
         let mut entries = match tokio::fs::read_dir(&self.dir).await {
             Ok(entries) => entries,
@@ -262,10 +209,6 @@ impl UsageRecorder {
     }
 }
 
-/// The attempts a finished call reports. A response from a provider that
-/// sends no request of its own (a test double, the null provider) lists
-/// none and counts as one attempt of the provider's model; an error listing
-/// none sent no request, so there is nothing to record.
 fn call_attempts(
     provider: &dyn InferenceProvider,
     result: &Result<InferenceResponse, InferenceError>,
@@ -286,7 +229,6 @@ fn month_file_name(year: i32, month: u32) -> String {
     format!("{year:04}-{month:02}.jsonl")
 }
 
-/// The `(year, month)` a [`month_file_name`] names; `None` for any other file.
 fn parse_month_file_name(name: &str) -> Option<(i32, u32)> {
     let (year, month) = name.strip_suffix(".jsonl")?.split_once('-')?;
     let year = year.parse::<i32>().ok()?;
@@ -294,9 +236,6 @@ fn parse_month_file_name(name: &str) -> Option<(i32, u32)> {
     (month_file_name(year, month) == name).then_some((year, month))
 }
 
-/// The records in a month file's bytes. Each line is decoded on its own, so
-/// a line torn inside a multi-byte character is skipped without costing the
-/// rest of the file.
 fn parse_lines<'a>(path: &'a Path, contents: &'a [u8]) -> impl Iterator<Item = UsageRecord> + 'a {
     contents
         .split(|byte| *byte == b'\n')
@@ -316,8 +255,6 @@ fn parse_lines<'a>(path: &'a Path, contents: &'a [u8]) -> impl Iterator<Item = U
         })
 }
 
-/// Append `lines` to the file at `path`, first ending a line a crash left
-/// unterminated so the new records start on a line of their own.
 async fn append_lines(path: &Path, lines: &str) -> std::io::Result<()> {
     let _guard = APPEND_LOCK.lock().await;
     if let Some(dir) = path.parent() {
@@ -340,8 +277,6 @@ async fn append_lines(path: &Path, lines: &str) -> std::io::Result<()> {
     }
     buf.push_str(lines);
     file.write_all(buf.as_bytes()).await?;
-    // `tokio::fs::File` hands the write to a blocking thread; `flush` waits
-    // for it, so a reader that follows sees the records.
     file.flush().await
 }
 
@@ -352,7 +287,6 @@ mod tests {
     use async_trait::async_trait;
     use chrono::TimeZone;
 
-    /// A provider known only by its model name.
     struct FixedProvider;
 
     #[async_trait]
@@ -657,8 +591,6 @@ mod tests {
             .record_attempts_at(at(2026, 11, 1, 1), &UsageComponent::Main, None, &one)
             .await;
 
-        // `é` is two bytes in UTF-8; a crash between them leaves a line that is
-        // not valid UTF-8.
         let torn_record = UsageRecord {
             recorded_at: at(2026, 11, 1, 2),
             component: UsageComponent::Main,
@@ -741,7 +673,6 @@ mod tests {
         for call in calls.collect::<Vec<_>>() {
             call.await.unwrap();
         }
-        // A second recorder for the same workspace shares the append lock.
         let other = UsageRecorder::new(&WorkspaceLayout::new(dir.path()));
         let (from, to) = all_time();
         assert_eq!(other.load(from, to, None).await.unwrap().len(), 32);

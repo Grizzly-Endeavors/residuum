@@ -1,11 +1,6 @@
 import { parse as parseToml } from "smol-toml";
 import type { Diagnostic, ValidateResponse } from "../src/lib/types";
 
-/**
- * Problems in a config file's text, the way the backend's validators report
- * them: a syntax error at its line and column. The mock has no semantic
- * checks, so text that parses has none.
- */
 export function diagnoseConfigText(format: "toml" | "json", content: string): Diagnostic[] {
   if (content.trim() === "") return [];
   try {
@@ -25,10 +20,6 @@ export function diagnoseConfigText(format: "toml" | "json", content: string): Di
   }
 }
 
-/**
- * A validate or raw-save answer for `content`, as `ValidateResponse::from_diagnostics`
- * builds it. `check` adds the problems of text that parses.
- */
 export function validation(
   format: "toml" | "json",
   content: string,
@@ -42,7 +33,6 @@ export function validation(
     : { valid: false, error: first.message, diagnostics };
 }
 
-/** The format of a workspace path the validate route checks, or null for one it doesn't. */
 export function configFormatOf(path: string): "toml" | "json" | null {
   if (/(^|\/)(config|providers|channels)\.toml$/.test(path)) return "toml";
   if (/(^|\/)config\/(mcp|a2a)\.json$/.test(path)) return "json";

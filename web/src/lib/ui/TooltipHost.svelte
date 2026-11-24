@@ -2,21 +2,12 @@
   import type { Attachment } from "svelte/attachments";
   import type { TooltipProvider } from "./tooltip";
 
-  // The tooltip provider: hand `tooltip` to `provideTooltips` at the root of a
-  // tree, and mount one TooltipHost, which draws the tooltip that is showing.
-  //
-  // A tooltip shows after a pointer rests on its control, or at once when
-  // keyboard focus reaches it. A press, leaving, blur or Esc hides it. Touch
-  // shows none: the control's label is all a tooltip would add.
-
   const HOVER_DELAY_MS = 500;
-  /** Moving from one control to the next soon after shows the next one at once. */
   const SKIP_DELAY_MS = 300;
 
   let shown = $state.raw<{ anchor: HTMLElement; text: string } | null>(null);
   let pending: ReturnType<typeof setTimeout> | undefined;
   let hiddenAt = Number.NEGATIVE_INFINITY;
-  /** Whether the last input was a key rather than a pointer, as `:focus-visible` decides. */
   let fromKeyboard = false;
 
   function show(anchor: HTMLElement, text: string): void {
@@ -31,7 +22,6 @@
     hiddenAt = Date.now();
   }
 
-  /** Shows `text` as the tooltip of the element it is attached to. */
   export const tooltip: TooltipProvider =
     (text: string): Attachment<HTMLElement> =>
     (element) => {
@@ -95,8 +85,6 @@
     };
   });
 
-  // Any press hides the tooltip before the overlay stack hears it, so the
-  // press reaches what is under it instead of only closing the tooltip.
   $effect(() => {
     if (shown === null) return;
     const press = (): void => {
@@ -107,7 +95,6 @@
     return () => window.removeEventListener("pointerdown", press, true);
   });
 
-  // A tooltip that says more than the control's name describes it.
   $effect(() => {
     const current = shown;
     if (current === null || current.text === current.anchor.getAttribute("aria-label")) return;

@@ -1,60 +1,28 @@
-//! Update-rollback watchdog: supervises a self-update restart and rolls
-//! back to the previous binary if the new one never becomes healthy.
-//!
-//! `commands::serve::foreground::relaunch` always spawns this from the
-//! *previous*, known-good binary rather than the newly-installed one — so a
-//! new binary that can't even execute (wrong format, missing, corrupt)
-//! still gets rolled back instead of losing the supervisor along with the
-//! failed launch.
-
 use std::path::PathBuf;
 use std::time::Duration;
 
 use residuum::util::FatalError;
 
-/// Arguments `commands::serve::foreground::relaunch` passes when handing a
-/// restart off to this watchdog.
 #[derive(clap::Args)]
 pub(super) struct UpdateWatchdogArgs {
-    /// The canonical path the gateway runs from. Holds the newly-installed
-    /// binary when the watchdog starts; holds the restored previous binary
-    /// after a rollback.
     #[arg(long)]
     gateway_exe: PathBuf,
-    /// Where the previous, known-good binary was preserved. Restored over
-    /// `gateway_exe` on failure; deleted once the new version is confirmed
-    /// healthy.
     #[arg(long)]
     prev_exe: PathBuf,
     #[arg(long)]
     previous_version: String,
     #[arg(long)]
     target_version: String,
-    /// Arguments to launch the gateway with — the same ones the restart
-    /// this watchdog took over from was using, e.g. `serve --foreground`.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     serve_args: Vec<String>,
 }
 
-/// Outcome of [`start_and_wait`]: either the new process reached readiness and
-/// is returned alive for supervision, or it failed before becoming healthy.
 enum WatchdogStart {
     Ready(std::process::Child),
     ProcessExited,
     TimedOut,
 }
 
-/// Run the watchdog: start the new version, wait up to
-/// [`residuum::daemon::READINESS_TIMEOUT`] for it to report healthy, and
-/// roll back to the previous version if it doesn't.
-///
-/// On Unix, once the new (or rolled-back) gateway process is running, this
-/// watchdog stays alive as its supervisor until the child exits — forwarding
-/// `SIGTERM`/`SIGINT` to it — because `commands::serve::foreground::relaunch`
-/// `exec()`s into this watchdog in-place. Staying alive keeps the original
-/// main PID running for the lifetime of the service so `systemd` (`Type=simple`,
-/// `KillMode=control-group`) and other process supervisors never treat the
-/// update handoff as a service exit.
 #[tracing::instrument(skip_all, fields(target_version = %args.target_version))]
 pub(super) async fn run_update_watchdog(args: &UpdateWatchdogArgs) -> Result<(), FatalError> {
     residuum::logging::init_default_tracing();
@@ -108,8 +76,6 @@ pub(super) async fn run_update_watchdog(args: &UpdateWatchdogArgs) -> Result<(),
     supervise_until_exit(active_child).await
 }
 
-/// Spawn the gateway at `args.gateway_exe` and wait for it to become ready,
-/// killing it first if it's still running but never became healthy.
 fn start_and_wait(
     args: &UpdateWatchdogArgs,
     config_dir: &std::path::Path,
@@ -138,8 +104,6 @@ fn start_and_wait(
     }
 }
 
-/// Kill and reap an unhealthy gateway child so it cannot keep the PID lock or
-/// HTTP port held while `roll_back` starts the previous binary.
 fn reap_unhealthy_child(child: &mut std::process::Child) {
     if let Err(e) = child.kill() {
         tracing::debug!(error = %e, "failed to kill the unhealthy new gateway process (it may have already exited)");
@@ -149,9 +113,6 @@ fn reap_unhealthy_child(child: &mut std::process::Child) {
     }
 }
 
-/// Wait for `child` to exit on Unix, forwarding `SIGTERM` and `SIGINT` to it
-/// so stopping the service unit gracefully stops the child gateway before this
-/// supervisor process exits.
 #[cfg(unix)]
 async fn supervise_until_exit(mut child: std::process::Child) -> Result<(), FatalError> {
     use tokio::signal::unix::{SignalKind, signal};
@@ -196,9 +157,6 @@ async fn supervise_until_exit(mut child: std::process::Child) -> Result<(), Fata
     }
 }
 
-/// On Windows, the watchdog was spawned as a separate process rather than
-/// `exec()`d in place, so once the new or restored gateway is up there is
-/// no parent PID contract to hold open.
 #[cfg(windows)]
 #[expect(
     clippy::unused_async,
@@ -208,8 +166,6 @@ async fn supervise_until_exit(_child: std::process::Child) -> Result<(), FatalEr
     Ok(())
 }
 
-/// Restore the previous binary over `gateway_exe`, record why, and start it
-/// so the gateway comes back up on the version that was working before.
 fn roll_back(
     args: &UpdateWatchdogArgs,
     config_dir: &std::path::Path,

@@ -7,21 +7,17 @@ use serde::{Deserialize, Serialize};
 
 pub(super) use residuum_bus::origin::ConversationKind;
 
-/// An inbound activity the Bot Connector sends to the messaging endpoint.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Activity {
-    /// Activity type (`"message"`, `"conversationUpdate"`, `"installationUpdate"`, ...).
     #[serde(rename = "type")]
     pub(super) kind: String,
     pub(super) id: Option<String>,
-    /// Base URL of the Bot Connector instance to reply through.
     pub(super) service_url: Option<String>,
     /// Channel the activity came from; always `"msteams"` for Teams.
     pub(super) channel_id: Option<String>,
     pub(super) from: Option<ChannelAccount>,
     pub(super) conversation: Option<ConversationAccount>,
-    /// The bot itself.
     pub(super) recipient: Option<ChannelAccount>,
     pub(super) text: Option<String>,
     #[serde(default)]
@@ -33,42 +29,34 @@ pub(super) struct Activity {
     pub(super) members_added: Vec<ChannelAccount>,
     #[serde(default)]
     pub(super) members_removed: Vec<ChannelAccount>,
-    /// `"add"` / `"remove"` on `installationUpdate`.
     pub(super) action: Option<String>,
 }
 
-/// A user or bot on the channel.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct ChannelAccount {
     pub(super) id: String,
     pub(super) name: Option<String>,
-    /// Entra object ID of a user; stable across chats.
     pub(super) aad_object_id: Option<String>,
 }
 
-/// The conversation an activity belongs to.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct ConversationAccount {
     pub(super) id: String,
     pub(super) name: Option<String>,
-    /// `"personal"`, `"groupChat"`, or `"channel"`.
     pub(super) conversation_type: Option<String>,
     pub(super) tenant_id: Option<String>,
 }
 
-/// An entity attached to a message; Residuum only reads `mention` entities.
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct Entity {
     #[serde(rename = "type")]
     pub(super) kind: String,
     pub(super) mentioned: Option<ChannelAccount>,
-    /// The inline markup for the mention, e.g. `<at>Residuum</at>`.
     pub(super) text: Option<String>,
 }
 
-/// A file or card attached to a message.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Attachment {
@@ -78,7 +66,6 @@ pub(super) struct Attachment {
     pub(super) content: Option<serde_json::Value>,
 }
 
-/// Teams-specific routing data on an activity.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub(super) struct TeamsChannelData {
     pub(super) tenant: Option<IdRef>,
@@ -105,7 +92,6 @@ fn conversation_kind_from_wire(value: Option<&str>) -> ConversationKind {
 }
 
 impl Activity {
-    /// Tenant the activity belongs to, from channel data or the conversation.
     pub(super) fn tenant_id(&self) -> Option<&str> {
         self.channel_data
             .as_ref()
@@ -126,7 +112,6 @@ impl Activity {
         )
     }
 
-    /// Human-readable place this activity came from, e.g. `"#General (Eng Team)"`.
     pub(super) fn location_label(&self) -> String {
         match self.conversation_kind() {
             ConversationKind::Personal => "direct message".to_string(),
@@ -138,7 +123,6 @@ impl Activity {
             }
             ConversationKind::Channel => {
                 let cd = self.channel_data.as_ref();
-                // Teams reports the General channel's name as null so clients can localize it.
                 let channel = cd
                     .and_then(|cd| cd.channel.as_ref())
                     .and_then(|c| c.name.as_deref())
@@ -154,7 +138,6 @@ impl Activity {
         }
     }
 
-    /// Whether this message @mentions the bot.
     pub(super) fn mentions_bot(&self) -> bool {
         let Some(bot) = &self.recipient else {
             return false;
@@ -164,8 +147,6 @@ impl Activity {
             .any(|e| e.kind == "mention" && e.mentioned.as_ref().is_some_and(|m| m.id == bot.id))
     }
 
-    /// Message text with the bot's own @mention removed and other mentions
-    /// rendered as `@Name`.
     pub(super) fn text_without_bot_mention(&self) -> String {
         let mut text = self.text.clone().unwrap_or_default();
         let bot_id = self.recipient.as_ref().map(|r| r.id.as_str());

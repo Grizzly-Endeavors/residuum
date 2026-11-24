@@ -1,8 +1,3 @@
-//! The hub's dedicated A2A protocol listener: one port, every agent under
-//! `/agents/{name}/`, authenticated per request. Each agent's routes come
-//! from [`residuum_background::team::TeamDirectory::agent_a2a_router`]. See
-//! `docs/systems-usage/a2a.md`.
-
 use std::sync::Arc;
 
 use a2a::{
@@ -31,11 +26,6 @@ use super::keys_runtime::SharedA2aKeys;
 use residuum_net::remote_access::A2A_AGENTS_PATH_PREFIX;
 use residuum_net::remote_access::siblings::{NoSiblings, SiblingKeyVerifier};
 
-/// A [`a2a_server::RequestHandler`] that refuses every operation with
-/// `A2AError::unsupported_operation`. Production wiring uses
-/// [`super::ResiduumA2aHandler`] instead; this is a lightweight stand-in for
-/// this module's own tests, which only need to exercise the auth layer and
-/// routing, not real task execution.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct StubHandler;
 
@@ -136,12 +126,6 @@ impl a2a_server::RequestHandler for StubHandler {
     }
 }
 
-/// One agent's A2A routes, rooted at `/`: the Agent Card, the JSON-RPC
-/// endpoint, and the REST endpoints under `/rest`, all dispatching to
-/// `handler` and serving `card_state`.
-///
-/// This carries no authentication. The hub listener authenticates each
-/// request against the agent's visibility before dispatching to it.
 pub fn agent_handler_router<H: a2a_server::RequestHandler>(
     handler: Arc<H>,
     card_state: SharedCardState,
@@ -152,15 +136,6 @@ pub fn agent_handler_router<H: a2a_server::RequestHandler>(
         .nest("/rest", a2a_server::rest::rest_router(handler))
 }
 
-/// The hub's A2A app: routes `/agents/{name}/...` to the named agent's
-/// router (from [`TeamDirectory::agent_a2a_router`]) and answers everything
-/// else `404`.
-///
-/// Per request, in order: an unknown agent is `404`; the caller is
-/// authenticated against that agent's visibility (see
-/// [`super::auth::authorize`]); an agent that isn't running is `503` with a
-/// body saying so. The agent's router sees the request with the
-/// `/agents/{name}` prefix stripped, so it is rooted at `/`.
 pub fn hub_a2a_app(directory: Arc<dyn TeamDirectory>, auth: AuthState) -> Router {
     Router::new()
         .fallback(dispatch_to_agent)
@@ -173,8 +148,6 @@ struct HubA2aState {
     auth: AuthState,
 }
 
-/// Split `/agents/{name}[/rest]` into the agent name and the path the
-/// agent's router sees (`/` when nothing follows the name).
 fn split_agent_path(path: &str) -> Option<(&str, &str)> {
     let after = path
         .strip_prefix(A2A_AGENTS_PATH_PREFIX)?
@@ -189,7 +162,6 @@ fn split_agent_path(path: &str) -> Option<(&str, &str)> {
     Some((name, rest))
 }
 
-/// The request with its path replaced by `path` and its query preserved.
 fn with_path(mut req: Request<Body>, path: &str) -> Result<Request<Body>, axum::http::Error> {
     let path_and_query = match req.uri().query() {
         Some(query) => format!("{path}?{query}"),
@@ -267,21 +239,16 @@ async fn dispatch_to_agent(State(state): State<HubA2aState>, req: Request<Body>)
     }
 }
 
-/// The hub's A2A listener: one port, every agent under `/agents/{name}/`,
-/// authenticated per request. See [`hub_a2a_app`].
 pub struct A2aListener {
     bind: String,
     port: u16,
     directory: Arc<dyn TeamDirectory>,
     auth: AuthState,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
-    /// A socket already bound to the address, served instead of binding at start.
     bound: Option<tokio::net::TcpListener>,
 }
 
 impl A2aListener {
-    /// Create the listener. `bind` is the gateway's bind address; `keys` is
-    /// the hub-level caller-key store.
     #[must_use]
     pub fn new(
         bind: String,
@@ -303,25 +270,18 @@ impl A2aListener {
         }
     }
 
-    /// Serve on `listener`, which the caller bound to this listener's address,
-    /// rather than binding at start.
     #[must_use]
     pub fn with_bound_listener(mut self, listener: tokio::net::TcpListener) -> Self {
         self.bound = Some(listener);
         self
     }
 
-    /// Accept the keys issued to joined siblings as calls from those siblings.
     #[must_use]
     pub fn with_sibling_keys(mut self, sibling_keys: Arc<dyn SiblingKeyVerifier>) -> Self {
         self.auth.sibling_keys = sibling_keys;
         self
     }
 
-    /// Run until the shutdown signal fires.
-    ///
-    /// # Errors
-    /// Returns an error if the listener port cannot be bound.
     pub async fn start(self) -> anyhow::Result<()> {
         let app = hub_a2a_app(self.directory, self.auth);
 

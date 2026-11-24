@@ -34,7 +34,6 @@ async function applyInsets(page: Page, insets: Insets): Promise<void> {
   });
 }
 
-/** The element's box once its own entrance has finished, so it is where it stays. */
 async function settledBox(
   locator: Locator,
 ): Promise<{ x: number; y: number; width: number; height: number }> {
@@ -68,7 +67,6 @@ test("the shell keeps the places inside the insets on every side", async ({ page
   expect(main.x + main.width).toBe(screen.width - insets.right);
 
   if (isMobile) {
-    // The bottom bar covers the home indicator; the place ends where the bar starts.
     const bar = await settledBox(page.getByRole("navigation", { name: "Main" }));
     expect(bar.y + bar.height).toBe(screen.height);
     expect(bar.height).toBe(60 + insets.bottom);
@@ -95,7 +93,6 @@ test("the context panel keeps inside the insets when it opens", async ({ page, i
   const heading = await settledBox(panel.getByRole("heading", { level: 2 }));
   expect(heading.y).toBeGreaterThanOrEqual(insets.top);
   if (isMobile) {
-    // A phone's sheet fills the screen and pads its own content.
     expect(box).toMatchObject({ x: 0, y: 0, width: screen.width, height: screen.height });
   } else {
     expect(box.x + box.width).toBe(screen.width - insets.right);

@@ -1,9 +1,6 @@
 <script lang="ts">
   import type { RunStatus } from "../../lib/session-format";
 
-  // How a run or task is doing, in a word or two after a dot in its tone: a
-  // working one glows in the vein, a finished one is moss, a failed one red.
-
   let { status }: { status: RunStatus } = $props();
 </script>
 

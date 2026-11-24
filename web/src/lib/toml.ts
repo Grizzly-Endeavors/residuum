@@ -1,8 +1,3 @@
-// ── Config Generators ───────────────────────────────────────────────
-//
-// Generates hub/config.toml, the agent's config.toml and providers.toml, and
-// mcp.json from wizard state.
-
 import type { SetupWizardState } from "./types";
 import { DEFAULT_MODELS } from "./models";
 import { mcpSecretName } from "./setup-keys";
@@ -11,16 +6,13 @@ function escapeTomlString(s: string): string {
   return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
-/** Generate hub/config.toml content (the timezone every agent shares). */
 export function generateHubConfigToml(state: SetupWizardState): string {
   return `timezone = "${escapeTomlString(state.timezone)}"\n`;
 }
 
-/** Generate the agent's config.toml content (integrations). */
 export function generateConfigToml(state: SetupWizardState): string {
   const lines: string[] = [];
 
-  // Discord (top-level section)
   if (state.integrations.discordToken) {
     const ref = state.secretRefs["discord"] ?? state.integrations.discordToken;
     lines.push("");
@@ -28,7 +20,6 @@ export function generateConfigToml(state: SetupWizardState): string {
     lines.push(`token = "${escapeTomlString(ref)}"`);
   }
 
-  // Telegram (top-level section)
   if (state.integrations.telegramToken) {
     const ref = state.secretRefs["telegram"] ?? state.integrations.telegramToken;
     lines.push("");
@@ -36,9 +27,6 @@ export function generateConfigToml(state: SetupWizardState): string {
     lines.push(`token = "${escapeTomlString(ref)}"`);
   }
 
-  // Microsoft Teams (top-level section) — app_id, tenant_id and app_password
-  // are all required together, so the section is only emitted once every
-  // required field is filled in.
   if (
     state.integrations.teamsAppId &&
     state.integrations.teamsTenantId &&
@@ -60,13 +48,6 @@ export function generateConfigToml(state: SetupWizardState): string {
 export function generateProvidersToml(state: SetupWizardState): string {
   const lines: string[] = [];
 
-  // Every selected provider gets a `[providers.<name>]` section, even when no
-  // key was typed: the backend falls back to that provider's env var (e.g.
-  // ANTHROPIC_API_KEY) whenever `api_key` is *absent* from the section, which
-  // is why the wizard's key field says the key can come from the environment
-  // instead. Writing `api_key = ""` would defeat that fallback — an empty
-  // string is a value, not an absence — so the line is only emitted when
-  // there's an actual key or secret reference to write.
   for (const prov of state.selectedProviders) {
     const cfg = state.providerConfigs[prov];
     lines.push(`[providers.${prov}]`);
@@ -79,7 +60,6 @@ export function generateProvidersToml(state: SetupWizardState): string {
     lines.push("");
   }
 
-  // Models section
   const mainCfg = state.providerConfigs[state.mainProvider];
   const mainModel = mainCfg.model || DEFAULT_MODELS[state.mainProvider] || "";
   lines.push("[models]");
@@ -94,14 +74,12 @@ export function generateProvidersToml(state: SetupWizardState): string {
     }
   }
 
-  // Embedding model
   if (state.embeddingModel.provider && state.embeddingModel.model) {
     lines.push(
       `embedding = "${escapeTomlString(`${state.embeddingModel.provider}/${state.embeddingModel.model}`)}"`,
     );
   }
 
-  // Background model tiers (lives in providers.toml alongside other model config)
   const bgEntries: { tier: string; prov: string; model: string }[] = [];
   for (const tier of ["small", "medium", "large"]) {
     const bg = state.backgroundModels[tier];
@@ -123,10 +101,6 @@ export function generateProvidersToml(state: SetupWizardState): string {
   return lines.join("\n");
 }
 
-/**
- * Generate mcp.json content (Claude Code format). A tool server key stored as
- * a secret is written as its `secret:<name>` reference instead of the key.
- */
 export function generateMcpJson(state: SetupWizardState): string {
   const servers: Record<
     string,

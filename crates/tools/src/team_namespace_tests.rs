@@ -1,6 +1,3 @@
-//! The `team/` namespace and team write coordination, exercised through the
-//! same registry the agent's file tools are registered in.
-
 use std::path::Path;
 
 use serde_json::{Value, json};
@@ -144,7 +141,6 @@ async fn a_stale_write_is_refused_and_names_the_teammate() {
         "the refused write must not touch the file"
     );
 
-    // Reading again brings sam up to date, so his next write goes through.
     assert!(!read(&sam, "team/shared.md").await.is_error);
     let retry = write(&sam, "team/shared.md", "sam was here").await;
     assert!(!retry.is_error, "{}", retry.output);
@@ -293,14 +289,11 @@ async fn agent_private_files_are_overwritten_when_changed_elsewhere() {
     let sam = tools_for(&hub, "sam");
     assert!(!read(&sam, "notes.md").await.is_error);
 
-    // Changed behind the agent's back: a private file is still overwritten,
-    // because only team files are guarded against concurrent edits.
     std::fs::write(&private, "changed elsewhere").unwrap();
     let written = write(&sam, "notes.md", "sam's version").await;
     assert!(!written.is_error, "{}", written.output);
     assert_eq!(std::fs::read_to_string(&private).unwrap(), "sam's version");
 
-    // Read-before-overwrite still applies.
     let unread = hub.agent_dir("sam").join("unread.md");
     std::fs::write(&unread, "x").unwrap();
     let refused = write(&sam, "unread.md", "y").await;
@@ -390,8 +383,6 @@ async fn an_edit_after_a_deletion_and_recreation_is_still_checked() {
     assert!(missing_edit.is_error);
     assert!(read(&sam, "team/x.md").await.is_error);
 
-    // A teammate recreates the file after sam saw it gone: sam's edit must
-    // refuse rather than apply to contents sam never read.
     assert!(!write(&robin, "team/x.md", "one two").await.is_error);
     let refused = edit(&sam, "team/x.md", "two", "three").await;
     assert!(refused.is_error);

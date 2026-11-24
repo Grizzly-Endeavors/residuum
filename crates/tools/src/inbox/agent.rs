@@ -1,7 +1,3 @@
-//! The agent-inbox tools: list, read, archive and restore this agent's
-//! inbox items. `inbox_read` also reads any agent's item by ref, with the
-//! earlier messages of its mail thread.
-
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
@@ -22,18 +18,13 @@ use super::paging::{
     DEFAULT_LIMIT, MAX_LIMIT, PageRequest, before_schema, limit_schema, more_note, query_schema,
 };
 
-// ─── inbox_list ─────────────────────────────────────────────────────────────
-
-/// The parameters of `inbox_list` a next-page call repeats.
 const LIST_FILTERS: &str = "query, unread_only and archived";
 
-/// Tool for listing this agent's agent-inbox items.
 pub struct InboxListTool {
     mail: MailAccess,
 }
 
 impl InboxListTool {
-    /// Create a new `InboxListTool` for the agent `mail` belongs to.
     #[must_use]
     pub fn new(mail: MailAccess) -> Self {
         Self { mail }
@@ -149,24 +140,17 @@ impl Tool for InboxListTool {
     }
 }
 
-// ─── inbox_read ─────────────────────────────────────────────────────────────
-
-/// Tool for reading a single inbox item, with the earlier messages of its
-/// mail thread. Reading an item of this agent's own active agent inbox marks
-/// it read.
 pub struct InboxReadTool {
     mail: MailAccess,
 }
 
 impl InboxReadTool {
-    /// Create a new `InboxReadTool` for the agent `mail` belongs to.
     #[must_use]
     pub fn new(mail: MailAccess) -> Self {
         Self { mail }
     }
 }
 
-/// Who wrote `message`, as the thread listing names them.
 fn sender_line(message: &MailMessage) -> String {
     match &message.from {
         MailSender::User if message.to.is_empty() => "the user".to_string(),
@@ -175,9 +159,6 @@ fn sender_line(message: &MailMessage) -> String {
     }
 }
 
-/// The item's own lines: its ref, header fields, attachments and body.
-/// Attachment paths of another agent's item are absolute, since they are
-/// relative to that agent's workspace.
 fn item_section(item_ref: &InboxRef, located: &super::mail::LocatedItem, own: bool) -> String {
     let item = &located.item;
     let mut output = format!(
@@ -210,13 +191,8 @@ fn item_section(item_ref: &InboxRef, located: &super::mail::LocatedItem, own: bo
     output
 }
 
-/// How much of each earlier thread message's body is shown. The rest is read
-/// with `inbox_read` on that message's ref.
 const EARLIER_BODY_MAX_CHARS: usize = 500;
 
-/// The thread lines for the message `item_ref` names: the earlier messages,
-/// oldest first, and the refs of the later ones. Empty when the item is not
-/// mail or is the thread's only message.
 fn thread_section(index: &MailIndex, item_ref: &InboxRef) -> String {
     let Some(thread) = index.thread_containing(item_ref) else {
         return String::new();
@@ -329,8 +305,6 @@ impl Tool for InboxReadTool {
         }
 
         let mut output = item_section(&item_ref, &located, own);
-        // An agent-inbox item that isn't user mail (a pulse, webhook or
-        // artifact item) is in no thread, so there is no mail to load for it.
         let can_be_mail =
             item_ref.kind() == InboxKind::User || is_user_mail_source(&located.item.source);
         if can_be_mail {
@@ -341,16 +315,12 @@ impl Tool for InboxReadTool {
     }
 }
 
-// ─── inbox_archive ──────────────────────────────────────────────────────────
-
-/// Tool for archiving inbox items.
 pub struct InboxArchiveTool {
     inbox_dir: PathBuf,
     archive_dir: PathBuf,
 }
 
 impl InboxArchiveTool {
-    /// Create a new `InboxArchiveTool`.
     #[must_use]
     pub fn new(inbox_dir: PathBuf, archive_dir: PathBuf) -> Self {
         Self {
@@ -434,22 +404,17 @@ impl Tool for InboxArchiveTool {
         } else if archived.is_empty() {
             Ok(ToolResult::error(output))
         } else {
-            // Partial success — report as success with error details
             Ok(ToolResult::success(output))
         }
     }
 }
 
-// ─── inbox_restore ──────────────────────────────────────────────────────────
-
-/// Tool for restoring archived inbox items back to the active inbox.
 pub struct InboxRestoreTool {
     inbox_dir: PathBuf,
     archive_dir: PathBuf,
 }
 
 impl InboxRestoreTool {
-    /// Create a new `InboxRestoreTool`.
     #[must_use]
     pub fn new(inbox_dir: PathBuf, archive_dir: PathBuf) -> Self {
         Self {
@@ -533,7 +498,6 @@ impl Tool for InboxRestoreTool {
         } else if restored.is_empty() {
             Ok(ToolResult::error(output))
         } else {
-            // Partial success — report as success with error details
             Ok(ToolResult::success(output))
         }
     }
@@ -545,15 +509,12 @@ mod tests {
     use crate::inbox::test_fixture::{Item, MailHub, listed_ids, next_cursor, pages};
     use residuum_config::WorkspaceLayout;
 
-    /// The workspace of an agent named `atlas` under `dir`, and its mail
-    /// access with no hub directory.
     fn atlas(dir: &tempfile::TempDir) -> (WorkspaceLayout, MailAccess) {
         let layout = WorkspaceLayout::new(dir.path().join("atlas"));
         let mail = MailAccess::new(None, &layout, chrono_tz::UTC);
         (layout, mail)
     }
 
-    /// What `tool` answers to `arguments`.
     async fn output_of(tool: &InboxListTool, arguments: serde_json::Value) -> String {
         tool.execute(arguments).await.unwrap().output
     }
@@ -590,7 +551,6 @@ mod tests {
         let archive_dir = layout.agent_inbox_archive_dir();
         tokio::fs::create_dir_all(&inbox_dir).await.unwrap();
 
-        // Add an item via quick_add directly
         let filename = residuum_workspace::inbox::quick_add(
             &inbox_dir,
             "test item",
@@ -602,7 +562,6 @@ mod tests {
         .unwrap();
         let filename = filename.trim_end_matches(".json").to_string();
 
-        // List items
         let list_tool = InboxListTool::new(mail.clone());
         let list_result = list_tool.execute(serde_json::json!({})).await.unwrap();
         assert!(!list_result.is_error, "list should succeed");
@@ -617,7 +576,6 @@ mod tests {
             list_result.output
         );
 
-        // Read item (marks as read)
         let read_tool = InboxReadTool::new(mail);
         let read_result = read_tool
             .execute(serde_json::json!({"id": filename}))
@@ -630,7 +588,6 @@ mod tests {
             read_result.output
         );
 
-        // List again — should show as read
         let list_after_read = list_tool.execute(serde_json::json!({})).await.unwrap();
         assert!(
             list_after_read.output.contains("[read]"),
@@ -638,7 +595,6 @@ mod tests {
             list_after_read.output
         );
 
-        // List unread only — should be empty
         let list_unread = list_tool
             .execute(serde_json::json!({"unread_only": true}))
             .await
@@ -649,7 +605,6 @@ mod tests {
             list_unread.output
         );
 
-        // Archive
         let archive_tool = InboxArchiveTool::new(inbox_dir.clone(), archive_dir.clone());
         let archive_result = archive_tool
             .execute(serde_json::json!({"ids": [filename]}))
@@ -662,7 +617,6 @@ mod tests {
             archive_result.output
         );
 
-        // List after archive — should be empty
         let list_after_archive = list_tool.execute(serde_json::json!({})).await.unwrap();
         assert!(
             list_after_archive.output.contains("No inbox items"),
@@ -698,7 +652,6 @@ mod tests {
 
         let list_tool = InboxListTool::new(mail);
 
-        // Archived items are visible via inbox_list(archived=true) …
         let list_archived = list_tool
             .execute(serde_json::json!({"archived": true}))
             .await
@@ -709,7 +662,6 @@ mod tests {
             list_archived.output
         );
 
-        // … and restoring it brings it back to the active inbox.
         let restore_tool = InboxRestoreTool::new(inbox_dir.clone(), archive_dir.clone());
         let restore_result = restore_tool
             .execute(serde_json::json!({"ids": [filename]}))
@@ -817,7 +769,6 @@ mod tests {
             .output;
 
         assert_eq!(listed_ids(&out), ["late"], "{out}");
-        // 10:00 in New York on 2026-02-25 is 15:00 UTC.
         assert_eq!(
             next_cursor(&out).as_deref(),
             Some("1772031600000:atlas/agent/late"),
@@ -1166,13 +1117,11 @@ mod tests {
         );
         assert!(!hub.load("nova", InboxKind::User, "answer").await.read);
 
-        // Another agent's agent-inbox item stays unread too.
         tool.execute(serde_json::json!({"id": "nova/agent/ask"}))
             .await
             .unwrap();
         assert!(!hub.load("nova", InboxKind::Agent, "ask").await.read);
 
-        // So does this agent's own user-inbox item.
         tool.execute(serde_json::json!({"id": "atlas/user/followup"}))
             .await
             .unwrap();

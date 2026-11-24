@@ -28,29 +28,18 @@ use residuum_bus::Publisher;
 use residuum_bus::conversations::{ConversationSource, KnownConversation};
 use residuum_config::TelegramConfig;
 
-/// Endpoint and interface name for Telegram on the bus.
 const ENDPOINT: &str = "telegram";
 
-/// State shared by the polling loop and the outbound subscriber.
 pub(super) struct TelegramState {
     respond_to_others: bool,
-    /// Whether intermediate (pre-tool-call) text is posted to the chat.
     deliver_intermediate: bool,
-    /// The owner and every chat the bot has seen, keyed by chat ID.
     store: ChatStateStore<ChatRef>,
-    /// Chat each in-flight turn should answer in, by correlation ID.
     reply_targets: ReplyTargets<ChatId>,
-    /// Unaddressed group messages held for the next time the bot is
-    /// addressed, by chat.
     context_buffer: ContextBuffer,
-    /// For notifying main when a conversation session's output can't be
-    /// delivered (see `subscriber::deliver_session_response`).
     publisher: Publisher,
 }
 
 impl TelegramState {
-    /// Where output for `correlation_id` goes: the chat that started the
-    /// turn, or the owner's DM for proactive output.
     async fn target_for(&self, correlation_id: &str) -> Option<ChatId> {
         match self.reply_targets.get(correlation_id) {
             Some(chat) => Some(chat),
@@ -85,7 +74,6 @@ impl ConversationSource for TelegramState {
     }
 }
 
-/// Telegram interface adapter that routes private and addressed group messages to the agent.
 pub struct TelegramInterface {
     cfg: TelegramConfig,
     senders: AdapterSenders,
@@ -95,7 +83,6 @@ pub struct TelegramInterface {
 }
 
 impl TelegramInterface {
-    /// Create a new Telegram interface adapter.
     #[must_use]
     pub fn new(
         cfg: TelegramConfig,
@@ -113,19 +100,6 @@ impl TelegramInterface {
         }
     }
 
-    /// Start the Telegram long-polling loop.
-    ///
-    /// This blocks until a shutdown signal is received, an error occurs, or the
-    /// task is cancelled. A corrupt saved Telegram state file is moved aside
-    /// and started fresh rather than treated as an error (see
-    /// `ChatStateStore::load`). Verifying the bot token retries with
-    /// backoff on a transient failure instead of failing immediately — see
-    /// `boot_retry`.
-    ///
-    /// # Errors
-    /// Returns an error if the saved Telegram state cannot be read (a
-    /// permissions problem, not corrupt content), the bot still can't
-    /// connect after retrying, or the bus subscription fails.
     pub async fn start(self) -> anyhow::Result<()> {
         let layout = residuum_config::WorkspaceLayout::new(&self.workspace_dir);
         let (chat_store, chat_state_notice) =

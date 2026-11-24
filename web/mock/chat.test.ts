@@ -133,7 +133,6 @@ describe("chat routes", () => {
 });
 
 describe("chat turns", () => {
-  /** When a plain turn is let end, and how long its last reply takes to stream in after that. */
   const END_MS = 1500;
   const streamMs = (reply: string): number =>
     deltaFrames("m1", "text", 2, reply).length * PIECE_MS + 40;
@@ -160,7 +159,6 @@ describe("chat turns", () => {
     return { type: "send_message", id, content };
   }
 
-  /** The kinds of frame sent, leaving out the pieces text and reasoning stream in as. */
   function types(): string[] {
     return frames
       .filter((f) => f.type !== "text_delta" && f.type !== "thinking_delta")
@@ -293,7 +291,6 @@ describe("chat turns", () => {
 
   it("answers a message starting with 'markdown' with the showcase, and keeps the cycle's place", () => {
     chat.send(message("markdown please", "m1"));
-    // The showcase streams longer than any canned reply; "again" waits for it otherwise.
     vi.advanceTimersByTime(END_MS + streamMs(markdownShowcase));
     chat.send(message("again", "m2"));
     vi.advanceTimersByTime(TURN_MS);
@@ -316,7 +313,6 @@ describe("chat turns", () => {
       "assistant",
     ]);
     expect(recorded()[0]?.content).toBe("hello there");
-    // What the model reasoned goes with the call that did it.
     expect(recorded()[1]?.thinking).toHaveLength(1);
     expect(recorded()[1]?.tool_calls?.[0]).toMatchObject({ name: "memory_search", server: null });
     expect(recorded()[3]?.tool_calls).toMatchObject([
@@ -324,7 +320,6 @@ describe("chat turns", () => {
       { name: "read_file", server: null },
     ]);
     expect(recorded()[6]?.content).toBe(cannedResponses[0]);
-    // Tagged with the turn's correlation id, so a page that saw it live can tell it's recorded.
     expect(new Set(recorded().map((m) => m.turn_id))).toEqual(new Set(["m1"]));
   });
 
@@ -381,7 +376,6 @@ describe("chat turns", () => {
       chat.send(message("drop please"));
       vi.advanceTimersByTime(DROP_MS);
       expect(drops).toBe(1);
-      // The search and the reads it started went out first; the reads' results are lost.
       expect(types()).toEqual([
         "user_message",
         "turn_started",
@@ -394,7 +388,6 @@ describe("chat turns", () => {
         "tool_call",
       ]);
 
-      // Frames sent while the connection is down go nowhere.
       vi.advanceTimersByTime(RECONNECT_MS - DROP_MS);
       expect(types()).toHaveLength(9);
 
@@ -430,7 +423,6 @@ describe("chat turns", () => {
         "assistant",
       ]);
 
-      // The page never comes back in the simulation's timeline: nothing more is sent.
       vi.advanceTimersByTime(DROP_TURN_MS);
       expect(types()).toHaveLength(9);
     });
@@ -450,7 +442,6 @@ describe("chat turns", () => {
       vi.advanceTimersByTime(DROP_TURN_MS + TURN_MS);
       const recent = chatHistorySegment(state, null) as ChatHistorySegment;
       expect(recent).toMatchObject({ kind: "recent", next_cursor: "ep-004" });
-      // The turn that finished after the compression is the recent history.
       expect(recent.messages.map((m) => m.content)).toContain("drop compress it");
       const episode = chatHistorySegment(state, "ep-004");
       expect(episode?.messages.map((m) => m.content)).toContain("earlier");
@@ -458,10 +449,8 @@ describe("chat turns", () => {
   });
 
   describe("scripted turns", () => {
-    /** Long enough for any scripted turn to run to its end. */
     const SCRIPT_MS = 8000;
 
-    /** The frames a turn sent in order, a run of pieces of one stream as one entry. */
     function outline(): string[] {
       const labels = frames.map((f) => {
         if (f.type === "text_delta") return `stream:${String(f.call)}`;
@@ -580,7 +569,6 @@ describe("chat turns", () => {
     });
 
     describe("running a failed turn again", () => {
-      /** The failed turn's frames are over; what the rerun sends comes after. */
       function failed(id = "m1"): void {
         chat.send(message("error please", id));
         vi.advanceTimersByTime(SCRIPT_MS);
@@ -854,7 +842,6 @@ describe("chat turns", () => {
       expect(types().at(-1)).toBe("turn_ended");
       expect(frames.at(-1)).toEqual({ type: "turn_ended", reply_to: "m1" });
       expect(busy).toEqual([true, false]);
-      // Only the user's message is kept; the reply never comes.
       expect(recorded().map((m) => m.content)).toEqual(["stop me"]);
 
       vi.advanceTimersByTime(TURN_MS);

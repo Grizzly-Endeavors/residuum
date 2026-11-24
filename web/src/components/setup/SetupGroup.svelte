@@ -1,11 +1,8 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
 
-  // Related fields on a setup step, grouped by surface tone rather than a
-  // border. A titled group is a named region under the step's heading.
   interface Props {
     title?: string;
-    /** A line under the title: plain text, or markup with links. */
     hint?: string | Snippet;
     children: Snippet;
   }

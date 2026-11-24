@@ -1,8 +1,3 @@
-//! End-to-end tests driving the A2A client tools (`message_agent`,
-//! `stop_agent`) against a real `a2a-server-lf` server. Delivery is asserted
-//! through a registered session's interrupt channel, the same fixture pattern
-//! `background::messaging`'s own tests use.
-
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -27,10 +22,6 @@ use residuum_bus::{EventTrigger, SessionAddress};
 use residuum_config::ModelSelector;
 use residuum_core::testing::wait;
 
-/// Test executor: a fresh task goes `WORKING` then
-/// `INPUT_REQUIRED`; a follow-up (the task already exists) completes with an
-/// artifact. A message containing "hold" stays `WORKING` indefinitely, for
-/// the cancel test.
 struct TestExecutor;
 
 fn status_event(task_id: &str, ctx: &str, state: TaskState, text: Option<&str>) -> StreamResponse {
@@ -70,7 +61,6 @@ impl AgentExecutor for TestExecutor {
         let (task_id, ctx_id) = (ctx.task_id.clone(), ctx.context_id.clone());
         residuum_core::util::spawn_in_span(async move {
             if text.contains("direct") {
-                // Answer with a bare message: no task is ever opened.
                 let reply = Message::new(Role::Agent, vec![Part::text("direct answer")]);
                 tx.send(Ok(StreamResponse::Message(reply))).await.ok();
                 return;
@@ -84,7 +74,6 @@ impl AgentExecutor for TestExecutor {
             .await
             .ok();
             if text.contains("hold") {
-                // Never completes on its own — only a cancel moves it on.
                 std::future::pending::<()>().await;
                 return;
             }
@@ -144,16 +133,6 @@ impl AgentExecutor for TestExecutor {
     }
 }
 
-/// Spawn a local `a2a-server-lf` server backed by [`TestExecutor`] on a free
-/// loopback port, returning its base URL. `streaming` sets the agent card's
-/// declared capability, which is what [`RemoteTaskTracker`] decides
-/// stream-vs-poll from.
-///
-/// # Errors
-/// Returns an error if the loopback listener can't be bound — an
-/// environment problem, not something callers assert against, so they
-/// unwrap it themselves (exempt from `unwrap_used` inside a `#[tokio::test]`
-/// function, unlike this plain helper).
 async fn spawn_agent_server(streaming: bool) -> std::io::Result<String> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let base = format!("http://{}", listener.local_addr()?);
@@ -202,9 +181,6 @@ async fn spawn_agent_server(streaming: bool) -> std::io::Result<String> {
     Ok(base)
 }
 
-/// Shared fixture: a hub/tracker pair with a fresh workspace, plus the
-/// session registry and messenger a tool under test identifies itself
-/// through.
 struct Fixture {
     hub: Arc<A2aClientHub>,
     tracker: Arc<RemoteTaskTracker>,
@@ -213,10 +189,6 @@ struct Fixture {
     _dir: tempfile::TempDir,
 }
 
-/// # Errors
-/// Returns an error if the temp workspace directory can't be created — an
-/// environment problem, not something callers assert against, so they
-/// unwrap it themselves.
 async fn fixture() -> std::io::Result<Fixture> {
     let dir = tempfile::tempdir()?;
     let registry = Arc::new(SessionRegistry::new());
@@ -267,8 +239,6 @@ fn sample_info(address: &str) -> SessionInfo {
     }
 }
 
-/// Poll the remote agent until the sender's open task reports WORKING, so a
-/// cancel never races the executor's first status event.
 async fn wait_until_remote_working(f: &Fixture, sender: &str, agent: &str) {
     let task_id = f
         .tracker
@@ -296,9 +266,6 @@ async fn wait_until_remote_working(f: &Fixture, sender: &str, agent: &str) {
     .await;
 }
 
-/// The delivered text if `interrupt` is an `AgentMessage`, or a placeholder
-/// naming what it actually was — so a caller's `assert!(content.contains(..))`
-/// fails with a useful message instead of this helper panicking directly.
 fn agent_message_content(interrupt: &Interrupt) -> String {
     match interrupt {
         Interrupt::AgentMessage(event) => event.content.clone(),
@@ -471,8 +438,6 @@ async fn stop_agent_cancels_the_open_task_exactly_once() {
         Arc::clone(&f.hub),
         Arc::clone(&f.tracker),
     );
-    // The task's watcher holds the tracker while it runs; this many holders
-    // means it has stopped.
     let holders_without_watchers = Arc::strong_count(&f.tracker);
     let sent_result = message_tool
         .execute(serde_json::json!({ "to": "a2a:agent1", "message": "hold this open" }))
@@ -504,9 +469,6 @@ async fn stop_agent_cancels_the_open_task_exactly_once() {
         .unwrap();
     assert!(agent_message_content(&interrupt).contains("canceled"));
 
-    // The background watcher observes the same cancellation independently;
-    // `notified_this_turn` must stop it from delivering a second time for
-    // this turn. Once it has stopped, anything it delivered is queued.
     drop(stop_tool);
     wait::until_true("the task's watcher to stop", || {
         Arc::strong_count(&f.tracker) == holders_without_watchers

@@ -2,10 +2,6 @@
   import { appUpdate } from "../lib/app-update.svelte";
   import { router } from "../lib/router.svelte";
   import { Banner, Button } from "../lib/ui";
-
-  // Shown across the top of the main region once the app was rebuilt and the
-  // new version is waiting. The page keeps running the files it loaded until
-  // Reload, which first asks about unsaved work through the router's guard.
 </script>
 
 {#if appUpdate.ready && !appUpdate.dismissed}

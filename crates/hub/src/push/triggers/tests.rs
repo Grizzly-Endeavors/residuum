@@ -1,6 +1,3 @@
-//! The rules for when each push fires, and the words each one carries,
-//! driven directly with what the hub and the agents publish.
-
 use chrono::{Duration, TimeZone as _};
 
 use super::*;
@@ -53,7 +50,6 @@ fn turn(visibility: Visibility, reply: Option<&str>, client_connected: bool) -> 
     })
 }
 
-/// A task `scout` sent to `laptop`.
 fn task(unreachable_notified: bool, state: &str) -> TrackedTask {
     let now = Utc::now();
     TrackedTask {
@@ -76,8 +72,6 @@ fn task(unreachable_notified: bool, state: &str) -> TrackedTask {
 fn outbound(task: TrackedTask) -> AgentChangeKind {
     AgentChangeKind::OutboundTaskChanged(Box::new(task))
 }
-
-// ─── inbox_item ───────────────────────────────────────────────────────
 
 #[test]
 fn an_item_the_tool_saved_is_one_push_and_the_file_change_beside_it_is_none() {
@@ -103,8 +97,6 @@ fn an_item_the_tool_saved_is_one_push_and_the_file_change_beside_it_is_none() {
     assert_eq!(file_change, None, "one save is one addition");
 }
 
-// ─── agent_failed ─────────────────────────────────────────────────────
-
 #[test]
 fn entering_the_failed_state_fires_once_with_what_failed() {
     let mut rules = Rules::default();
@@ -123,7 +115,6 @@ fn entering_the_failed_state_fires_once_with_what_failed() {
         })
     );
 
-    // A change of settings while it stays failed is not another failure.
     assert_eq!(
         rules.on_hub_event(&state_event(failed("scout", AgentErrorKind::Config))),
         None
@@ -165,14 +156,12 @@ fn a_created_agent_whose_start_failed_is_one_push_in_either_order() {
         by: Actor::User,
     };
 
-    // The state change comes first, as the host publishes it.
     let mut state_first = Rules::default();
     let from_state = state_first.on_hub_event(&state_event(failed("nova", AgentErrorKind::Config)));
     let then_creation = state_first.on_hub_event(&created(failed("nova", AgentErrorKind::Config)));
     assert!(from_state.is_some());
     assert_eq!(then_creation, None);
 
-    // And if the creation were seen first, the state change adds nothing.
     let mut creation_first = Rules::default();
     let from_creation =
         creation_first.on_hub_event(&created(failed("nova", AgentErrorKind::Config)));
@@ -250,19 +239,15 @@ fn a_failure_whose_event_was_lost_is_found_by_reading_the_agents_again() {
     assert!(again.is_empty(), "a failure already pushed is not repeated");
 }
 
-// ─── outbound_unreachable ─────────────────────────────────────────────
-
 #[test]
 fn an_unreachable_streak_is_one_push_when_it_passes_the_threshold() {
     let mut rules = Rules::default();
 
-    // The streak starts: the tracker announces it, with no notice yet.
     assert_eq!(
         rules.on_change(change("scout", outbound(task(false, "working")))),
         None
     );
 
-    // It passes the threshold: this is the push.
     let crossed = task(true, "working");
     let since = crossed.first_unreachable_at.unwrap();
     assert_eq!(
@@ -275,7 +260,6 @@ fn an_unreachable_streak_is_one_push_when_it_passes_the_threshold() {
         })
     );
 
-    // Hearing of the same streak again sends nothing.
     assert_eq!(
         rules.on_change(change("scout", outbound(crossed))),
         None,
@@ -292,7 +276,6 @@ fn a_new_streak_after_recovery_is_pushed_again() {
             .is_some()
     );
 
-    // The remote answered: the streak ended.
     assert_eq!(
         rules.on_change(change("scout", outbound(task(false, "working")))),
         None
@@ -315,7 +298,6 @@ fn a_closed_task_is_not_pushed_and_two_agents_tasks_are_counted_apart() {
         "nobody is waiting on a closed task"
     );
 
-    // The same task id on two senders is two tasks.
     assert!(
         rules
             .on_change(change("scout", outbound(task(true, "working"))))
@@ -345,8 +327,6 @@ fn a_deleted_agents_pushed_streaks_are_forgotten() {
         "a restored agent's streak is new"
     );
 }
-
-// ─── reply_while_away ─────────────────────────────────────────────────
 
 #[test]
 fn a_reply_to_the_user_with_no_client_connected_is_a_push() {
@@ -415,8 +395,6 @@ fn the_rest_of_the_change_feed_fires_nothing() {
         );
     }
 }
-
-// ─── The words ────────────────────────────────────────────────────────
 
 #[test]
 fn an_inbox_item_push_carries_the_items_title_and_the_start_of_its_body() {

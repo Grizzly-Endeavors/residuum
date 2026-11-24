@@ -4,19 +4,12 @@ import { sendFromComposer } from "../support/composer";
 import { IMAGE_SHOWCASE_REMOTE_HOST } from "../../mock/data/chat";
 import { expect, test } from "../support/fixtures";
 
-/**
- * A reply's Markdown on the page: the table that scrolls instead of breaking
- * its words, task items that read as words, links that open beside the app,
- * code a keyboard can reach, and headings that sit below the page's own.
- */
-
 const GREETING = "Hi, this is atlas. You are in my conversation, not scout's.";
 
 function conversation(page: Page): Locator {
   return page.getByRole("region", { name: "Conversation with atlas" });
 }
 
-/** Ask the mock for its Markdown showcase and wait for it to land. */
 async function showcase(page: Page): Promise<Locator> {
   await page.goto("/agent/atlas");
   const feed = conversation(page);
@@ -29,7 +22,6 @@ async function showcase(page: Page): Promise<Locator> {
 }
 
 test("a reply's images from elsewhere are links the page never requests", async ({ page }) => {
-  // The fixture also fails the test if the page's policy refuses any request.
   const requested: string[] = [];
   page.on("request", (request) => {
     requested.push(request.url());
@@ -53,7 +45,6 @@ test("a reply's images from elsewhere are links the page never requests", async 
     await expect(link).toHaveAttribute("target", "_blank");
     await expect(link).toHaveAttribute("rel", "noopener noreferrer");
   }
-  // A data: image is the page's own, and shows.
   const dot = feed.getByRole("img", { name: "dot" });
   await expect.poll(() => dot.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(1);
 
@@ -69,7 +60,6 @@ test("a table keeps its words whole and scrolls when it is wider than the messag
   const table = feed.getByRole("group", { name: "Table" });
   await table.scrollIntoViewIfNeeded();
 
-  // No cell breaks a word across lines: a one-word cell is a single line.
   const brokenWords = await table.evaluate(
     (group) =>
       [...group.querySelectorAll("td, th")].filter((cell) => {
@@ -89,7 +79,6 @@ test("a table keeps its words whole and scrolls when it is wider than the messag
   if (isMobile) expect(scrollWidth).toBeGreaterThan(clientWidth);
   else expect(scrollWidth).toBeLessThanOrEqual(clientWidth);
 
-  // The group takes focus, and the arrow keys move what it shows.
   await table.focus();
   await expect(table).toBeFocused();
   if (isMobile) {
@@ -107,14 +96,12 @@ test("task items read as done and to do, with no checkbox or bullet", async ({ p
   await expect(items.nth(1)).toHaveText(
     "Done: Cascade to the next channel when one is unreachable",
   );
-  // The parent item holds the nested one's words as well.
   await expect(items.nth(2)).toContainText(
     "To do: Park the notification in the inbox when every channel is down",
   );
   await expect(items.nth(3)).toHaveText("To do: Write the inbox summary line");
   const style = await items.first().evaluate((li) => getComputedStyle(li).listStyleType);
   expect(style).toBe("none");
-  // A plain item keeps its bullet.
   const plain = feed.getByRole("listitem").filter({ hasText: "A plain bullet stays a bullet" });
   expect(await plain.evaluate((li) => getComputedStyle(li).listStyleType)).not.toBe("none");
 });
@@ -149,7 +136,6 @@ test("a code block can be focused and scrolled, and its Copy button hides what r
   await code.focus();
   await expect(code).toBeFocused();
 
-  // The block overflows, and the keyboard scrolls it.
   await expect.poll(() => code.evaluate((pre) => pre.scrollWidth > pre.clientWidth)).toBe(true);
   await page.keyboard.press("ArrowRight");
   await expect.poll(() => code.evaluate((pre) => pre.scrollLeft)).toBeGreaterThan(0);
@@ -168,7 +154,6 @@ test("a reply's headings sit below the page's", async ({ page }) => {
     "tagName",
     "H5",
   );
-  // The place's own title stays the page's one h1.
   await expect(page.getByRole("heading", { level: 1 })).toHaveCount(1);
 });
 

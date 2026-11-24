@@ -16,10 +16,6 @@ import {
   type RowInput,
 } from "./home-model";
 
-// Times are built in the machine's own zone, and expected clock times are
-// formatted the way Home formats them, so the tests hold in any zone and locale.
-
-/** Noon on a fixed day, local time. */
 const NOW = new Date(2026, 2, 14, 12, 0).getTime();
 const at = (day: number, hour: number, minute = 0): string =>
   new Date(2026, 2, day, hour, minute).toISOString();

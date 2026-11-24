@@ -4,10 +4,6 @@
   import SecretsGroup from "./SecretsGroup.svelte";
   import SettingsSection from "./SettingsSection.svelte";
 
-  // Saved keys: two lists the hub keeps encrypted and every agent on this
-  // install shares. Both act at once through their own endpoints, so nothing
-  // here is staged for the save bar.
-
   let { scope, section }: AllSectionProps = $props();
 </script>
 

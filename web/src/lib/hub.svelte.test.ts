@@ -467,7 +467,6 @@ describe("HubStore connection", () => {
 });
 
 describe("HubStore team watching", () => {
-  /** A hub whose socket is open. */
   function openHub(): HubStore {
     vi.stubGlobal(
       "fetch",

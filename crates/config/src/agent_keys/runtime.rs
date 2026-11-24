@@ -1,5 +1,3 @@
-//! Shared runtime handle over the agent key store.
-
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -8,10 +6,8 @@ use tokio::sync::{Mutex, RwLock};
 
 use super::{AgentKeyError, AgentKeyStore, ENCRYPTED_FILE, KeyCreator, LOCK_FILE, Redactor};
 
-/// Shared handle to the agent keys runtime.
 pub type SharedAgentKeys = Arc<AgentKeys>;
 
-/// A consistent view of the store and the redactor built from it.
 #[derive(Debug, Default)]
 pub struct AgentKeysSnapshot {
     pub store: AgentKeyStore,
@@ -25,8 +21,6 @@ impl AgentKeysSnapshot {
     }
 }
 
-/// What the file looked like when the cache was filled; any change means
-/// another process (the CLI, a second gateway) wrote it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct FileStamp {
     modified: Option<SystemTime>,
@@ -35,18 +29,12 @@ struct FileStamp {
 
 #[derive(Debug, Default)]
 struct Cache {
-    /// Stamp of the file the cache reflects; `None` = file absent.
     stamp: Option<FileStamp>,
-    /// Whether `stamp` has been read at least once.
     primed: bool,
     snapshot: Arc<AgentKeysSnapshot>,
-    /// Load failure for the current stamp, reported on every access but
-    /// logged only when first seen.
     load_error: Option<AgentKeyError>,
 }
 
-/// Runtime agent-key store: cached, reloaded when the file changes on disk,
-/// with serialized writes.
 #[derive(Debug)]
 pub struct AgentKeys {
     config_dir: PathBuf,
@@ -55,7 +43,6 @@ pub struct AgentKeys {
 }
 
 impl AgentKeys {
-    /// A handle over the store in `config_dir`. Nothing is read until first use.
     #[must_use]
     pub fn new(config_dir: impl Into<PathBuf>) -> Self {
         Self {
@@ -65,23 +52,16 @@ impl AgentKeys {
         }
     }
 
-    /// [`new`](Self::new), wrapped for sharing.
     #[must_use]
     pub fn new_shared(config_dir: impl Into<PathBuf>) -> SharedAgentKeys {
         Arc::new(Self::new(config_dir))
     }
 
-    /// The config directory holding the store.
     #[must_use]
     pub fn config_dir(&self) -> &Path {
         &self.config_dir
     }
 
-    /// The current store, reloaded first if the file changed on disk.
-    ///
-    /// # Errors
-    /// Returns `AgentKeyError::Storage` if the file changed and can't be
-    /// read or decrypted.
     pub async fn snapshot(&self) -> Result<Arc<AgentKeysSnapshot>, AgentKeyError> {
         let stamp = self.read_stamp().await;
         {
@@ -95,7 +75,6 @@ impl AgentKeys {
         }
 
         let mut cache = self.cache.write().await;
-        // Another task may have reloaded while we waited for the write lock.
         let fresh_stamp = self.read_stamp().await;
         if cache.primed && cache.stamp == fresh_stamp {
             return match &cache.load_error {
@@ -125,10 +104,6 @@ impl AgentKeys {
         }
     }
 
-    /// The redactor for the current store. When the store can't be loaded,
-    /// falls back to the last successfully loaded set (the failure is logged
-    /// by [`snapshot`](Self::snapshot)) — redaction must never be skipped
-    /// because of a reload error.
     pub async fn redactor(&self) -> Redactor {
         match self.snapshot().await {
             Ok(snapshot) => snapshot.redactor.clone(),
@@ -136,18 +111,6 @@ impl AgentKeys {
         }
     }
 
-    /// Store a key and persist it.
-    ///
-    /// Reloads from disk under both the in-process lock and an exclusive
-    /// lock on `agent-keys.lock` first, so a concurrent write from the CLI,
-    /// the web API, or another handle isn't lost.
-    ///
-    /// Returns a warning (the key is still stored either way) when `value`
-    /// is short enough that redaction by substring match becomes unreliable.
-    ///
-    /// # Errors
-    /// Returns the store's validation or ownership error, or
-    /// `AgentKeyError::Storage` if reading or writing the file fails.
     pub async fn set(
         &self,
         name: &str,
@@ -162,18 +125,11 @@ impl AgentKeys {
             .await
     }
 
-    /// Delete a key and persist, whoever created it.
-    ///
-    /// # Errors
-    /// Returns `AgentKeyError::NotFound` or `AgentKeyError::Storage`.
     pub async fn delete(&self, name: &str) -> Result<(), AgentKeyError> {
         let name = name.to_string();
         self.mutate(move |store| store.delete(&name)).await
     }
 
-    /// Applies `change` to a freshly-loaded store and persists it, returning
-    /// whatever `change` itself returns (e.g. `set`'s short-value warning)
-    /// alongside the usual write/reload machinery.
     async fn mutate<F, T>(&self, change: F) -> Result<T, AgentKeyError>
     where
         F: FnOnce(&mut AgentKeyStore) -> Result<T, AgentKeyError> + Send + 'static,
@@ -216,9 +172,6 @@ impl AgentKeys {
     }
 }
 
-/// Take an exclusive lock on `agent-keys.lock` in `config_dir`, held until
-/// the returned file is dropped. Serializes read-modify-write cycles across
-/// processes (the CLI and the gateway) as well as across handles.
 fn lock_store_file(config_dir: &Path) -> Result<std::fs::File, AgentKeyError> {
     std::fs::create_dir_all(config_dir).map_err(|e| {
         AgentKeyError::Storage(format!(
@@ -289,7 +242,6 @@ mod tests {
             "starts empty"
         );
 
-        // Simulates `residuum agent-keys set` from another process.
         let mut store = AgentKeyStore::load(dir.path()).unwrap();
         store
             .set("cli_key", "from-the-cli-123", None, KeyCreator::User)

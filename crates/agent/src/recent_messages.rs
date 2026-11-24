@@ -1,22 +1,11 @@
-//! In-memory recent message history before observation.
-
 use chrono::{DateTime, Utc};
 use residuum_inference::Message;
 
 use crate::prefix_watch::PrefixWatch;
 use crate::turn::ModelRequest;
 
-/// In-memory buffer holding recent conversation messages before observation,
-/// with the time each message entered the buffer.
-///
-/// It is the conversation's state, so it also watches the model requests
-/// built from it: each request is compared with the previous one, and a
-/// change to a part already sent (which ends the provider's cached prefix
-/// there) is logged. Clearing or prepending counts as a rewrite, which makes
-/// the next request's history change expected.
 pub struct RecentMessages {
     messages: Vec<Message>,
-    /// When each entry of `messages` (same index) entered the buffer.
     recorded_at: Vec<DateTime<Utc>>,
     prefix_watch: PrefixWatch,
 }
@@ -28,7 +17,6 @@ impl Default for RecentMessages {
 }
 
 impl RecentMessages {
-    /// Create a new empty message buffer.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -38,38 +26,31 @@ impl RecentMessages {
         }
     }
 
-    /// Add a message to the recent history.
     pub fn push(&mut self, message: Message) {
         self.messages.push(message);
         self.recorded_at.push(Utc::now());
     }
 
-    /// Get all recent messages.
     #[must_use]
     pub fn messages(&self) -> &[Message] {
         &self.messages
     }
 
-    /// Get messages starting from the given index.
     #[must_use]
     pub fn messages_since(&self, idx: usize) -> &[Message] {
         self.messages.get(idx..).unwrap_or_default()
     }
 
-    /// When each message from the given index on entered the buffer, in the
-    /// same order as [`Self::messages_since`].
     #[must_use]
     pub fn recorded_at_since(&self, idx: usize) -> &[DateTime<Utc>] {
         self.recorded_at.get(idx..).unwrap_or_default()
     }
 
-    /// Get the current message count.
     #[must_use]
     pub fn len(&self) -> usize {
         self.messages.len()
     }
 
-    /// Append all messages to the end of the buffer.
     pub fn extend(&mut self, messages: Vec<Message>) {
         let now = Utc::now();
         self.recorded_at
@@ -77,31 +58,21 @@ impl RecentMessages {
         self.messages.extend(messages);
     }
 
-    /// Remove all messages from the buffer.
     pub fn clear(&mut self) {
         self.messages.clear();
         self.recorded_at.clear();
         self.prefix_watch.history_rewritten();
     }
 
-    /// Compare `request`, built from this history, with the previous request
-    /// and log each earlier part that changed. `within_turn` is whether it is
-    /// a later call of the same turn.
     pub(crate) fn watch_request(&mut self, request: &ModelRequest, within_turn: bool) {
         self.prefix_watch.observe(request, within_turn);
     }
 
-    /// Check if the buffer is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.messages.is_empty()
     }
 
-    /// Return the last `n` user/assistant text-only exchange pairs.
-    ///
-    /// Walks backward through messages to find pairs of user + assistant
-    /// messages that have text content and no tool calls. Returns them
-    /// flattened in chronological order.
     #[must_use]
     #[expect(
         clippy::indexing_slicing,
@@ -119,7 +90,6 @@ impl RecentMessages {
             i -= 1;
             let msg = &self.messages[i];
 
-            // Look for an assistant message with text and no tool calls
             if msg.role != residuum_inference::Role::Assistant {
                 continue;
             }
@@ -127,9 +97,6 @@ impl RecentMessages {
                 continue;
             }
 
-            // Walk backward to find the preceding user message, skipping
-            // tool results and assistant messages with tool calls (the tool
-            // call/result chain between a user message and the final text reply).
             let mut j = i;
             while j > 0 {
                 j -= 1;
@@ -139,14 +106,12 @@ impl RecentMessages {
                     i = j; // continue scanning before this user message
                     break;
                 }
-                // Skip tool results and assistant-with-tool-calls (mid-chain)
                 if prev.role == residuum_inference::Role::Tool {
                     continue;
                 }
                 if prev.role == residuum_inference::Role::Assistant && prev.tool_calls.is_some() {
                     continue;
                 }
-                // Any other message type means no matching user message
                 break;
             }
         }
@@ -155,7 +120,6 @@ impl RecentMessages {
         pairs.into_iter().flat_map(|(u, a)| [u, a]).collect()
     }
 
-    /// Insert messages at the beginning of the buffer.
     pub fn prepend(&mut self, messages: Vec<Message>) {
         if messages.is_empty() {
             return;
@@ -308,7 +272,6 @@ mod tests {
         push_assistant_msg(&mut recent, "you're welcome");
 
         let exchanges = recent.last_exchanges(3);
-        // Should find "thanks"/"you're welcome" and "run a command"/"the result was: test"
         assert_eq!(
             exchanges.len(),
             4,
@@ -446,8 +409,6 @@ mod tests {
         );
     }
 
-    /// The request a turn would build from `recent`, with a fixed system
-    /// prompt and no tools.
     fn request_from(recent: &RecentMessages) -> ModelRequest {
         let mut messages = vec![Message::system("prompt")];
         messages.extend(recent.messages().iter().cloned());

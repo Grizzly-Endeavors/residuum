@@ -30,7 +30,6 @@ describe("cardSender", () => {
       icon: "users",
       isSession: false,
     });
-    // A teammate's session is still the teammate's, not one of this agent's.
     expect(cardSender("agent:scout/research-2", null, "atlas")).toMatchObject({
       sender: "scout/research-2",
       isSession: false,

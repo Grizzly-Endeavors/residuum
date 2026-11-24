@@ -3,7 +3,4 @@ import type { AtkStatus } from "./AtkStatus";
 import type { SuggestedEndpointSource } from "./SuggestedEndpointSource";
 import type { ToolStatus } from "./ToolStatus";
 
-/**
- * Prerequisite check results before running the Teams setup wizard.
- */
 export type TeamsSetupPrereqs = { node: ToolStatus, npm: ToolStatus, atk: AtkStatus, min_node_version: string, teams_already_configured: boolean, suggested_endpoint: string | null, suggested_endpoint_source: SuggestedEndpointSource | null, manual_guide_url: string, };

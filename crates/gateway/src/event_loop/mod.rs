@@ -1,5 +1,3 @@
-//! One agent's start-up, HTTP routes, adapters, and main event loop.
-
 mod commands;
 mod http;
 mod pulse;

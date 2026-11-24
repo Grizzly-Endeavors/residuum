@@ -6,9 +6,6 @@
   import { comingUp, runTitle, upcomingWhen } from "./home-model";
   import { followLink } from "./follow-link";
 
-  // The soonest pulses and scheduled actions across the agents that will run
-  // them. Each opens its agent's Schedule.
-
   let { now }: { now: number } = $props();
 
   const uid = $props.id();

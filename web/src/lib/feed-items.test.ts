@@ -32,7 +32,6 @@ describe("when converted history says a message was sent", () => {
     const stamps = items.map((item) => [item.kind, item.timestamp]);
     expect(stamps).toEqual([
       ["user", "2026-10-09T10:05:00"],
-      // The steps between messages are timed live, or not at all.
       ["thinking", undefined],
       ["assistant", "2026-10-09T10:05:30"],
       ["tool-group", undefined],
@@ -111,7 +110,6 @@ describe("the times in the store's history", () => {
       kind: "episode",
       episode_id: "ep-1",
       date: "2026-10-01",
-      // An episode records its date as midnight on every message.
       messages: [
         message("user", "Back then", { timestamp: "2026-10-01T00:00:00" }),
         message("assistant", "Yes.", { timestamp: "2026-10-01T00:00:00" }),
@@ -130,7 +128,6 @@ describe("the times in the store's history", () => {
 
   it("stamps the recent messages that an older episode decides to show, and not the episode's", () => {
     const store = new FeedStore();
-    // The recent history begins in the middle of a background turn that older history began.
     store.loadHistory({
       kind: "recent",
       messages: [
@@ -141,7 +138,6 @@ describe("the times in the store's history", () => {
     });
     expect(store.feed.map((item) => item.kind)).toEqual(["user"]);
 
-    // The episode ends in a message from an agent, which makes the turn one the user sees.
     store.prependEpisode({
       kind: "episode",
       episode_id: "ep-1",

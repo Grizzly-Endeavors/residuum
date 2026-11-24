@@ -8,10 +8,6 @@
   import Prose from "./Prose.svelte";
   import Timestamp from "./Timestamp.svelte";
 
-  // A message from a session or a teammate: a compact card with who sent it,
-  // when, and its body clamped to a few lines. A session sender, on `agent`, can be
-  // opened; a teammate is another agent and has no session here to open.
-
   let { item, agent }: { item: AgentMessageFeedItem; agent: string } = $props();
 
   const uid = $props.id();
@@ -23,8 +19,6 @@
   let expanded = $state(false);
   let overflowing = $state(false);
 
-  // The body is clamped until Show all; whether it overflows changes as the
-  // text renders, fonts load and the column resizes.
   function measure(node: HTMLElement): () => void {
     const check = (): void => {
       overflowing = node.scrollHeight > node.clientHeight + 1;
@@ -120,14 +114,12 @@
     white-space: nowrap;
   }
 
-  /* At the end of the line, once its sender has said what it needs. */
   .card-time {
     flex: none;
     margin-left: auto;
   }
 
   .card-body.clamped {
-    /* Eight of the prose's lines, each rounded to a whole pixel as the base styles round them. */
     max-height: calc(8 * round(calc(var(--line-height-message) * 1em), 1px));
     overflow: hidden;
   }

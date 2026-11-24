@@ -1,5 +1,3 @@
-//! `agent-keys` subcommand: manage credentials the agent can use in commands.
-
 use std::io::Read as _;
 use std::path::PathBuf;
 
@@ -7,39 +5,26 @@ use residuum::agent_keys::{AgentKeys, KeyCreator};
 use residuum::checkpoints::CheckpointEngine;
 use residuum::util::FatalError;
 
-/// Agent key management subcommands.
 #[derive(clap::Subcommand)]
 pub(super) enum AgentKeysCommand {
-    /// Store a key the agent can use (prompts for the value if omitted)
     Set {
-        /// Key name: lowercase letters, digits, underscores; exposed to
-        /// commands as an environment variable named in uppercase
         name: String,
-        /// Value to store (prompted with masked input if omitted)
         value: Option<String>,
-        /// Read the value from stdin instead of prompting
         #[arg(long, conflicts_with = "value")]
         stdin: bool,
-        /// What the key is and what it grants, shown to the agent
         #[arg(long, short)]
         description: Option<String>,
     },
-    /// List keys (names, environment variables, creators, descriptions)
     List,
-    /// Remove a key
     Delete {
-        /// Name of the key to remove
         name: String,
     },
 }
 
-/// Run the `agent-keys` subcommand.
 pub(super) async fn run_agent_keys_command(command: &AgentKeysCommand) -> Result<(), FatalError> {
     run_agent_keys_command_at(residuum::config::default_hub_dir()?, command).await
 }
 
-/// [`run_agent_keys_command`] against an explicit config directory, so the
-/// dispatch logic is testable without touching the real `~/.residuum`.
 async fn run_agent_keys_command_at(
     config_dir: PathBuf,
     command: &AgentKeysCommand,
@@ -111,7 +96,6 @@ async fn run_agent_keys_command_at(
     Ok(())
 }
 
-/// The value from the argument, stdin, or a masked prompt, in that order.
 fn read_value(name: &str, value: Option<&str>, stdin: bool) -> Result<String, FatalError> {
     if let Some(v) = value {
         return Ok(v.to_string());
@@ -135,8 +119,6 @@ mod tests {
     async fn set_and_delete_each_checkpoint_the_config_repo() {
         let dir = tempfile::tempdir().unwrap();
 
-        // First write has nothing preexisting to checkpoint (nothing to
-        // protect yet); the checkpoint appears from the second write on.
         run_agent_keys_command_at(
             dir.path().to_path_buf(),
             &AgentKeysCommand::Set {

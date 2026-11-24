@@ -1,6 +1,3 @@
-//! Test fixtures for code that builds session resources. Behind
-//! `test-support`, and compiled for this crate's own tests.
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -30,12 +27,6 @@ use crate::store::SessionStore;
 use crate::subagent::SubAgentResources;
 use crate::types::SubAgentConfig;
 
-/// A throwaway checkpoint engine for tests that need a `SessionRuntime`
-/// but don't exercise checkpointing behavior themselves.
-///
-/// # Panics
-///
-/// Panics when the checkpoint engine cannot be created in `dir`.
 #[must_use]
 #[expect(
     clippy::unwrap_used,
@@ -56,18 +47,12 @@ pub fn test_checkpoints(dir: &std::path::Path) -> Arc<residuum_checkpoints::Chec
     )
 }
 
-/// A session store in a temporary directory that lives as long as the
-/// store, for this crate's tests that need one but don't read what it
-/// records.
 #[cfg(test)]
 pub(crate) fn test_store() -> Arc<SessionStore> {
     let dir = tempfile::tempdir().unwrap();
     Arc::new(SessionStore::new(dir.path().to_path_buf()).with_tempdir_guard(dir))
 }
 
-/// A `TracingService` with auto error reporting off, for tests that need
-/// a `SessionRuntime` but don't exercise auto-reporting behavior
-/// themselves — `on_error` calls through it are a guaranteed no-op.
 #[must_use]
 pub fn test_tracing_service() -> Arc<TracingService> {
     let (_, handle) = residuum_core::util::telemetry::SpanBufferLayer::new(
@@ -94,9 +79,6 @@ pub fn test_tracing_client_context() -> Arc<ClientContext> {
     })
 }
 
-/// Provider that returns canned responses in sequence, one per call —
-/// unlike `MockProvider`, which always returns the same response — so a
-/// test can distinguish a run's first turn from its second.
 pub struct SequencedProvider {
     responses: Vec<String>,
     call_count: std::sync::atomic::AtomicUsize,
@@ -159,15 +141,6 @@ pub fn make_sequenced_resources(responses: Vec<&str>) -> SubAgentResources {
     }
 }
 
-/// Build a runtime whose idle window outlasts any test, rather than
-/// `test_runtime`'s 20ms: a session stays idle until the test delivers to
-/// it or stops it, so the test never races the idle timeout completing
-/// the run out from under it.
-///
-/// # Panics
-///
-/// Panics when the broker, the temporary directory or the session subscription
-/// cannot be set up.
 #[expect(
     clippy::unwrap_used,
     reason = "test-support helper: a fixture that cannot be built fails the test that asked for it"
@@ -183,8 +156,6 @@ pub async fn test_runtime_held_idle() -> (
     let registry = Arc::new(SessionRegistry::new());
     let dir = tempfile::tempdir().unwrap();
     let dir_path = dir.path().to_path_buf();
-    // The store owns the guard, so the directory lives as long as any
-    // session task still writing through it.
     let store = Arc::new(SessionStore::new(dir_path.clone()).with_tempdir_guard(dir));
     let messenger = Arc::new(AgentMessenger::new(
         Arc::clone(&registry),
@@ -214,9 +185,6 @@ pub async fn test_runtime_held_idle() -> (
     (runtime, sub, bus_handle)
 }
 
-/// Skip `events` to the next time the session at `address` reports
-/// going `idle`, so each call matches one turn's idle and a test can tell
-/// a second turn's idle from the first one's.
 pub async fn next_idle(
     events: &mut residuum_bus::Subscriber<residuum_bus::SessionEvent>,
     address: &SessionAddress,
@@ -235,9 +203,6 @@ pub async fn next_idle(
     }
 }
 
-/// A conversation-triggered spawn request at a deterministic-style
-/// address, wired with a conversation target so its turn output routes
-/// back to it.
 #[must_use]
 pub fn sample_conversation_request(address: &str) -> SessionSpawnRequest {
     SessionSpawnRequest {
@@ -269,8 +234,6 @@ pub fn sample_conversation_request(address: &str) -> SessionSpawnRequest {
     }
 }
 
-/// Calls `send_message` to discord's `chan-1` on its first completion,
-/// then answers with text.
 pub struct SendsToChatProvider {
     pub calls: std::sync::atomic::AtomicUsize,
 }
@@ -322,14 +285,6 @@ impl residuum_bus::conversations::ConversationSource for BuildsChannel {
     }
 }
 
-/// A layout, observer, and merge writer for a session's `SubAgentResources`,
-/// backed by a temporary directory the layout keeps alive. `Observer::disabled`
-/// and a disabled reflector mean neither ever fires unless a test configures
-/// otherwise.
-///
-/// # Panics
-///
-/// Panics when the temporary directory or its search index cannot be created.
 #[must_use]
 #[expect(
     clippy::unwrap_used,

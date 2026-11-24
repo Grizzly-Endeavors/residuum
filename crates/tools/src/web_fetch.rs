@@ -1,5 +1,3 @@
-//! Web page content fetcher optimized for LLM consumption.
-
 use async_trait::async_trait;
 use encoding_rs::{Encoding, UTF_8};
 use html_escape::decode_html_entities;
@@ -11,29 +9,17 @@ use residuum_inference::ToolDefinition;
 use residuum_agent::Tool;
 use residuum_inference::{ToolError, ToolResult};
 
-/// Page size returned per call: the shared page budget, so a page fits under
-/// the history limit and is never cut again by the turn loop.
-///
-/// Not a hard limit on what can be fetched: `offset` pages through the rest
-/// of a longer page across further calls.
 const DEFAULT_PAGE_BYTES: usize = crate::PAGE_BUDGET;
 
-/// Response body bytes read before the download stops.
-///
-/// Bounds memory for a single fetch. A page past this size is cut short, the
-/// header says so, and `offset` pages through what was downloaded.
 const MAX_DOWNLOAD_BYTES: usize = 5 * 1024 * 1024;
 
-/// Elements whose contents are code, styling or fallback markup rather than page text.
 const NON_TEXT_ELEMENTS: [&str; 4] = ["script", "style", "noscript", "template"];
 
-/// Tool for fetching web page content and extracting readable text.
 pub(crate) struct WebFetchTool {
     http: reqwest::Client,
 }
 
 impl WebFetchTool {
-    /// Create a new web fetch tool with a dedicated HTTP client.
     #[must_use]
     pub(crate) fn new() -> Self {
         let http = reqwest::Client::builder()
@@ -140,8 +126,6 @@ impl Tool for WebFetchTool {
             body
         };
 
-        // Note the content type on anything other than HTML/plain text, since
-        // the caller sees only extracted/raw text with no header otherwise.
         let mut notes = Vec::new();
         if !(is_html || content_type.contains("text/plain") || content_type.is_empty()) {
             notes.push(format!("content-type: {content_type}"));
@@ -157,8 +141,6 @@ impl Tool for WebFetchTool {
     }
 }
 
-/// Read a response body up to `MAX_DOWNLOAD_BYTES`, decoded with the charset
-/// its Content-Type declares. Returns the text and whether the body was cut short.
 async fn read_capped_body(
     response: &mut reqwest::Response,
     content_type: &str,
@@ -184,7 +166,6 @@ async fn read_capped_body(
     Ok((text.into_owned(), truncated))
 }
 
-/// The encoding named by a `charset=` parameter of a Content-Type header.
 fn charset_of(content_type: &str) -> Option<&'static Encoding> {
     content_type
         .split(';')
@@ -193,11 +174,6 @@ fn charset_of(content_type: &str) -> Option<&'static Encoding> {
         .and_then(|(_, label)| Encoding::for_label(label.trim().trim_matches('"').as_bytes()))
 }
 
-/// Textual content types `web_fetch` will return; everything else (images,
-/// video, audio, PDFs, archives, etc.) is refused with a clear message.
-///
-/// Missing/empty content type is treated as textual rather than refused,
-/// since some servers omit the header for plain responses.
 fn is_textual_content_type(content_type: &str) -> bool {
     let ct = content_type.to_ascii_lowercase();
     ct.is_empty()
@@ -209,9 +185,6 @@ fn is_textual_content_type(content_type: &str) -> bool {
         || ct.contains("csv")
 }
 
-/// Whether a body served without a Content-Type is an HTML document: it
-/// opens, after any byte-order mark and leading whitespace, with a
-/// `<!doctype html` or `<html` tag (ASCII case ignored).
 fn looks_like_html(body: &str) -> bool {
     let start = body.trim_start_matches('\u{feff}').trim_start();
     ["<!doctype html", "<html"].iter().any(|opening| {
@@ -221,7 +194,6 @@ fn looks_like_html(body: &str) -> bool {
     })
 }
 
-/// Extract readable content from HTML using readability algorithm.
 fn extract_content(html: &str, url: &str) -> Result<String, String> {
     let mut readability =
         dom_smoothie::Readability::new(html, Some(url), None).map_err(|e| e.to_string())?;
@@ -233,23 +205,16 @@ fn extract_content(html: &str, url: &str) -> Result<String, String> {
         output.push_str(&article.title);
         output.push_str("\n\n");
     }
-    // article.content is cleaned HTML; reduce it to plain text
     output.push_str(&html_to_text(&article.content));
     Ok(output)
 }
 
-/// Convert HTML to plain text.
-///
-/// Drops tags, comments and the contents of `NON_TEXT_ELEMENTS`, collapses
-/// whitespace runs, and decodes entities. Entities are decoded last, after the
-/// markup is gone, so an escaped `&lt;b&gt;` stays text instead of becoming a tag.
 fn html_to_text(html: &str) -> String {
     let mut raw = String::with_capacity(html.len());
     let mut rest = html;
     while let Some(tag_start) = rest.find('<') {
         raw.push_str(rest.get(..tag_start).unwrap_or_default());
         let Some(after) = skip_markup(rest.get(tag_start..).unwrap_or_default()) else {
-            // An unterminated tag has no end, so nothing after it is text.
             return collapse_and_decode(&raw);
         };
         rest = after;
@@ -258,13 +223,8 @@ fn html_to_text(html: &str) -> String {
     collapse_and_decode(&raw)
 }
 
-/// Skip the markup at the start of `markup` (which begins with `<`) and return
-/// the input that follows it. An element in `NON_TEXT_ELEMENTS` is skipped with
-/// its contents. Returns `None` when the markup is never closed.
 fn skip_markup(markup: &str) -> Option<&str> {
     if let Some(comment) = markup.strip_prefix("<!--") {
-        // Commented-out markup can contain a `>` or an element opening tag,
-        // so comments are skipped whole rather than by their first `>`.
         return comment.find("-->").and_then(|end| comment.get(end + 3..));
     }
     let tag_end = markup.find('>')?;
@@ -276,7 +236,6 @@ fn skip_markup(markup: &str) -> Option<&str> {
     }
 }
 
-/// The `NON_TEXT_ELEMENTS` entry an opening tag (the text between `<` and `>`) starts.
 fn non_text_element_opened_by(tag: &str) -> Option<&'static str> {
     let name = tag
         .split(|c: char| c.is_ascii_whitespace() || c == '/')
@@ -287,8 +246,6 @@ fn non_text_element_opened_by(tag: &str) -> Option<&'static str> {
         .find(|element| element.eq_ignore_ascii_case(name))
 }
 
-/// Return the input after the closing tag of `element`. An element that is
-/// never closed runs to the end of the input, as it does in a browser.
 fn skip_element_contents<'a>(contents: &'a str, element: &str) -> &'a str {
     let Some(close) = find_ignore_ascii_case(contents, &format!("</{element}")) else {
         return "";
@@ -300,9 +257,6 @@ fn skip_element_contents<'a>(contents: &'a str, element: &str) -> &'a str {
         .unwrap_or_default()
 }
 
-/// Byte index of the first ASCII-case-insensitive match of `needle` in `haystack`.
-///
-/// Needles start with `<`, so a match is always on a character boundary.
 fn find_ignore_ascii_case(haystack: &str, needle: &str) -> Option<usize> {
     haystack
         .as_bytes()
@@ -310,8 +264,6 @@ fn find_ignore_ascii_case(haystack: &str, needle: &str) -> Option<usize> {
         .position(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
 }
 
-/// Collapse whitespace runs to their first character, then decode entities in
-/// the result and trim it.
 fn collapse_and_decode(raw: &str) -> String {
     let mut collapsed = String::with_capacity(raw.len());
     let mut last_was_whitespace = false;
@@ -326,12 +278,6 @@ fn collapse_and_decode(raw: &str) -> String {
     decode_html_entities(&collapsed).trim().to_string()
 }
 
-/// Page `content` starting at byte `offset`, returning at most
-/// `DEFAULT_PAGE_BYTES` of it with a header reporting the total size and,
-/// when more remains, the `offset` to pass next to continue reading.
-///
-/// `notes` (e.g. a non-HTML content type, or a download cut short) are
-/// included in the header on every page.
 fn page_content(content: &str, offset: usize, notes: &[String]) -> String {
     let total_len = content.len();
     let start = content.floor_char_boundary(offset.min(total_len));
@@ -349,8 +295,6 @@ fn page_content(content: &str, offset: usize, notes: &[String]) -> String {
     }
 
     if header.len() == 1 && start == 0 && end == total_len {
-        // Whole content fit in one page with nothing extra to note — no
-        // header needed, just the content.
         return page.to_string();
     }
 
@@ -690,7 +634,6 @@ mod tests {
     #[tokio::test]
     async fn fetch_html_without_a_content_type_is_cleaned() {
         let server = MockServer::start().await;
-        // set_body_bytes sends no Content-Type header.
         Mock::given(method("GET"))
             .and(path("/untyped"))
             .respond_with(ResponseTemplate::new(200).set_body_bytes(
@@ -793,7 +736,6 @@ mod tests {
     #[tokio::test]
     async fn fetch_decodes_body_in_declared_charset() {
         let server = MockServer::start().await;
-        // "café" in ISO-8859-1: the é is the single byte 0xE9.
         Mock::given(method("GET"))
             .and(path("/latin1.txt"))
             .respond_with(

@@ -1,8 +1,3 @@
-//! `A2aClientHub`: the remote agents this instance's A2A client can reach —
-//! loaded from `config/a2a.json`, plus any registered programmatically (used
-//! by relay-sibling discovery). Resolves and caches each agent's card, and
-//! builds A2A protocol clients on demand. See `docs/systems-usage/a2a.md`.
-
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -15,35 +10,22 @@ use residuum_config::agent_keys::SharedAgentKeys;
 
 use super::config::{A2aAgentEntry, load_a2a_agents_map};
 
-/// Minimum delay before retrying a failed card fetch, doubled on every
-/// consecutive failure up to [`MAX_RETRY_BACKOFF`].
 const MIN_RETRY_BACKOFF: Duration = Duration::from_secs(5);
-/// Longest delay between retries of a failed card fetch.
 const MAX_RETRY_BACKOFF: Duration = Duration::from_secs(60);
-/// How often the background refresh loop checks for agents due a retry.
 const REFRESH_TICK: Duration = Duration::from_secs(5);
-/// How long a single agent-card HTTP fetch may take before timing out.
 const CARD_FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Where a tracked agent entry came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentSource {
-    /// Listed in `config/a2a.json`.
     Config,
-    /// One of this user's own other instances, registered by relay-sibling
-    /// discovery.
     Sibling,
 }
 
-/// Current status of an agent's card.
 #[derive(Debug, Clone)]
 pub enum AgentStatus {
-    /// A card fetch hasn't completed yet.
     Pending,
-    /// The agent's card, from the last successful fetch.
     Ok(Arc<a2a::AgentCard>),
-    /// The last card fetch (or refetch) failed; the message is user-facing.
     Error(String),
 }
 
@@ -57,8 +39,6 @@ struct AgentRecord {
     next_retry_at: Instant,
 }
 
-/// A point-in-time view of one registered agent, for `list_agents` and the
-/// web settings API.
 #[derive(Debug, Clone)]
 pub struct AgentSnapshot {
     pub name: String,
@@ -68,7 +48,6 @@ pub struct AgentSnapshot {
 }
 
 impl AgentSnapshot {
-    /// The agent's card, if the last fetch succeeded.
     #[must_use]
     pub fn card(&self) -> Option<&a2a::AgentCard> {
         match &self.status {
@@ -78,25 +57,19 @@ impl AgentSnapshot {
     }
 }
 
-/// A client call against a remote agent could not be prepared.
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum HubError {
-    /// No agent by that name is registered.
     #[error("no remote agent named 'a2a:{0}'. Check config/a2a.json or list_agents.")]
     Unknown(String),
-    /// The agent is registered but its card hasn't resolved successfully.
     #[error("remote agent a2a:{0} isn't reachable right now: {1}")]
     Offline(String, String),
-    /// The card resolved, but a client transport couldn't be built from it.
     #[error("couldn't set up a connection to remote agent a2a:{0}: {1}")]
     ClientBuild(String, String),
-    /// A connected call to the agent (e.g. `CancelTask`) failed.
     #[error("remote agent a2a:{0} couldn't complete the request: {1}")]
     RequestFailed(String, String),
 }
 
 impl HubError {
-    /// The name of the remote agent the error is about.
     #[must_use]
     pub fn agent_name(&self) -> &str {
         match self {
@@ -108,11 +81,8 @@ impl HubError {
     }
 }
 
-/// The negotiated A2A client type [`A2AClientFactory::create_from_card`]
-/// returns.
 pub type NegotiatedClient = a2a_client::A2AClient<Box<dyn a2a_client::Transport>>;
 
-/// Registry of remote A2A agents this instance's client can reach.
 pub struct A2aClientHub {
     agents: RwLock<HashMap<String, AgentRecord>>,
 }
@@ -124,7 +94,6 @@ impl Default for A2aClientHub {
 }
 
 impl A2aClientHub {
-    /// Create an empty hub.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -132,18 +101,15 @@ impl A2aClientHub {
         }
     }
 
-    /// [`new`](Self::new), wrapped for sharing.
     #[must_use]
     pub fn new_shared() -> Arc<Self> {
         Arc::new(Self::new())
     }
 
-    /// Whether `name` is currently registered (config or sibling).
     pub async fn agent_exists(&self, name: &str) -> bool {
         self.agents.read().await.contains_key(name)
     }
 
-    /// Every registered agent's current state.
     pub async fn snapshot(&self) -> Vec<AgentSnapshot> {
         let agents = self.agents.read().await;
         let mut out: Vec<AgentSnapshot> = agents
@@ -159,13 +125,6 @@ impl A2aClientHub {
         out
     }
 
-    /// (Re)load agents from `config/a2a.json`. Config-sourced agents no
-    /// longer in the file are removed. A name also registered as a sibling
-    /// (relay-sibling discovery) is overridden by the config entry — config
-    /// always wins a name collision, logged once at debug. A new or changed
-    /// entry is queued for an immediate card fetch. A parse/read failure
-    /// keeps the current agents and logs a warning, matching
-    /// `residuum_workspace::config::load_mcp_servers_map`'s reload behavior.
     pub async fn reload_from_file(&self, path: &std::path::Path, agent_keys: &SharedAgentKeys) {
         let snapshot = match agent_keys.snapshot().await {
             Ok(s) => s,
@@ -222,9 +181,6 @@ impl A2aClientHub {
         self.refresh_cards(to_refresh).await;
     }
 
-    /// Register (or update) one externally-sourced agent — e.g. a relay
-    /// sibling, or any other programmatic registration — and queue an
-    /// immediate card fetch.
     pub async fn register_external(
         &self,
         name: String,
@@ -249,13 +205,6 @@ impl A2aClientHub {
         self.refresh_card(&name).await;
     }
 
-    /// Replace every `Sibling`-sourced agent with `siblings`, returning the
-    /// names of newly added or changed siblings whose cards need fetching.
-    ///
-    /// Entries missing from `siblings` are removed; unchanged entries keep
-    /// their cached card and backoff state. A name already claimed by a
-    /// `config/a2a.json` entry is skipped: config always wins a name
-    /// collision, logged once here per call.
     pub(crate) async fn apply_siblings(
         &self,
         siblings: Vec<(String, String, HashMap<String, String>)>,
@@ -296,22 +245,15 @@ impl A2aClientHub {
         to_refresh
     }
 
-    /// Fetch cards concurrently for every agent name in `names`.
     pub(crate) async fn refresh_cards(&self, names: Vec<String>) {
         futures_util::future::join_all(names.iter().map(|name| self.refresh_card(name))).await;
     }
 
-    /// Replace every `Sibling`-sourced agent with exactly this set —
-    /// entries missing from `siblings` are removed, present ones are
-    /// registered (or refreshed if changed). A name already claimed by a
-    /// `config/a2a.json` entry is skipped: config always wins a name
-    /// collision, logged once here per call.
     pub async fn set_siblings(&self, siblings: Vec<(String, String, HashMap<String, String>)>) {
         let to_refresh = self.apply_siblings(siblings).await;
         self.refresh_cards(to_refresh).await;
     }
 
-    /// Drop a registered agent entirely (any source).
     pub async fn remove(&self, name: &str) {
         self.agents.write().await.remove(name);
     }
@@ -326,8 +268,6 @@ impl A2aClientHub {
             return;
         };
 
-        // A sibling's card is only ever read at the address its key was issued
-        // for; a configured agent's address may legitimately redirect.
         let result = fetch_card(&url, &headers, source != AgentSource::Sibling).await;
         let mut agents = self.agents.write().await;
         let Some(rec) = agents.get_mut(name) else {
@@ -347,10 +287,6 @@ impl A2aClientHub {
         }
     }
 
-    /// Spawn the background loop that retries card fetches for agents not
-    /// currently `Ok`, honoring each agent's own backoff. Fire-and-forget:
-    /// the loop holds the hub weakly, so it ends on its own once the agent
-    /// that owns the hub lets go of it.
     pub fn spawn_background_refresh(self: &Arc<Self>) {
         let hub = Arc::downgrade(self);
         residuum_core::util::spawn_monitored("a2a-hub-refresh", async move {
@@ -376,7 +312,6 @@ impl A2aClientHub {
         });
     }
 
-    /// The agent's currently cached card, if the last fetch succeeded.
     pub async fn card_for(&self, name: &str) -> Option<Arc<a2a::AgentCard>> {
         let agents = self.agents.read().await;
         match &agents.get(name)?.status {
@@ -385,14 +320,6 @@ impl A2aClientHub {
         }
     }
 
-    /// Build a fresh protocol client for `name`'s currently cached card,
-    /// carrying its configured headers as auth interceptors.
-    ///
-    /// # Errors
-    /// Returns [`HubError::Unknown`] if no such agent is registered,
-    /// [`HubError::Offline`] if its card hasn't resolved successfully, and
-    /// [`HubError::ClientBuild`] if a client transport couldn't be
-    /// negotiated from the card.
     pub async fn client_for(
         &self,
         name: &str,
@@ -443,9 +370,6 @@ fn fresh_record(entry: A2aAgentEntry, source: AgentSource) -> AgentRecord {
     }
 }
 
-/// Fetch `url`'s agent card, using a reqwest client that sends `headers` as
-/// default headers on every request — including the card fetch itself, so a
-/// private remote agent works from its configured headers.
 async fn fetch_card(
     url: &str,
     headers: &HashMap<String, String>,
@@ -481,10 +405,6 @@ fn headers_client(
         .map_err(|e| format!("failed to build http client: {e}"))
 }
 
-/// The client-facing name for a task state, used in outbound tool responses
-/// and the tracked-task record. Distinct from the wire enum's Serialize
-/// impl (`TASK_STATE_*`), so a user reading `list_agents` or `outbound.json`
-/// sees a plain word rather than a protocol constant.
 #[must_use]
 pub fn task_state_str(state: &a2a::TaskState) -> &'static str {
     match state {

@@ -3,18 +3,12 @@
   import VisuallyHidden from "./VisuallyHidden.svelte";
   import type { BadgeTone } from "./types";
 
-  // A count ("3", "99+") or a short state label ("running", "overlap"). A
-  // count of zero draws nothing.
   interface Props {
     count?: number;
-    /** Counts above this read as "max+". */
     max?: number;
-    /** What the count counts, for assistive technology: "unread" reads as "3 unread". */
     label?: string;
     tone?: BadgeTone;
-    /** A filled accent count, for counts that need the user. Accent tone only. */
     solid?: boolean;
-    /** A leading dot in the tone's color, for state labels. */
     dot?: boolean;
     children?: Snippet;
   }
@@ -80,7 +74,6 @@
     background: var(--dot-color);
   }
 
-  /* Text on a tint takes text, text-2 or vein-bright only; the dot carries the tone. */
   .ui-badge[data-tone="neutral"] {
     --dot-color: var(--color-text-3);
 

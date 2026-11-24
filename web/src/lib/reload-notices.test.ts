@@ -23,9 +23,6 @@ const HUB_REPORT = "hub configuration reloaded: timezone";
 const HUB_FAILED = "hub config reload failed (keeping current hub config): bad toml";
 const WORKSPACE_REPORT = "workspace configuration reloaded";
 
-// The quiet window is module state, so each test starts a minute after the last
-// one ended, wherever that test moved the clock: whatever an earlier test left
-// open has closed, in any test order.
 let clock = Date.parse("2026-10-09T12:00:00Z");
 
 beforeEach(() => {
@@ -71,7 +68,6 @@ describe("a reload nobody asked to keep quiet", () => {
         reload_of: "agent_config",
       }),
     ).toMatchObject({ message: "Settings reloaded." });
-    // Text that reads like a reload report but carries no outcome is any other notice.
     expect(noticeFrameNotice({ message: REPORT })).toEqual({ kind: "notice", message: REPORT });
   });
 
@@ -176,7 +172,6 @@ describe("a reload a control asked for quietly", () => {
     quietReloads.expect();
     vi.advanceTimersByTime(16_000);
     expect(noticeFrameNotice(reloaded)).toMatchObject({ message: "Settings reloaded." });
-    // A request whose answer never came doesn't hide a later reload's.
     expect(reloadingNotice()).toMatchObject({ message: "Reloading settings…" });
   });
 });

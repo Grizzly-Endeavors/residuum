@@ -1,5 +1,3 @@
-// ── Feed store (Svelte 5 runes) ──────────────────────────────────────
-
 import { SvelteMap } from "svelte/reactivity";
 import { failedAnnouncement, repliedAnnouncement, workingAnnouncement } from "./announce";
 import { LiveStreams, MessageIds, nextAnimationFrame, type FrameScheduler } from "./feed-stream";
@@ -35,25 +33,14 @@ import type {
   WaitingMessage,
 } from "./types";
 
-/**
- * Background messages at the head of a loaded history segment whose turn
- * began in older history, waiting for that history to decide whether they
- * are shown. `index` is where their items go in the feed.
- */
 interface PendingHead {
   messages: RecentMessage[];
   index: number;
-  /** The head of the recent segment (the one `reconcileRecent` rebuilds). */
   recent: boolean;
 }
 
-/** Existing items matched against reloaded history when reconciling. */
 const RECONCILE_ANCHOR_ITEMS = 3;
 
-/**
- * When the signed items of `fresh` begin with exactly `shown`, the index just
- * past the last of them; otherwise -1.
- */
 function afterSignedPrefix(fresh: (string | null)[], shown: string[]): number {
   let matched = 0;
   for (let i = 0; i < fresh.length; i++) {
@@ -66,11 +53,6 @@ function afterSignedPrefix(fresh: (string | null)[], shown: string[]): number {
   return matched === shown.length ? fresh.length : -1;
 }
 
-/**
- * The index just past the last place the signed items of `fresh` end with
- * the run `anchor` (consecutive among signed items); 0 for an empty anchor,
- * -1 when it doesn't occur.
- */
 function afterLastRun(fresh: (string | null)[], anchor: string[]): number {
   if (anchor.length === 0) return 0;
   for (let end = fresh.length - 1; end >= 0; end--) {
@@ -87,13 +69,6 @@ function afterLastRun(fresh: (string | null)[], anchor: string[]): number {
   return -1;
 }
 
-/**
- * How many of `messages` belong to the turn `turnId`. The server tags every
- * message a turn produces, including its own user message, with the turn's
- * correlation id in one atomic write when the turn completes, so a turn has
- * messages exactly when it has finished and been recorded, never while it is
- * still in flight.
- */
 function recordedMessages(messages: RecentMessage[], turnId: string): number {
   return messages.filter((msg) => msg.turn_id === turnId).length;
 }
@@ -101,10 +76,6 @@ function recordedMessages(messages: RecentMessage[], turnId: string): number {
 type UserMessageFrame = Extract<ServerMessage, { type: "user_message" }>;
 type QueuedMessageFrame = Extract<ServerMessage, { type: "message_queued" }>["message"];
 
-/**
- * Whether a turn snapshot draws `item` again: the agent's output, and the
- * messages it names (`echoed`). Anything else of the turn stays as it is.
- */
 function redrawnBySnapshot(item: FeedItem, echoed: readonly string[]): boolean {
   if (
     item.kind === "assistant" ||
@@ -121,22 +92,15 @@ function redrawnBySnapshot(item: FeedItem, echoed: readonly string[]): boolean {
   );
 }
 
-/**
- * Where a reply went, when that was a chat interface rather than this page: an
- * empty endpoint means nowhere, `ws` is this page, and `background` is no
- * interface at all.
- */
 function deliveredElsewhere(endpoint: string): string | undefined {
   return endpoint === "" || endpoint === "ws" || endpoint === "background" ? undefined : endpoint;
 }
 
-/** A divider naming the day `iso` falls on, on the reader's clock. */
 function dayDivider(iso: string): DividerFeedItem {
   const date = localDay(iso);
   return { id: nextFeedId(), kind: "divider", variant: "day", label: dayLabel(date), date };
 }
 
-/** A day-divider callback with its own memory of the last day seen. */
 function dayDividerTracker(): (iso: string) => DividerFeedItem | null {
   let lastKey: string | null = null;
   return (iso) => {
@@ -147,83 +111,25 @@ function dayDividerTracker(): (iso: string) => DividerFeedItem | null {
   };
 }
 
-/** Manages the chat feed state and processes incoming server messages. */
 export class FeedStore {
   feed = $state<FeedItem[]>([]);
   isProcessing = $state(false);
-  /**
-   * Correlation id of the turn currently in flight, or `null` when idle.
-   * Set on `turn_started`, cleared on `turn_ended` — the only frame the
-   * protocol guarantees closes every turn — so a stop request always has
-   * the right id to target even if `isProcessing` cleared earlier via a
-   * `response`/`error` frame.
-   */
   activeTurnId = $state<string | null>(null);
-  /**
-   * What this page saw of each turn while it ran: when it started and ended,
-   * how it ended, and where steps may be missing. The activity line reads it.
-   */
   readonly observed = new ObservedTurns();
-  /**
-   * The id of a message this page sent with no turn in flight. The agent
-   * starts a turn for it under that id, so history can record the turn before
-   * its `turn_started` arrives here.
-   */
   private sentTurnId: string | null = null;
-  /**
-   * A turn that history recorded, and the feed took from history, while its
-   * frames were still arriving. The rest of them are dropped until its
-   * `turn_ended`, or they would draw the turn a second time.
-   */
   private settledTurnId: string | null = null;
-  /**
-   * How many messages the Recent history last loaded held for each turn id.
-   * Older history repeats ids (every page load once counted from `web-1`),
-   * so a turn id in history doesn't by itself mean the turn in flight is
-   * recorded: it is recorded once history holds more messages for it than it
-   * did when the turn began.
-   */
   private historyTurnCounts: ReadonlyMap<string, number> = countByTurn([]);
-  /** The turn in flight and what `historyTurnCounts` held for its id when it began. */
   private liveBaseline: { turnId: string; recorded: number } | null = null;
-  /**
-   * People's messages the agent hasn't read yet, oldest first: sent while a
-   * turn ran, they join the feed where the agent reads them (its
-   * `user_message` frame), and until then wait apart from it.
-   */
   waiting = $state<WaitingMessage[]>([]);
-  /** The page's connections so far, for telling a waiting message that went out before this one. */
   private connection = 0;
-  /** Output tokens generated by every model call so far this turn. */
   turnOutputTokens = $state(0);
-  /** Whether any model call so far this turn reported usage. */
   turnHasUsage = $state(false);
-  /** Tool calls executed so far this turn. */
   turnToolCalls = $state(0);
-  /**
-   * Cumulative session token totals for the conversation-size view, or
-   * `null` before the first value arrives (a `turn_usage` frame, or the
-   * `GET /api/usage` read on binding and on connect).
-   */
   sessionUsage = $state<SessionUsageTotals | null>(null);
-  /** Why the totals couldn't be read, until they are. */
   usageProblem = $state<string | null>(null);
-  /**
-   * Whether the background post-turn observer/reflector cycle is
-   * currently running (see the gateway's `post_turn` module on the server) —
-   * drives a quiet "updating memory…" indicator. Never blocks anything;
-   * this work runs off the event loop, so a turn can start while it's
-   * still in flight.
-   */
   memoryWorking = $state(false);
-  /** Same as `memoryWorking`, for the end-of-turn subconscious evaluation. */
   subconsciousWorking = $state(false);
 
-  /**
-   * Forget which background cycles are running. Called on disconnect: the
-   * frame saying a cycle finished may never arrive, and an indicator stuck
-   * on would claim work that already ended.
-   */
   clearPostTurnActivity(): void {
     this.memoryWorking = false;
     this.subconsciousWorking = false;
@@ -232,67 +138,31 @@ export class FeedStore {
   hasMoreHistory = $state(false);
   isLoadingOlder = $state(false);
 
-  /** Bumped whenever the whole feed is replaced from history. */
   generation = $state(0);
-  /** Recent history has been loaded at least once. */
   historyLoaded = $state(false);
 
   private pendingToolCalls = new SvelteMap<string, ToolCallState>();
   private lastLiveDayKey: string | null = null;
   private compressedMarkerInserted = false;
   private pendingHeads: PendingHead[] = [];
-  /** Feed index where the recent segment's items begin. */
   private recentStart = 0;
-  /** Cursor the recent segment pointed at when loaded. */
   private recentCursor: string | null = null;
-  /** How the turn in progress at the recent segment's start was decided, once known. */
   private recentCarriedTurn: BackgroundTurnState | undefined;
-  /** Episodes already in the feed, so a segment is never shown twice. */
   // eslint-disable-next-line svelte/prefer-svelte-reactivity -- bookkeeping only, never rendered
   private loadedEpisodes = new Set<string>();
-  /**
-   * Feed index where the turn in flight begins (its user message, or the
-   * first item after `turn_started`), or `null` when idle. Its items are
-   * live-only until the turn ends and history records them.
-   */
   private turnStart: number | null = null;
-  /** How many turns have ended live, read through `turnsEndedLive`. */
   private endedLiveTurns = 0;
 
-  /**
-   * How many turns have ended live. History records a turn before its end
-   * reaches the page, and once it has ended a reload keeps nothing of it, so a
-   * Recent segment read before this count last moved can lack a turn the feed
-   * shows: applying it would take that turn off the feed.
-   */
   get turnsEndedLive(): number {
     return this.endedLiveTurns;
   }
 
-  /**
-   * What a screen reader is told about the agent's work: that a turn started,
-   * that its reply is complete (with the start of it), or that it couldn't
-   * finish. Each is new, so the same words twice in a row are read twice.
-   * Only whole messages are announced, never a reply as it streams in.
-   */
   announcement = $state<{ id: number; text: string } | null>(null);
   private announced = 0;
-  /** Text and reasoning still streaming in, which the authoritative messages replace. */
   private readonly streams: LiveStreams;
-  /** The ids of the messages this page sent, so the agent's echo of one isn't shown a second time. */
   private readonly sentIds = new MessageIds();
-  /**
-   * When the frame being replayed from a turn snapshot was sent, in
-   * milliseconds, or `null` outside a replay, when frames arrive as they are sent.
-   */
   private replayClock: number | null = null;
 
-  /**
-   * @param joinedTurnStart When the agent became busy, for a turn this page
-   *   joined already running; null when unknown.
-   * @param agentName How the agent is named in what a screen reader is told.
-   * @param schedule When streamed text is added to what is shown: once per frame.
-   */
   constructor(
     private readonly joinedTurnStart: () => number | null = () => null,
     private readonly agentName: () => string = () => "The agent",
@@ -306,18 +176,15 @@ export class FeedStore {
     );
   }
 
-  /** When the frame being handled was sent: now, unless it is replayed from a snapshot. */
   private now(): number {
     return this.replayClock ?? Date.now();
   }
 
   private announce(text: string): void {
-    // A replayed turn was announced when it happened, or was already under way.
     if (this.replayClock !== null) return;
     this.announcement = { id: ++this.announced, text };
   }
 
-  /** Dispatch a server message into the feed. */
   handleMessage(msg: ServerMessage): void {
     if (this.isOfSettledTurn(msg)) return;
     switch (msg.type) {
@@ -327,11 +194,8 @@ export class FeedStore {
         this.activeTurnId = msg.reply_to;
         this.announce(workingAnnouncement(this.agentName()));
         this.captureBaseline(msg.reply_to);
-        // A rerun of a failed turn starts under the same id: the failure
-        // card gives way to it, and the rerun follows what the turn did before.
         if (this.removeFailures(msg.reply_to)) this.closeToolGroup(msg.reply_to);
         this.turnStart ??= this.feed.length;
-        // The user message that started it arrived first.
         for (const item of this.feed.slice(this.turnStart)) item.turnId = msg.reply_to;
         this.observed.start(msg.reply_to, this.now());
         this.turnOutputTokens = 0;
@@ -340,9 +204,6 @@ export class FeedStore {
         break;
 
       case "turn_ended":
-        // Closes out turns that produce no response/error (e.g. zero-text
-        // replies) — harmless no-op if isProcessing already cleared via
-        // one of those paths.
         this.isProcessing = false;
         this.tagTurnStart(msg.reply_to);
         this.closeTurn(msg.reply_to);
@@ -398,15 +259,12 @@ export class FeedStore {
         break;
 
       case "queued_message_unavailable": {
-        // Already read or taken back: its frame for that, if not here yet, is on its way.
         const message = this.waiting.find((waiting) => waiting.id === msg.id);
         if (message !== undefined) delete message.asked;
         break;
       }
 
       case "response": {
-        // A reply posted to this page outside any turn (the agent's send_message)
-        // is a message of its own, and ends nothing.
         const standalone = msg.reply_to === "";
         if (!standalone) {
           this.isProcessing = false;
@@ -452,8 +310,6 @@ export class FeedStore {
         break;
 
       case "stream_restart":
-        // The call starts over: what it had streamed is dropped, and the turn
-        // says it is retrying until something of the new attempt arrives.
         this.joinTurn(msg.reply_to);
         this.streams.restart(msg.reply_to, msg.call);
         this.observed.retry(msg.reply_to, true);
@@ -464,12 +320,7 @@ export class FeedStore {
         break;
 
       case "error":
-        // A server error ends the reply in progress (the composer's Stop
-        // goes back to Send). The notification surface itself is
-        // dispatched by WsCoordinator before this runs.
         this.isProcessing = false;
-        // An error that names a turn is that turn failing: it leaves its
-        // account in the feed after the toast is gone.
         if (msg.reply_to !== null) {
           this.recordFailure(msg.reply_to, msg.message, msg.details);
           this.announce(failedAnnouncement(this.agentName()));
@@ -477,21 +328,15 @@ export class FeedStore {
         break;
 
       case "message_refused":
-        // Never delivered, so it started no turn and fails none. The toast
-        // and the composer's copy are WsCoordinator's.
         this.withdrawRefused(msg.id);
         break;
 
       case "retry_refused":
-        // The failed turn stays as it was, and its message is still there:
-        // only the card's offer to run it again goes, for the agent's reason.
-        // The toast is WsCoordinator's.
         this.refuseRetry(msg.id, msg.message);
         break;
 
       case "notice":
       case "reloading":
-        // Surfaced by WsCoordinator; no chat-state side effect.
         break;
 
       case "inline_output":
@@ -538,28 +383,22 @@ export class FeedStore {
       case "session_message_delivered":
       case "session_stop_requested":
       case "session_command_failed":
-        // Agent session activity belongs to the sessions surface, never
-        // the main chat feed.
         break;
 
       case "pulse_fire_changed":
-        // Pulse fires belong to the Schedule place.
         break;
 
       case "artifact_updated":
       case "artifact_removed":
-        // The Workbench follows artifacts on the hub socket.
         break;
 
       case "workspace_changed":
       case "workspace_resync":
       case "workspace_watch_unavailable":
-        // The change feed belongs to the watch registry's owners.
         break;
     }
   }
 
-  /** Populate the feed from a Recent history segment. */
   loadHistory(segment: RecentHistorySegment): void {
     this.feed.length = 0;
     this.pendingToolCalls.clear();
@@ -570,12 +409,10 @@ export class FeedStore {
     this.hasMoreHistory = segment.next_cursor !== null;
     this.recentStart = 0;
     this.turnStart = null;
-    // History renders every turn again, with nothing of what this page timed.
     this.observed.clear(this.activeTurnId);
     this.generation++;
     this.recentCursor = segment.next_cursor;
     this.countHistoryTurns(segment.messages);
-    // With no older history, a turn can't have begun before this segment.
     this.recentCarriedTurn = segment.next_cursor === null ? "hidden" : undefined;
     this.historyLoaded = true;
 
@@ -590,28 +427,16 @@ export class FeedStore {
     for (const item of conversion.items) this.feed.push(item);
   }
 
-  /**
-   * Bring the recent part of the feed up to date with a freshly fetched
-   * Recent segment, adding what the live connection missed (e.g. while it
-   * was down). Lines history up with the settled messages shown (everything
-   * before the turn in flight, which history doesn't hold until it ends);
-   * returns `false` when they can't be lined up (history was compressed into
-   * a new episode, or diverged), in which case the caller should
-   * `reloadHistory`.
-   */
   reconcileRecent(segment: RecentHistorySegment): boolean {
     if (!this.historyLoaded || segment.next_cursor !== this.recentCursor) return false;
     this.countHistoryTurns(segment.messages);
     const fresh = convertHistory(segment.messages, {
       mode: "main",
       carriedTurn: this.recentCarriedTurn,
-      // Replayed from the segment's start so dividers land where a fresh load
-      // would put them; only those among the added items are kept.
       dayDivider: dayDividerTracker(),
     }).items;
     const liveStart = this.turnStart ?? this.feed.length;
     const shown: string[] = [];
-    // Tool groups shown after the last signed item: history has them too.
     let trailingToolGroups = 0;
     for (const item of this.feed.slice(this.recentStart, liveStart)) {
       const sig = feedItemSignature(item);
@@ -623,8 +448,6 @@ export class FeedStore {
       }
     }
     const freshSigs = fresh.map(feedItemSignature);
-    // History read before the agent recorded what the page has since shown
-    // live is behind the page, not different from it: there is nothing to add.
     const freshSigned = freshSigs.filter((sig): sig is string => sig !== null);
     if (
       freshSigned.length > 0 &&
@@ -633,13 +456,9 @@ export class FeedStore {
     ) {
       return true;
     }
-    // Exactly what was shown, then more: the usual case. Failing that (the
-    // live feed showed something history doesn't hold), line up on the last
-    // few messages shown.
     let appendFrom = afterSignedPrefix(freshSigs, shown);
     if (appendFrom < 0) appendFrom = afterLastRun(freshSigs, shown.slice(-RECONCILE_ANCHOR_ITEMS));
     if (appendFrom < 0) return false;
-    // The reasoning that led to those tool calls is shown too, ahead of them.
     while (trailingToolGroups > 0) {
       const next = fresh[appendFrom]?.kind;
       if (next !== "tool-group" && next !== "thinking") break;
@@ -651,11 +470,6 @@ export class FeedStore {
     return true;
   }
 
-  /**
-   * Replace the feed with a freshly fetched Recent segment, keeping the turn
-   * in flight: its live items are put back after the history unless history
-   * already records the turn by id (it ended while disconnected).
-   */
   reloadHistory(segment: RecentHistorySegment): void {
     const liveStart = this.turnStart;
     const live = liveStart === null ? [] : this.feed.slice(liveStart);
@@ -672,14 +486,6 @@ export class FeedStore {
     for (const [id, call] of pendingTools) this.pendingToolCalls.set(id, call);
   }
 
-  /**
-   * Prepend an episode segment to the top of the feed.
-   *
-   * Inserts an `ep-NNN · date` divider above the episode's messages. On the
-   * first prepend, also inserts a `compressed-marker` between the episode
-   * block and the already-present live messages so the user sees where
-   * the observer cut.
-   */
   prependEpisode(segment: EpisodeHistorySegment): void {
     if (this.loadedEpisodes.has(segment.episode_id)) return;
     this.loadedEpisodes.add(segment.episode_id);
@@ -709,35 +515,21 @@ export class FeedStore {
     if (this.turnStart !== null) this.turnStart += block.length;
     for (const head of this.pendingHeads) head.index += block.length;
     if (conversion.undecidedHead.length) {
-      // Just below this episode's divider.
       this.pendingHeads.push({ messages: conversion.undecidedHead, index: 1, recent: false });
     }
     this.oldestEpisodeCursor = segment.next_cursor;
     this.hasMoreHistory = segment.next_cursor !== null;
   }
 
-  /**
-   * Push a client-only system message into the feed for inline rendering.
-   * Used by slash commands like `/help` and `/status`, and by inbound
-   * `inline_output` server messages (e.g. `/context` results). These items
-   * never round-trip to history and vanish on reload.
-   */
   pushLocalSystem(content: string): void {
     this.feed.push({ id: nextFeedId(), kind: "local-system", content });
   }
 
-  /** The cumulative totals as `GET /api/usage` read them, on binding and on connect. */
   setSessionUsage(totals: SessionUsageTotals): void {
     this.sessionUsage = totals;
     this.usageProblem = null;
   }
 
-  /**
-   * Show a message the user sent. `id` is the message's id, which names the
-   * turn it starts when no turn is in flight. Sent while a turn runs, it waits
-   * apart from the feed until the agent reads it; `delivered` says whether it
-   * went out now, or waits for the connection to come back.
-   */
   pushUserMessage(
     content: string,
     attachments?: MessageAttachment[],
@@ -756,8 +548,6 @@ export class FeedStore {
       });
       return;
     }
-    // Live user messages are stamped with the moment they arrive — inject a
-    // day divider if the calendar day has rolled over since the last live entry.
     const timestamp = localTimestamp();
     this.maybePushDayDivider(timestamp);
     if (id !== undefined) this.sentIds.add(id);
@@ -778,12 +568,6 @@ export class FeedStore {
     this.isProcessing = true;
   }
 
-  /**
-   * The agent refused a message this page sent (`message_refused`): it comes
-   * off the feed, or off the waiting messages, since it never went. The
-   * composer gets it back. Its id no longer counts as shown, so should the
-   * same message come back from the agent after all, its bubble shows.
-   */
   withdrawRefused(id: string): void {
     this.sentIds.delete(id);
     if (this.waiting.some((message) => message.id === id)) {
@@ -793,7 +577,6 @@ export class FeedStore {
     const index = this.feed.findLastIndex((item) => item.kind === "user" && item.messageId === id);
     if (index !== -1) this.feed.splice(index, 1);
     if (this.activeTurnId === null && this.sentTurnId === id) {
-      // The turn the message was about to start never will.
       if (this.turnStart !== null && this.turnStart >= this.feed.length) this.turnStart = null;
       this.sentTurnId = null;
       this.liveBaseline = null;
@@ -801,28 +584,16 @@ export class FeedStore {
     }
   }
 
-  /**
-   * The agent stopped with a turn in flight. What the turn showed stays as it
-   * is, and no more of it will arrive. History records the turn as the agent
-   * stops it, and shows it from there after a reload, unless the agent was
-   * force-aborted or crashed. Messages still waiting go into history as the
-   * agent stops, and show from there.
-   */
   abandonLiveTurn(): void {
     if (this.activeTurnId !== null) this.closeTurn(this.activeTurnId, "interrupted");
     this.endLiveTurn();
     this.waiting = [];
   }
 
-  /** A connection opened; messages sent before it went out on an earlier one. */
   connected(): void {
     this.connection++;
   }
 
-  /**
-   * The connection dropped: nothing asked of a waiting message will be
-   * answered, nor will a Try again asked on a failed turn.
-   */
   forgetAsks(): void {
     for (const message of this.waiting) delete message.asked;
     for (const item of this.feed) {
@@ -830,49 +601,33 @@ export class FeedStore {
     }
   }
 
-  /** Try again was asked on the failed turn `turnId`, and the agent's answer is awaited. */
   askRetry(turnId: string): void {
     const failure = this.failureOf(turnId);
     if (failure?.retry !== undefined) failure.retry.asked = true;
   }
 
-  /** Whether the feed still shows the failure of the turn `turnId`. */
   showsFailure(turnId: string): boolean {
     return this.failureOf(turnId) !== undefined;
   }
 
-  /** Something was asked of the waiting message `id`, and its answer is awaited. */
   askOfWaiting(id: string, asked: NonNullable<WaitingMessage["asked"]>): void {
     const message = this.waiting.find((waiting) => waiting.id === id);
     if (message !== undefined) message.asked = asked;
   }
 
-  /** The user asked to stop the turn in flight. */
   askStop(): void {
     if (this.activeTurnId !== null) this.observed.askStop(this.activeTurnId);
   }
 
-  /**
-   * The connection came back while a turn was in flight: steps it took while
-   * the page was away may be missing from its line.
-   */
   markReconnectGap(): void {
-    // A new connection carries no more frames of a turn history settled.
     this.settledTurnId = null;
     const turnId = this.activeTurnId;
     if (turnId === null) return;
     this.observed.gap(turnId, countTurnCalls(this.feed.slice(this.turnStart ?? 0), turnId));
   }
 
-  // ── Private ──────────────────────────────────────────────────────────
-
-  /**
-   * A frame of the turn `turnId` arrived with no turn in flight: the page
-   * connected while it ran. It becomes the turn in flight, joined partway.
-   */
   private joinTurn(turnId: string): void {
     if (this.activeTurnId !== null) return;
-    // A late frame of a turn that already ended starts nothing.
     if (this.observed.get(turnId)?.endedAt != null) return;
     this.activeTurnId = this.observed.join(turnId, this.joinedTurnStart());
     this.captureBaseline(turnId);
@@ -880,24 +635,13 @@ export class FeedStore {
     this.isProcessing = true;
   }
 
-  /** Something of the turn's current attempt arrived, so it is no longer retrying. */
   private attempted(turnId: string): void {
     this.observed.retry(turnId, false);
   }
 
-  /**
-   * A message from a person, a teammate or one of this agent's own sessions
-   * entering the main conversation, from any channel. One this page sent is
-   * already shown. One that arrives while its turn runs joins it; any other
-   * starts the turn that follows, which `turn_started` then announces. An
-   * agent's (`agent_sender` set) shows as the card history gives it, opening
-   * the run that sent it when the sender names one.
-   */
   private receiveUserMessage(msg: UserMessageFrame): void {
-    // The agent read a waiting message: it joins the feed here, where the agent read it.
     const waited = this.waiting.some((message) => message.id === msg.id);
     if (waited) this.waiting = this.waiting.filter((message) => message.id !== msg.id);
-    // A snapshot draws the turn again, this page's own messages included.
     if (!waited && this.replayClock === null && this.sentIds.has(msg.id)) {
       this.confirmSentAttachments(msg);
       return;
@@ -940,7 +684,6 @@ export class FeedStore {
     });
   }
 
-  /** A message the agent hasn't read yet, unless it's already shown waiting. */
   private addWaiting(message: QueuedMessageFrame): void {
     if (this.waiting.some((waiting) => waiting.id === message.id)) return;
     this.waiting.push({
@@ -958,12 +701,6 @@ export class FeedStore {
     });
   }
 
-  /**
-   * The messages still waiting as a snapshot lists them. One this page sent
-   * on an earlier connection that the list leaves out was read, or taken
-   * back, while the page was away; one sent on this connection may not have
-   * reached the agent yet when the snapshot was taken, and stays.
-   */
   private reconcileWaiting(queued: readonly QueuedMessageFrame[]): void {
     const listed = queued.map((message) => message.id);
     this.waiting = this.waiting.filter(
@@ -972,17 +709,11 @@ export class FeedStore {
     for (const message of queued) this.addWaiting(message);
   }
 
-  /**
-   * Show that the turn `turnId` couldn't finish, as the last thing in it. When
-   * the user's own message began the turn, the failure offers Try again, which
-   * has the agent rerun the turn on the message it holds.
-   */
   private recordFailure(turnId: string, message: string, details: string | undefined): void {
     this.streams.finish(turnId, "interrupted");
     const asked = this.feed.findLast(
       (item): item is UserFeedItem =>
         item.kind === "user" &&
-        // A failure can overtake the turn's start, before the message is tied to the turn.
         (item.turnId === turnId || item.messageId === turnId) &&
         item.midTurn !== true &&
         item.sender === undefined,
@@ -997,17 +728,12 @@ export class FeedStore {
     });
   }
 
-  /** The latest failure card of the turn `turnId`. */
   private failureOf(turnId: string): TurnFailureFeedItem | undefined {
     return this.feed.findLast(
       (item): item is TurnFailureFeedItem => item.kind === "turn-failure" && item.turnId === turnId,
     );
   }
 
-  /**
-   * The turn `turnId` runs again: its failure cards give way to the rerun.
-   * Whether there were any.
-   */
   private removeFailures(turnId: string): boolean {
     let removed = false;
     for (let at = this.feed.length - 1; at >= 0; at--) {
@@ -1020,27 +746,16 @@ export class FeedStore {
     return removed;
   }
 
-  /**
-   * A rerun of the turn `turnId` begins: the failed attempt's tool group at
-   * the tail, which the failure card no longer separates from the rerun,
-   * takes no more calls.
-   */
   private closeToolGroup(turnId: string): void {
     const last = this.feed.at(-1);
     if (last?.kind === "tool-group" && last.turnId === turnId) last.closed = true;
   }
 
-  /** The agent won't run the failed turn `turnId` again, for `reason`. */
   private refuseRetry(turnId: string, reason: string): void {
     const failure = this.failureOf(turnId);
     if (failure !== undefined) failure.retry = { refused: reason };
   }
 
-  /**
-   * The agent took in a message this page sent and already shows: the files
-   * it saved replace the ones the page showed as it sent them, and the
-   * pictures it inlined show as pictures.
-   */
   private confirmSentAttachments(msg: UserMessageFrame): void {
     const hasFiles = msg.attachments !== undefined && msg.attachments.length > 0;
     const hasImages = msg.images !== undefined && msg.images.length > 0;
@@ -1053,58 +768,34 @@ export class FeedStore {
     if (hasImages) shown.images = msg.images;
   }
 
-  /** The turn ended: settle calls still waiting on results, and record how it ended. */
   private closeTurn(turnId: string, ending?: TurnEnding): void {
     const how = this.observed.end(turnId, ending);
     this.streams.finish(turnId, how);
     settlePendingCalls(this.pendingToolCalls, how === "finished" ? "done" : "stopped");
   }
 
-  /**
-   * The turn in flight, for an item that arrives during it. A message sent
-   * mid-turn joins the turn, as the agent takes it into the turn it is running.
-   */
   private ofLiveTurn(): { turnId?: string } {
     return this.activeTurnId === null ? {} : { turnId: this.activeTurnId };
   }
 
-  /**
-   * The turn in flight, for a user or agent message that arrives now. One
-   * that arrives during a turn is flagged `midTurn`, which keeps it inside
-   * that turn's block; one that arrives with none running starts a turn.
-   */
   private reachedLiveTurn(): { turnId?: string; midTurn?: true } {
     return this.activeTurnId === null ? {} : { turnId: this.activeTurnId, midTurn: true };
   }
 
-  /** Remember how much of `turnId` history held before the turn began. */
   private captureBaseline(turnId: string): void {
     if (this.liveBaseline?.turnId === turnId) return;
     this.liveBaseline = { turnId, recorded: this.historyTurnCounts.get(turnId) ?? 0 };
   }
 
-  /** Whether `messages` records the turn `turnId`, beyond what history held before it began. */
   private historyRecords(messages: RecentMessage[], turnId: string): boolean {
     const before = this.liveBaseline?.turnId === turnId ? this.liveBaseline.recorded : 0;
     return recordedMessages(messages, turnId) > before;
   }
 
-  /** Count what a Recent segment holds for each turn id, for `historyRecords`. */
   private countHistoryTurns(messages: RecentMessage[]): void {
     this.historyTurnCounts = countByTurn(messages);
   }
 
-  /**
-   * Tag the user message that started the turn just ending with its turn
-   * id, so the feed can offer "Undo this turn" on it. A no-op when the
-   * turn has no user message to anchor to (a background turn's own message
-   * is a different kind), or the turn never got a start index at all.
-   *
-   * A rerun of a failed turn starts after the failed attempt's items, so its
-   * start index holds no user message: the message that began the turn is
-   * found by id instead. Tagging it afresh asks again whether the turn
-   * changed anything, now counting the rerun too.
-   */
   private tagTurnStart(turnId: string): void {
     if (this.turnStart === null) return;
     const atStart = this.feed[this.turnStart];
@@ -1120,12 +811,7 @@ export class FeedStore {
     if (item !== undefined) item.turn = { turnId, changed: null };
   }
 
-  /**
-   * Older history decided the turn that pending heads continue: insert them
-   * if it's shown, drop them if not.
-   */
   private resolvePendingHeads(turn: "shown" | "hidden"): void {
-    // Highest index first, so inserting doesn't shift the ones still to go.
     const heads = [...this.pendingHeads].sort((a, b) => b.index - a.index);
     this.pendingHeads = [];
     for (const head of heads) {
@@ -1144,12 +830,6 @@ export class FeedStore {
     }
   }
 
-  /**
-   * Add history items newer than everything settled in the feed. If
-   * `historyMessages` records the turn in flight by id (it ended while
-   * disconnected), they replace its live items and the turn is closed;
-   * otherwise they go before it.
-   */
   private placeRecorded(
     recorded: FeedItem[],
     liveStart: number,
@@ -1169,15 +849,7 @@ export class FeedStore {
     if (this.turnStart !== null) this.turnStart += recorded.length;
   }
 
-  /**
-   * Show the turn in flight as the agent has run it so far, in place of what
-   * the page showed of it: what streamed before the page connected, or while
-   * it was disconnected, is in the snapshot, and the frames after it
-   * continue it.
-   */
   private applyTurnSnapshot(turn: TurnInProgress | null): void {
-    // With no turn running, a turn the page still shows live ended while it
-    // was away, and history settles it.
     if (turn === null || turn.reply_to === this.settledTurnId) return;
     const echoed = turn.frames.flatMap(({ frame }) =>
       frame.type === "user_message" ? [frame.id] : [],
@@ -1185,7 +857,6 @@ export class FeedStore {
     const stopAsked = this.observed.get(turn.reply_to)?.stopAsked === true;
     const sentTurnId = this.sentTurnId;
     const kept = this.dropLiveTurn(echoed);
-    // The snapshot's times are on the server's clock; this places them on the page's.
     const serverNow = Date.parse(turn.now);
     const skew = Number.isNaN(serverNow) ? 0 : Date.now() - serverNow;
     const onPageClock = (at: string): number => {
@@ -1205,17 +876,10 @@ export class FeedStore {
       this.observed.start(turn.reply_to, onPageClock(turn.started_at));
     }
     if (stopAsked) this.observed.askStop(turn.reply_to);
-    // A message this page sent that the agent hasn't taken in yet still
-    // starts the turn after this one.
     if (sentTurnId !== null && !echoed.includes(sentTurnId)) this.sentTurnId = sentTurnId;
     for (const item of kept) this.feed.push(item);
   }
 
-  /**
-   * Take the turn in flight out of the feed, for a snapshot to draw again.
-   * Returns its items the snapshot doesn't draw (a message the agent hasn't
-   * taken in yet, a session's message, a note, a failure), to go back after it.
-   */
   private dropLiveTurn(echoed: readonly string[]): FeedItem[] {
     const start = this.turnStart;
     const dropped = this.activeTurnId;
@@ -1225,7 +889,6 @@ export class FeedStore {
     return this.feed.splice(start).filter((item) => !redrawnBySnapshot(item, echoed));
   }
 
-  /** The turn in flight is over (history records it); clear its live state. */
   private endLiveTurn(): void {
     this.turnStart = null;
     this.isProcessing = false;
@@ -1236,27 +899,16 @@ export class FeedStore {
     this.pendingToolCalls.clear();
   }
 
-  /** The turn in flight, or the one a message this page sent is about to start. */
   private liveTurnId(): string | null {
     return this.activeTurnId ?? this.sentTurnId;
   }
 
-  /**
-   * History recorded the turn in flight, and the feed now shows it from there.
-   * Its frames can still be on their way, since history and the socket are
-   * separate connections, so they are dropped until its `turn_ended`.
-   */
   private settleFromHistory(turnId: string): void {
     this.endLiveTurn();
     this.observed.forget(turnId);
     this.settledTurnId = turnId;
   }
 
-  /**
-   * Whether `msg` belongs to the turn history settled. The main conversation
-   * runs one turn at a time, so until that turn's `turn_ended` (or another
-   * turn's start) every turn frame without an id is one of its own.
-   */
   private isOfSettledTurn(msg: ServerMessage): boolean {
     const settled = this.settledTurnId;
     if (settled === null) return false;
@@ -1286,7 +938,6 @@ export class FeedStore {
     );
   }
 
-  /** Continue live day dividers from the newest message in `segment`. */
   private syncDayKey(segment: RecentHistorySegment): void {
     const last = segment.messages[segment.messages.length - 1];
     if (last?.timestamp) this.lastLiveDayKey = localDay(last.timestamp);

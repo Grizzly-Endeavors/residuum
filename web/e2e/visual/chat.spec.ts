@@ -3,15 +3,7 @@ import { sendFromComposer } from "../support/composer";
 import { expect, test } from "../support/fixtures";
 import { expectClipScreenshot, expectScreenshot } from "../support/screenshot";
 
-/**
- * The chat's design reference: a finished turn with a step's details open, a
- * running turn, a reply's hover details, the composer with a draft and an
- * image, a Markdown reply, and the card of an agent that couldn't start. Each
- * is shot alone, on the desktop.
- */
-
 const GREETING = "Hi, this is atlas. You are in my conversation, not scout's.";
-/** A 1×1 PNG. */
 const PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
   "base64",
@@ -21,17 +13,10 @@ function conversation(page: Page, agent = "atlas"): Locator {
   return page.getByRole("region", { name: `Conversation with ${agent}` });
 }
 
-/** The messages box of atlas's chat. */
 function messageBox(page: Page): Locator {
   return page.getByRole("combobox", { name: "Message atlas" });
 }
 
-/**
- * The turn in `feed` that holds `content`, which is looked up inside each turn.
- * A turn is the block of one reply's steps and messages. It has no role a
- * screen reader should announce for every turn, so it is found by its
- * `data-feed-turn` attribute.
- */
 function turnWith(feed: Locator, content: Locator): Locator {
   return feed.locator("[data-feed-turn]").filter({ has: content });
 }
@@ -49,9 +34,6 @@ test.describe("chat", { tag: "@visual" }, () => {
     await step.click();
     const details = page.locator(`#${(await step.getAttribute("aria-controls")) ?? ""}`);
     await expect(details).toContainText("Last observer run: 3 minutes ago");
-    // The reader scrolls the turn to the middle by hand. Their wheel ends the
-    // feed's hold on the place of the control they pressed, which otherwise
-    // undoes a scroll made in the moment after the press.
     const turn = turnWith(feed, activity);
     await turn.evaluate((el) => {
       el.dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
@@ -69,16 +51,12 @@ test.describe("chat", { tag: "@visual" }, () => {
     await messageBox(page).fill("Check the wiki index");
     await sendFromComposer(messageBox(page));
     await expect(feed.getByText("Working", { exact: true })).toBeVisible();
-    // Time stands still for the shot, at 1s into the turn: one read done (it ends at 0.9s)
-    // and the other running (it ends at 1.2s).
     await mock.advance(1_000);
     await expect(feed.getByRole("button", { name: "Read team/wiki/index.md" })).toBeVisible();
     await expect(
       feed.getByRole("button", { name: "Reading team/wiki/projects/residuum.md, running" }),
     ).toBeVisible();
-    // The hub has heard the agent is busy: the header's mark is working.
     await expect(page.getByRole("main").locator("[data-working]").first()).toBeAttached();
-    // The page's clock stands at 1s of the turn too; the head shows it from its next tick.
     const head = page.locator("[data-turn-head]");
     await expect(head.getByText("1s", { exact: true })).toBeVisible();
     await page.mouse.move(0, 0);
@@ -86,17 +64,13 @@ test.describe("chat", { tag: "@visual" }, () => {
   });
 
   test("a reply's time and Copy, shown on hover", async ({ page }) => {
-    // A short window leaves the conversation just the newest reply to show.
     await page.setViewportSize({ width: page.viewportSize()?.width ?? 0, height: 420 });
     await page.goto("/agent/atlas");
     const reply = conversation(page).locator(".feed-message").filter({ hasText: GREETING });
     await expect(reply).toBeInViewport();
-    // The composer under the conversation has read the agent's model.
     await expect(page.getByRole("button", { name: /^Model: Claude Sonnet 4\.6/ })).toBeAttached();
     await reply.hover();
     await expect(reply.locator("time").first()).toHaveCSS("opacity", "1");
-    // The time and Copy sit in the conversation's margin, outside the reply's own box, and no
-    // element holds both. The shot is the rectangle round the reply and its details.
     await expectClipScreenshot(
       [reply, reply.getByRole("button", { name: "Copy reply" }), reply.locator("time").first()],
       "message-details",
@@ -111,7 +85,6 @@ test.describe("chat", { tag: "@visual" }, () => {
       .setInputFiles({ name: "shot.png", mimeType: "image/png", buffer: PNG });
     await expect(page.getByRole("img", { name: "Image 1" })).toBeVisible();
     await messageBox(page).fill("Can you read the error in this screenshot?");
-    // The composer has read the agent's model.
     await expect(page.getByRole("button", { name: /^Model: Claude Sonnet 4\.6/ })).toBeAttached();
     await expectScreenshot(page.getByRole("form", { name: "Message atlas" }), "composer");
   });

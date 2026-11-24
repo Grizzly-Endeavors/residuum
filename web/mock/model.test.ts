@@ -123,7 +123,6 @@ describe("model call route", () => {
   });
 
   it("holds a good call for the delay, and refuses a bad one at once", async () => {
-    // The delay is the mock's own sleep, so the test releases it by hand: no wall clock is read.
     const env = createMockEnv();
     const sleep = vi.spyOn(env, "sleep");
     let endDelay: () => void = () => undefined;

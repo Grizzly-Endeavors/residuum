@@ -1,8 +1,3 @@
-//! HTTP client for CLI commands that talk to the running hub.
-//!
-//! Turns transport failures and the server's `{ "error": "…" }` bodies into
-//! plain-language messages, so no command shows raw HTTP or socket errors.
-
 use reqwest::Method;
 use serde::de::DeserializeOwned;
 
@@ -10,29 +5,18 @@ use residuum::util::FatalError;
 
 const NOT_RUNNING_MESSAGE: &str = "Residuum isn't running. Start it with `residuum serve`.";
 
-/// How long the CLI waits for the hub to answer before reporting a timeout.
-///
-/// Stopping or restarting an agent can wait up to `STOP_TIMEOUT` (`150s`) plus
-/// `ABORT_SETTLE` (`10s`) in `residuum-hub` before starting the agent again, so
-/// the client timeout must exceed that window.
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
 
-/// A client builder for the CLI's requests to the hub on this machine. It
-/// takes no proxy from the environment (`HTTP_PROXY`, `ALL_PROXY`): the hub
-/// is always local, and a proxy would answer in its place with its own error,
-/// or fail every request while the hub is running.
 pub(super) fn local_hub_client() -> reqwest::ClientBuilder {
     reqwest::Client::builder().no_proxy()
 }
 
-/// Client for the hub's `/api/hub/...` routes on the local gateway address.
 pub(super) struct HubClient {
     addr: String,
     http: reqwest::Client,
 }
 
 impl HubClient {
-    /// Build a client for the gateway listening at `addr` (`host:port`).
     pub(super) fn new(addr: &str) -> Result<Self, FatalError> {
         let http = local_hub_client()
             .timeout(REQUEST_TIMEOUT)
@@ -47,9 +31,6 @@ impl HubClient {
         })
     }
 
-    /// Send a request that answers with no body when it succeeds.
-    ///
-    /// Failures are reported as [`Self::send`] reports them.
     pub(super) async fn send_no_content(
         &self,
         method: Method,
@@ -58,8 +39,6 @@ impl HubClient {
         self.execute(method, path, None).await.map(drop)
     }
 
-    /// Send a request with a JSON body that answers with no body when it
-    /// succeeds.
     pub(super) async fn send_no_content_with(
         &self,
         method: Method,
@@ -69,10 +48,6 @@ impl HubClient {
         self.execute(method, path, Some(body)).await.map(drop)
     }
 
-    /// Send a request and decode the JSON response body.
-    ///
-    /// Non-success statuses become an error carrying the server's message
-    /// (`400`, `404`, `409`) or a generic failure line naming the status.
     pub(super) async fn send<T: DeserializeOwned>(
         &self,
         method: Method,

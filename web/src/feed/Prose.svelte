@@ -3,30 +3,13 @@
   import { VisuallyHidden } from "../lib/ui";
   import { openPathInPanel, openTeamPathInPanel, pathHref, teamPathHref } from "./feed-links";
 
-  // Message text as sanitized Markdown. Each code block has a Copy button,
-  // and inline code that is a whole workspace path opens that file in the
-  // context panel, in `agent`'s workspace. Other links open in a new tab,
-  // so following one never takes the app away. With no agent (the team's
-  // folder, whose paths name no agent's workspace) such code is not a link.
-  // A relative link to a Markdown file opens that file in the panel when
-  // `filePath` names the file the text is in, in the agent's workspace or the
-  // team's folder; any other link keeps its own behavior. `openPath` replaces
-  // what clicking an agent's path does, for text that sits where the default
-  // (the agent's own place) is wrong.
-
   interface Props {
     content: string;
-    /** The agent whose workspace the message's paths are in, or null where the paths name none. */
     agent: string | null;
-    /** With no agent, true for the team's folder, whose relative file links open in the panel. */
     teamFolder?: boolean;
-    /** The workspace path (or team-folder path) of the file the text is in, for its relative links. */
     filePath?: string;
-    /** Opens a path in `agent`'s workspace when its link is clicked. By default the agent's own place shows it. */
     openPath?: (path: string) => void;
-    /** `compact` for text inside a card. */
     size?: "message" | "compact";
-    /** The text is still arriving: a blinking caret follows its last word. */
     streaming?: boolean;
   }
 
@@ -51,7 +34,6 @@
   const inTeam = $derived(teamFolder);
   const base = $derived(filePath);
 
-  /** Where a path link points, for the scope the text is in; null where links to paths aren't made. */
   function linkFor(
     linkAgent: string | null,
     linkTeam: boolean,
@@ -79,7 +61,6 @@
 
   const COPY_FEEDBACK_MS = 2000;
 
-  /** What the Copy button just did, said politely: a button that is pressed doesn't announce its new label. */
   let copyResult = $state("");
 
   async function copyCode(button: HTMLButtonElement): Promise<void> {
@@ -90,7 +71,6 @@
     } catch {
       copyResult = "Couldn't copy";
     }
-    // The name follows the label, so what is read matches what is shown.
     button.textContent = copyResult;
     button.setAttribute("aria-label", copyResult);
     window.setTimeout(() => {
@@ -121,8 +101,6 @@
     }
   }
 
-  // The links and buttons are in the rendered HTML, so their clicks are
-  // handled here; keyboard activation arrives as a click too.
   function handleClicks(node: HTMLElement): () => void {
     node.addEventListener("click", onclick);
     return () => node.removeEventListener("click", onclick);
@@ -150,7 +128,6 @@
     }
   }
 
-  /* The rendered nodes carry no scoping class, so everything under the root is global. */
   .prose :global {
     :is(p, ul, ol, blockquote, .prose-code, .prose-table, hr) {
       margin-bottom: var(--space-10);
@@ -160,7 +137,6 @@
       margin-bottom: 0;
     }
 
-    /* Headings sit two levels below the page's own (see `renderMarkdown`): a reply's # is an h3, its ## an h4. */
     :is(h3, h4, h5, h6) {
       margin: var(--space-14) 0 var(--space-6);
       font-size: var(--font-size-message);
@@ -188,7 +164,6 @@
       color: var(--color-text-3);
     }
 
-    /* A task item has a glyph where a bullet would be, and says its state to assistive technology in words. */
     li.prose-task {
       position: relative;
       list-style: none;
@@ -262,7 +237,6 @@
       text-decoration-color: currentcolor;
     }
 
-    /* A path link underlines its code, not the gap around it. */
     .prose-path {
       text-decoration: none;
     }
@@ -295,13 +269,11 @@
       border-radius: var(--corner-md);
     }
 
-    /* An image that isn't an agent's file, shown as a link to it: a quieter "Image" leads its alt text or URL. */
     .prose-image-link-kind {
       color: var(--color-text-2);
       font-weight: var(--font-weight-medium);
     }
 
-    /* A table keeps its words whole: a column never narrows below its longest word, and a table wider than the message scrolls in its group. */
     .prose-table {
       max-width: 100%;
       overflow-x: auto;
@@ -327,7 +299,6 @@
       font-weight: var(--font-weight-medium);
     }
 
-    /* A code block: a well with its Copy button in the corner. */
     .prose-code {
       position: relative;
     }
@@ -357,7 +328,6 @@
       padding: 0 var(--space-8);
       border: 0;
       border-radius: var(--corner-sm);
-      /* Opaque, so a long line scrolled under the button doesn't show through it. */
       background: var(--color-stone-2);
       color: var(--color-text-2);
       cursor: pointer;

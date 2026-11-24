@@ -3,11 +3,6 @@
   import { Button, Dialog } from "../../lib/ui";
   import { conflictQuestion } from "./changed-on-disk.svelte";
 
-  // Asks what to do when a file changed on disk under the keys a save is
-  // about to write. Keeping the user's changes can be undone after the save;
-  // using what's on disk drops their changes to that file. Closing the dialog
-  // leaves the file unsaved, with its changes still staged.
-
   const conflict = $derived(conflictQuestion.current);
 
   function title({ file }: ConfigConflict): string {

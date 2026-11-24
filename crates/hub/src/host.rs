@@ -1,18 +1,3 @@
-//! The agent host: the hub's set of agents and their lifecycle.
-//!
-//! [`AgentHost`] implements [`AgentDirectory`]. It scans `~/.residuum/` for
-//! agent directories, starts the `autostart` ones with the hub, and tracks
-//! each agent's [`AgentState`] and last error. Each agent's event loop runs as
-//! its own task, watched by a supervisor: a panic or fatal error moves that
-//! agent alone to `failed` with a plain-language message, while the hub and
-//! the other agents keep running.
-//!
-//! Every state, autostart, visibility, and activity change is published on
-//! the hub bus, in order, for the hub WebSocket to forward. What happens
-//! inside a running agent (its sessions, inbox, schedule and turns) reaches
-//! the hub's [`AgentChangeFeed`] through the agent's watcher, which starts
-//! and stops with the agent.
-
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -53,29 +38,18 @@ use residuum_background::team::{
 };
 use residuum_workspace::team_files::TeamWriter;
 
-/// Capacity of the hub bus. A subscriber that falls this far behind loses the
-/// oldest events and is told so; the hub WebSocket resends a snapshot then.
 const HUB_EVENT_CAPACITY: usize = 256;
 
-/// How long a stop waits for an agent to wind down (post-turn cycles, live
-/// sessions, adapters, MCP servers) before its task is aborted.
 const STOP_TIMEOUT: Duration = Duration::from_secs(150);
 
-/// How long a stop waits after aborting the agent's task.
 const ABORT_SETTLE: Duration = Duration::from_secs(10);
 
-/// How long `patch` waits for the agent to finish reloading the config it
-/// just wrote before answering anyway.
 const PATCH_RELOAD_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// How long a graceful restart waits for an in-flight main turn to finish
-/// before escalating to an immediate restart.
 const GRACEFUL_RESTART_TIMEOUT: Duration = Duration::from_secs(300);
 
-/// What start, restart, and create answer once the hub is shutting down.
 const SHUTTING_DOWN: &str = "Residuum is shutting down";
 
-/// Whether `doc`'s `[teams]` section has the three fields the listener requires.
 fn teams_section_is_configured(doc: &toml_edit::DocumentMut) -> bool {
     let Some(teams) = doc.get("teams") else {
         return false;
@@ -88,21 +62,15 @@ fn teams_section_is_configured(doc: &toml_edit::DocumentMut) -> bool {
     })
 }
 
-/// Settings the summary reads from the agent's config file: whether it
-/// starts with the hub, who can see it, and the name people use for it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AgentMeta {
     autostart: bool,
     a2a_visibility: A2aVisibility,
     display_name: String,
-    /// A complete `[teams]` section: app id, tenant id, and client secret all set.
     teams_configured: bool,
 }
 
 impl AgentMeta {
-    /// What a summary reports for an agent whose config has never loaded:
-    /// the default autostart, private (so a card that can't be checked is
-    /// never served without a key), and the folder name as the shown name.
     fn unverified(name: &str) -> Self {
         Self {
             autostart: true,
@@ -112,17 +80,6 @@ impl AgentMeta {
         }
     }
 
-    /// Read `autostart`, `[a2a] visibility`, and `display_name` from the
-    /// agent's `config/config.toml`, with the defaults an absent key resolves
-    /// to. `had_meta` says whether a config has loaded before. `name` is the
-    /// folder name, shown when `display_name` is absent or unusable.
-    ///
-    /// # Errors
-    /// Returns why the file could not be used: it can't be read, isn't valid
-    /// TOML, or is empty when a config has loaded before (as a half-written
-    /// file is). The caller keeps the last meta that did load rather than
-    /// guessing. An empty file for an agent that never loaded one reads as
-    /// all defaults.
     fn read(agent_dir: &Path, name: &str, had_meta: bool) -> Result<Self, String> {
         let path = agent_dir.join("config").join("config.toml");
         let text = std::fs::read_to_string(&path)
@@ -177,14 +134,11 @@ impl AgentMeta {
     }
 }
 
-/// The `description` frontmatter of a role page.
 #[derive(Deserialize)]
 struct RoleFrontmatter {
     description: Option<String>,
 }
 
-/// The one-line role from `team/wiki/agents/<name>.md`, if the page exists
-/// and has a description.
 fn role_line(team: &TeamPaths, name: &str) -> Option<String> {
     let page = team.agent_role_page(name);
     let text = std::fs::read_to_string(&page).ok()?;
@@ -200,30 +154,20 @@ fn role_line(team: &TeamPaths, name: &str) -> Option<String> {
     }
 }
 
-/// Everything the host keeps for an agent that is running.
 pub struct RunningAgent {
-    /// The routers, reload and stop channels, and cleanup the agent started
-    /// with.
     pub(crate) control: AgentControl,
-    /// Set before the stop signal is sent, so the supervisor can tell a
-    /// requested stop from a failure.
     pub(crate) stop_requested: Arc<AtomicBool>,
-    /// Set before the agent's task is aborted after a stop timed out.
     forced: Arc<AtomicBool>,
-    /// Turns `true` once the supervisor has recorded the agent's exit.
     done: watch::Receiver<bool>,
     abort: AbortHandle,
 }
 
 impl RunningAgent {
-    /// The routers, reload and stop channels, and cleanup the agent started with.
     #[must_use]
     pub fn control(&self) -> &AgentControl {
         &self.control
     }
 
-    /// Set before the stop signal is sent, so the supervisor can tell a requested
-    /// stop from a failure.
     #[must_use]
     pub fn stop_requested(&self) -> &Arc<AtomicBool> {
         &self.stop_requested
@@ -235,33 +179,21 @@ pub struct SlotState {
     last_error: Option<AgentLastError>,
     pub(crate) running: Option<RunningAgent>,
     generation: u64,
-    /// Autostart and visibility from the last config that loaded, as last
-    /// published. `None` until one has loaded. Summaries and the A2A
-    /// listener's auth read this, so a config that is broken or half written
-    /// never changes what they report.
     published_meta: Option<AgentMeta>,
-    /// Whether the config file could not be used the last time it was read,
-    /// so the problem is logged once per streak instead of on every request.
     meta_unreadable: bool,
 }
 
 impl SlotState {
-    /// The running agent, when one is running.
     #[must_use]
     pub fn running(&self) -> Option<&RunningAgent> {
         self.running.as_ref()
     }
 }
 
-/// One agent the host knows about.
 pub struct AgentSlot {
     name: String,
     dir: PathBuf,
-    /// Serializes start, stop, restart, and patch on this agent.
     op_lock: tokio::sync::Mutex<()>,
-    /// Set under `op_lock` once the agent has been deleted. Anything that
-    /// took this slot before the delete and gets `op_lock` afterwards sees it
-    /// and stops, so a deleted agent's directory is never written again.
     removed: AtomicBool,
     state: Mutex<SlotState>,
     activity: Arc<ActivityTracker>,
@@ -276,7 +208,6 @@ impl AgentSlot {
         self.removed.load(Ordering::SeqCst)
     }
 
-    /// The error for an operation that reached a deleted agent's slot.
     fn ensure_present(&self) -> Result<(), LifecycleError> {
         if self.is_removed() {
             return Err(LifecycleError::NotFound(self.name.clone()));
@@ -284,9 +215,6 @@ impl AgentSlot {
         Ok(())
     }
 
-    /// Re-read the config file. A file that can't be used leaves the last
-    /// meta that loaded in place (private if none ever has). Returns the meta
-    /// to report and whether it differs from the one published before.
     fn reload_meta(&self) -> (AgentMeta, bool) {
         let had_meta = self.lock().published_meta.is_some();
         let read = AgentMeta::read(&self.dir, &self.name, had_meta);
@@ -319,9 +247,6 @@ impl AgentSlot {
         }
     }
 
-    /// The settings to report: while the agent runs, those of the config it
-    /// last loaded; otherwise the config file, falling back to the last that
-    /// loaded.
     fn current_meta(&self) -> AgentMeta {
         {
             let guard = self.lock();
@@ -335,43 +260,23 @@ impl AgentSlot {
     }
 }
 
-/// The hub's agents: lookup, per-agent routing, and lifecycle.
 pub struct AgentHost {
     me: Weak<Self>,
     services: HubServices,
-    /// Starts each agent's runtime.
     launcher: Arc<dyn AgentLauncher>,
     hub_cfg: RwLock<HubConfig>,
     slots: RwLock<BTreeMap<String, Arc<AgentSlot>>>,
     events: broadcast::Sender<HubEvent>,
-    /// Changes inside running agents, published by each agent's watcher and
-    /// by its activity tracker's turn hook.
     agent_changes: Arc<AgentChangeFeed>,
-    /// Serializes creating agents, so two requests for one name can't both
-    /// write its directory.
     creation_lock: tokio::sync::Mutex<()>,
-    /// Set when the hub begins shutting down; from then on nothing starts.
     stopping: AtomicBool,
-    /// Teams adapter ports held by agents that are starting or running,
-    /// keyed by port, so two agents starting at once can't both take one.
     teams_ports: Mutex<BTreeMap<u16, String>>,
-    /// The same reservations keyed by agent name, for the tunnel to dial the
-    /// listener a Teams message names. Updated under the same changes as
-    /// [`Self::teams_ports`].
     teams_ports_tx: watch::Sender<BTreeMap<String, u16>>,
-    /// The embedding model the team wiki currently uses. Holding the lock
-    /// covers choosing and swapping, so refreshes never interleave.
     team_embedding: tokio::sync::Mutex<Option<EmbeddingSource>>,
-    /// How long a graceful restart waits for an in-flight turn to finish
-    /// before escalating to an immediate restart.
     graceful_restart_timeout: Mutex<Duration>,
 }
 
 impl AgentHost {
-    /// A host over `services`, knowing no agents yet; call
-    /// [`Self::discover`] to scan for them. `hub_cfg` is the hub config
-    /// every agent resolves its own config against, and `launcher` starts
-    /// each agent.
     pub fn new(
         services: HubServices,
         hub_cfg: HubConfig,
@@ -380,8 +285,6 @@ impl AgentHost {
         let (events, _first_subscriber) = broadcast::channel(HUB_EVENT_CAPACITY);
         let (teams_ports_tx, _) = watch::channel(BTreeMap::new());
         Arc::new_cyclic(|me| {
-            // Agent tools and the team router reach this host through the
-            // directory handle in the shared services.
             services
                 .directory
                 .bind(Weak::clone(me) as Weak<dyn TeamDirectory>);
@@ -413,8 +316,6 @@ impl AgentHost {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Override how long a graceful restart waits for an in-flight turn to
-    /// finish before restarting immediately.
     #[cfg(any(test, feature = "test-support"))]
     pub fn set_graceful_restart_timeout(&self, timeout: Duration) {
         *self
@@ -432,19 +333,11 @@ impl AgentHost {
             .collect()
     }
 
-    /// The slot of the agent `name`, by its folder name or its shown name.
-    ///
-    /// # Errors
-    /// [`LifecycleError::NotFound`] when no agent has that name.
     pub fn slot(&self, name: &str) -> Result<Arc<AgentSlot>, LifecycleError> {
         let slots = self.slots.read().unwrap_or_else(PoisonError::into_inner);
         if let Some(slot) = slots.get(name) {
             return Ok(Arc::clone(slot));
         }
-        // A typed name (`Research Desk`, or `atlas` for an agent shown as
-        // `Atlas`) resolves to the folder it belongs to. The folder name
-        // itself was returned above, so a folder is never hidden by another
-        // agent's shown name.
         let Ok(canonical) = residuum_config::canonicalize_display_name(name) else {
             return Err(LifecycleError::NotFound(name.to_string()));
         };
@@ -477,28 +370,19 @@ impl AgentHost {
             .clone()
     }
 
-    /// Publish an event on the hub bus.
     pub fn publish(&self, event: HubEvent) {
-        // No subscribers is the normal state until a client opens the hub
-        // WebSocket.
         self.events.send(event).ok();
     }
 
-    /// The feed of changes inside running agents: sessions, outbound tasks,
-    /// user inbox additions, watched files, turns that ended, and resyncs.
-    /// Subscribe before agents start to hear about every one of them.
     #[must_use]
     pub fn agent_changes(&self) -> &Arc<AgentChangeFeed> {
         &self.agent_changes
     }
 
-    /// Publish a hub notice for the user.
     pub fn notice(&self, level: NoticeLevel, message: String, agent: Option<String>) {
         self.publish(HubEvent::notice(level, message, agent));
     }
 
-    /// Publish a hub notice the web words itself from `kind`, keeping
-    /// `message` as the detail behind it.
     pub fn notice_of_kind(&self, level: NoticeLevel, kind: HubNoticeKind, message: String) {
         self.publish(HubEvent::Notice {
             level,
@@ -508,11 +392,6 @@ impl AgentHost {
         });
     }
 
-    /// Register the agents found under `~/.residuum/` as stopped agents,
-    /// keeping the ones already known. Returns the names found, sorted.
-    ///
-    /// # Errors
-    /// Returns `FatalError::Config` if the residuum root cannot be scanned.
     pub fn discover(&self) -> Result<Vec<String>, FatalError> {
         let names = residuum_config::discover_agents(&self.services.root)?;
         for name in &names {
@@ -521,9 +400,6 @@ impl AgentHost {
         Ok(names)
     }
 
-    /// Register the agent directory `~/.residuum/<name>` as a stopped agent,
-    /// if it isn't already known. A newly created agent is adopted once its
-    /// directory is written, then started.
     pub fn adopt(&self, name: &str) {
         let dir = residuum_config::paths::agent_dir(&self.services.root, name);
         let mut slots = self.slots.write().unwrap_or_else(PoisonError::into_inner);
@@ -553,8 +429,6 @@ impl AgentHost {
         slots.insert(name.to_string(), slot);
     }
 
-    /// Forget the agent `name`, whose directory has been removed. The agent
-    /// must already be stopped.
     pub fn forget(&self, name: &str) {
         self.slots
             .write()
@@ -563,10 +437,6 @@ impl AgentHost {
         self.release_teams_port(name);
     }
 
-    /// From now on nothing starts: `start`, `restart`, and `create` refuse
-    /// with a plain-language error. The hub calls this before it stops the
-    /// agents and the servers, so a request arriving in between can't start
-    /// an agent that nothing would stop.
     pub fn begin_shutdown(&self) {
         self.stopping.store(true, Ordering::SeqCst);
     }
@@ -578,8 +448,6 @@ impl AgentHost {
         Ok(())
     }
 
-    /// Start every agent whose `autostart` is on, concurrently. A failure to
-    /// start one is that agent's `failed` state, not an error here.
     pub async fn start_autostart(&self) {
         let starts = self
             .slots()
@@ -587,39 +455,29 @@ impl AgentHost {
             .filter(|slot| slot.reload_meta().0.autostart)
             .map(|slot| async move {
                 let _op = slot.op_lock.lock().await;
-                // The failure is recorded on the agent and logged there.
                 self.start_locked(&slot).await.ok();
             });
         futures_util::future::join_all(starts).await;
     }
 
-    /// Stop every running agent, concurrently.
     pub async fn stop_all(&self) {
         let stops = self.slots().into_iter().map(|slot| async move {
             slot.activity.take_restart_pending();
             let _op = slot.op_lock.lock().await;
-            // A slot deleted meanwhile has nothing left to stop.
             self.stop_locked(&slot).await.ok();
         });
         futures_util::future::join_all(stops).await;
     }
 
-    /// Record the hub config that agents started from now on resolve against,
-    /// and tell every running agent to reload against it.
     pub fn hub_config_changed(&self, hub_cfg: HubConfig) {
         *self.hub_cfg.write().unwrap_or_else(PoisonError::into_inner) = hub_cfg;
         self.signal_running_agents(ReloadSignal::Hub, "the hub config change");
     }
 
-    /// Tell every running agent that files it reads from the shared team
-    /// directory changed (its identity files, `AGENTS.md` and `USER.md`), so
-    /// each reloads its workspace.
     pub fn team_files_changed(&self) {
         self.signal_running_agents(ReloadSignal::Workspace, "the team file change");
     }
 
-    /// Send `signal` to every running agent; `about` names the cause in the
-    /// log when an agent can't be reached.
     fn signal_running_agents(&self, signal: ReloadSignal, about: &str) {
         for slot in self.slots() {
             if let Some(running) = &slot.lock().running
@@ -630,10 +488,6 @@ impl AgentHost {
         }
     }
 
-    /// The health of the change feed over the running agent `name`'s
-    /// directory, or `None` when it isn't running. The receiver belongs to
-    /// this run of the agent: its sender goes away when the agent stops, so
-    /// after a restart a caller asks again.
     #[must_use]
     pub fn workspace_watch_health(
         &self,
@@ -647,8 +501,6 @@ impl AgentHost {
             .map(|running| running.control.workspace_watch_health.clone())
     }
 
-    /// How many web clients are connected to the agent `name`'s WebSocket,
-    /// or `None` for an agent the hub doesn't have.
     #[must_use]
     pub fn connected_clients(&self, name: &str) -> Option<usize> {
         self.slot(name)
@@ -656,8 +508,6 @@ impl AgentHost {
             .map(|slot| slot.activity.connected_clients())
     }
 
-    /// How many config reloads the running agent `name` has finished, or
-    /// `None` when it isn't running.
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn reloads_finished(&self, name: &str) -> Option<u64> {
@@ -669,7 +519,6 @@ impl AgentHost {
             .map(|running| *running.control.reload_done.borrow())
     }
 
-    /// The live subagent sessions of every running agent.
     #[must_use]
     pub fn active_subagents(&self) -> Vec<residuum_tracing_service::Subagent> {
         let registries: Vec<_> = self
@@ -706,14 +555,12 @@ impl AgentHost {
         }
     }
 
-    /// Publish the agent's summary as an `agent_state` event.
     fn publish_state(&self, slot: &AgentSlot) {
         self.publish(HubEvent::AgentState {
             agent: self.summary_of(slot),
         });
     }
 
-    /// Move the agent to `state` and publish the change.
     fn set_state(&self, slot: &AgentSlot, state: AgentState, last_error: Option<AgentLastError>) {
         {
             let mut guard = slot.lock();
@@ -730,8 +577,6 @@ impl AgentHost {
         self.publish_state(slot);
     }
 
-    /// Announce autostart or visibility changes made to the agent's config,
-    /// whoever made them.
     fn refresh_meta(&self, slot: &AgentSlot) {
         let (_meta, changed) = slot.reload_meta();
         if changed {
@@ -739,9 +584,6 @@ impl AgentHost {
         }
     }
 
-    // ─── Start ────────────────────────────────────────────────────────
-
-    /// Start the agent. The caller holds its `op_lock`.
     async fn start_locked(&self, slot: &Arc<AgentSlot>) -> Result<(), LifecycleError> {
         slot.ensure_present()?;
         self.ensure_not_stopping()?;
@@ -794,8 +636,6 @@ impl AgentHost {
             hub_cfg,
             activity: Arc::clone(&slot.activity),
         };
-        // Its own task, so a panic while starting is this agent's failure
-        // instead of unwinding into the caller.
         let launcher = Arc::clone(&self.launcher);
         let started = residuum_core::util::spawn_in_span(
             async move { launcher.start(inputs).await }.instrument(agent_span(&slot.name)),
@@ -846,10 +686,6 @@ impl AgentHost {
         }
     }
 
-    /// Reserve Teams port `port` for `agent`, releasing any other port it
-    /// held. Fails with the name of the agent that already holds the port.
-    /// Checking and taking happen under one lock, so two agents starting at
-    /// once can't both get it.
     fn reserve_teams_port(&self, agent: &str, port: u16) -> Result<(), String> {
         let mut ports = self
             .teams_ports
@@ -866,7 +702,6 @@ impl AgentHost {
         Ok(())
     }
 
-    /// Release the Teams port `agent` holds, if any.
     fn release_teams_port(&self, agent: &str) {
         let mut ports = self
             .teams_ports
@@ -876,12 +711,10 @@ impl AgentHost {
         self.publish_teams_ports(&ports);
     }
 
-    /// The ports the tunnel dials for Teams, keyed by agent name.
     pub fn subscribe_teams_ports(&self) -> watch::Receiver<BTreeMap<String, u16>> {
         self.teams_ports_tx.subscribe()
     }
 
-    /// Publish `ports` (keyed by port) as agent name to port.
     fn publish_teams_ports(&self, ports: &BTreeMap<u16, String>) {
         let by_agent = ports
             .iter()
@@ -897,9 +730,6 @@ impl AgentHost {
         });
     }
 
-    /// After a reload, move the agent's Teams port reservation to the port
-    /// its new config uses. A port another agent holds is left to the
-    /// adapter, whose failed bind is told to the user.
     pub fn refresh_teams_port(&self, slot: &AgentSlot) {
         let hub_cfg = self.hub_config();
         let cfg = match agent_span(&slot.name)
@@ -921,11 +751,6 @@ impl AgentHost {
         }
     }
 
-    /// Put the agent in `failed` with `message` and `kind`, log and
-    /// auto-report `reason` (the underlying error, which the agent's
-    /// last-error record also carries). The `agent_state` event this
-    /// publishes is what the user hears of the failure. Returns the error a
-    /// caller of `start` gets back.
     async fn record_failure(
         &self,
         slot: &Arc<AgentSlot>,
@@ -959,9 +784,6 @@ impl AgentHost {
         LifecycleError::Failed(message)
     }
 
-    /// Start watching a started agent, before its event loop runs so the
-    /// watcher hears everything it does. An agent that can't be watched
-    /// still runs; the hub just hears nothing from it.
     async fn attach_watcher(
         &self,
         slot: &AgentSlot,
@@ -976,16 +798,11 @@ impl AgentHost {
         }
     }
 
-    /// Record a successfully started agent: run its event loop as its own
-    /// task under a supervisor, which stops `watcher` when the agent ends.
     fn attach(&self, slot: &Arc<AgentSlot>, started: StartedAgent, watcher: Option<AgentWatcher>) {
         let StartedAgent {
             control,
             event_loop,
         } = started;
-        // Inside the agent's span. The task's `JoinHandle` resolves with the
-        // loop's exit, or with a `JoinError` if the loop panicked; a panic
-        // there never unwinds into the hub or another agent.
         let join =
             residuum_core::util::spawn_in_span(event_loop.instrument(agent_span(&slot.name)));
         let abort = join.abort_handle();
@@ -1005,9 +822,6 @@ impl AgentHost {
             guard.generation
         };
         self.set_state(slot, AgentState::Running, None);
-        // The watcher is already listening, so whatever happened before now
-        // is on disk or in the registry, and everything after reaches the
-        // feed: a consumer recomputes the agent once, from here.
         self.agent_changes.publish(&AgentChange {
             agent: slot.name.clone(),
             kind: AgentChangeKind::Resync,
@@ -1043,10 +857,6 @@ impl AgentHost {
         }
     }
 
-    // ─── Team wiki embedding ──────────────────────────────────────────
-
-    /// Record the embedding model the team wiki index was opened with, so
-    /// the first refresh doesn't reopen it for nothing.
     pub(crate) async fn note_team_embedding(&self, source: Option<EmbeddingSource>) {
         *self.team_embedding.lock().await = source;
     }
@@ -1057,11 +867,6 @@ impl AgentHost {
         }
     }
 
-    /// Point the team wiki at the embedding model the agents now configure:
-    /// the first agent (by name) with one. The one shared index swaps its
-    /// embedder in place, so every agent's searcher sees the change. A choice
-    /// that is unchanged, or that can't be made because an agent's config
-    /// doesn't load right now, leaves the index alone.
     pub async fn refresh_team_embedding(&self) {
         let mut current = self.team_embedding.lock().await;
         let hub_cfg = self.hub_config();
@@ -1127,12 +932,9 @@ impl AgentHost {
         *current = wanted;
     }
 
-    /// Wait for the agent's event loop to end, then record how it ended.
     async fn supervise(&self, mut run: Supervised, join: tokio::task::JoinHandle<AgentExit>) {
         let exit = join.await;
         let requested = run.stop_requested.load(Ordering::SeqCst);
-        // A failure is its message for the user and the underlying reason. A
-        // run that ends on its own is always a crash.
         let failure: Option<(String, String)> = match exit {
             Ok(AgentExit::Stopped) => None,
             Ok(AgentExit::BusClosed) => Some((
@@ -1142,8 +944,6 @@ impl AgentHost {
                 ),
                 "the event loop ended because its message channel closed".to_string(),
             )),
-            // Only an abort after a timed-out stop is a stop; a panic while
-            // shutting down is still a crash.
             Err(ref join_err) if requested && join_err.is_cancelled() => None,
             Err(join_err) => Some((
                 format!(
@@ -1154,22 +954,16 @@ impl AgentHost {
             )),
         };
         if failure.is_some() || run.forced.load(Ordering::SeqCst) {
-            // The event loop didn't shut the agent down itself.
             run.cleanup.run().await;
         }
-        // After the agent's own shutdown, so what it published while winding
-        // down (sessions recorded as interrupted) still reaches the feed.
         if let Some(watcher) = run.watcher.take() {
             watcher.stop().await;
         }
         run.slot.activity.run_ended();
-        // Whether the agent shut down itself or died, it no longer takes part
-        // in sibling discovery.
         self.services
             .sibling_fanout
             .unregister(&run.slot.name)
             .await;
-        // Nor does it take teammate messages: nothing queues for a dead agent.
         self.services.team_router.unregister(&run.slot.name);
 
         let current = run.slot.lock().generation == run.generation;
@@ -1178,7 +972,6 @@ impl AgentHost {
                 None => self.set_state(&run.slot, AgentState::Stopped, None),
                 Some((message, reason)) => {
                     let cfg = Config::load_agent_at(&run.slot.dir, &self.hub_config()).ok();
-                    // Reported once, from here; `record_failure` does the rest.
                     self.record_failure(
                         &run.slot,
                         AgentErrorKind::Crash,
@@ -1193,13 +986,6 @@ impl AgentHost {
         run.done_tx.send(true).ok();
     }
 
-    // ─── Stop ─────────────────────────────────────────────────────────
-
-    /// Stop the agent and wait until it has wound down. The caller holds its
-    /// `op_lock`. Does nothing for an agent that isn't running.
-    ///
-    /// # Errors
-    /// Returns `NotFound` for an agent that has been deleted.
     async fn stop_locked(&self, slot: &Arc<AgentSlot>) -> Result<(), LifecycleError> {
         slot.ensure_present()?;
         let Some((stop_tx, stop_requested, forced, mut done, abort)) =
@@ -1217,16 +1003,10 @@ impl AgentHost {
             return Ok(());
         };
         stop_requested.store(true, Ordering::SeqCst);
-        // From the stop request on, no teammate message reaches the agent;
-        // its event loop only unregisters once it sees the request.
         self.services.team_router.unregister(&slot.name);
-        // Mirror that timing for the relay's A2A directory: it stops
-        // advertising the agent now rather than waiting for the stop to
-        // finish, which can take up to `STOP_TIMEOUT` plus `ABORT_SETTLE`.
         self.publish(HubEvent::AgentStopping {
             name: slot.name.clone(),
         });
-        // A closed channel means the event loop is already gone.
         stop_tx.send(()).await.ok();
         slot.activity.take_restart_pending();
         if tokio::time::timeout(STOP_TIMEOUT, done.wait_for(|finished| *finished))
@@ -1248,9 +1028,6 @@ impl AgentHost {
         Ok(())
     }
 
-    /// Wait for the running main turn on `slot` (at `generation`) to finish
-    /// (up to [`Self::graceful_restart_timeout`]), then stop and restart the
-    /// agent if the deferred restart is still pending.
     async fn run_deferred_restart(self: Arc<Self>, slot: Arc<AgentSlot>, generation: u64) {
         let timeout = self.graceful_restart_timeout();
         let timed_out =
@@ -1299,14 +1076,6 @@ impl AgentHost {
         self.note_start_outcome(&slot, &started);
     }
 
-    // ─── Create and delete ────────────────────────────────────────────
-
-    /// Create an agent from the blank template, start it, and hand it its
-    /// role description as a first message.
-    ///
-    /// A creation whose start-up fails still creates the agent: it is
-    /// returned in the `failed` state with its error, and the user can fix
-    /// its settings and start it.
     async fn create_agent(
         &self,
         request: CreateAgentRequest,
@@ -1357,7 +1126,6 @@ impl AgentHost {
             let _op = slot.op_lock.lock().await;
             self.start_locked(&slot).await
         };
-        // The agent exists either way; a failed start is its `failed` state.
         self.note_start_outcome(&slot, &started);
         if started.is_ok() {
             self.hand_over_role(
@@ -1376,9 +1144,6 @@ impl AgentHost {
         Ok(summary)
     }
 
-    /// Log why a start that create or restore asked for did not happen. The
-    /// agent stays in the state the summary reports (`failed` with its error,
-    /// or `stopped` when the start was refused before it began).
     pub fn note_start_outcome(&self, slot: &AgentSlot, started: &Result<(), LifecycleError>) {
         if let Err(reason) = started {
             tracing::info!(
@@ -1390,9 +1155,6 @@ impl AgentHost {
         }
     }
 
-    /// Deliver a new agent's role description to its main conversation, from
-    /// its creator. A delivery failure is logged and told to the user; the
-    /// agent is still created and can be given its role by hand.
     async fn hand_over_role(
         &self,
         slot: &AgentSlot,
@@ -1429,12 +1191,8 @@ impl AgentHost {
         }
     }
 
-    /// Stop the agent, checkpoint its directory, and remove the directory,
-    /// its role page, and its roster entry.
     async fn delete_agent(&self, name: &str, by: Actor) -> Result<DeleteOutcome, LifecycleError> {
         let slot = self.slot(name)?;
-        // Files, history, and the role page are keyed by the folder name,
-        // even when `name` was the name people type.
         let slug = slot.name.clone();
         let display_name = self.summary_of(&slot).display_name;
         slot.activity.take_restart_pending();
@@ -1442,7 +1200,6 @@ impl AgentHost {
             let _op = slot.op_lock.lock().await;
             slot.activity.take_restart_pending();
             self.stop_locked(&slot).await?;
-            // Read before the role page goes, so a restore can bring it back.
             let mut record = super::deleted::DeletionRecord {
                 deleted_at: Utc::now(),
                 checkpoint_id: None,
@@ -1468,9 +1225,6 @@ impl AgentHost {
             .await?;
             record.checkpoint_id.clone_from(&id);
             super::deleted::record_deletion(&self.checkpoints_dir(), &slug, &record).await;
-            // Marked under the lock and before the slot is forgotten, so a
-            // start or restart already holding this slot finds it gone
-            // instead of starting the agent in a deleted directory.
             slot.removed.store(true, Ordering::SeqCst);
             self.forget(&slug);
             id
@@ -1486,12 +1240,6 @@ impl AgentHost {
         })
     }
 
-    /// The folder a new agent called `display` should use.
-    ///
-    /// The same name, ignoring case, is refused when an agent already has it,
-    /// and reused when a deleted agent had it so that agent's history
-    /// continues. Otherwise the first free slug is used, skipping folders
-    /// that still hold someone else's history.
     async fn choose_slug(&self, display: &str) -> Result<String, LifecycleError> {
         let key = residuum_config::display_name_key(display);
         for slot in self.slots() {
@@ -1530,8 +1278,6 @@ impl AgentHost {
         .map_err(LifecycleError::Failed)
     }
 
-    /// The folder of the deleted agent `requested` names, by folder name or
-    /// by the name people saw.
     async fn resolve_deleted_name(&self, requested: &str) -> Result<String, LifecycleError> {
         let checkpoints = self.checkpoints_dir();
         let history = residuum_checkpoints::agents_with_history(&checkpoints)
@@ -1556,9 +1302,6 @@ impl AgentHost {
         Err(LifecycleError::NoDeletedAgent(requested.to_string()))
     }
 
-    /// Refuse a name the hub already holds. A slot outlives its directory
-    /// until a delete has finished, so this also stops a create or restore
-    /// from racing the delete of the same name. Called under `creation_lock`.
     fn ensure_name_free(&self, name: &str) -> Result<(), LifecycleError> {
         let held = self
             .slots
@@ -1571,16 +1314,12 @@ impl AgentHost {
         Ok(())
     }
 
-    /// Restore a deleted agent from its checkpoint history, adopt it, and
-    /// start it when its settings say to.
     async fn restore_agent(
         &self,
         request: RestoreAgentRequest,
         by: Actor,
     ) -> Result<AgentSummary, LifecycleError> {
         self.ensure_not_stopping()?;
-        // A live agent answers before the deleted-history lookup, so restoring
-        // a name that is in use is a conflict rather than "nothing to restore".
         if let Ok(slot) = self.slot(&request.name) {
             return Err(LifecycleError::AlreadyExists(
                 slot.current_meta().display_name.clone(),
@@ -1588,8 +1327,6 @@ impl AgentHost {
         }
         let name = self.resolve_deleted_name(&request.name).await?;
         {
-            // The same lock as create, so a restore and a create of one name
-            // can't both write the directory.
             let _creating = self.creation_lock.lock().await;
             self.ensure_name_free(&name)?;
             let dir = residuum_config::paths::agent_dir(&self.services.root, &name);
@@ -1651,8 +1388,6 @@ impl AgentHost {
         let slot = self.slot(&name)?;
         if self.summary_of(&slot).autostart {
             let _op = slot.op_lock.lock().await;
-            // The agent is restored either way; a failed start is its
-            // `failed` state, which the user sees and can fix.
             let started = self.start_locked(&slot).await;
             self.note_start_outcome(&slot, &started);
         }
@@ -1665,7 +1400,6 @@ impl AgentHost {
         Ok(summary)
     }
 
-    /// The deleted agents, newest deletion first.
     async fn deleted_agents(&self) -> Result<Vec<DeletedAgent>, LifecycleError> {
         let checkpoints_dir = self.checkpoints_dir();
         let names = residuum_checkpoints::agents_with_history(&checkpoints_dir)
@@ -1725,10 +1459,6 @@ impl AgentHost {
         Ok(deleted)
     }
 
-    // ─── Patch ────────────────────────────────────────────────────────
-
-    /// Write the patched settings to the agent's `config.toml` (checkpointing
-    /// it first) and, for a running agent, wait for it to reload.
     async fn apply_patch(
         &self,
         slot: &Arc<AgentSlot>,
@@ -1799,8 +1529,6 @@ impl AgentHost {
         Ok(())
     }
 
-    /// Checkpoint the agent's config repository before a write, the way the
-    /// settings API does. Never fails the write.
     async fn checkpoint_config_before_write(&self, slot: &AgentSlot) {
         match self.checkpoint_engine(slot) {
             Ok(engine) => {
@@ -1820,8 +1548,6 @@ impl AgentHost {
         }
     }
 
-    /// A checkpoint engine over the agent's repositories, rebuilt from its
-    /// name and paths.
     fn checkpoint_engine(
         &self,
         slot: &AgentSlot,
@@ -1830,12 +1556,6 @@ impl AgentHost {
         self.checkpoint_engine_for(&slot.name, &slot.dir)
     }
 
-    /// `checkpoint_engine` for an agent that has no slot, such as a
-    /// deleted one.
-    ///
-    /// # Errors
-    /// The [`residuum_checkpoints::CheckpointError`] of opening the agent's
-    /// repositories.
     pub fn checkpoint_engine_for(
         &self,
         name: &str,
@@ -1845,9 +1565,6 @@ impl AgentHost {
         self.checkpoint_opener(name, dir)()
     }
 
-    /// A function that opens the checkpoint engine over the agent's
-    /// repositories each time it is called. It owns everything it needs, so
-    /// a router can hold it past the borrow of `self`.
     fn checkpoint_opener(
         &self,
         name: &str,
@@ -1880,10 +1597,6 @@ impl AgentHost {
         residuum_config::HubPaths::new(&self.services.hub_dir).checkpoints_dir()
     }
 
-    // ─── Routers ──────────────────────────────────────────────────────
-
-    /// The agent's config, file, and checkpoint routes, over its files on
-    /// disk, so they work whether or not the agent is running.
     fn repair_router_for(&self, slot: &AgentSlot) -> Result<Router, LifecycleError> {
         let checkpoints = self.checkpoint_engine(slot).map_err(|e| {
             tracing::error!(agent = %slot.name, error = %e, "couldn't open the agent's checkpoint repositories for its repair routes");
@@ -1912,16 +1625,6 @@ impl AgentHost {
         Ok(crate::web::agent_repair_api_router(state))
     }
 
-    /// The agent's chat history, usage, inbox attachments, A2A settings, and file
-    /// link routes, over its files on disk (the token links from the ones it
-    /// saved in its `file_links.json`). Unlike
-    /// [`Self::repair_router_for`] it opens no checkpoint repository: the one
-    /// write that takes a checkpoint opens them when it runs, so these routes
-    /// answer even when the repositories can't be opened.
-    ///
-    /// It also carries the usage record routes, priced at the hub config as it
-    /// is when the router is built, which is why the directory asks for a file
-    /// router for them on every request.
     fn file_router_for(&self, slot: &AgentSlot) -> Router {
         let reload_tx = slot
             .lock()
@@ -1946,11 +1649,6 @@ impl AgentHost {
         files.merge(crate::web::agent_usage_api_router(usage))
     }
 
-    /// Run a lifecycle transition (`start`, `stop`, `restart`, `create`,
-    /// `restore`, `delete`) inside a host-owned task so that if the caller's
-    /// future is dropped mid-flight (for example when an HTTP client times out
-    /// or disconnects), the transition still runs to completion while holding
-    /// `slot.op_lock` and never abandons a slot mid-transition.
     async fn run_in_host_task<T, F, Fut>(&self, op: F) -> Result<T, LifecycleError>
     where
         T: Send + 'static,
@@ -1973,7 +1671,6 @@ impl AgentHost {
     }
 }
 
-/// What the supervisor task needs to record an agent's exit.
 struct Supervised {
     slot: Arc<AgentSlot>,
     generation: u64,
@@ -1981,11 +1678,9 @@ struct Supervised {
     forced: Arc<AtomicBool>,
     done_tx: watch::Sender<bool>,
     cleanup: AgentCleanup,
-    /// Stopped once the agent's run has ended.
     watcher: Option<AgentWatcher>,
 }
 
-/// A log-ready description of why an agent's task ended.
 fn history_unreadable(error: &residuum_checkpoints::CheckpointError) -> LifecycleError {
     tracing::error!(error = %error, "couldn't read the deleted agents' checkpoint history");
     LifecycleError::Failed(format!(
@@ -1993,16 +1688,8 @@ fn history_unreadable(error: &residuum_checkpoints::CheckpointError) -> Lifecycl
     ))
 }
 
-/// How many of a deleted agent's newest checkpoints are searched for the one
-/// its deletion took when no record names it.
 const DELETE_CHECKPOINT_SEARCH_DEPTH: usize = 50;
 
-/// The workspace checkpoint a deleted agent is restored from by default: the
-/// one its deletion recorded. Without a record (an agent deleted before
-/// records were kept, or a record that couldn't be written) the newest
-/// checkpoint the deletion itself took, else the newest one. The newest is
-/// not always the deletion's: a turn-end checkpoint still in flight when the
-/// agent stopped can land after it and see the directory already gone.
 async fn pre_delete_checkpoint(
     engine: &residuum_checkpoints::CheckpointEngine,
     name: &str,
@@ -2056,10 +1743,6 @@ fn describe_join_error(error: tokio::task::JoinError) -> String {
     }
 }
 
-/// Resets a slot's state from [`AgentState::Starting`] back to
-/// [`AgentState::Stopped`] if `start_locked` is dropped before `attach` or
-/// `record_failure` completes, so a cancelled start can never leave the slot
-/// wedged in `Starting` with `running = None`.
 struct StartingResetGuard<'a> {
     host: &'a AgentHost,
     slot: &'a Arc<AgentSlot>,
@@ -2074,7 +1757,6 @@ impl Drop for StartingResetGuard<'_> {
     }
 }
 
-/// Who a lifecycle action counts as writing the team files it touches.
 fn team_writer(by: &Actor) -> TeamWriter {
     match by {
         Actor::User => TeamWriter::User,
@@ -2133,8 +1815,6 @@ impl TeamDirectory for AgentHost {
         let name = name.to_string();
         self.run_in_host_task(move |host| async move {
             let result = host.delete_agent(&name, by.clone()).await;
-            // An agent deleting itself is stopped by its own delete, so nothing is
-            // left to hear the error; the user has to.
             if let (Err(e), Actor::Agent(actor)) = (&result, &by)
                 && *actor == name
             {
@@ -2151,9 +1831,6 @@ impl TeamDirectory for AgentHost {
     }
 }
 
-/// The agents' mailboxes, for mail read and sent from the hub and from the
-/// agents' tools: each agent's directory in any state, read in the hub's
-/// timezone.
 impl residuum_workspace::inbox::mail::MailboxDirectory for AgentHost {
     fn mailboxes(&self) -> Vec<residuum_workspace::inbox::mail::Mailbox> {
         crate::mail::AgentMailboxes(self).mailboxes()

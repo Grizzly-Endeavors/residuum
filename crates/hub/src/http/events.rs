@@ -17,15 +17,12 @@ use serde::Deserialize;
 use super::error::json_error;
 use crate::team_events::{PageQuery, TeamEventLog};
 
-/// The events route.
 pub(super) fn routes(log: Arc<TeamEventLog>) -> Router {
     Router::new()
         .route("/api/hub/events", get(list_events))
         .with_state(log)
 }
 
-/// The query of `GET /api/hub/events`, kept as text so a value that can't be
-/// used is answered with a JSON error that says which one.
 #[derive(Deserialize)]
 struct ListParams {
     before: Option<String>,
@@ -66,7 +63,6 @@ fn limit_param(raw: &str) -> Result<usize, String> {
     Ok(limit)
 }
 
-/// `GET /api/hub/events?before=&after=&limit=`.
 async fn list_events(
     State(log): State<Arc<TeamEventLog>>,
     params: Result<Query<ListParams>, QueryRejection>,

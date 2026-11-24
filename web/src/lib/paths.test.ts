@@ -98,7 +98,6 @@ describe("last-used agent", () => {
   });
 });
 
-/** Run `call` against a stubbed fetch and return the "METHOD url" it made. */
 async function requestOf(call: () => Promise<unknown>): Promise<string> {
   const fetchMock = vi.fn((_input: string, init?: RequestInit) => {
     void init;
@@ -115,7 +114,6 @@ async function requestOf(call: () => Promise<unknown>): Promise<string> {
   return `${init?.method ?? "GET"} ${url}`;
 }
 
-// Every API function lands on the scope the contract puts its route in.
 describe("api functions use the contract paths", () => {
   it.each<[string, () => Promise<unknown>, string]>([
     ["fetchStatus", () => api.fetchStatus("scout"), "GET /api/agents/scout/status"],
@@ -382,7 +380,6 @@ describe("api functions use the contract paths", () => {
       "PATCH /api/hub/agents/atlas",
     ],
   ])("%s", async (_name, call, expected) => {
-    // The fetch cache is keyed by request and would answer a repeat call.
     localStorage.clear();
     expect(await requestOf(call)).toBe(expected);
   });

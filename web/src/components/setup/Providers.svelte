@@ -10,7 +10,6 @@
     wizardState: SetupWizardState;
     onNext: () => void;
     onBack: () => void;
-    /** The wizard was restored from a draft, which never keeps keys. */
     restoredDraft?: boolean;
   }
 

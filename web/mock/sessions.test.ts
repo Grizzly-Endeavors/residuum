@@ -340,7 +340,6 @@ describe("sessions endpoints", () => {
         from_category: "owner",
         content: "and now?",
       });
-      // The tool result came first: it was read at the checkpoint after it.
       expect(harness.frames.map((f) => f.type).slice(-2)).toEqual([
         "session_tool_result",
         "session_user_message",
@@ -350,7 +349,6 @@ describe("sessions endpoints", () => {
 
       await advanceMockTime(harness.state.env, 1200);
       expect(transcript.at(-1)?.content).toBe('Understood: "and now?".');
-      // Only the one turn ran.
       expect(harness.frames.filter((f) => f.type === "session_turn_started")).toHaveLength(1);
     });
 
@@ -433,7 +431,6 @@ describe("session commands and lifecycle", () => {
   let state: MockState;
   let frames: ServerMessage[];
   let replies: ServerMessage[];
-  /** What the sessions sent the main conversation, in order. */
   let toMain: Array<{ content: string; sender: AgentSender }>;
   const reply = (frame: ServerMessage): void => {
     replies.push(frame);
@@ -564,7 +561,6 @@ describe("session commands and lifecycle", () => {
     expect(summaryOf("run-resumed-1")?.state).toBe("forking");
     vi.advanceTimersByTime(400);
     expect(summaryOf("run-resumed-1")?.state).toBe("running");
-    // The new run's first turn reads the message, under the id it was sent with.
     expect(frames.at(-1)).toMatchObject({
       type: "session_user_message",
       id: "web-c5",
@@ -572,8 +568,6 @@ describe("session commands and lifecycle", () => {
       content: "resume me",
       from: "owner",
     });
-    // Its transcript opens with the pointer to the previous run, marked as
-    // context, then the message.
     const transcript = state.sessions.transcripts.get("run-resumed-1") ?? [];
     const [pointer, read] = transcript;
     expect(pointer).toMatchObject({ role: "user", context: true });
@@ -602,7 +596,6 @@ describe("session commands and lifecycle", () => {
       status: "cancelled",
       error: null,
     });
-    // As on the wire, a finish with no details leaves the key out.
     expect(frames.at(-1)).not.toHaveProperty("error_details");
   });
 

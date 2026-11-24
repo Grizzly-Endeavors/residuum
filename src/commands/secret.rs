@@ -1,36 +1,19 @@
-//! Secret subcommand: manage encrypted secret storage.
-
 use std::path::PathBuf;
 
 use residuum::checkpoints::CheckpointEngine;
 use residuum::util::FatalError;
 
-/// Secret management subcommands.
 #[derive(clap::Subcommand)]
 pub(super) enum SecretCommand {
-    /// Store a secret (prompts for value if omitted)
-    Set {
-        /// Name of the secret
-        name: String,
-        /// Value to store (prompted interactively if omitted)
-        value: Option<String>,
-    },
-    /// List stored secret names
+    Set { name: String, value: Option<String> },
     List,
-    /// Remove a secret
-    Delete {
-        /// Name of the secret to remove
-        name: String,
-    },
+    Delete { name: String },
 }
 
-/// Run the `secret` subcommand — manage encrypted secret storage.
 pub(super) async fn run_secret_command(command: &SecretCommand) -> Result<(), FatalError> {
     run_secret_command_at(residuum::config::default_hub_dir()?, command).await
 }
 
-/// [`run_secret_command`] against an explicit config directory, so the
-/// dispatch logic is testable without touching the real `~/.residuum`.
 async fn run_secret_command_at(
     config_dir: PathBuf,
     command: &SecretCommand,
@@ -44,7 +27,6 @@ async fn run_secret_command_at(
             let resolved_value = if let Some(v) = value {
                 v.clone()
             } else {
-                // Prompt for value with masked input
                 rpassword::prompt_password(format!("value for '{name}': "))
                     .map_err(|e| FatalError::Config(format!("failed to read secret value: {e}")))?
             };
@@ -92,8 +74,6 @@ mod tests {
     async fn set_and_delete_each_checkpoint_the_config_repo() {
         let dir = tempfile::tempdir().unwrap();
 
-        // First write has nothing preexisting to checkpoint (nothing to
-        // protect yet); the checkpoint appears from the second write on.
         run_secret_command_at(
             dir.path().to_path_buf(),
             &SecretCommand::Set {

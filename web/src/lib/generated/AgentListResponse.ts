@@ -2,20 +2,4 @@
 import type { AgentActivity } from "./AgentActivity";
 import type { AgentSummary } from "./AgentSummary";
 
-/**
- * Every hosted agent with its activity and stopping set: the answer to
- * `GET /api/hub/agents` and the body of the hub WebSocket's snapshot.
- */
-export type AgentListResponse = { 
-/**
- * Every agent, sorted by name.
- */
-agents: Array<AgentSummary>, 
-/**
- * Main-conversation activity of every agent, by name.
- */
-activity: { [key in string]: AgentActivity }, 
-/**
- * Names of running agents whose stop has begun but not finished.
- */
-stopping: Array<string>, };
+export type AgentListResponse = { agents: Array<AgentSummary>, activity: { [key in string]: AgentActivity }, stopping: Array<string>, };

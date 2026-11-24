@@ -13,14 +13,10 @@
   import { panelFile } from "./file-buffer.svelte";
   import { fileName, historyLocation, type FileSource } from "./file-source";
 
-  // One file's history: the checkpoints that changed it, newest first, what
-  // each changed or the whole file as it was, and restoring a version.
-
   interface Props {
     source: FileSource;
     path: string;
     onclose: () => void;
-    /** A version was restored, so the file is back on disk as it was then. */
     onrestored?: () => void;
   }
 
@@ -42,7 +38,6 @@
   let selectedId = $state<string | null>(null);
   const selected = $derived(checkpoints?.find((c) => c.id === selectedId) ?? null);
   let view = $state<View>("diff");
-  /** What the selected version shows: its change or its text, null for no change here, undefined while loading. */
   let shown = $state<string | null | undefined>(undefined);
   let shownError = $state("");
   let restoring = $state(false);

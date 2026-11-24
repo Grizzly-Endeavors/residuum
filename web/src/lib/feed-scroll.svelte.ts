@@ -43,50 +43,30 @@
 // composer floating over the area's foot), and that room never counts against
 // the reader.
 
-/** Within this distance of the end of the content, a reader back from further up follows again. */
 const FOLLOW_THRESHOLD_PX = 120;
 
-/** Sub-pixel scroll positions leave a reader at the bottom a pixel or so short of it. */
 const SCROLL_END_SLACK_PX = 2;
 
-/** Input other than a key that means the reader is taking the scroll position over. */
 const READER_INPUT_EVENTS = ["wheel", "touchstart", "pointerdown"] as const;
 
-/** Keys that scroll a focused scrolling area up, whatever modifier is held with them. */
 const UP_KEYS = new Set(["ArrowUp", "PageUp", "Home"]);
 
-/** The shortest a glide takes. */
 const GLIDE_MIN_MS = 150;
-/** What each further pixel of distance adds, by its square root, so long glides don't drag. */
 const GLIDE_MS_PER_ROOT_PX = 8;
-/** The longest a glide takes, however far it goes. */
 const GLIDE_MAX_MS = 600;
 
-/** How long a glide over `distance` pixels takes: longer the further it goes, up to the cap. */
 function glideDuration(distance: number): number {
   return Math.min(GLIDE_MAX_MS, GLIDE_MIN_MS + Math.sqrt(distance) * GLIDE_MS_PER_ROOT_PX);
 }
 
-/** The frame a glide's first frame counts as already having moved for, so the glide moves at once. */
 const FRAME_MS = 1000 / 60;
 
-/**
- * A cubic ease-out: off at once and slowing into the end, the shape of the
- * app's `--ease-out`, not its exact curve. That token is a CSS timing
- * function; a glide is scripted a frame at a time, and the cubic needs no
- * Bézier solver to get the same feel.
- */
 function easeOut(progress: number): number {
   return 1 - (1 - progress) ** 3;
 }
 
-/** How long a pressed expand or collapse control keeps its place against layout moving around it. */
 const KEEP_PLACE_MS = 500;
 
-/**
- * Elements that act on Home and End themselves: fields, media players, and
- * ARIA widgets that move their selection or position with them.
- */
 const OWNS_HOME_END = [
   "input",
   "textarea",
@@ -110,12 +90,6 @@ const OWNS_HOME_END = [
   '[role="toolbar"]',
 ].join(", ");
 
-/**
- * Whether a key pressed on `target` scrolls the feed: it is the feed, or
- * something in it that leaves the key to the feed, not an element that owns
- * Home and End (`OWNS_HOME_END`), nor inside an area in the feed that scrolls
- * up and down on its own.
- */
 function keyReachesFeed(target: EventTarget | null, feed: HTMLElement): boolean {
   if (target === feed || !(target instanceof Element)) return true;
   if (ownsHomeEnd(target, feed)) return false;
@@ -123,7 +97,6 @@ function keyReachesFeed(target: EventTarget | null, feed: HTMLElement): boolean 
   return !scrollsInside(target, feed);
 }
 
-/** Whether `target`, or something from it up to, not including, `feed`, owns Home and End. */
 function ownsHomeEnd(target: Element, feed: HTMLElement): boolean {
   for (let el: Element | null = target; el !== null && el !== feed; el = el.parentElement) {
     if (el.matches(OWNS_HOME_END)) return true;
@@ -131,13 +104,6 @@ function ownsHomeEnd(target: Element, feed: HTMLElement): boolean {
   return false;
 }
 
-/**
- * Home or End with no modifier that reaches the feed, and that no listener
- * attached to its element has handled: the feed takes these over from the
- * browser. Svelte's delegated `onkeydown` handlers run after the feed's own
- * listener, so they can't be seen here; the widgets that use these keys are
- * excluded by role instead.
- */
 function feedKey(event: KeyboardEvent, feed: HTMLElement): "Home" | "End" | null {
   const { key, altKey, ctrlKey, metaKey, shiftKey } = event;
   if (key !== "Home" && key !== "End") return null;
@@ -145,7 +111,6 @@ function feedKey(event: KeyboardEvent, feed: HTMLElement): "Home" | "End" | null
   return keyReachesFeed(event.target, feed) ? key : null;
 }
 
-/** Whether something from `target` up to, not including, `feed` scrolls up and down by itself. */
 function scrollsInside(target: Element, feed: HTMLElement): boolean {
   for (let el: Element | null = target; el !== null && el !== feed; el = el.parentElement) {
     if (el.scrollHeight <= el.clientHeight) continue;
@@ -167,16 +132,10 @@ function prefersReducedMotion(): boolean {
   );
 }
 
-/** Where `el` sits below the top of the scrolling area `scroll`. */
 function offsetIn(scroll: HTMLElement, el: HTMLElement): number {
   return el.getBoundingClientRect().top - scroll.getBoundingClientRect().top;
 }
 
-/**
- * Where the layout puts `el` below the top of `scroll`, without the nudge a
- * press gives a button (`:active` moves it down a pixel while it is held,
- * and a touch holds it until after the click).
- */
 function placeIn(scroll: HTMLElement, el: HTMLElement): number {
   if (typeof DOMMatrix === "undefined") return offsetIn(scroll, el);
   const { transform } = getComputedStyle(el);
@@ -184,83 +143,42 @@ function placeIn(scroll: HTMLElement, el: HTMLElement): number {
   return offsetIn(scroll, el) - nudge;
 }
 
-/** The control the reader pressed to open or close something, and where it was. */
 interface PlaceToKeep {
-  /** The control, or the one that replaced it: what it opens may redraw it as it goes. */
   control: HTMLElement;
-  /** What it controls (`aria-controls`) and its number among its item's such controls, to find it again. */
   controls: string | null;
   position: number;
-  /** Its feed item, held in place while the control is away. */
   item: HTMLElement | null;
   controlTop: number;
   itemTop: number;
 }
 
-/** Controls that open or close something. */
 const EXPANDERS = "[aria-expanded]";
 
 export interface FeedScrollerOptions {
-  /** How near the end of the content a reader coming back down must be to follow again. */
   followWithinPx?: number;
-  /**
-   * Pixels at the foot of the scrolling area that something floating over it
-   * hides (a composer): the last line is only in view above them.
-   */
   covered?: () => number;
 }
 
 export class FeedScroller {
-  /** The reader has scrolled away from the end; show "Jump to latest". */
   scrolledUp = $state(false);
-  /** Something arrived below the reader while they were scrolled away. */
   unseen = $state(false);
 
   private el: HTMLElement | null = null;
   private content: HTMLElement | null = null;
-  /** New content keeps the reader at the bottom. Only the reader's own doing changes it. */
   private following = true;
-  /**
-   * Where the scroll position is, as far as the scroller knows: where it last
-   * put it, or where the last move it took in left it. `null` until it has
-   * seen the feed laid out.
-   */
   private knownTop: number | null = null;
-  /** How tall the content was where the scroller last took the position in. */
   private knownHeight = 0;
-  /**
-   * The page has said its items are about to change (`takeInPendingScroll`),
-   * and the `contentChanged` of that change hasn't come yet. Both come in one
-   * task, with no frame between them for the reader to scroll in.
-   */
   private updating = false;
-  /** The feed was hidden when the scroller last looked: it reports no size, and no position worth judging. */
   private hidden = false;
-  /**
-   * The feed is being rebuilt under a reader who had scrolled up; the scroll
-   * position it passes through meanwhile isn't theirs, so it doesn't count.
-   */
   private held = false;
-  /** Where the content ended and how tall the area was when last looked at. */
   private lastEnd = 0;
   private lastViewport = 0;
-  /** The room reserved under the last line when the scroller last looked. */
   private lastRoom = 0;
-  /**
-   * How much floated over the foot when the scroller last pinned the reader
-   * to the bottom. Room that grows while that is unchanged is the page
-   * catching up with the room the pin was meant to include (some browsers
-   * restyle the column a frame after the room changes), not the composer
-   * growing, so it keeps the reader at the bottom.
-   */
   private pinnedCovered: number | null = null;
-  /** An expand or collapse control to keep where it was, for a moment. */
   private keeping: PlaceToKeep | null = null;
   private keepingTimer: ReturnType<typeof setTimeout> | undefined;
   private keepingFrame = 0;
-  /** The content is held at its height from the moment of a press, until the reader scrolls. */
   private holdingHeight = false;
-  /** The next frame of the glide under way, or 0 when there is none. */
   private glideFrame = 0;
 
   private readonly followWithinPx: number;
@@ -276,10 +194,6 @@ export class FeedScroller {
     this.takeInScroll();
   };
 
-  /**
-   * Take in where the scroll position is now. A move the scroller didn't make
-   * is the reader's, unless it is the browser's.
-   */
   private takeInScroll(): void {
     const el = this.el;
     if (!el) return;
@@ -291,13 +205,11 @@ export class FeedScroller {
     const from = this.knownTop;
     const fromHeight = this.knownHeight;
     this.know(top);
-    // Where the browser has the position as the feed shows again isn't the reader's move.
     if (this.hidden) {
       this.hidden = false;
       return;
     }
     if (from === null || Math.abs(top - from) < 1) return;
-    // Someone else has the position now: a glide of the scroller's would take it back.
     this.interruptGlide();
     const up = top < from;
     if (this.held) return;
@@ -309,21 +221,11 @@ export class FeedScroller {
     this.refreshPill();
   }
 
-  /** Record `top` as where the position is, over the content as it is now. */
   private know(top: number): void {
     this.knownTop = top;
     this.knownHeight = this.el?.scrollHeight ?? 0;
   }
 
-  /**
-   * Whether a move up from `from` to `top` is the browser keeping the position
-   * in range: where it was is past the end of the range, and it lands at the
-   * end. The range is judged both as it is now and as it was where the scroller last took the
-   * position in (`fromHeight`), since content can grow in place (an image
-   * loading, a font swapping in) after the move and before its event: the view
-   * grows, the browser keeps the position in range, and then the content below
-   * a following reader grows.
-   */
   private keptInRange(from: number, top: number, fromHeight: number): boolean {
     const el = this.el;
     if (!el) return false;
@@ -366,17 +268,11 @@ export class FeedScroller {
     if (el && !isHidden(el) && !this.hidden) this.know(el.scrollTop);
   }
 
-  /**
-   * Scroll at once to `top`, as the scroller's own move, and record where it
-   * left the position. It ends any glide under way, which would otherwise
-   * move the position on from there on its next frame.
-   */
   private write(top: number): void {
     this.stopGlide();
     this.place(top);
   }
 
-  /** Scroll at once to `top` and record where it left the position. */
   private place(top: number): void {
     const el = this.el;
     if (!el) return;
@@ -385,11 +281,6 @@ export class FeedScroller {
     this.hidden = false;
   }
 
-  /**
-   * Move the scroll position for the page: keeping what the reader sees in
-   * place as older history goes in above it, or putting them back where they
-   * were after a reload. It is the scroller's own move, never the reader's.
-   */
   moveTo(top: number): void {
     const el = this.el;
     if (!el || isHidden(el)) return;
@@ -397,9 +288,6 @@ export class FeedScroller {
     this.write(top);
   }
 
-  // The reader taking over the scroll ends a reload's hold on their state, and
-  // any hold on the place of a control they pressed. A wheel, a touch or a
-  // press also ends a glide; a key ends one only when it scrolls the feed.
   private readonly onReaderInput = (event: Event): void => {
     this.held = false;
     this.letGoOfPlace();
@@ -408,8 +296,6 @@ export class FeedScroller {
     if (event.type === "wheel" && this.wheelScrollsUp(event as WheelEvent)) this.leave();
   };
 
-  // The feed moves itself for the Home and End it takes (`feedKey`); any other
-  // key is the browser's to act on, and one that scrolls up is the reader leaving.
   private readonly onKeyDown = (event: KeyboardEvent): void => {
     const el = this.el;
     if (!el) return;
@@ -426,16 +312,12 @@ export class FeedScroller {
     if (key === "End") {
       this.jumpToLatest();
     } else if (this.canScrollUp()) {
-      // The glide goes first: under reduced motion it moves the position at once,
-      // and leaving then sees the top, so the pill shows.
       this.glideTo(0);
       this.leave();
     }
   };
 
   private wheelScrollsUp(event: WheelEvent): boolean {
-    // Ctrl zooms, Shift turns the wheel sideways, and a swipe that is mostly
-    // sideways scrolls something sideways (a code block, a table).
     if (!(event.deltaY < 0) || event.ctrlKey || event.shiftKey) return false;
     if (Math.abs(event.deltaX) >= Math.abs(event.deltaY)) return false;
     return this.canScrollUp();
@@ -443,25 +325,20 @@ export class FeedScroller {
 
   private keyScrollsUp(event: KeyboardEvent): boolean {
     if (event.defaultPrevented || event.altKey) return false;
-    // Space pages, with Shift up, only from the area itself: on a control it presses the control.
     const up =
       UP_KEYS.has(event.key) || (event.key === " " && event.shiftKey && event.target === this.el);
     return up && this.el !== null && keyReachesFeed(event.target, this.el) && this.canScrollUp();
   }
 
-  /** Whether the feed has anywhere to scroll up to. */
   private canScrollUp(): boolean {
     return this.el !== null && this.el.scrollTop > 0;
   }
 
-  /** The reader scrolled up: stop following at once, however near the end they still are. */
   private leave(): void {
     this.following = false;
     this.refreshPill();
   }
 
-  // Seen before the control's own handler: open or close, the control stays
-  // where the reader pressed it.
   private readonly onPress = (event: Event): void => {
     const el = this.el;
     if (!el || !(event.target instanceof Element)) return;
@@ -489,10 +366,6 @@ export class FeedScroller {
     this.lastRoom = room;
     this.restorePlace();
     if (this.following) {
-      // Content growing, or the area changing size, keeps a following reader
-      // at the bottom. Only the reserved room changing (the composer growing
-      // or shrinking) leaves the thread where it is, unless the last line
-      // would end up under what floats over the foot.
       if (reshaped || roomCaughtUp) this.pinToBottom();
       else this.keepLastLineClear();
     } else if (!this.held) {
@@ -500,18 +373,10 @@ export class FeedScroller {
     }
   };
 
-  /**
-   * Start tracking the scrolling `el`, whose `content` element holds the
-   * feed; returns the cleanup. Content growing in place (a tool result
-   * filling in, an image loading) keeps a following reader at the bottom, and
-   * so does `el` itself changing size under them (the window narrowing).
-   * Attaching reads no reactive state, and leaves the reader's state as it was.
-   */
   attach(el: HTMLElement, content: HTMLElement): () => void {
     this.el = el;
     this.content = content;
     const resizes = new ResizeObserver(this.onResize);
-    // The border box: the room reserved under the last line is padding.
     resizes.observe(content, { box: "border-box" });
     resizes.observe(el);
     el.addEventListener("scroll", this.onScroll, { passive: true });
@@ -520,7 +385,6 @@ export class FeedScroller {
     }
     // Not passive: it takes Home and End over from the browser.
     el.addEventListener("keydown", this.onKeyDown);
-    // Capture: before the control's own click handler changes what is shown.
     el.addEventListener("click", this.onPress, true);
     this.hidden = isHidden(el);
     this.know(el.scrollTop);
@@ -543,17 +407,10 @@ export class FeedScroller {
     };
   }
 
-  /** Whether new content should keep the feed pinned to the bottom. */
   get isFollowing(): boolean {
     return this.following;
   }
 
-  /**
-   * Content changed: stay pinned to the bottom if following (or `force`d,
-   * e.g. for the reader's own message or a freshly loaded feed). `arrived`
-   * says a new item landed at the end, which a reader who isn't following is
-   * told about (`unseen`).
-   */
   contentChanged(force = false, arrived = false): void {
     if (this.updating) this.takeInUpdate();
     if (force) {
@@ -571,17 +428,12 @@ export class FeedScroller {
     if (arrived && this.scrolledUp) this.unseen = true;
   }
 
-  /**
-   * Keep the reader counted as scrolled up while the feed is rebuilt under
-   * them, until `release()` or they scroll by hand.
-   */
   hold(): void {
     this.held = true;
     this.following = false;
     this.scrolledUp = true;
   }
 
-  /** The rebuild is done; judge where the reader is afresh. */
   release(): void {
     if (!this.held) return;
     this.held = false;
@@ -592,18 +444,10 @@ export class FeedScroller {
     this.refreshPill();
   }
 
-  /** Whether a `hold()` is still in effect. */
   get isHeld(): boolean {
     return this.held;
   }
 
-  /**
-   * The pill's action, and End's: glide back to the newest content and follow
-   * it again. The glide aims at the end as it is on each frame, and content
-   * landing on the way (an older episode prepended at the top they just left)
-   * pins them to the bottom at once instead of holding them where the glide
-   * had reached.
-   */
   jumpToLatest(): void {
     const el = this.el;
     if (!el) return;
@@ -615,11 +459,6 @@ export class FeedScroller {
     this.glideTo("end");
   }
 
-  /**
-   * Glide to `target`, the top of the content (0) or its end, one position a
-   * frame from where the reader is, ending any glide under way; or go there
-   * at once for a reader who prefers less motion.
-   */
   private glideTo(target: 0 | "end"): void {
     const el = this.el;
     if (!el) return;
@@ -631,115 +470,80 @@ export class FeedScroller {
     }
     this.stopGlide();
     const from = el.scrollTop;
-    // The glide starts from wherever the position is; a move not yet taken in is overtaken by it.
     this.know(from);
     const duration = glideDuration(Math.abs(destination() - from));
     let start: number | null = null;
-    // The frame's own time, not the page's clock: the end-to-end tests stop that clock.
     const step = (now: number): void => {
       if (this.el !== el || isHidden(el)) {
         this.glideFrame = 0;
         return;
       }
-      // Moved since the last frame by someone else, whose scroll event hasn't come
-      // yet (a script in the glide's own scroll event, find in page): theirs wins,
-      // and taking it in ends the glide, still counted as under way until then.
       if (this.knownTop !== null && Math.abs(el.scrollTop - this.knownTop) >= 1) {
         this.takeInScroll();
-        // Also when taking it in didn't get as far as ending the glide (the feed was
-        // shown again since the last frame): no frame is coming, so none is under way.
         this.glideFrame = 0;
         return;
       }
       this.glideFrame = 0;
-      // The first frame counts as one frame in, so the glide moves at once.
       start ??= now - FRAME_MS;
       const progress = Math.min(1, (now - start) / duration);
       const to = destination();
       this.place(progress < 1 ? from + (to - from) * easeOut(progress) : to);
-      // Its own moves never reach `takeInScroll` as moves, so the pill follows them here.
       if (!this.following) this.refreshPill();
       if (progress < 1) this.glideFrame = requestAnimationFrame(step);
     };
     this.glideFrame = requestAnimationFrame(step);
   }
 
-  /** End the glide under way, if any, where it has got to. */
   private stopGlide(): void {
     if (this.glideFrame === 0) return;
     cancelAnimationFrame(this.glideFrame);
     this.glideFrame = 0;
   }
 
-  /**
-   * The reader, not the scroller, ends the glide under way: a glide to the
-   * end that stops short of it leaves them where it stopped, no longer
-   * following, so new content doesn't pull them down after all.
-   */
   private interruptGlide(): void {
     if (this.glideFrame === 0) return;
     this.stopGlide();
-    // A rebuild holds the reader's state until it is done (`hold`).
     if (this.held) return;
     if (this.following && !this.nearEnd()) this.following = false;
     this.refreshPill();
   }
 
-  /** Put the reader at the true bottom, the reserved room included. */
   private pinToBottom(): void {
     const el = this.el;
     if (!el || isHidden(el)) return;
-    // Instant, not smooth: a smooth scroll still in flight when more content
-    // lands stops short of the new bottom.
     this.write(el.scrollHeight);
     this.pinnedCovered = this.covered();
     this.scrolledUp = false;
     this.unseen = false;
   }
 
-  /** The room under the content's last line, which reserves space and is never counted as content. */
   private bottomRoom(): number {
     const content = this.content;
     if (!content) return 0;
     return Number.parseFloat(getComputedStyle(content).paddingBottom) || 0;
   }
 
-  /** Where the last line ends, in the area's scrolled coordinates. */
   private contentEnd(): number {
     const el = this.el;
     return el === null ? 0 : el.scrollHeight - this.bottomRoom();
   }
 
-  /**
-   * How far the last line is below the part of the area the reader can see:
-   * positive when it is out of view, negative while it is in view with room
-   * to spare.
-   */
   private reach(): number {
     const el = this.el;
     if (!el) return 0;
     return this.contentEnd() - (el.scrollTop + el.clientHeight - this.covered());
   }
 
-  /** At the very bottom of the scroll range, where there is no further to go. */
   private atBottom(): boolean {
     const el = this.el;
     if (!el) return true;
     return el.scrollHeight - el.scrollTop - el.clientHeight <= SCROLL_END_SLACK_PX;
   }
 
-  /**
-   * Whether the reader is at the end: their last line is near enough the view,
-   * or they are at the very bottom of the scroll range. The room under the
-   * last line is a CSS variable set from the composer's measured height a
-   * frame after the composer changes, so for that frame a reader at the
-   * bottom can see the composer cover more than the room left for it.
-   */
   private nearEnd(): boolean {
     return this.atBottom() || this.reach() <= this.followWithinPx;
   }
 
-  /** Scroll just far enough that something floating over the foot isn't covering the last line. */
   private keepLastLineClear(): void {
     const el = this.el;
     if (!el) return;
@@ -747,7 +551,6 @@ export class FeedScroller {
     if (reach > 0) this.write(el.scrollTop + reach);
   }
 
-  /** The pill, from whether the reader follows and how far from the end they are. */
   private refreshPill(): void {
     const el = this.el;
     if (!el || isHidden(el)) return;
@@ -755,16 +558,6 @@ export class FeedScroller {
     if (!this.scrolledUp) this.unseen = false;
   }
 
-  // ── Opening and closing things ─────────────────────────────────────
-
-  /**
-   * The reader pressed a control that opens or closes something (anything
-   * with `aria-expanded`). What it reveals or hides must not carry the
-   * control away: it keeps its place on the screen, the feed stops following
-   * until the reader is back at the end, and the content's height is held,
-   * so closing something at the very end doesn't pull everything down after
-   * it. Scrolling by hand lets the height go.
-   */
   private keepPlaceOf(control: HTMLElement): void {
     const el = this.el;
     const content = this.content;
@@ -779,15 +572,12 @@ export class FeedScroller {
       controlTop: placeIn(el, control),
       itemTop: item === null ? 0 : offsetIn(el, item),
     };
-    // As tall as it is now, whatever an earlier press held it at.
     content.style.minHeight = `${String(content.offsetHeight)}px`;
     this.holdingHeight = true;
     clearTimeout(this.keepingTimer);
     this.keepingTimer = setTimeout(() => {
       this.keeping = null;
     }, KEEP_PLACE_MS);
-    // Every frame while it holds: the control can move inside content whose
-    // overall size doesn't change, which no resize would report.
     cancelAnimationFrame(this.keepingFrame);
     this.keepingFrame = requestAnimationFrame(this.keepPlaceEachFrame);
   }
@@ -798,7 +588,6 @@ export class FeedScroller {
     this.keepingFrame = requestAnimationFrame(this.keepPlaceEachFrame);
   };
 
-  /** The control the reader pressed, or what stands in for it once what it opened has redrawn it. */
   private controlNow(keeping: PlaceToKeep): HTMLElement | null {
     if (keeping.control.isConnected) return keeping.control;
     const scope = keeping.item?.isConnected ? keeping.item : this.el;

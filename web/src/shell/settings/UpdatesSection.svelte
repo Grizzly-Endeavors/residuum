@@ -9,11 +9,6 @@
   import SettingsGroup from "./SettingsGroup.svelte";
   import SettingsSection from "./SettingsSection.svelte";
 
-  // Updates: the running version, checking for a newer one, and installing it.
-  // These act at once through their own endpoints and have no part in the save
-  // bar. Installing restarts Residuum, so the section polls the status until
-  // it answers again and says whether the new version came up or rolled back.
-
   let { scope, section }: AllSectionProps = $props();
 
   const RESTART_POLL_INTERVAL_MS = 1500;
@@ -35,7 +30,6 @@
   let restartStartedAt = 0;
   let versionBeforeRestart = "";
 
-  /** Take a status, showing a rollback notice whenever there is one: it may have happened before this section opened. */
   function take(next: UpdateStatusResponse): void {
     status = next;
     if (next.rollback_notice !== null) {
@@ -66,7 +60,6 @@
     waitedSeconds = Math.floor((Date.now() - restartStartedAt) / 1000);
     try {
       const next = await fetchUpdateStatus();
-      // The old process can still answer for a moment after the install; only a new version or a rollback is an outcome.
       if (next.rollback_notice !== null || next.current !== versionBeforeRestart) {
         take(next);
         restarting = false;
@@ -74,9 +67,7 @@
         stopPolling();
         return;
       }
-    } catch {
-      // Residuum is still down mid-restart, so keep waiting.
-    }
+    } catch {}
     if (Date.now() - restartStartedAt > RESTART_TIMEOUT_MS) {
       restarting = false;
       outcome = "timed_out";

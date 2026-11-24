@@ -1,23 +1,13 @@
-//! Sliding-window limits on the pairing routes a stranger can reach.
-//!
-//! Creating a pairing request, entering a recovery code and presenting a
-//! token are each capped per peer address and, so many addresses can't add up
-//! to a flood, across the whole install. Only attempts that are allowed count
-//! against the window, so a refused flood adds no memory.
-
 use std::collections::{HashMap, VecDeque};
 
 use chrono::{DateTime, Duration, Utc};
 
-/// How many attempts one peer address may make in a window.
 pub(super) const PER_PEER_LIMIT: usize = 10;
 
-/// How many attempts the whole install allows in a window.
 pub(super) const PER_INSTANCE_LIMIT: usize = 60;
 
 const WINDOW_SECS: i64 = 60;
 
-/// Key for attempts that arrive with no usable peer address.
 const UNKNOWN_PEER: &str = "unknown";
 
 #[derive(Debug, Default)]
@@ -26,7 +16,6 @@ pub(super) struct RateLimiter {
     all: VecDeque<DateTime<Utc>>,
 }
 
-/// Which limit refused an attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum LimitHit {
     Peer,
@@ -34,7 +23,6 @@ pub(super) enum LimitHit {
 }
 
 impl RateLimiter {
-    /// Count an attempt by `peer` at `now`, or say which limit it hit.
     pub(super) fn check(&mut self, peer: Option<&str>, now: DateTime<Utc>) -> Result<(), LimitHit> {
         let cutoff = now - Duration::seconds(WINDOW_SECS);
         prune(&mut self.all, cutoff);

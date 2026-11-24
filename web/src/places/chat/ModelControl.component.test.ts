@@ -116,8 +116,6 @@ describe("the model and thinking popover", () => {
     await userEvent.click(screen.getByRole("button", { name: "Claude Haiku 4.5" }));
     await settle();
 
-    // What the agent sends back: it is reloading, how that went, and the
-    // settings watcher's second pass over the same file.
     ws.transport.onMessage?.({ type: "reloading" });
     ws.transport.onMessage?.({
       type: "notice",

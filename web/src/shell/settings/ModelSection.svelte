@@ -14,14 +14,6 @@
   import SettingsGroup from "./SettingsGroup.svelte";
   import SettingsSection from "./SettingsSection.svelte";
 
-  // The Model section: the main model and how hard it thinks,
-  // thinking and temperature for every model, a model for each job that
-  // needs its own, and the providers they come from. Roles are saved to the
-  // agent's `providers.toml`, the settings for every model to its
-  // `config.toml`. It stays editable while the agent is stopped, and a field
-  // asked for on arrival, such as the one Fix settings found, is focused once
-  // the section shows.
-
   let { scope, section }: AgentSectionProps = $props();
 
   const agent = $derived(scope.agent);
@@ -29,7 +21,6 @@
 
   type Tuning = "thinking" | "temperature";
 
-  /** A role's own thinking or temperature, which is saved with its model. */
   const tuningOf = (role: ModelRoleKey, key: Tuning): string => models.overrides[role]?.[key] ?? "";
 
   function setTuning(role: ModelRoleKey, key: Tuning, next: string): void {
@@ -42,7 +33,6 @@
       (placed) => placed.field?.kind === "role" && placed.field.role !== "main",
     ),
   );
-  // Open when a job has a model of its own, so what is set is never hidden.
   let jobsOpen = $state(untrack(() => JOB_ROLES.some((job) => scope.models[job.key] !== "")));
   $effect(() => {
     if (jobHasProblem) jobsOpen = true;
@@ -179,7 +169,6 @@
 </SettingsSection>
 
 <style>
-  /* The field asked for on arrival, until focus leaves it. */
   .model-section :global([data-arrived]) {
     border-radius: var(--corner-sm);
     outline: 1px solid var(--color-vein);

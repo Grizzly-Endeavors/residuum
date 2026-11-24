@@ -5,18 +5,10 @@
 
   interface Props {
     label: string;
-    /** Help under the control, linked to it as a description. */
     hint?: string;
-    /** An inline error under the control; marks the control invalid and describes it. */
     error?: string;
-    /** Keep the label for assistive technology only. */
     labelHidden?: boolean;
-    /**
-     * `label` for a control a `<label for>` can name (inputs, selects,
-     * buttons); `span` for one named by `aria-labelledby` (radio groups, groups).
-     */
     labelElement?: "label" | "span";
-    /** Label above the control, label beside it with the control at the end, or both on one compact line. */
     layout?: "stack" | "row" | "inline";
     children: Snippet<[FieldControl]>;
   }

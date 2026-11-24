@@ -28,7 +28,6 @@ describe("relativeTime", () => {
   });
 });
 
-/** Run the test with the clock of `zone`, the way a reader in it sees the page. */
 function inZone(zone: string): void {
   vi.stubEnv("TZ", zone);
 }
@@ -40,10 +39,8 @@ afterEach(() => {
 describe("localTimestamp", () => {
   it("is the reader's wall clock in the shape history uses, not UTC", () => {
     inZone("America/Los_Angeles");
-    // 06:30 UTC on the 10th is 23:30 on the 9th in Los Angeles.
     expect(localTimestamp(new Date("2026-10-10T06:30:12Z"))).toBe("2026-10-09T23:30:12");
     inZone("Pacific/Auckland");
-    // 11:30 UTC on the 9th is 00:30 on the 10th in Auckland.
     expect(localTimestamp(new Date("2026-10-09T11:30:12Z"))).toBe("2026-10-10T00:30:12");
   });
 
@@ -88,7 +85,6 @@ describe("messageTimeLabel", () => {
 
   it("reads today on the reader's clock, not UTC's", () => {
     inZone("America/Los_Angeles");
-    // 23:30 on the 9th in Los Angeles, which is already the 10th in UTC.
     const now = new Date("2026-10-10T06:45:00Z").getTime();
     expect(messageTimeLabel("2026-10-09T23:30:00", now)).toBe(clock(new Date(2026, 9, 9, 23, 30)));
   });

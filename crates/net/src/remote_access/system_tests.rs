@@ -1,10 +1,3 @@
-//! The whole remote access path, end to end: the real manager and engine behind
-//! the real tunnel client, a fake relay speaking tunnel v2 with a TCP front
-//! door, a fake pin service and (for the issuance tests) a Pebble ACME CA.
-//!
-//! The Pebble tests need Docker and are `#[ignore]`d; run them with
-//! `cargo test --quiet -p residuum-net --lib system_tests -- --ignored`.
-
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -40,15 +33,12 @@ const UI: &str = "bear.relay.test";
 const WORKBENCH: &str = "bear.workbench.relay.test";
 const INSTANCE: &str = "laptop.bear.relay.test";
 
-/// Everything one instance keeps on disk, which survives a restart.
 struct Env {
     hub: tempfile::TempDir,
     settings: RemoteAccessSettings,
 }
 
 impl Env {
-    /// An install whose CA, pin service and resolver are nowhere: whatever
-    /// tries to reach them fails at once.
     fn offline() -> Self {
         Self {
             hub: tempfile::tempdir().unwrap(),
@@ -62,7 +52,6 @@ impl Env {
         }
     }
 
-    /// An install that talks to Pebble and the fake pin service.
     fn pebble(harness: &PebbleHarness, pins: &FakePinService) -> Self {
         Self {
             hub: tempfile::tempdir().unwrap(),
@@ -80,7 +69,6 @@ impl Env {
         self.hub.path().join("remote-access")
     }
 
-    /// Store the identity an earlier enrollment would have.
     fn seed_identity(&self) {
         std::fs::create_dir_all(self.state_dir()).unwrap();
         std::fs::write(
@@ -90,7 +78,6 @@ impl Env {
         .unwrap();
     }
 
-    /// Store a self-signed certificate for the three names.
     async fn seed_certificate(&self) {
         let names: Vec<String> = [UI, WORKBENCH, INSTANCE].map(String::from).to_vec();
         let key = rcgen::generate_simple_self_signed(names.clone()).unwrap();
@@ -109,7 +96,6 @@ impl Env {
     }
 }
 
-/// A running manager behind a tunnel client.
 struct Stack {
     remote: RemoteAccess,
     slot: RemoteAccessSlot,
@@ -256,14 +242,11 @@ impl ServerCertVerifier for AcceptAnyCertificate {
     }
 }
 
-/// What a browser sees: the answer and the certificate it was served under.
 struct Fetched {
     response: String,
     certificate: Vec<u8>,
 }
 
-/// A browser's request to the relay's front door: TLS to `sni`, then HTTP
-/// with `host` as the Host header.
 async fn fetch(door_port: u16, sni: &str, host: &str, path: &str) -> Fetched {
     let provider = Arc::new(tokio_rustls::rustls::crypto::ring::default_provider());
     let mut config = ClientConfig::builder_with_provider(provider)
@@ -329,8 +312,6 @@ fn names_in(certificate: &[u8]) -> Vec<String> {
     names.sort();
     names
 }
-
-// ── Without a CA ─────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn an_enrolled_install_serves_each_host_and_answers_421_for_others() {
@@ -494,8 +475,6 @@ async fn the_stored_identity_replaces_what_the_relay_announces_for_pairing() {
     stack.stop().await;
 }
 
-// ── With Pebble ──────────────────────────────────────────────────────
-
 async fn pebble_world() -> (Arc<PebbleHarness>, FakePinService, FakeRelay) {
     let harness = Arc::new(PebbleHarness::start().await.expect("Pebble starts"));
     for name in [UI, WORKBENCH, INSTANCE] {
@@ -519,7 +498,6 @@ async fn pebble_enrolls_gets_a_certificate_through_the_tunnel_and_alerts_on_an_u
     let stack = Stack::start(&env, &relay);
     let status = stack.wait_for_state(RemoteAccessState::Ready).await;
 
-    // Enrolled: the pin, the identity, the recovery code to save.
     assert_eq!(pins.operations(), ["enroll"]);
     assert_eq!(pins.pins().len(), 1);
     assert_eq!(status.user.as_deref(), Some("bear"));
@@ -532,7 +510,6 @@ async fn pebble_enrolls_gets_a_certificate_through_the_tunnel_and_alerts_on_an_u
         .wait_frame(|f| matches!(f, V2Frame::ChallengeRelease { .. }))
         .await;
 
-    // The certificate was issued by the CA to the account, and serves.
     let ui = fetch(relay.front_door_port(), UI, UI, "/hello").await;
     assert!(ui.response.ends_with("ui-ok"), "{}", ui.response);
     assert_eq!(names_in(&ui.certificate), [UI, WORKBENCH, INSTANCE]);
@@ -545,11 +522,9 @@ async fn pebble_enrolls_gets_a_certificate_through_the_tunnel_and_alerts_on_an_u
     let unknown = fetch(relay.front_door_port(), UI, "other.relay.test", "/").await;
     assert!(unknown.response.starts_with("HTTP/1.1 421"));
 
-    // Saving the recovery code makes Residuum forget it.
     stack.remote.acknowledge_recovery_code().await.unwrap();
     assert!(!stack.status().recovery_code_pending);
 
-    // A certificate account nobody here approved is reported.
     pins.preload("https://acme.test/acct/stranger", "stranger");
     stack.remote.retry_now();
     let alerted = stack
@@ -572,7 +547,6 @@ async fn pebble_renews_a_due_certificate_through_the_tunnel() {
         .certificate;
     first.stop().await;
 
-    // Age the stored certificate until its renewal is due.
     let store = super::acme::CertStore::new(&env.state_dir(), &env.settings.acme_directory);
     let mut bundle = store.load().expect("a stored certificate");
     bundle.not_before = Utc::now() - chrono::Duration::days(3000);
@@ -609,13 +583,11 @@ async fn pebble_a_second_install_needs_a_join_and_a_recovery_code_resets_the_pin
     let recovery_code = ready.recovery_code.expect("the recovery code");
     first.stop().await;
 
-    // A new install of the same user: pins exist, so it serves nothing.
     let second_env = Env::pebble(&harness, &pins);
     let second = Stack::start(&second_env, &relay);
     second.wait_for_state(RemoteAccessState::NeedsJoin).await;
     assert_eq!(pins.operations(), ["enroll"]);
 
-    // The recovery code takes the address back for this install.
     let wrong = second.remote.reset_pins("AAAAAAAAAAAAAAAAAAAA").await;
     assert!(wrong.is_err(), "a wrong code is refused");
     second.remote.reset_pins(&recovery_code).await.unwrap();
@@ -626,7 +598,6 @@ async fn pebble_a_second_install_needs_a_join_and_a_recovery_code_resets_the_pin
     second.stop().await;
 }
 
-/// What the install stored about its pending recovery code.
 fn stored_recovery_code(env: &Env) -> Option<String> {
     let text = std::fs::read_to_string(env.state_dir().join("state.json")).ok()?;
     let state: serde_json::Value = serde_json::from_str(&text).ok()?;
@@ -663,7 +634,6 @@ async fn pebble_an_email_reset_keeps_its_recovery_code_until_the_reset_takes_eff
     );
     let kept = stored_recovery_code(&second_env).expect("the new code is stored");
 
-    // A pass through the needs-join path doesn't discard it.
     let checked_before = second.status().checked_at;
     second.remote.retry_now();
     second
@@ -674,7 +644,6 @@ async fn pebble_an_email_reset_keeps_its_recovery_code_until_the_reset_takes_eff
     assert_eq!(second.status().state, RemoteAccessState::NeedsJoin);
     assert_eq!(stored_recovery_code(&second_env).as_ref(), Some(&kept));
 
-    // Confirmed, then the hold ends.
     let effective_at = Utc::now().timestamp() + 3600;
     pins.confirm_email_reset(effective_at);
     pins.apply_email_reset().await;

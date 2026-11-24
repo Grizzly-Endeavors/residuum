@@ -1,7 +1,3 @@
-//! Persistent, file-backed [`a2a_server::TaskStore`]: each task is a JSON
-//! file at `{workspace}/a2a/tasks/{task_id}.json`, written atomically, with
-//! an in-memory index for reads. See `docs/systems-usage/a2a.md`.
-
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -14,18 +10,10 @@ use tokio::sync::RwLock;
 
 use residuum_core::util::fs::atomic_write;
 
-/// Task metadata key recording the caller (`key:<name>` | `sibling:<slug>`)
-/// a task belongs to, checked by [`super::handler::ResiduumA2aHandler`] on
-/// every task-addressed request.
 pub const CALLER_METADATA_KEY: &str = "residuum.caller";
-/// Task metadata key recording the conversation-session address the
-/// executor delivers this task's messages into.
 pub const ADDRESS_METADATA_KEY: &str = "residuum.address";
-/// Message metadata key marking a restart-continuation message as synthetic
-/// (Residuum's own, not something the caller sent).
 pub const SYNTHETIC_METADATA_KEY: &str = "residuum.synthetic";
 
-/// How long a terminal task is kept before being pruned at startup.
 const TASK_RETENTION: chrono::Duration = chrono::Duration::days(30);
 
 struct StoredEntry {
@@ -33,22 +21,14 @@ struct StoredEntry {
     version: TaskVersion,
 }
 
-/// File-backed [`a2a_server::TaskStore`].
 pub struct FileTaskStore {
     dir: PathBuf,
     tasks: RwLock<HashMap<String, StoredEntry>>,
 }
 
-/// Shared handle to the task store.
 pub type SharedTaskStore = Arc<FileTaskStore>;
 
 impl FileTaskStore {
-    /// Load every task file under `dir` (creating it if missing) into an
-    /// in-memory index, pruning terminal tasks whose status timestamp is
-    /// older than 30 days.
-    ///
-    /// # Errors
-    /// Returns an error if `dir` cannot be created or listed.
     pub async fn load(dir: &Path) -> anyhow::Result<SharedTaskStore> {
         tokio::fs::create_dir_all(dir)
             .await
@@ -122,14 +102,11 @@ impl FileTaskStore {
             .map_err(|e| A2AError::internal(format!("failed to persist a2a task {}: {e}", task.id)))
     }
 
-    /// The caller a task belongs to, from its `residuum.caller` metadata.
     #[must_use]
     pub fn caller_of(task: &Task) -> Option<&str> {
         task.metadata.as_ref()?.get(CALLER_METADATA_KEY)?.as_str()
     }
 
-    /// The non-terminal task in `context_id`, if one exists — used to
-    /// enforce one open task per context.
     pub async fn open_task_in_context(&self, context_id: &str) -> Option<Task> {
         self.tasks
             .read()
@@ -140,8 +117,6 @@ impl FileTaskStore {
             .cloned()
     }
 
-    /// Every task belonging to `caller` (its `residuum.caller` metadata),
-    /// for `super::handler::ResiduumA2aHandler::list_tasks` scoping.
     pub async fn tasks_for_caller(&self, caller: &str) -> Vec<Task> {
         self.tasks
             .read()
@@ -153,8 +128,6 @@ impl FileTaskStore {
             .collect()
     }
 
-    /// Every task left `Submitted` or `Working`, for the restart
-    /// continuation sweep.
     pub async fn in_progress_tasks(&self) -> Vec<Task> {
         self.tasks
             .read()
@@ -172,17 +145,11 @@ impl FileTaskStore {
     }
 }
 
-/// Saturating `usize -> i32`, for the `ListTasksResponse` count fields a
-/// page or store size never realistically approaches `i32::MAX` anyway.
 #[must_use]
 pub(crate) fn saturating_i32(n: usize) -> i32 {
     i32::try_from(n).unwrap_or(i32::MAX)
 }
 
-/// Mirrors `a2a_server::task_store::apply_history_length`, which is
-/// crate-private in the SDK — duplicated here rather than widened upstream.
-/// Shared with `ResiduumA2aHandler::list_tasks` in `handler.rs`, which
-/// bypasses the SDK's own list path to filter by caller first.
 pub(crate) fn apply_history_length(task: &mut Task, history_length: Option<i32>) {
     let Some(requested) = history_length else {
         return;
@@ -281,15 +248,6 @@ impl a2a_server::TaskStore for FileTaskStore {
     }
 }
 
-/// Wraps a [`SharedTaskStore`] so it can be handed to
-/// `a2a_server::DefaultRequestHandler::new` (which takes `impl TaskStore` by
-/// value and wraps it in its own `Arc`) while
-/// [`super::handler::ResiduumA2aHandler`] keeps its own clone of the same
-/// `Arc<FileTaskStore>` — both then read and write the one underlying store,
-/// rather than the handler silently getting a disconnected copy. A local
-/// newtype rather than `impl TaskStore for SharedTaskStore` directly: `Arc`
-/// isn't `#[fundamental]`, so the orphan rules refuse a foreign trait on a
-/// foreign `Arc<Local>` even though the pointee is local.
 pub struct DelegatingTaskStore(pub SharedTaskStore);
 
 #[async_trait]

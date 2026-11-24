@@ -37,8 +37,6 @@ import type {
   UpcomingKind,
 } from "./hub-types";
 
-// The agent shapes are the backend's ts-rs exports, not copies of them: these
-// fail to compile if `hub-types` ever declares its own again.
 describe("hub types", () => {
   it("re-exports the shapes the backend generates", () => {
     expectTypeOf<AgentSummary>().toEqualTypeOf<GeneratedAgentSummary>();

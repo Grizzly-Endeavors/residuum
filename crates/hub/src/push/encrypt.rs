@@ -1,13 +1,3 @@
-//! Web Push message encryption: RFC 8291 over the `aes128gcm` content coding
-//! of RFC 8188.
-//!
-//! A push message is one encrypted record. The hub generates a fresh P-256
-//! key pair and salt per message, agrees a secret with the subscription's
-//! public key, mixes in the subscription's authentication secret, and seals
-//! the payload with AES-128-GCM. The body is the coding header (salt, record
-//! size, the hub's public key) followed by that record, so the push service
-//! can carry it without being able to read it.
-
 use anyhow::{Context as _, anyhow, bail};
 use base64::Engine as _;
 use base64::alphabet;
@@ -19,17 +9,12 @@ use ring::rand::{SecureRandom as _, SystemRandom};
 
 use super::types::WebPushSubscriptionKeys;
 
-/// Length of an uncompressed P-256 public key: `0x04` and two 32-byte
-/// coordinates.
 pub(super) const PUBLIC_KEY_LEN: usize = 65;
 
-/// Length of the authentication secret a browser generates per subscription.
 const AUTH_SECRET_LEN: usize = 16;
 
-/// Length of the random salt in the content coding header.
 const SALT_LEN: usize = 16;
 
-/// Length of the AES-GCM authentication tag.
 const TAG_LEN: usize = 16;
 
 /// The `rs` field of the header: the most bytes one record holds. Push
@@ -40,8 +25,6 @@ const RECORD_SIZE: u32 = 4096;
 /// Salt, record size, key id length, and the hub's public key.
 const HEADER_LEN: usize = SALT_LEN + 4 + 1 + PUBLIC_KEY_LEN;
 
-/// The longest plaintext that fits in one record: the record size less the
-/// header, the padding delimiter and the tag. RFC 8291 gives 3993.
 pub(super) const MAX_PLAINTEXT_LEN: usize = RECORD_SIZE as usize - HEADER_LEN - 1 - TAG_LEN;
 
 /// Browsers give base64url without padding; padded input is accepted too.
@@ -52,12 +35,10 @@ const BASE64URL: GeneralPurpose = GeneralPurpose::new(
         .with_decode_padding_mode(DecodePaddingMode::Indifferent),
 );
 
-/// Encode bytes as base64url without padding.
 pub(super) fn base64url_encode(bytes: &[u8]) -> String {
     BASE64URL.encode(bytes)
 }
 
-/// A subscription's keys, decoded and checked for shape.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Recipient {
     public_key: [u8; PUBLIC_KEY_LEN],
@@ -65,10 +46,6 @@ pub(super) struct Recipient {
 }
 
 impl Recipient {
-    /// Decode `keys`. The error says in plain words which key is wrong.
-    ///
-    /// Whether the public key is a point on the curve is only known when a
-    /// message is encrypted to it.
     pub(super) fn parse(keys: &WebPushSubscriptionKeys) -> Result<Self, String> {
         let public_key = BASE64URL
             .decode(&keys.p256dh)
@@ -93,12 +70,6 @@ impl Recipient {
     }
 }
 
-/// Encrypt `plaintext` for `recipient` into the body of a push request.
-///
-/// # Errors
-/// Returns an error if the plaintext is longer than [`MAX_PLAINTEXT_LEN`], if
-/// the recipient's public key is not a valid P-256 point, or if the system
-/// can't supply random bytes.
 pub(super) fn encrypt(recipient: &Recipient, plaintext: &[u8]) -> anyhow::Result<Vec<u8>> {
     if plaintext.len() > MAX_PLAINTEXT_LEN {
         bail!(
@@ -129,11 +100,6 @@ pub(super) fn encrypt(recipient: &Recipient, plaintext: &[u8]) -> anyhow::Result
     })?
 }
 
-/// Derive the content keys from the agreed secret and seal `plaintext` into
-/// the coding header and its single record.
-///
-/// This is everything after the key agreement and the random choices, so the
-/// RFC's published example can drive it with its own values.
 fn seal(
     ecdh_secret: &[u8],
     recipient: &Recipient,
@@ -143,7 +109,6 @@ fn seal(
 ) -> anyhow::Result<Vec<u8>> {
     let keys = derive_keys(ecdh_secret, recipient, as_public, salt);
 
-    // The record is the plaintext and the delimiter that marks it as the last.
     let mut record = Vec::with_capacity(plaintext.len() + 1 + TAG_LEN);
     record.extend_from_slice(plaintext);
     record.push(0x02);
@@ -168,16 +133,11 @@ fn seal(
     Ok(body)
 }
 
-/// The key and nonce one record is sealed with.
 struct ContentKeys {
     content_key: [u8; 16],
     nonce: [u8; 12],
 }
 
-/// RFC 8291 section 3.4: combine the ECDH secret with the authentication
-/// secret, then derive the content encryption key and nonce with HKDF
-/// (RFC 5869) over SHA-256. Each HKDF-Expand output here fits one HMAC block,
-/// so it is a single HMAC of the info and a counter byte of 1.
 fn derive_keys(
     ecdh_secret: &[u8],
     recipient: &Recipient,
@@ -205,8 +165,6 @@ fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
     prefix(hmac::sign(&hmac::Key::new(hmac::HMAC_SHA256, key), data).as_ref())
 }
 
-/// The first `N` bytes of `bytes`, or fewer followed by zeros when it is
-/// shorter.
 fn prefix<const N: usize>(bytes: &[u8]) -> [u8; N] {
     let mut out = [0_u8; N];
     for (dst, src) in out.iter_mut().zip(bytes) {
@@ -215,8 +173,6 @@ fn prefix<const N: usize>(bytes: &[u8]) -> [u8; N] {
     out
 }
 
-/// The browser's side of a subscription, for tests that check what a push
-/// service would hand to a real device.
 #[cfg(any(test, feature = "test-support"))]
 pub(super) mod browser {
     use ring::aead;
@@ -229,7 +185,6 @@ pub(super) mod browser {
     };
     use crate::push::types::WebPushSubscriptionKeys;
 
-    /// A subscription's key pair and authentication secret.
     pub struct Browser {
         private: agreement::EphemeralPrivateKey,
         public_key: [u8; PUBLIC_KEY_LEN],
@@ -243,10 +198,6 @@ pub(super) mod browser {
     }
 
     impl Browser {
-        /// A fresh key pair and authentication secret.
-        ///
-        /// # Panics
-        /// When the system cannot generate the keys.
         #[expect(
             clippy::unwrap_used,
             reason = "test-support helper: a key pair that cannot be made fails the test that asked for it"
@@ -268,7 +219,6 @@ pub(super) mod browser {
             }
         }
 
-        /// The keys the browser's `PushSubscription` reports.
         #[must_use]
         pub fn keys(&self) -> WebPushSubscriptionKeys {
             WebPushSubscriptionKeys {
@@ -284,11 +234,6 @@ pub(super) mod browser {
             }
         }
 
-        /// Open a push message the way a browser does: agree the same secret
-        /// from its side, derive the same keys, and decrypt the one record.
-        ///
-        /// # Panics
-        /// When `body` is not one record sealed for this browser.
         #[expect(
             clippy::unwrap_used,
             reason = "test-support helper: a message that does not open fails the test that sent it"
@@ -350,7 +295,6 @@ mod tests {
         <[u8; N]>::try_from(b64(text)).unwrap()
     }
 
-    /// The example of RFC 8291 section 5 and appendix A.
     struct Rfc8291 {
         plaintext: Vec<u8>,
         as_public: [u8; PUBLIC_KEY_LEN],
@@ -413,9 +357,6 @@ mod tests {
              mlMoZIIgDll6e3vCYLocInmYWAmS6TlzAC8wEqKK6PBru3jl7A_yl95bQpu6cVPT
              pK4Mqgkf1CXztLVBSt2Ks3oZwbuwXPXLWyouBWLVWGNWQexSgSxsj_Qulcy4a-fN",
         );
-        // 86 header bytes, 41 of plaintext, the delimiter and the 16-byte tag.
-        // (The RFC's example request states a Content-Length of 145, which
-        // doesn't match its own body.)
         assert_eq!(expected.len(), 86 + 41 + 1 + 16);
         assert_eq!(body, expected);
     }
@@ -463,7 +404,6 @@ mod tests {
     #[test]
     fn a_public_key_that_is_not_on_the_curve_is_refused() {
         let mut device = browser::Browser::new().recipient();
-        // A point whose coordinates are all 0xFF is not on P-256.
         device.public_key = [0xFF; PUBLIC_KEY_LEN];
         if let Some(format_byte) = device.public_key.first_mut() {
             *format_byte = 0x04;

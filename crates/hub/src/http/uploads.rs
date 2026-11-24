@@ -19,7 +19,6 @@ use serde_json::json;
 use super::error::json_error;
 use crate::uploads::{MAX_UPLOAD_BYTES, StagedUpload, UploadError, UploadStore};
 
-/// The upload route, served by the hub whatever the agents' state.
 pub(super) fn routes(store: UploadStore) -> Router {
     Router::new()
         .route("/api/hub/uploads", post(create_upload))
@@ -27,7 +26,6 @@ pub(super) fn routes(store: UploadStore) -> Router {
         .with_state(store)
 }
 
-/// The query of `POST /api/hub/uploads`.
 #[derive(Deserialize)]
 struct UploadParams {
     filename: Option<String>,
@@ -69,8 +67,6 @@ fn staged_response(staged: &StagedUpload) -> Response {
     .into_response()
 }
 
-/// The response for a body the server could not read: over the limit is
-/// `413`, anything else is a request the server could not read.
 fn body_rejection_response(rejection: BytesRejection) -> Response {
     let response = rejection.into_response();
     if response.status() == StatusCode::PAYLOAD_TOO_LARGE {

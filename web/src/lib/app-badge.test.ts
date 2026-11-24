@@ -20,7 +20,6 @@ describe("the app icon's badge", () => {
   });
 
   it("takes a refusal quietly", async () => {
-    // An unhandled rejection would fail the run.
     showAppBadge(3, { setAppBadge: () => Promise.reject(new Error("not installed")) });
     showAppBadge(0, { clearAppBadge: () => Promise.reject(new Error("not installed")) });
     await new Promise((resolve) => setTimeout(resolve, 0));

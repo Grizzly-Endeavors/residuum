@@ -1,5 +1,3 @@
-//! Validated runtime configuration structs for each subsystem.
-
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fmt;
@@ -30,12 +28,9 @@ use super::constants::{
 };
 use super::provider::ProviderSpec;
 
-/// Validated gateway configuration.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GatewayConfig {
-    /// Address to bind the WebSocket server to.
     pub bind: String,
-    /// Port for the WebSocket server.
     pub port: u16,
 }
 
@@ -49,27 +44,18 @@ impl Default for GatewayConfig {
 }
 
 impl GatewayConfig {
-    /// The full socket address string (e.g. `"127.0.0.1:7700"`).
     #[must_use]
     pub fn addr(&self) -> String {
         format!("{}:{}", self.bind, self.port)
     }
 }
 
-/// Validated memory subsystem configuration (thresholds only).
-///
-/// Provider assignments for observer/reflector are on `Config` directly.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MemoryConfig {
-    /// Token threshold before the observer fires.
     pub observer_threshold_tokens: usize,
-    /// Token threshold before the reflector compresses, estimated on the observation log as the main prompt displays it.
     pub reflector_threshold_tokens: usize,
-    /// Cooldown period in seconds after the soft threshold is crossed.
     pub observer_cooldown_secs: u64,
-    /// Token threshold that forces immediate observation (bypasses cooldown).
     pub observer_force_threshold_tokens: usize,
-    /// Hybrid search configuration.
     pub search: SearchConfig,
 }
 
@@ -85,20 +71,13 @@ impl Default for MemoryConfig {
     }
 }
 
-/// Validated hybrid search configuration.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchConfig {
-    /// Weight for vector similarity scores in hybrid merge; sums to 1.0 with `text_weight`.
     pub vector_weight: f64,
-    /// Weight for BM25 text scores in hybrid merge; sums to 1.0 with `vector_weight`.
     pub text_weight: f64,
-    /// Minimum hybrid score threshold for results.
     pub min_score: f64,
-    /// Multiplier on limit for candidate retrieval before merge.
     pub candidate_multiplier: usize,
-    /// Whether temporal decay is enabled (default: false).
     pub temporal_decay: bool,
-    /// Half-life in days for temporal decay (default: 30.0).
     pub temporal_decay_half_life_days: f64,
 }
 
@@ -115,37 +94,23 @@ impl Default for SearchConfig {
     }
 }
 
-/// Validated cloud tunnel configuration.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CloudConfig {
-    /// Relay server WebSocket URL.
     pub relay_url: String,
-    /// Authentication token.
     pub token: String,
-    /// Settings for end-to-end encrypted remote access.
     pub remote: RemoteAccessSettings,
 }
 
-/// Production Let's Encrypt directory.
 pub const ACME_PRODUCTION_DIRECTORY: &str = "https://acme-v02.api.letsencrypt.org/directory";
 
-/// Let's Encrypt staging directory.
 pub const ACME_STAGING_DIRECTORY: &str = "https://acme-staging-v02.api.letsencrypt.org/directory";
 
-/// Validated settings for end-to-end encrypted remote access (`[cloud]`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteAccessSettings {
-    /// Domain the relay serves hosts under; every host name is derived from
-    /// it and the stored user and slug.
     pub base_domain: String,
-    /// ACME directory certificates are ordered from.
     pub acme_directory: String,
-    /// Extra PEM root the ACME directory's TLS certificate may chain to, for
-    /// a private test CA.
     pub acme_root_ca: Option<std::path::PathBuf>,
-    /// Base URL of the pin service.
     pub pin_service_url: String,
-    /// Public DNS resolver used to see which CAA records the world sees.
     pub caa_resolver: std::net::SocketAddr,
 }
 
@@ -161,17 +126,11 @@ impl Default for RemoteAccessSettings {
     }
 }
 
-/// Validated Discord bot configuration.
 #[derive(Clone, PartialEq, Eq)]
 pub struct DiscordConfig {
-    /// Bot token for the Discord API.
     pub token: String,
-    /// Whether people other than the owner can talk to the agent.
     pub respond_to_others: bool,
-    /// How many earlier unmentioned server messages to hand the agent on @mention.
     pub context_messages: usize,
-    /// Whether text the agent writes before a tool call goes to the chat as
-    /// its own message. Off: the chat gets only each turn's final reply.
     pub deliver_intermediate: bool,
 }
 
@@ -186,17 +145,11 @@ impl std::fmt::Debug for DiscordConfig {
     }
 }
 
-/// Validated Telegram bot configuration.
 #[derive(Clone, PartialEq, Eq)]
 pub struct TelegramConfig {
-    /// Bot token for the Telegram API.
     pub token: String,
-    /// Whether people other than the owner can talk to the agent.
     pub respond_to_others: bool,
-    /// How many earlier unmentioned group messages to hand the agent when addressed.
     pub context_messages: usize,
-    /// Whether text the agent writes before a tool call goes to the chat as
-    /// its own message. Off: the chat gets only each turn's final reply.
     pub deliver_intermediate: bool,
 }
 
@@ -211,26 +164,15 @@ impl std::fmt::Debug for TelegramConfig {
     }
 }
 
-/// Validated Microsoft Teams bot configuration.
 #[derive(Clone, PartialEq, Eq)]
 pub struct TeamsConfig {
-    /// Bot (Entra app) ID; the audience of inbound tokens.
     pub app_id: String,
-    /// Client secret used to obtain outbound Bot Connector tokens.
     pub app_password: String,
     /// Directory (tenant) ID; inbound activities from other tenants are rejected.
     pub tenant_id: String,
-    /// Whether people other than the owner can talk to the agent.
     pub respond_to_others: bool,
-    /// How many earlier group chat / channel messages to hand the agent on @mention.
     pub context_messages: usize,
-    /// Whether text the agent writes before a tool call goes to the chat as
-    /// its own message. Off: the chat gets only each turn's final reply.
     pub deliver_intermediate: bool,
-    /// Port for the dedicated messaging listener (bound on the gateway's address).
-    ///
-    /// Kept separate from the gateway port so a public tunnel pointed at it
-    /// exposes only the signature-checked Teams endpoint, never the config API.
     pub port: u16,
 }
 
@@ -248,12 +190,8 @@ impl std::fmt::Debug for TeamsConfig {
     }
 }
 
-/// Who can reach an A2A-enabled agent without presenting a caller key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum A2aVisibility {
-    /// The Agent Card and every route answer unauthenticated requests
-    /// (still subject to the auth layer's per-request caller checks for
-    /// anything beyond the card).
     #[default]
     Public,
     /// Every route, including the Agent Card, answers a plain 404 to a
@@ -263,7 +201,6 @@ pub enum A2aVisibility {
 }
 
 impl A2aVisibility {
-    /// Lowercase label, as stored in config and shown in status output.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -279,18 +216,11 @@ impl std::fmt::Display for A2aVisibility {
     }
 }
 
-/// Validated `Agent2Agent` (A2A) protocol configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct A2aConfig {
-    /// Whether the A2A listener runs at all.
     pub enabled: bool,
-    /// Port for the dedicated A2A protocol listener (bound on the gateway's address).
     pub port: u16,
-    /// Public URL other agents should use to reach this instance's A2A
-    /// interfaces, when this instance runs its own tunnel/reverse proxy
-    /// rather than relying on the relay's origin.
     pub public_url: Option<String>,
-    /// Who may reach this agent without a caller key.
     pub visibility: A2aVisibility,
 }
 
@@ -305,13 +235,10 @@ impl Default for A2aConfig {
     }
 }
 
-/// Routing target for a named webhook.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum WebhookRouting {
-    /// Route to the default inbox.
     #[default]
     Inbox,
-    /// Route to a sub-agent running the named skill.
     Agent(String),
 }
 
@@ -340,13 +267,10 @@ impl std::str::FromStr for WebhookRouting {
     }
 }
 
-/// Payload format for a named webhook.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum WebhookFormat {
-    /// Parse JSON body and extract specific fields (default).
     #[default]
     Parsed,
-    /// Pass the full HTTP body as-is.
     Raw,
 }
 
@@ -373,30 +297,18 @@ impl std::str::FromStr for WebhookFormat {
     }
 }
 
-/// Validated configuration for a single named webhook endpoint.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WebhookEntry {
-    /// Optional bearer token for authenticating incoming requests.
     pub secret: Option<String>,
-    /// Where to route incoming messages.
     pub routing: WebhookRouting,
-    /// Payload extraction format.
     pub format: WebhookFormat,
-    /// JSON dot-path fields to extract (only used with `Parsed` format).
     pub content_fields: Option<Vec<String>>,
 }
 
-/// Which layer a skill was discovered in.
-///
-/// Layers are searched in the order agent, team, configured; the first skill
-/// with a given name wins.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkillSource {
-    /// From the agent's own `skills/` directory.
     Agent,
-    /// From the shared `team/skills/` directory.
     Team,
-    /// From an extra directory configured in `[skills].dirs`.
     Configured,
 }
 
@@ -410,17 +322,13 @@ impl fmt::Display for SkillSource {
     }
 }
 
-/// A directory to scan for skills, tagged with the layer it belongs to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillDir {
-    /// Directory holding one subfolder per skill.
     pub path: PathBuf,
-    /// Layer skills found here are attributed to.
     pub source: SkillSource,
 }
 
 impl SkillDir {
-    /// A directory in the given layer.
     #[must_use]
     pub fn new(path: impl Into<PathBuf>, source: SkillSource) -> Self {
         Self {
@@ -429,54 +337,33 @@ impl SkillDir {
         }
     }
 
-    /// The agent's own skills directory.
     #[must_use]
     pub fn agent(path: impl Into<PathBuf>) -> Self {
         Self::new(path, SkillSource::Agent)
     }
 
-    /// The shared team skills directory.
     #[must_use]
     pub fn team(path: impl Into<PathBuf>) -> Self {
         Self::new(path, SkillSource::Team)
     }
 
-    /// A directory from `[skills].dirs`.
     #[must_use]
     pub fn configured(path: impl Into<PathBuf>) -> Self {
         Self::new(path, SkillSource::Configured)
     }
 }
 
-/// Validated skills subsystem configuration.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SkillsConfig {
-    /// Directories to scan for skills, in priority order (agent, team,
-    /// then configured), each tagged with its layer.
     pub dirs: Vec<SkillDir>,
 }
 
-/// Validated runtime tool PATH configuration.
-///
-/// These directories are prepended to the `PATH` of every child process
-/// Residuum spawns (MCP stdio servers and the `exec` tool), so tools become
-/// resolvable at runtime without rebuilding the image. Ordered highest
-/// precedence first: configured `[tools].path` entries, then the default
-/// persistent `~/.residuum/bin`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolsConfig {
-    /// Directories prepended to child `PATH` (resolved, expanded paths).
     pub dirs: Vec<PathBuf>,
 }
 
 impl ToolsConfig {
-    /// The effective `PATH` for spawned children: the tool dirs prepended to
-    /// the inherited process `PATH`.
-    ///
-    /// Returns `None` when there are no tool dirs (no override needed).
-    /// Uses [`std::env::split_paths`]/[`std::env::join_paths`] so the platform
-    /// path separator is handled correctly; returns an `OsString` to avoid a
-    /// lossy conversion of non-UTF-8 paths.
     #[must_use]
     pub fn effective_path(&self) -> Option<OsString> {
         if self.dirs.is_empty() {
@@ -486,44 +373,23 @@ impl ToolsConfig {
         if let Some(inherited) = std::env::var_os("PATH") {
             parts.extend(std::env::split_paths(&inherited));
         }
-        // join_paths only fails if a path contains the separator char; in that
-        // case fall back to no override rather than a malformed PATH.
         std::env::join_paths(parts).ok()
     }
 }
 
-/// Shared, reloadable effective `PATH` for spawned children.
-///
-/// Holds the tool-dir-prepended `PATH` (see [`ToolsConfig::effective_path`]),
-/// or `None` when no override applies. Read at spawn time by the `exec` tool and
-/// MCP stdio spawner so config reloads take effect without rebuilding registries.
 pub type SharedToolsPath = Arc<RwLock<Option<OsString>>>;
 
-/// Give `cmd` the configured tools `PATH`, read live so a config reload
-/// applies to the next spawn. Leaves the inherited `PATH` alone when no
-/// override is configured.
 pub async fn apply_tools_path(cmd: &mut tokio::process::Command, tools_path: &SharedToolsPath) {
     if let Some(path) = tools_path.read().await.as_ref() {
         cmd.env("PATH", path);
     }
 }
 
-/// Validated agent ability gates and turn limits.
-///
-/// Controls what the agent is allowed to modify at runtime, and bounds how
-/// long a single turn's tool loop may run.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AgentAbilitiesConfig {
-    /// Whether the agent can add/remove MCP servers.
     pub modify_mcp: bool,
-    /// Whether the agent can add/remove notification channels.
     pub modify_channels: bool,
-    /// Maximum tool-call iterations a turn may run before it stops itself
-    /// gracefully. `None` means unlimited — the user's own Cancel /
-    /// `stop_agent` is the intended safety valve for a runaway turn.
     pub max_tool_iterations: Option<usize>,
-    /// Guards against a model repeating the exact same tool call over and
-    /// over (see [`RepeatCallGuardConfig`]).
     pub repeat_call_guard: RepeatCallGuardConfig,
 }
 
@@ -538,25 +404,10 @@ impl Default for AgentAbilitiesConfig {
     }
 }
 
-/// Thresholds for the consecutive-identical-tool-call guard in the turn loop.
-///
-/// Observed failure this guards against: GLM 5.3 Flash has been seen calling
-/// a tool with byte-identical arguments hundreds of times in a row, spinning
-/// instead of making progress — the result cannot change, so repeating the
-/// call again never helps. `steer_after` consecutive identical calls appends
-/// a steering note to the call's own result nudging the model to try
-/// something else; the call still runs. `stop_after` ends the turn instead
-/// of running the call again, with a cancelled-style result for that call
-/// and a notice naming the repeated tool. Set `enabled = false` to turn the
-/// guard off entirely.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RepeatCallGuardConfig {
-    /// Master switch.
     pub enabled: bool,
-    /// Consecutive identical calls at which a steering note is appended.
     pub steer_after: u32,
-    /// Consecutive identical calls at which the turn ends instead of
-    /// running the call again.
     pub stop_after: u32,
 }
 
@@ -570,21 +421,14 @@ impl Default for RepeatCallGuardConfig {
     }
 }
 
-/// Validated `[auto_mode]`: plain-language rules a decision model checks
-/// every tool call against before it runs.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AutoModeConfig {
     pub enabled: bool,
-    /// What the agent isn't allowed to do. A call matching one is blocked.
     pub deny: Vec<String>,
-    /// Exceptions: a call matching one of these runs even if it matches a
-    /// deny rule.
     pub allow: Vec<String>,
-    /// Probability (exclusive 0 to inclusive 1) at which a rule matches.
     pub threshold: f64,
 }
 
-/// The probability at which an Auto Mode rule counts as matching.
 pub const DEFAULT_AUTO_MODE_THRESHOLD: f64 = 0.5;
 
 impl Default for AutoModeConfig {
@@ -599,20 +443,15 @@ impl Default for AutoModeConfig {
 }
 
 impl AutoModeConfig {
-    /// Whether any call would be checked: enabled with at least one deny rule.
     #[must_use]
     pub fn is_active(&self) -> bool {
         self.enabled && !self.deny.is_empty()
     }
 }
 
-/// Validated idle system configuration.
 #[derive(Clone, Debug, PartialEq)]
 pub struct IdleConfig {
-    /// Inactivity timeout. `Duration::ZERO` means disabled.
     pub timeout: Duration,
-    /// Endpoint that agent-started main turns go to once the owner is idle:
-    /// `ws` (the web UI) unless the config names a chat interface.
     pub idle_channel: String,
 }
 
@@ -625,25 +464,13 @@ impl Default for IdleConfig {
     }
 }
 
-/// Validated subconscious classifier settings.
-///
-/// Opt-in: `enabled` defaults to `false` because the classifier adds latency
-/// and token cost to every evaluated turn.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SubconsciousSettings {
-    /// Whether the subconscious classifier is enabled.
     pub enabled: bool,
-    /// Whether the mid-turn watch runs during the tool loop.
     pub mid_turn: bool,
-    /// Evaluate every N tool-loop iterations.
     pub every_n_iterations: usize,
-    /// Token cap for the transcript sent to the classifier.
     pub max_transcript_tokens: usize,
-    /// Whether the activity-triggered learning loop is enabled (surfaces `learn`
-    /// findings and spawns the `learner` sub-agent). Opt-in, default false.
     pub learning: bool,
-    /// Minimum minutes between learner sub-agent spawns (shared by both the
-    /// subconscious signal path and the turn-count fallback).
     pub learning_cooldown_minutes: u64,
 }
 
@@ -661,22 +488,14 @@ impl Default for SubconsciousSettings {
 }
 
 impl SubconsciousSettings {
-    /// The learner spawn cooldown as a `Duration`.
     #[must_use]
     pub fn learning_cooldown(&self) -> Duration {
         Duration::from_secs(self.learning_cooldown_minutes.saturating_mul(60))
     }
 }
 
-/// Validated activity-triggered learning loop settings.
-///
-/// The subconscious signal path (spawning the `learner` when `learn` findings
-/// appear) is configured under `[subconscious]`. This section only carries the
-/// dumb turn-count fallback for users running with the subconscious off.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LearningConfig {
-    /// Spawn the learner after this many foreground turns when the subconscious
-    /// learning path is inactive. `0` disables the fallback (the default).
     pub nudge_after_turns: u32,
 }
 
@@ -688,38 +507,17 @@ impl Default for LearningConfig {
     }
 }
 
-/// Validated background task configuration.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BackgroundConfig {
-    /// Maximum number of concurrent running session turns.
     pub max_concurrent: usize,
-    /// Model tier assignments for background tasks.
     pub models: BackgroundModelsConfig,
-    /// How long a `scheduled` session (pulses, actions) lingers idle before
-    /// completing. Webhook sessions (`external`) also use this timeout.
     pub idle_timeout_scheduled: Duration,
-    /// How long a `spawned` session (`subagent_spawn`, the learner) lingers
-    /// idle before completing.
     pub idle_timeout_spawned: Duration,
-    /// How long a non-webhook `external` session lingers idle before
-    /// completing.
     pub idle_timeout_external: Duration,
-    /// How long an `artifact` session (started by a workbench artifact)
-    /// lingers idle before completing.
     pub idle_timeout_artifact: Duration,
-    /// Token floor below which a completed run with nothing staged produces
-    /// no episode (its transcript is still kept in the session store).
     pub episode_skip_token_floor: usize,
-    /// Maximum depth a `subagent_spawn`-created session may have. Main is
-    /// depth 0, a `scheduled`/`external` session is depth 1, and a spawned
-    /// session is its spawner's depth plus 1; spawning past this cap is
-    /// refused.
     pub subagent_depth_cap: u32,
-    /// Hop count at or above which a delivered agent message carries a note
-    /// asking the receiver to reply only if a reply is actually needed.
     pub hop_soft_limit: u32,
-    /// Hop count at or above which agent message delivery is refused
-    /// outright, to bound message loops.
     pub hop_hard_limit: u32,
 }
 
@@ -742,24 +540,14 @@ impl Default for BackgroundConfig {
     }
 }
 
-/// Model tier assignments for background tasks.
-///
-/// Each tier can be explicitly assigned a model chain (failover). Unset tiers
-/// fall back to the next tier up, ultimately falling back to main.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct BackgroundModelsConfig {
-    /// Small/fast model chain for simple tasks.
     pub small: Option<Vec<ProviderSpec>>,
-    /// Medium model chain for typical tasks (default tier).
     pub medium: Option<Vec<ProviderSpec>>,
-    /// Large model chain for complex tasks.
     pub large: Option<Vec<ProviderSpec>>,
 }
 
 impl BackgroundModelsConfig {
-    /// Resolve a specific tier to a concrete provider chain.
-    ///
-    /// Fallback chain: tier → next tier up → main.
     #[must_use]
     pub fn resolve_tier(
         &self,
@@ -785,16 +573,12 @@ impl BackgroundModelsConfig {
     }
 }
 
-/// Which model tier a background task requests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BackgroundModelTier {
-    /// Small/fast model for simple tasks.
     Small,
-    /// Medium model for typical tasks.
     #[default]
     Medium,
-    /// Large model for complex tasks.
     Large,
 }
 
@@ -823,28 +607,15 @@ impl std::str::FromStr for BackgroundModelTier {
     }
 }
 
-/// Which model a background session runs on: one of the `[background.models]`
-/// tiers, or one explicit `provider/model` id.
-///
-/// Written and stored as a plain string: `small`, `medium`, or `large` names
-/// a tier, and anything of the form `provider/model` (the format
-/// `providers.toml`'s `[models]` uses, where `provider` is a `[providers]`
-/// entry or a provider type) names a model. A tier resolves to its failover
-/// chain; an explicit model runs that one model with no failover.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModelSelector {
-    /// A configured background tier.
     Tier(BackgroundModelTier),
-    /// An explicit `provider/model` id.
     Explicit(String),
 }
 
 impl ModelSelector {
-    /// The `small` tier.
     pub const SMALL: Self = Self::Tier(BackgroundModelTier::Small);
-    /// The `medium` tier.
     pub const MEDIUM: Self = Self::Tier(BackgroundModelTier::Medium);
-    /// The `large` tier.
     pub const LARGE: Self = Self::Tier(BackgroundModelTier::Large);
 }
 
@@ -903,32 +674,21 @@ impl<'de> Deserialize<'de> for ModelSelector {
     }
 }
 
-/// Per-role overrides for temperature and thinking.
-///
-/// When set, these override the global `temperature` / `thinking` values
-/// from `config.toml` for a specific role.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct RoleOverrides {
-    /// Sampling temperature override (0.0–2.0).
     pub temperature: Option<f32>,
-    /// Thinking/reasoning configuration override.
     pub thinking: Option<crate::ThinkingConfig>,
 }
 
-/// Log detail level for daemon file output.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum LogLevel {
-    /// Standard operational logging.
     Info,
-    /// Detailed debugging for residuum crates.
     #[default]
     Debug,
-    /// Maximum verbosity for residuum crates.
     Trace,
 }
 
 impl LogLevel {
-    /// The `EnvFilter` directive string for this level.
     #[must_use]
     pub fn filter_str(self) -> &'static str {
         match self {
@@ -964,30 +724,19 @@ impl std::str::FromStr for LogLevel {
     }
 }
 
-/// A configured OTEL endpoint for trace export.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OtelEndpoint {
-    /// OTLP HTTP endpoint URL.
     pub url: String,
-    /// Human-readable name for this endpoint.
     pub name: Option<String>,
-    /// Additional HTTP headers (e.g. auth tokens).
     pub headers: HashMap<String, String>,
 }
 
-/// Validated tracing and observability configuration.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TracingConfig {
-    /// Log detail level for daemon file output.
     pub log_level: LogLevel,
-    /// Whether to automatically report errors to the developer endpoint.
     pub auto_error_reporting: bool,
-    /// Whether to redact sensitive content in trace exports.
     pub sanitize_content: bool,
-    /// OTEL endpoints for trace export.
     pub otel_endpoints: Vec<OtelEndpoint>,
-    /// Upstream relay base URL for bug-report and feedback submissions.
-    /// Override in `config.toml` to point at a local mock during development.
     pub feedback_endpoint: String,
 }
 
@@ -1003,139 +752,70 @@ impl Default for TracingConfig {
     }
 }
 
-/// Validated web search configuration.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct WebSearchConfig {
-    /// Provider-native search config (set when main provider supports it).
     pub provider_native: Option<ProviderNativeSearchConfig>,
-    /// Standalone backend name for MCP resolution (e.g. `"brave"`, `"tavily"`, `"ollama"`).
     pub standalone_backend: Option<StandaloneBackendConfig>,
 }
 
-/// Provider-native search overrides (Anthropic, `OpenAI`, Gemini).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ProviderNativeSearchConfig {
     /// Maximum web search invocations per request (Anthropic).
     pub max_uses: Option<u32>,
-    /// Restrict search to these domains (Anthropic).
     pub allowed_domains: Option<Vec<String>>,
-    /// Exclude these domains from search (Anthropic).
     pub blocked_domains: Option<Vec<String>>,
     /// Search context size (`OpenAI`: `"low"`, `"medium"`, `"high"`).
     pub search_context_size: Option<String>,
-    /// Domains to exclude from Google Search grounding (Gemini).
     pub exclude_domains: Option<Vec<String>>,
 }
 
-/// Standalone web search backend configuration.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StandaloneBackendConfig {
-    /// Backend name (`"brave"`, `"tavily"`, or `"ollama"`).
     pub name: String,
-    /// API key for the backend.
     pub api_key: String,
     /// Base URL (only used by Ollama Cloud).
     pub base_url: Option<String>,
 }
 
-/// Validated runtime configuration for one agent.
-///
-/// All provider roles are fully resolved at load time. Consumers read fields
-/// directly — no fallback chains needed.
-///
-/// A handful of fields (`gateway`, `cloud`, `tracing`, `timezone`,
-/// `a2a.enabled`/`a2a.port`/`a2a.public_url`, and
-/// `background.max_concurrent`/`background.hop_soft_limit`/
-/// `background.hop_hard_limit`) belong to the hub: they live in
-/// `hub/config.toml` (see [`crate::HubConfig`]) and are copied in
-/// here at resolve time so the rest of the codebase reads one flat `Config`.
-/// Every other field is resolved from this agent's own files.
 #[derive(Clone, PartialEq)]
 pub struct Config {
-    /// This agent's name — its directory name and identity everywhere
-    /// (addresses, A2A path segment).
     pub agent_name: String,
-    /// Whether this agent starts automatically when the hub starts.
     pub autostart: bool,
-    /// Fully resolved main agent provider chain (failover).
     pub main: Vec<ProviderSpec>,
-    /// Fully resolved observer provider chain (failover).
     pub observer: Vec<ProviderSpec>,
-    /// Fully resolved reflector provider chain (failover).
     pub reflector: Vec<ProviderSpec>,
-    /// Fully resolved pulse provider chain (failover).
     pub pulse: Vec<ProviderSpec>,
-    /// Fully resolved subconscious provider chain (failover).
     pub subconscious: Vec<ProviderSpec>,
-    /// Fully resolved embedding provider (None if not configured).
     pub embedding: Option<ProviderSpec>,
-    /// Path to this agent's workspace root directory (`~/.residuum/<name>`).
     pub workspace_dir: PathBuf,
-    /// Request timeout in seconds.
     pub timeout_secs: u64,
-    /// Maximum tokens for model responses.
     pub max_tokens: u32,
-    /// Memory subsystem configuration (thresholds only).
     pub memory: MemoryConfig,
-    /// Whether the pulse system is enabled.
     pub pulse_enabled: bool,
-    /// Subconscious classifier settings.
     pub subconscious_settings: SubconsciousSettings,
-    /// Activity-triggered learning loop settings (turn-count fallback).
     pub learning: LearningConfig,
-    /// WebSocket gateway configuration. Hub-owned; copied from `HubConfig`.
     pub gateway: GatewayConfig,
-    /// IANA timezone, shared by every agent. Hub-owned; copied from `HubConfig`.
     pub timezone: chrono_tz::Tz,
-    /// Cloud tunnel configuration. Hub-owned; copied from `HubConfig`.
     pub cloud: Option<CloudConfig>,
-    /// Discord bot configuration (None if `[discord]` section absent or no token).
     pub discord: Option<DiscordConfig>,
-    /// Telegram bot configuration (None if `[telegram]` section absent or no token).
     pub telegram: Option<TelegramConfig>,
-    /// Microsoft Teams bot configuration (None if `[teams]` section absent).
     pub teams: Option<TeamsConfig>,
-    /// `Agent2Agent` (A2A) protocol configuration. `enabled`/`port`/`public_url`
-    /// are hub-owned (copied from `HubConfig`); `visibility` is this agent's own.
     pub a2a: A2aConfig,
-    /// Named webhook endpoint configurations.
     pub webhooks: HashMap<String, WebhookEntry>,
-    /// Skills subsystem configuration.
     pub skills: SkillsConfig,
-    /// Runtime tool PATH configuration.
     pub tools: ToolsConfig,
-    /// Retry configuration for model provider calls.
     pub retry: RetryConfig,
-    /// Background task configuration. `max_concurrent`/`hop_soft_limit`/
-    /// `hop_hard_limit` are hub-owned (copied from `HubConfig`); everything
-    /// else is this agent's own.
     pub background: BackgroundConfig,
-    /// Agent ability gates.
     pub agent: AgentAbilitiesConfig,
-    /// Auto Mode rules for tool calls.
     pub auto_mode: AutoModeConfig,
-    /// Idle system configuration.
     pub idle: IdleConfig,
-    /// Sampling temperature for model completions.
     pub temperature: Option<f32>,
-    /// Thinking/reasoning configuration for model completions.
     pub thinking: Option<crate::ThinkingConfig>,
-    /// Web search configuration.
     pub web_search: WebSearchConfig,
-    /// Tracing and observability configuration. Hub-owned; copied from `HubConfig`.
     pub tracing: TracingConfig,
-    /// Per-role overrides for temperature and thinking.
     pub role_overrides: HashMap<String, RoleOverrides>,
-    /// The providers an explicit `provider/model` id (a pulse's or scheduled
-    /// action's `model_tier`, `subagent_spawn`'s `model`) resolves against.
     pub model_catalog: super::model_catalog::ModelCatalog,
-    /// Directory this config was loaded from (`<agent>/config`).
     pub config_dir: PathBuf,
-    /// User-facing notices describing what was skipped or degraded while
-    /// loading this config — an unknown key, a dropped fallback provider,
-    /// a disabled optional feature, and so on. Populated by
-    /// `resolve::from_file_and_env` and `Config::load_at`; empty for a
-    /// config that loaded with nothing to report.
     pub load_notices: Vec<String>,
 }
 
@@ -1265,7 +945,6 @@ mod tests {
             Some(&PathBuf::from("/home/x/.residuum/bin")),
             "default bin comes after configured dirs"
         );
-        // The inherited PATH (if any) follows the tool dirs.
         if let Some(inherited) = std::env::var_os("PATH") {
             let inherited_first = std::env::split_paths(&inherited).next();
             if let Some(first) = inherited_first {
@@ -1388,7 +1067,6 @@ mod tests {
 
         let main_slice = std::slice::from_ref(&p_main);
 
-        // All present -> resolves to specific tier
         let config_full = BackgroundModelsConfig {
             small: Some(vec![p_small.clone()]),
             medium: Some(vec![p_medium.clone()]),
@@ -1407,7 +1085,6 @@ mod tests {
             vec![p_large.clone()]
         );
 
-        // Missing small -> small falls back to medium
         let config_no_small = BackgroundModelsConfig {
             small: None,
             medium: Some(vec![p_medium.clone()]),
@@ -1418,7 +1095,6 @@ mod tests {
             vec![p_medium.clone()]
         );
 
-        // Missing small and medium -> small and medium fall back to large
         let config_only_large = BackgroundModelsConfig {
             small: None,
             medium: None,
@@ -1433,7 +1109,6 @@ mod tests {
             vec![p_large.clone()]
         );
 
-        // Empty config -> all fall back to main
         let config_empty = BackgroundModelsConfig::default();
         assert_eq!(
             config_empty.resolve_tier(&BackgroundModelTier::Small, main_slice),
@@ -1492,7 +1167,6 @@ mod tests {
 
         let main_slice = std::slice::from_ref(&p_main);
 
-        // Only small -> requesting Medium should fall back to main (not small)
         let config_only_small = BackgroundModelsConfig {
             small: Some(vec![p_small.clone()]),
             medium: None,
@@ -1511,7 +1185,6 @@ mod tests {
             vec![p_main.clone()]
         );
 
-        // Only medium -> Small falls back to medium, Large falls back to main
         let config_only_medium = BackgroundModelsConfig {
             small: None,
             medium: Some(vec![p_medium.clone()]),

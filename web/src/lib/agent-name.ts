@@ -1,13 +1,7 @@
-// The name a person types for an agent, mirrored from `crates/config/src/agent_name.rs`.
-// The folder, the URL, and the A2A path stay a short ASCII slug.
-
-/** Longest typed name, in Unicode scalar values after the name is cleaned up. */
 export const MAX_DISPLAY_NAME_CHARS = 32;
 
-/** The default name offered for the first agent. */
 export const DEFAULT_AGENT_NAME = "assistant";
 
-/** The name people see. An empty `display_name` means the folder name. */
 export function agentLabel(agent: { name: string; display_name: string }): string {
   return agent.display_name === "" ? agent.name : agent.display_name;
 }
@@ -29,20 +23,14 @@ const LATIN_ASCII: Readonly<Record<string, string>> = {
 
 const MAX_SLUG_LEN = 24;
 
-/** The cleaned name, or `null` when `raw` cannot be one. */
 export function canonicalAgentName(raw: string): string | null {
   return agentNameProblem(raw) === null ? cleaned(raw) : null;
 }
 
-/** The identity of a cleaned name, so `Atlas` and `atlas` are one agent. */
 export function displayNameKey(canonical: string): string {
   return canonical.toLowerCase();
 }
 
-/**
- * Check a proposed agent name. Returns a plain-language problem, or null
- * when the name is acceptable.
- */
 export function agentNameProblem(name: string): string | null {
   const problem = classify(name);
   if (problem === null) return null;
@@ -57,10 +45,6 @@ export function agentNameProblem(name: string): string | null {
   return `"${problem.name}" is reserved. Pick a different name.`;
 }
 
-/**
- * The backend's refusal for `name`, or `null` when the name is acceptable.
- * The mock answers with these strings.
- */
 export function backendAgentNameProblem(name: string): string | null {
   const problem = classify(name);
   if (problem === null) return null;
@@ -77,7 +61,6 @@ export function backendAgentNameProblem(name: string): string | null {
   return `agent name '${problem.name}' is reserved and cannot be used; reserved names: ${RESERVED_AGENT_NAMES.join(", ")}`;
 }
 
-/** Whether `typed` is the same agent as one of `taken`, ignoring case. */
 export function nameIsTaken(typed: string, taken: readonly string[]): boolean {
   const canonical = canonicalAgentName(typed);
   if (canonical === null) return false;
@@ -85,7 +68,6 @@ export function nameIsTaken(typed: string, taken: readonly string[]): boolean {
   return taken.some((existing) => displayNameKey(existing) === key);
 }
 
-/** Check a name for a new agent: the rules above, and not one of `existing`. */
 export function newAgentNameProblem(name: string, existing: readonly string[]): string | null {
   const problem = agentNameProblem(name);
   if (problem !== null) return problem;
@@ -96,13 +78,11 @@ export function newAgentNameProblem(name: string, existing: readonly string[]): 
   return null;
 }
 
-/** The folder name derived from a cleaned typed name. */
 export function slugBase(display: string): string {
   const ascii = foldToAscii(displayNameKey(display));
   return ascii === "" ? hashSlug(displayNameKey(display)) : ascii;
 }
 
-/** The first free folder name derived from `base`. */
 export function allocateSlug(base: string, taken: (candidate: string) => boolean): string {
   if (slugIsLegal(base) && !taken(base)) return base;
   for (let n = 2; n < 1000; n += 1) {
@@ -142,14 +122,12 @@ function classify(raw: string): NameProblem | null {
   return null;
 }
 
-/** How many Unicode scalar values `text` holds. */
 function scalarCount(text: string): number {
   let count = 0;
   for (const _ch of text) count += 1;
   return count;
 }
 
-/** The first `max` Unicode scalar values of `text`. */
 function scalarPrefix(text: string, max: number): string {
   let out = "";
   let count = 0;
@@ -215,7 +193,6 @@ function hashSlug(key: string): string {
   return `n${fnv1aLow32(key).toString(16).padStart(8, "0")}`;
 }
 
-/** Whether `name` is a folder, URL, and A2A segment: `[a-z0-9-]`, 1–24 characters. */
 export function isAgentSlug(name: string): boolean {
   return slugIsLegal(name) && !RESERVED_AGENT_NAMES.includes(name);
 }

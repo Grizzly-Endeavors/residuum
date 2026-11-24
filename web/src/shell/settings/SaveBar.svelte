@@ -4,11 +4,6 @@
   import { discardScope, saveScope, undoSave, unsavedFailure } from "./scope-actions";
   import type { SettingsScope } from "./sections";
 
-  // The save bar: there while the scope holds staged changes,
-  // with Save changes and Discard. When a save left files unsaved it names
-  // them here until those changes are saved or discarded, with Undo for the
-  // files that did save.
-
   let { scope }: { scope: SettingsScope } = $props();
 
   const failure = $derived(unsavedFailure(scope));

@@ -1,26 +1,7 @@
-//! Paths excluded from a workspace checkpoint snapshot: data Residuum
-//! rebuilds itself, a `.git` directory the user keeps in the workspace, and
-//! logs/locks/other runtime churn.
-//!
-//! One function, [`is_excluded`], is used both to decide whether to descend
-//! into a directory while walking the workspace, and to decide whether to
-//! include a single file — matched by path segment rather than substring,
-//! same convention as [`residuum_workspace::access`].
-
 use std::path::Path;
 
-/// The agent's own config file and providers file, tracked instead by the
-/// `AgentConfig` checkpoint repository (see `crate::RepoKind`)
-/// so plaintext provider keys never land in the workspace-style repo, which
-/// is designed to allow a user-configured remote later.
 const AGENT_CONFIG_TRACKED_PATHS: &[&str] = &["config/config.toml", "config/providers.toml"];
 
-/// Returns true if `relative` (workspace-relative, `/`-separated, no
-/// leading `/`) must never be included in a workspace checkpoint snapshot.
-///
-/// Call this on a directory's own relative path before descending into it
-/// (an excluded directory is pruned, never walked) and on a file's relative
-/// path before snapshotting it.
 #[must_use]
 pub(super) fn is_excluded(relative: &str) -> bool {
     if residuum_workspace::access::is_blocked_path(relative) {
@@ -32,8 +13,6 @@ pub(super) fn is_excluded(relative: &str) -> bool {
 
     let path = Path::new(relative);
     if path.components().any(|c| c.as_os_str() == ".git") {
-        // Never touch a `.git` directory the user keeps in the workspace —
-        // not Residuum's data, and never read as blob content.
         return true;
     }
 
@@ -42,11 +21,6 @@ pub(super) fn is_excluded(relative: &str) -> bool {
         .is_some_and(is_excluded_file_name)
 }
 
-/// Returns true if `relative` (team-relative, `/`-separated, no leading
-/// `/`) must never be included in a team checkpoint snapshot: the team
-/// wiki's search index (`.index`), its vector store (`vectors.db` and its
-/// sidecars), atomic-write temp files, a user-kept `.git`, and lock/PID
-/// files.
 #[must_use]
 pub(super) fn is_team_excluded(relative: &str) -> bool {
     const VECTOR_STORE_FILES: &[&str] = &[
@@ -73,10 +47,6 @@ pub(super) fn is_team_excluded(relative: &str) -> bool {
         || is_excluded_file_name(name)
 }
 
-/// Runtime churn matched by file name: lock files and PID files. Log files
-/// live outside the workspace (`~/.residuum/hub/logs/`), so they never reach
-/// this check, but a workspace-relative `logs/` directory is excluded too
-/// in case one ever appears there.
 fn is_excluded_file_name(name: &str) -> bool {
     Path::new(name)
         .extension()
@@ -131,7 +101,6 @@ mod tests {
     fn excludes_the_agents_own_config_and_providers_toml() {
         assert!(is_excluded("config/config.toml"));
         assert!(is_excluded("config/providers.toml"));
-        // A look-alike path elsewhere in the tree is still tracked.
         assert!(!is_excluded("skills/config/config.toml"));
     }
 
@@ -156,7 +125,6 @@ mod tests {
         assert!(!is_team_excluded("wiki/agents/scout.md"));
         assert!(!is_team_excluded("skills/wiki/SKILL.md"));
         assert!(!is_team_excluded("workbench/dash/index.html"));
-        // A user's own vectors.db deeper in the tree is their data.
         assert!(!is_team_excluded("workbench/vectors.db"));
     }
 

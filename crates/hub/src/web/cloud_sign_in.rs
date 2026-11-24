@@ -25,22 +25,12 @@ use tokio::time::Instant;
 use super::cloud::CloudApiState;
 use residuum_core::util::secrets_match;
 
-/// How long a started sign-in can take to come back. Signing in on the relay
-/// can include creating an account, so this is generous.
 const SIGN_IN_LIFETIME: Duration = Duration::from_mins(15);
 
-/// How many started sign-ins the hub remembers at once. Someone who clicks
-/// Connect a few times and finishes in any of the tabs it opened still gets
-/// in; the oldest is forgotten when a ninth starts.
 const MAX_PENDING_SIGN_INS: usize = 8;
 
-/// Random bytes in a `state`: 256 bits, 43 characters of URL-safe base64,
-/// inside the relay's `^[A-Za-z0-9_-]{16,128}$`.
 const STATE_BYTES: usize = 32;
 
-/// The sign-ins Connect started that haven't come back yet, newest last.
-/// They live in memory only: a hub restart forgets them, and a sign-in
-/// started before it is refused like any other unknown one.
 #[derive(Clone, Default)]
 pub(crate) struct PendingSignIns {
     started: Arc<Mutex<VecDeque<StartedSignIn>>>,
@@ -51,22 +41,15 @@ struct StartedSignIn {
     at: Instant,
 }
 
-/// What a callback's `state` says about where the sign-in came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SignInOrigin {
-    /// A sign-in Connect started here, within its lifetime. It is used up.
     StartedHere,
-    /// A sign-in Connect started here, but longer ago than its lifetime.
     Expired,
-    /// No sign-in this hub remembers: never handed out, already used, or
-    /// pushed out by newer ones.
     Unknown,
-    /// The callback carried no `state`.
     Missing,
 }
 
 impl PendingSignIns {
-    /// Start a sign-in: a fresh `state`, remembered until it comes back.
     pub(super) fn start(&self) -> Result<String, ring::error::Unspecified> {
         let mut bytes = [0_u8; STATE_BYTES];
         SystemRandom::new().fill(&mut bytes)?;
@@ -84,9 +67,6 @@ impl PendingSignIns {
         Ok(state)
     }
 
-    /// Use up the started sign-in `presented` names, if there is one. Every
-    /// remembered `state` is compared, each in constant time, so the answer's
-    /// timing says nothing about how close a guess came.
     fn redeem(&self, presented: &str) -> SignInOrigin {
         let mut started = self.lock();
         let mut found = None;
@@ -102,9 +82,6 @@ impl PendingSignIns {
         }
     }
 
-    /// Whether the callback query `query` comes back from a sign-in Connect
-    /// started here, using that sign-in up. Logs why at `warn` when it
-    /// doesn't; the token is never logged.
     pub(crate) fn callback_started_here(&self, query: Option<&str>) -> bool {
         let origin = match state_from_query(query) {
             Some(presented) => self.redeem(&presented),
@@ -130,26 +107,20 @@ impl PendingSignIns {
     }
 }
 
-/// The first non-empty `state` in a raw callback query.
 fn state_from_query(query: Option<&str>) -> Option<String> {
     url::form_urlencoded::parse(query.unwrap_or_default().as_bytes())
         .find(|(key, value)| key == "state" && !value.is_empty())
         .map(|(_, value)| value.into_owned())
 }
 
-/// The relay the sign-in is for, as the Settings form has it.
 #[derive(Deserialize)]
 pub(crate) struct ConnectRequest {
-    /// The relay URL the tunnel would dial; empty means Residuum Cloud's.
     #[serde(default)]
     relay_url: String,
-    /// The gateway port the relay sends the browser back to; empty means
-    /// the default.
     #[serde(default)]
     port: String,
 }
 
-/// Where to send the browser to sign in.
 #[derive(Serialize)]
 pub(crate) struct ConnectResponse {
     url: String,
@@ -206,9 +177,6 @@ fn connect_refused(status: StatusCode, message: &str) -> Response {
     (status, Json(serde_json::json!({ "error": message }))).into_response()
 }
 
-/// The web origin of the relay the tunnel would dial: `ws` read as `http`,
-/// `wss` as `https`, Residuum Cloud's when `relay_url` is empty. `None` when
-/// it isn't a `ws://` or `wss://` address with a host.
 fn relay_web_origin(relay_url: &str) -> Option<String> {
     let relay_url = match relay_url.trim() {
         "" => residuum_config::DEFAULT_CLOUD_RELAY_URL,
@@ -275,7 +243,6 @@ mod tests {
             .collect();
         let oldest = states.pop_front().unwrap();
         assert_eq!(sign_ins.redeem(&oldest), SignInOrigin::Unknown);
-        // Out of order: any of them may be the tab the person finishes in.
         states.rotate_left(3);
         for state in states {
             assert_eq!(sign_ins.redeem(&state), SignInOrigin::StartedHere);

@@ -75,7 +75,6 @@ function page(threads: MailThreadSummary[], next: string | null = null): Respons
   return json({ threads, next } satisfies MailThreadPage);
 }
 
-/** A promise the test settles when it chooses. */
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   let resolve: (value: T) => void = () => undefined;
   const promise = new Promise<T>((r) => {
@@ -84,14 +83,12 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   return { promise, resolve };
 }
 
-/** A file whose size is `size`, without holding that many bytes. */
 function fileOf(name: string, size = 10): File {
   const file = new File(["x"], name, { type: "text/plain" });
   Object.defineProperty(file, "size", { value: size });
   return file;
 }
 
-// The fake hub: what it answers, and every request it was asked, as `METHOD path?query`.
 let requests: string[];
 let bodies: Record<string, unknown>;
 let listAnswer: (url: URL) => Response | Promise<Response>;
@@ -101,10 +98,8 @@ let sendAnswer: () => Response | Promise<Response>;
 let replyAnswer: (id: string) => Response | Promise<Response>;
 let uploadAnswer: (filename: string) => Response | Promise<Response>;
 let uploads: number;
-/** The abort signal of each upload request, in the order they were made. */
 let uploadSignals: (AbortSignal | null | undefined)[];
 
-/** An answer that rejects the way fetch does when `signal` aborts before it arrives. */
 function abortable(
   signal: AbortSignal | null | undefined,
   answer: Response | Promise<Response>,
@@ -841,7 +836,6 @@ describe("a new message", () => {
     const store = new MailStore();
     const draft = store.openNewMessage(["atlas"]);
 
-    // Recipients alone are not something the user wrote.
     expect(store.openNewMessage(["scout"])).toBe(draft);
     expect(draft.to).toEqual(["scout"]);
     expect(store.openNewMessage()).toBe(draft);

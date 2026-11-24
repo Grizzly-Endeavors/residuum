@@ -77,12 +77,10 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
-/** What the stubbed hub answers. Tests change these between steps. */
 let answers: {
   overview: OverviewResponse;
   events: (url: URL) => TeamEventPage;
   mail: (url: URL) => MailThreadPage;
-  /** Held back until released, for a test about a request that is still out. */
   holdOverview: Promise<void> | null;
   task: (url: URL) => Response;
 };
@@ -138,7 +136,6 @@ afterEach(() => {
   for (const id of [...toast.toasts.keys()]) toast.dismiss(id);
 });
 
-/** The frames every hub socket connection starts with. */
 function connect(bootId = BOOT, agents = [agent("atlas"), agent("scout")]): void {
   hub.handleFrame({ type: "hub_boot", boot_id: bootId });
   hub.handleFrame(snapshot(agents));
@@ -333,18 +330,15 @@ describe("OverviewStore inbox threads", () => {
     await waitFor(() => {
       expect(store.unreadThreads.map((t) => t.subject)).toEqual(["a", "c", "d", "e", "f", "g"]);
     });
-    // However long the inbox is, a count change asks for its newest page and no more.
     expect(requests.filter((r) => r.includes("/mail/"))).toEqual([
       "GET /api/hub/mail/threads?folder=inbox&limit=50",
     ]);
     expect(store.unreadThreadsComplete).toBe(false);
     expect(store.needsYou.items.filter((item) => item.kind === "inbox")).toHaveLength(5);
     expect(store.needsYou.count).toBe(5);
-    // The page isn't the last, so the link says there is more without a number.
     expect(store.needsYou.moreInInbox).toBeGreaterThan(0);
     expect(store.needsYou.moreInInboxExact).toBe(false);
 
-    // A frame with the same counts asks for nothing; a changed count asks again.
     hub.handleFrame({ type: "agent_overview", overview: overviewOf("atlas", { inbox_unread: 9 }) });
     const asked = requests.length;
     hub.handleFrame({ type: "agent_overview", overview: overviewOf("atlas", { inbox_unread: 0 }) });
@@ -355,7 +349,6 @@ describe("OverviewStore inbox threads", () => {
   });
 
   it("counts nothing more in the Inbox once every unread thread is listed", async () => {
-    // Two unread items in one thread: the count says 2, the inbox has one thread.
     answers.overview = { boot_id: BOOT, agents: [overviewOf("atlas", { inbox_unread: 2 })] };
     answers.mail = () => ({ threads: [inboxThread("a"), inboxThread("b", false)], next: null });
     connect(BOOT, [agent("atlas")]);

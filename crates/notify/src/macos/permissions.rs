@@ -1,5 +1,3 @@
-//! macOS notification permission checking and requesting.
-
 #[tracing::instrument(skip_all)]
 pub async fn check_and_request() {
     let result = residuum_core::util::spawn_blocking_in_span(|| {
@@ -21,7 +19,6 @@ fn check_permissions_sync() {
     let result = std::panic::catch_unwind(|| {
         let center = UNUserNotificationCenter::currentNotificationCenter();
 
-        // Request authorization with provisional to avoid upfront prompt
         let options = UNAuthorizationOptions::Alert
             | UNAuthorizationOptions::Sound
             | UNAuthorizationOptions::Badge

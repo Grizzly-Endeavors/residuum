@@ -8,7 +8,6 @@ export interface BadgingNavigator {
   clearAppBadge?: () => Promise<void>;
 }
 
-/** Show `count` on the app icon, or clear the badge at zero. */
 export function showAppBadge(count: number, nav: BadgingNavigator = navigator): void {
   const shown = count > 0 ? nav.setAppBadge?.(count) : nav.clearAppBadge?.();
   // A browser may refuse (the app isn't installed, or badges are off for it);

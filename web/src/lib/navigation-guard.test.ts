@@ -85,7 +85,6 @@ describe("NavigationGuard", () => {
       guard.setConfirm(confirm);
       await expect(guard.confirmReload()).resolves.toBe(false);
       expect(confirm).toHaveBeenCalledWith(["an unsaved file"]);
-      // Still guarded: the person's own reload gets the browser's prompt.
       expect(unload(guard)).toBe(true);
     });
 

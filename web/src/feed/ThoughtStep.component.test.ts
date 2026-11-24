@@ -13,7 +13,6 @@ function thought(more: Partial<ThinkingFeedItem> = {}): ThinkingFeedItem {
   };
 }
 
-// The step sits in the activity line's list.
 function renderStep(item: ThinkingFeedItem): void {
   render(ThoughtStep, { item });
 }

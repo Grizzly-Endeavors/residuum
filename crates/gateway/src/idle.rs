@@ -1,15 +1,3 @@
-//! Idle transition logic.
-//!
-//! After a configurable period of user inactivity the gateway deactivates
-//! active skills, sends agent-started turns to the idle channel, fires the
-//! observer, clears the message buffer, and injects a continuity system
-//! message. The observer fire-and-clear-and-summarize
-//! sequence runs through the same background worker as every other automatic
-//! observe (see `crate::post_turn`), so [`execute_idle_transition`]
-//! itself returns almost immediately — [`apply_idle_continuation`] finishes
-//! the sequence once that background cycle's result comes back on the main
-//! loop.
-
 use crate::memory::MemorySubsystems;
 use crate::post_turn::IdleContinuation;
 use crate::types::AgentRuntime;
@@ -17,9 +5,6 @@ use residuum_agent::Agent;
 use residuum_bus::EndpointName;
 use residuum_config::WEB_UI_ENDPOINT;
 
-/// Run the idle transition's synchronous steps and trigger its observe
-/// cycle in the background; [`apply_idle_continuation`] finishes the rest
-/// once that cycle's result comes back.
 #[tracing::instrument(skip_all)]
 pub(super) async fn execute_idle_transition(
     rt: &mut AgentRuntime,
@@ -28,20 +13,12 @@ pub(super) async fn execute_idle_transition(
     let timeout_mins = rt.cfg.idle.timeout.as_secs() / 60;
     tracing::info!(timeout_mins, "idle timeout reached, transitioning");
 
-    // 1. Deactivate explicitly-activated skills
     let total_skills = deactivate_remaining_skills(rt).await;
     *observe_deadline = None;
 
-    // 2. Send agent-started turns to the idle channel now, not once the
-    // observe cycle below returns: an owner who writes while it runs moves
-    // routing back to themselves, and must not be overridden afterwards.
     let idle_endpoint = idle_output_endpoint(&rt.endpoint_registry, &rt.cfg.idle.idle_channel);
     rt.last_output_endpoint = Some(idle_endpoint.clone());
 
-    // 3. Trigger the observe cycle in the background; the remaining steps
-    // (clearing messages, injecting the continuity note) wait for it via
-    // `apply_idle_continuation` so a message that hasn't yet been observed
-    // is never wiped out by the clear racing ahead of it.
     let mem = MemorySubsystems::from_runtime(rt);
     rt.memory_worker.trigger_for_idle(
         mem,
@@ -53,9 +30,6 @@ pub(super) async fn execute_idle_transition(
     );
 }
 
-/// Finish an idle transition once its background observe cycle's result
-/// arrives: clear the in-memory message buffer and inject the continuity
-/// system message. Called from `run_loop`'s `apply_post_turn_result`.
 pub(super) fn apply_idle_continuation(agent: &mut Agent, continuation: &IdleContinuation) {
     agent.clear_messages();
 
@@ -67,11 +41,6 @@ pub(super) fn apply_idle_continuation(agent: &mut Agent, continuation: &IdleCont
     agent.inject_system_message(&summary);
 }
 
-/// Where agent-started main turns go once the owner is idle: the configured
-/// idle channel when the registry has it as an interactive endpoint, else
-/// the web UI, which is always registered. Falling back to the web rather
-/// than leaving output where the owner last spoke keeps it off a chat the
-/// owner did not choose for this.
 pub(super) fn idle_output_endpoint(
     registry: &residuum_bus::EndpointRegistry,
     channel_name: &str,
@@ -103,7 +72,6 @@ pub(super) fn idle_output_endpoint(
     }
 }
 
-/// Deactivate all remaining explicitly-activated skills.
 async fn deactivate_remaining_skills(rt: &mut AgentRuntime) -> usize {
     let mut state = rt.skill_state.lock().await;
     let names: Vec<String> = state
@@ -126,9 +94,6 @@ async fn deactivate_remaining_skills(rt: &mut AgentRuntime) -> usize {
     count
 }
 
-/// Build the idle summary message injected into the agent context. It says
-/// where turns the agent starts now reach the user, so the agent doesn't
-/// assume a chat notification went out when it only reached the web app.
 fn format_idle_summary(
     timeout_mins: u64,
     skill_count: usize,

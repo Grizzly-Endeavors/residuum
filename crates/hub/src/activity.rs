@@ -1,16 +1,3 @@
-//! Main-conversation activity for one agent: whether a main turn is running,
-//! and how many messages the web UI has not shown yet.
-//!
-//! The rail and Home show both. `busy` follows the main turn, and `busy_since`
-//! says when that turn began. `unread` counts
-//! main-conversation messages published while no web client is connected to
-//! the agent's WebSocket, and resets when a client connects. Every change is
-//! published on the hub bus as a [`HubEvent::AgentActivity`].
-//!
-//! The tracker is also the **turn hook**: the runtime calls
-//! [`ActivityTracker::main_turn_ended`] once when a main turn ends, and the
-//! turn reaches the hub's [`AgentChangeFeed`] as a [`MainTurnEnded`].
-
 use std::sync::{Arc, Mutex, PoisonError};
 
 use chrono::{DateTime, Utc};
@@ -22,37 +9,23 @@ use residuum_memory::types::Visibility;
 
 #[derive(Default)]
 struct ActivityState {
-    /// When the current main turn began, while one is running.
     busy_since: Option<DateTime<Utc>>,
     unread: u32,
-    /// A graceful restart was requested while `busy_since` was set, and is
-    /// waiting for the current main turn to end.
     restart_pending: bool,
-    /// Web clients currently connected to the agent's `/ws`.
     clients: usize,
-    /// Whether a client was connected when the running turn's latest
-    /// endpoint reply went out; taken when the turn ends.
     last_reply_seen: bool,
-    /// Bumped whenever the agent stops, so a connection guard from the run
-    /// that ended cannot unbalance the next run's client count.
     run: u64,
 }
 
-/// Tracks one agent's [`AgentActivity`] and publishes its changes.
 pub struct ActivityTracker {
     name: String,
     state: Mutex<ActivityState>,
     events: broadcast::Sender<HubEvent>,
-    /// Tracks `(busy, restart_pending)` so a deferred restart task can wait
-    /// without polling or missing a state transition.
     turn_state_tx: tokio::sync::watch::Sender<(bool, bool)>,
-    /// Where the turn hook reports each main turn's end.
     changes: Arc<AgentChangeFeed>,
 }
 
 impl ActivityTracker {
-    /// A tracker for the agent `name` that publishes activity on `events`
-    /// and reports each main turn's end on `changes`.
     #[must_use]
     pub fn new(
         name: impl Into<String>,
@@ -69,14 +42,12 @@ impl ActivityTracker {
         })
     }
 
-    /// The current activity.
     #[must_use]
     pub fn snapshot(&self) -> AgentActivity {
         let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         Self::activity_of(&state)
     }
 
-    /// How many web clients are connected to the agent's `/ws` now.
     #[must_use]
     pub fn connected_clients(&self) -> usize {
         self.state
@@ -94,7 +65,6 @@ impl ActivityTracker {
         }
     }
 
-    /// Apply `change` to the state and publish the new activity if it differs.
     fn update(&self, change: impl FnOnce(&mut ActivityState)) {
         let (before, after) = {
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
@@ -106,8 +76,6 @@ impl ActivityTracker {
             (before, after)
         };
         if before != after {
-            // No subscribers is the normal state until a client opens the
-            // hub WebSocket.
             self.events
                 .send(HubEvent::AgentActivity {
                     name: self.name.clone(),
@@ -117,9 +85,6 @@ impl ActivityTracker {
         }
     }
 
-    /// If a main turn is currently running (or a deferred restart is already
-    /// pending), mark `restart_pending = true` and return `(true, newly_scheduled)`.
-    /// If no main turn is running and none is pending, return `(false, false)`.
     pub(crate) fn defer_restart_if_busy(&self) -> (bool, bool) {
         let mut deferred = false;
         let mut newly_scheduled = false;
@@ -135,7 +100,6 @@ impl ActivityTracker {
         (deferred, newly_scheduled)
     }
 
-    /// Clear `restart_pending` and return whether it was set.
     pub(crate) fn take_restart_pending(&self) -> bool {
         let mut was_pending = false;
         self.update(|state| {
@@ -144,8 +108,6 @@ impl ActivityTracker {
         was_pending
     }
 
-    /// Wait until no main turn is running (`!busy`) or the pending restart
-    /// has been cancelled (`!restart_pending`).
     pub(crate) async fn wait_until_turn_ends_or_cancelled(&self) {
         let mut rx = self.turn_state_tx.subscribe();
         rx.wait_for(|&(busy, restart_pending)| !busy || !restart_pending)
@@ -153,7 +115,6 @@ impl ActivityTracker {
             .ok();
     }
 
-    /// Mark a main turn as running until the returned guard drops.
     #[must_use]
     pub fn main_turn(self: &Arc<Self>) -> MainTurnGuard {
         self.update(|state| {
@@ -164,9 +125,6 @@ impl ActivityTracker {
         }
     }
 
-    /// A main-conversation reply for an endpoint was just published. It
-    /// counts as unread when no web client is connected to see it, and the
-    /// turn's end reports whether one was.
     pub fn main_message_published(&self) {
         self.update(|state| {
             let seen = state.clients > 0;
@@ -177,17 +135,6 @@ impl ActivityTracker {
         });
     }
 
-    /// The turn hook: a main turn ended. The runtime calls this exactly once
-    /// per turn, after the turn's replies were published and counted by
-    /// [`Self::main_message_published`] as each went out.
-    ///
-    /// `user_message` is what the user said to start the turn, `reply` the
-    /// turn's last reply text, and `visibility` whether a user was part of it.
-    /// Text that is empty or only whitespace counts as no text. The turn is
-    /// reported with the time, and whether a client was there to see it:
-    /// connected as the turn's last reply went out (a reader who saw it may
-    /// leave before the turn's tail finishes), or connected now (a page that
-    /// opens mid-turn is shown the turn so far).
     pub fn main_turn_ended(
         &self,
         user_message: Option<String>,
@@ -211,8 +158,6 @@ impl ActivityTracker {
         });
     }
 
-    /// A web client connected to the agent's `/ws`. Resets the unread count;
-    /// the client is counted as connected until the guard drops.
     #[must_use]
     pub fn client_connected(self: &Arc<Self>) -> ClientGuard {
         let mut run = 0;
@@ -227,15 +172,12 @@ impl ActivityTracker {
         }
     }
 
-    /// Tell the user something about this agent as a hub notice.
     pub fn hub_notice(&self, level: NoticeLevel, message: String) {
         self.events
             .send(HubEvent::notice(level, message, Some(self.name.clone())))
             .ok();
     }
 
-    /// The agent stopped: nothing is running and no client is connected any
-    /// more. The unread count is kept.
     pub fn run_ended(&self) {
         self.update(|state| {
             state.busy_since = None;
@@ -253,7 +195,6 @@ impl residuum_agent::ReplyAudience for ActivityTracker {
     }
 }
 
-/// Keeps an agent marked busy while a main turn runs.
 pub struct MainTurnGuard {
     tracker: Arc<ActivityTracker>,
 }
@@ -264,7 +205,6 @@ impl Drop for MainTurnGuard {
     }
 }
 
-/// Counts one connected web client until dropped.
 pub struct ClientGuard {
     tracker: Arc<ActivityTracker>,
     run: u64,
@@ -356,7 +296,6 @@ mod tests {
         let guard = tracker.main_turn();
         assert_eq!(tracker.defer_restart_if_busy(), (true, true));
         assert!(tracker.snapshot().restart_pending);
-        // A second request while already pending coalesces into the first.
         assert_eq!(tracker.defer_restart_if_busy(), (true, false));
         let events = drain(&mut rx);
         let flags: Vec<(bool, bool)> = events.iter().map(|e| (e.busy, e.restart_pending)).collect();
@@ -474,7 +413,6 @@ mod tests {
         assert!(drain(&mut rx).is_empty(), "a shown message is not unread");
     }
 
-    /// A tracker whose turn hook reports to the returned receiver.
     fn tracker_with_changes() -> (
         Arc<ActivityTracker>,
         crate::agent_watch::AgentChangeReceiver,
@@ -508,8 +446,6 @@ mod tests {
         assert_eq!(turn.reply.as_deref(), Some("Two meetings."));
         assert_eq!(turn.visibility, Visibility::User);
         assert!(before <= turn.at && turn.at <= Utc::now());
-        // The hook publishes before it returns, so a second event would
-        // already be queued.
         assert!(changes.try_recv().is_none(), "one call, one event");
 
         tracker.main_turn_ended(
@@ -556,7 +492,6 @@ mod tests {
         let (tracker, mut changes) = tracker_with_changes();
         let client = tracker.client_connected();
         tracker.main_message_published();
-        // The reader closes the page while the turn's tail is still running.
         drop(client);
         tracker.main_turn_ended(None, Some("Done.".to_string()), Visibility::User);
         assert!(next_turn(&mut changes).await.client_connected);

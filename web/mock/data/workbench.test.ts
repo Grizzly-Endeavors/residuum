@@ -5,7 +5,6 @@ import { MOCK_WORKBENCH_ARTIFACT } from "./workbench";
 
 type Listener = () => void;
 
-/** The part of a page element the sample's script uses. */
 interface StubElement {
   value: string;
   textContent: string;
@@ -32,10 +31,6 @@ interface SamplePage {
   startSession: Mock<(options: { agent: string; prompt: string }) => Promise<object>>;
 }
 
-/**
- * Run the sample page's own script against stub elements and a stub SDK, so
- * a click reaches the `residuum` calls the real page would make.
- */
 function openSamplePage(): SamplePage {
   const script = /<script>([\s\S]*)<\/script>/.exec(MOCK_WORKBENCH_ARTIFACT)?.[1] ?? "";
   const elements = new Map([

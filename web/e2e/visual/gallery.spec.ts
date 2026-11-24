@@ -2,11 +2,6 @@ import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "../support/fixtures";
 import { expectScreenshot } from "../support/screenshot";
 
-/**
- * The primitives gallery's design reference: the buttons, the fields with one
- * focused, an open menu, and the toasts. Each is shot alone, on the desktop.
- */
-
 test.describe("primitives gallery", { tag: "@visual" }, () => {
   test.skip(({ isMobile }) => isMobile, "The gallery's controls are shot at the desktop size.");
 
@@ -40,7 +35,6 @@ test.describe("primitives gallery", { tag: "@visual" }, () => {
 
   test("an error toast and a toast with Undo", async ({ page }) => {
     const toasts = section(page, "Toasts and recent notifications");
-    // Errors stay and an action keeps a toast up for 10 seconds, so these hold still.
     await toasts.getByRole("button", { name: "Error" }).click();
     await toasts.getByRole("button", { name: "With Undo" }).click();
     await expect(page.getByText("Couldn't save the settings.")).toBeVisible();

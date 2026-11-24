@@ -1,26 +1,16 @@
-//! The status line each user message in the main conversation carries.
-
 use chrono::NaiveDateTime;
 use residuum_bus::MessageEvent;
 use residuum_config::WEB_UI_ENDPOINT;
 use residuum_core::time::{format_display_datetime, format_relative_time, now_local};
 use residuum_inference::{Message, Role};
 
-/// Stamps each user message entering the main conversation with its status
-/// line: `[Received: …][Last Message: …][Message Source: …]`, computed
-/// at the message's arrival and stored on it ([`Message::status_line`]).
-///
-/// A stored line is never recomputed, so replaying history renders the same
-/// bytes on every turn.
 #[derive(Debug)]
 pub struct StatusClock {
     tz: chrono_tz::Tz,
-    /// When the previous user message arrived, for the next `[Last Message]`.
     last_message_at: Option<NaiveDateTime>,
 }
 
 impl StatusClock {
-    /// A clock in `tz` that has seen no message yet.
     #[must_use]
     pub(crate) fn new(tz: chrono_tz::Tz) -> Self {
         Self {
@@ -29,27 +19,20 @@ impl StatusClock {
         }
     }
 
-    /// Render later lines in `tz`.
     pub(crate) fn set_timezone(&mut self, tz: chrono_tz::Tz) {
         self.tz = tz;
     }
 
-    /// Set when the previous user message arrived (at startup, from the
-    /// persisted history), for the next line's `[Last Message]`.
     pub(crate) fn set_last_message_at(&mut self, at: Option<NaiveDateTime>) {
         self.last_message_at = at;
     }
 
-    /// Stamp `message`, arriving now from the interface `source`, with its
-    /// status line, and record its arrival for the next line.
     pub(crate) fn stamp(&mut self, message: &mut Message, source: Option<&str>) {
         let now = now_local(self.tz);
         message.status_line = Some(render_status_line(now, self.last_message_at, source));
         self.last_message_at = Some(now);
     }
 
-    /// The history entries for `message` arriving now
-    /// ([`MessageEvent::into_history_messages`]), its user message stamped.
     #[must_use]
     pub(crate) fn admit(&mut self, message: MessageEvent) -> Vec<Message> {
         let source = message.origin.endpoint.clone();
@@ -61,8 +44,6 @@ impl StatusClock {
     }
 }
 
-/// Render the status line for a message that arrived at `now`, the previous
-/// one at `last_message_at`, from the interface `source`.
 fn render_status_line(
     now: NaiveDateTime,
     last_message_at: Option<NaiveDateTime>,
@@ -78,8 +59,6 @@ fn render_status_line(
     }
 
     if let Some(source) = source {
-        // The web UI's endpoint is named `ws` inside the harness; the agent
-        // knows that interface as the web UI.
         let source = if source == WEB_UI_ENDPOINT {
             "web"
         } else {

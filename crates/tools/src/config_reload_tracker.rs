@@ -1,48 +1,23 @@
-//! Correlates the agent's own config-file writes with the reload they
-//! trigger, so the reload's outcome can be delivered back to the agent's own
-//! transcript instead of only published as a user-facing notice.
-//!
-//! Wired only into main's `write_file`/`edit_file` tools (see
-//! `main_tools::init_tool_registry`) — a session's tool
-//! registry never gets a [`ConfigWriteWatch`], since there is no live,
-//! durable `Agent` to deliver a later note back into once a session's run
-//! completes.
-
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use residuum_config::WorkspaceLayout;
 
-/// Which reload pathway a recognized config path funnels into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigReloadKind {
-    /// The agent's `config.toml` / `providers.toml` — `ReloadSignal::Agent`.
     Agent,
-    /// The hub's `config.toml` — `ReloadSignal::Hub`.
     Hub,
-    /// `mcp.json` / `channels.toml` / `a2a.json` — `ReloadSignal::Workspace`.
     Workspace,
-    /// `HEARTBEAT.yml` — hot-reloaded on the pulse scheduler's next tick,
-    /// not through `ReloadSignal` at all.
     Heartbeat,
 }
 
-/// The seven config paths a write/edit tool call recognizes as
-/// reload-triggering, canonicalized once so a written path can be compared
-/// by equality rather than re-resolving symlinks/`..`/relative forms on
-/// every write.
 #[derive(Clone)]
 pub struct RecognizedConfigPaths {
-    // (canonicalized path, the reload pathway it funnels into)
     paths: Vec<(PathBuf, ConfigReloadKind)>,
 }
 
 impl RecognizedConfigPaths {
-    /// Build the recognized set from the agent's config directory
-    /// (`config.toml`, `providers.toml`), the hub directory (`config.toml`),
-    /// and workspace layout (`mcp.json`, `channels.toml`, `a2a.json`,
-    /// `HEARTBEAT.yml`).
     #[must_use]
     pub fn new(config_dir: &Path, hub_dir: &Path, layout: &WorkspaceLayout) -> Self {
         let canon = |p: PathBuf| std::fs::canonicalize(&p).unwrap_or(p);
@@ -65,10 +40,6 @@ impl RecognizedConfigPaths {
         }
     }
 
-    /// Which reload pathway `written_path` funnels into, if it's one of the
-    /// seven recognized config paths. `written_path` should already exist (the
-    /// write already succeeded), so it can be canonicalized for a robust
-    /// comparison against symlinks/`..`/relative forms.
     #[must_use]
     pub fn kind_for(&self, written_path: &Path) -> Option<ConfigReloadKind> {
         let canonical = std::fs::canonicalize(written_path).ok()?;
@@ -79,34 +50,22 @@ impl RecognizedConfigPaths {
     }
 }
 
-/// One write the agent made to a recognized config path, awaiting its
-/// reload's outcome.
 struct PendingWrite {
     kind: ConfigReloadKind,
     marked_at: Instant,
 }
 
-/// How long a pending mark stays valid before a matching reload is treated
-/// as unrelated to it — e.g. a manual edit made through the web UI shortly
-/// after the agent's own write, or a reload long after the write already
-/// settled some other way.
 const PENDING_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Shared between the agent's `write_file`/`edit_file` tools (which mark a
-/// write) and the gateway event loop (which consumes the mark once the
-/// matching reload completes, delivering its outcome to the agent).
 #[derive(Clone, Default)]
 pub struct SharedConfigReloadTracker(Arc<Mutex<Vec<PendingWrite>>>);
 
 impl SharedConfigReloadTracker {
-    /// Create a new, empty tracker.
     #[must_use]
     pub fn new_shared() -> Self {
         Self::default()
     }
 
-    /// Record that the agent just wrote a path funneling into `kind`'s
-    /// reload pathway.
     pub fn mark(&self, kind: ConfigReloadKind) {
         let mut pending = self.lock();
         pending.retain(|p| p.marked_at.elapsed() < PENDING_WRITE_TIMEOUT);
@@ -116,9 +75,6 @@ impl SharedConfigReloadTracker {
         });
     }
 
-    /// Consume the oldest still-valid pending mark for `kind`, if any.
-    /// `true` means this reload was caused by the agent's own write and its
-    /// outcome should also reach the agent, not just the user's interfaces.
     #[must_use]
     pub fn take_if_matches(&self, kind: ConfigReloadKind) -> bool {
         let mut pending = self.lock();
@@ -138,9 +94,6 @@ impl SharedConfigReloadTracker {
     }
 }
 
-/// What `write_file`/`edit_file` need to recognize and mark a config write —
-/// bundles [`RecognizedConfigPaths`] and the [`SharedConfigReloadTracker`]
-/// they mark on a match.
 #[derive(Clone)]
 pub struct ConfigWriteWatch {
     pub recognized: RecognizedConfigPaths,
@@ -148,8 +101,6 @@ pub struct ConfigWriteWatch {
 }
 
 impl ConfigWriteWatch {
-    /// Check whether `written_path` is a recognized config path and, if so,
-    /// mark it on the shared tracker.
     pub fn note_write(&self, written_path: &Path) {
         if let Some(kind) = self.recognized.kind_for(written_path) {
             self.tracker.mark(kind);
@@ -283,8 +234,6 @@ mod tests {
     fn a_stale_mark_past_the_timeout_is_not_attributed_to_a_later_reload() {
         let tracker = SharedConfigReloadTracker::new_shared();
         {
-            // Backdate the mark past the timeout window directly, rather
-            // than sleeping the test for 30s.
             let mut pending = tracker.lock();
             pending.push(PendingWrite {
                 kind: ConfigReloadKind::Agent,

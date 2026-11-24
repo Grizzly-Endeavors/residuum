@@ -23,7 +23,6 @@ import {
   type Place,
 } from "./routes";
 
-/** Read a URL with `scout` as the last-used agent, and format what it reads: the address the app settles on. */
 function read(url: string, lastUsed: string | null = "scout"): ParsedUrl & { url: string } {
   const [path = "", query = ""] = url.split("?");
   const parsed = parseUrl(path, query === "" ? "" : `?${query}`, { lastUsed });

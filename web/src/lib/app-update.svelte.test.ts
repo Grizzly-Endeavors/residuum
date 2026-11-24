@@ -16,7 +16,6 @@ class FakeWorker extends EventTarget implements WorkerLike {
     this.posted.push(message);
   }
 
-  /** The worker finishes installing, as a browser reports it. */
   finishInstalling(): void {
     this.state = "installed";
     this.dispatchEvent(new Event("statechange"));
@@ -28,7 +27,6 @@ class FakeRegistration extends EventTarget implements RegistrationLike {
   installing: FakeWorker | null = null;
   readonly update = vi.fn((): Promise<unknown> => Promise.resolve());
 
-  /** A rebuilt app's worker is found, installs and waits. */
   foundUpdate(): FakeWorker {
     const worker = new FakeWorker();
     this.installing = worker;
@@ -47,7 +45,6 @@ class FakeContainer extends EventTarget implements ContainerLike {
     (_url: string): Promise<RegistrationLike | undefined> => Promise.resolve(this.registration),
   );
 
-  /** A worker takes control of the page, as a browser reports it. */
   takeControl(): void {
     this.controller = {};
     this.dispatchEvent(new Event("controllerchange"));
@@ -84,7 +81,6 @@ class FakePage implements PageLike {
 const yes = (): Promise<boolean> => Promise.resolve(true);
 const no = (): Promise<boolean> => Promise.resolve(false);
 
-/** Let the registration and the work after it settle. */
 const settle = async (): Promise<void> => {
   await vi.advanceTimersByTimeAsync(0);
 };
@@ -238,7 +234,6 @@ describe("Reload", () => {
     container.takeControl();
     await applying;
     expect(page.reload).toHaveBeenCalledOnce();
-    // This page asked for the takeover, so it is not left with a second notice.
     expect(update.ready).toBe(true);
   });
 

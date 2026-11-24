@@ -3,27 +3,15 @@ import { expectNoAxeViolations } from "../support/axe";
 import { sendFromComposer } from "../support/composer";
 import { expect, test } from "../support/fixtures";
 
-/**
- * Activity and the session panel: what an agent is running and has finished,
- * a run opened in the panel from Activity, a chat card and the Workbench,
- * messaging, stopping and resuming a run, the message box over the
- * transcript with its `/` menu, a run on another agent streaming
- * in through the hub's relay, outbound tasks, and the panel keeping its
- * state across a breakpoint.
- */
-
 const RESEARCH = "Compare fallback strategies for notification delivery";
 const FAMILY = "Conversation in Family chat";
-/** The session message box's send button. */
 const SEND = "Send to this session";
 
-/** Path and query of the page's URL, decoded. */
 function address(page: Page): string {
   const url = new URL(page.url());
   return decodeURIComponent(`${url.pathname}${url.search}`);
 }
 
-/** The panel named `name`: a column beside the main region, or on a phone a full-screen sheet. */
 function sessionPanel(page: Page, isMobile: boolean, name: string): Locator {
   return page.getByRole(isMobile ? "dialog" : "complementary", { name });
 }
@@ -92,7 +80,6 @@ test("a live run is messaged and stopped from the panel", async ({ page, isMobil
   await expect(panel.getByText("Session stopped.")).toBeVisible();
   await expect(panel.getByRole("button", { name: "Stop", exact: true })).toHaveCount(0);
   await expect(messageBox(panel)).toHaveAttribute("placeholder", "Message it to start it again…");
-  // Activity moved it to Finished.
   if (!isMobile) {
     await expect(
       page.getByRole("region", { name: /^Finished/ }).getByRole("button", { name: /^Compare/ }),
@@ -113,19 +100,16 @@ test("a message sent while the run works waits until the session reads it", asyn
   await mock.manualTime();
   await messageBox(panel).fill("Check the archive too");
   await sendFromComposer(messageBox(panel), SEND);
-  // The turn it starts reads it as it begins.
   await expect(transcript.getByText("Check the archive too")).toBeVisible();
 
   await messageBox(panel).fill("And the old notes");
   await sendFromComposer(messageBox(panel), SEND);
   const waiting = panel.getByRole("region", { name: "Waiting for this session to read" });
   await expect(waiting.getByText("And the old notes")).toBeVisible();
-  // Dismiss is the only thing to ask of it.
   await expect(waiting.getByRole("button")).toHaveCount(1);
   await expect(waiting.getByRole("button", { name: "Dismiss" })).toBeVisible();
   await scanPanel(page, isMobile);
 
-  // The turn reads it after its tool batch, at 1.2s, and answers it at 2.4s.
   await mock.advance(1_200);
   await expect(waiting).toHaveCount(0);
   await expect(transcript.getByText("And the old notes")).toBeVisible();
@@ -142,10 +126,6 @@ test("the message box floats over the transcript, and its / menu stops the run",
   const newest = panel.getByText("Starting with what's already in the wiki.");
   await expect(newest).toBeVisible();
 
-  // The transcript's scrolling area runs to the panel's foot, behind the box,
-  // and at its end the newest line rests above the box, not under it. All of
-  // it is read in one frame, so a panel still sliding in (a phone's sheet)
-  // or a feed still settling is read as one layout, and polled until settled.
   const region = panel.getByRole("region", { name: "Transcript" });
   const form = await panel.locator("form.composer").elementHandle();
   const line = await newest.elementHandle();
@@ -216,8 +196,6 @@ test("a finished run is resumed by a message, and the panel follows it", async (
   await expect.poll(() => address(page)).toMatch(/\?panel=session:atlas:run-resumed-http-\d+$/);
   await expect(panel.getByRole("separator", { name: "New run" })).toBeAttached();
 
-  // A reload draws the run from its transcript, which opens with the pointer to
-  // the previous run: the panel leaves it out, as the live view did.
   await page.reload();
   const reloaded = sessionPanel(page, isMobile, FAMILY);
   await expect(reloaded.getByText("Any news?")).toBeVisible();
@@ -240,7 +218,6 @@ test("a run on another agent streams into the panel through the hub", async ({
   page,
   isMobile,
 }) => {
-  // scout's socket is the one open: atlas's run comes through the hub's relay.
   await page.goto("/agent/scout");
   await page.goto("/team/workbench?panel=session:atlas:run-live-research");
   const panel = sessionPanel(page, isMobile, RESEARCH);
@@ -285,7 +262,6 @@ test.describe("at wide width", () => {
     const panel = (name: "complementary" | "dialog"): Locator =>
       page.getByRole(name, { name: RESEARCH });
     await expect(panel("complementary").getByText("Starting with what's")).toBeVisible();
-    // Past the reads the panel makes as it subscribes.
     await page.waitForLoadState("networkidle");
     page.on("request", (request) => {
       if (request.url().includes("/transcript")) transcripts.push(request.url());

@@ -1,13 +1,3 @@
-//! Memory subsystem: observation, reflection, and search.
-//!
-//! Provides persistence across restarts through structured episodes,
-//! observation logs, and full-text search.
-//!
-//! The `test-support` feature adds `testing`, the fixed-reply model provider
-//! other crates' tests run the observer and reflector with, and two
-//! `episode_store` helpers those tests seed and read episodes with:
-//! `write_episode_transcript` and `latest_episode_id`.
-
 mod chunk_extractor;
 #[cfg(test)]
 #[path = "../../core/src/testing/crypto.rs"]
@@ -32,7 +22,6 @@ pub mod wiki_index;
 
 pub use chunk_extractor::read_idx_jsonl;
 
-/// Truncate a string at a char boundary, appending "...(truncated)" if truncated.
 pub(crate) fn truncate_at_char_boundary(s: &str, max: usize) -> String {
     if s.len() <= max {
         return s.to_string();
@@ -45,10 +34,6 @@ pub(crate) fn truncate_at_char_boundary(s: &str, max: usize) -> String {
     format!("{prefix}...(truncated)")
 }
 
-/// Parse a timestamp string into a local `NaiveDateTime`.
-///
-/// Accepts `YYYY-MM-DDTHH:MM` format (plain local time, no offset/Z).
-/// Falls back to `now_local(tz)` with a warning if parsing fails.
 pub(crate) fn parse_minute_timestamp(ts: &str, tz: chrono_tz::Tz) -> chrono::NaiveDateTime {
     if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(ts, "%Y-%m-%dT%H:%M") {
         return naive;

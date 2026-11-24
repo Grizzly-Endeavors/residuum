@@ -1,5 +1,3 @@
-//! Serenity event handler and slash command registration.
-
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -30,18 +28,11 @@ use residuum_workspace::inbox::attachment::{
 use super::DiscordState;
 use super::channels::{guild_channel_label, strip_bot_mention};
 
-/// Serenity event handler that filters for DMs, enforces who may use the
-/// bot, registers slash commands, and handles attachments.
-///
-/// `Clone` so the client-build retry in [`super::DiscordInterface::start`]
-/// can hand a fresh clone to each attempt — `Client::builder(..)
-/// .event_handler(handler)` consumes it by value.
 #[derive(Clone)]
 pub(super) struct DiscordHandler {
     pub(super) state: Arc<DiscordState>,
     pub(super) publisher: Publisher,
     pub(super) inbox_dir: PathBuf,
-    /// Main's saved conversation, which `/multitask` forks.
     pub(super) main_conversation: PathBuf,
     pub(super) reload_tx: residuum_bus::control::ReloadSender,
     pub(super) command_tx: tokio::sync::mpsc::Sender<ServerCommand>,
@@ -58,7 +49,6 @@ impl EventHandler for DiscordHandler {
             tracing::debug!("discord reconnected; bot user already known");
         }
 
-        // Register global slash commands
         if let Err(e) = register_commands(&ctx).await {
             tracing::warn!(error = %e, "failed to register discord slash commands");
         }
@@ -97,7 +87,6 @@ impl EventHandler for DiscordHandler {
             }
         };
 
-        // Build content with attachment metadata and collect inline images
         let (content, images, attachments) = process_discord_attachments(
             &msg.attachments,
             addressed.text,
@@ -175,7 +164,6 @@ impl EventHandler for DiscordHandler {
             return;
         }
 
-        // Extract optional text argument from Discord interaction options
         let cmd_args = cmd
             .data
             .options
@@ -183,9 +171,6 @@ impl EventHandler for DiscordHandler {
             .and_then(|opt| opt.value.as_str())
             .map(str::to_string);
 
-        // A slash command carries no @mention, so its conversation identity
-        // is derived the same way `addressed_to_agent` derives it for an
-        // ordinary message: no guild means a DM.
         let conversation = ConversationContext {
             id: cmd.channel_id.to_string(),
             kind: if cmd.guild_id.is_some() {
@@ -215,7 +200,6 @@ impl EventHandler for DiscordHandler {
         )
         .await;
 
-        // Command output can carry internals; in a server only the owner sees it.
         let msg = CreateInteractionResponseMessage::new()
             .content(response_text)
             .ephemeral(cmd.guild_id.is_some());
@@ -230,9 +214,6 @@ impl EventHandler for DiscordHandler {
     }
 }
 
-/// A message the bot has decided to act on: where it happened, its text
-/// (mention stripped), its conversation identity, and any unmentioned
-/// chatter buffered since the last mention there.
 struct Addressed {
     location: String,
     text: String,
@@ -242,11 +223,6 @@ struct Addressed {
 }
 
 impl DiscordHandler {
-    /// Where a message was sent and its text, if it is meant for the agent:
-    /// every DM, and server messages that @mention the bot (mention removed).
-    /// DMs are also recorded, and the first one claims ownership. An
-    /// unmentioned server message is buffered as context instead, and `None`
-    /// is returned.
     async fn addressed_to_agent(&self, http: &Http, msg: &Message) -> Option<Addressed> {
         let Some(guild_id) = msg.guild_id else {
             let channel_key = msg.channel_id.to_string();
@@ -288,8 +264,6 @@ impl DiscordHandler {
     }
 }
 
-/// Hold an unmentioned server message as context for the next @mention in
-/// that channel; empty messages (e.g. attachment-only) are dropped.
 fn buffer_unmentioned(state: &DiscordState, channel_key: &str, msg: &Message, tz: chrono_tz::Tz) {
     if msg.content.trim().is_empty() {
         return;
@@ -310,7 +284,6 @@ async fn say_or_warn(ctx: &Context, channel_id: ChannelId, text: &str) {
     }
 }
 
-/// Make the sender the owner if nobody is yet; only called for DMs.
 async fn claim_owner_if_unset(state: &DiscordState, author: &User, dm_channel: &str) {
     let owner = Owner {
         user_id: author.id.to_string(),
@@ -326,7 +299,6 @@ async fn claim_owner_if_unset(state: &DiscordState, author: &User, dm_channel: &
     }
 }
 
-/// Download and process all Discord attachments, encoding supported images inline.
 async fn process_discord_attachments(
     attachments: &[serenity::model::channel::Attachment],
     mut content: String,
@@ -394,9 +366,6 @@ async fn process_discord_attachments(
     (content, images, saved_attachments)
 }
 
-/// Register global slash commands with Discord from the shared command registry.
-///
-/// Commands that take arguments (like `/inbox`) get a `text` string option.
 async fn register_commands(ctx: &Context) -> Result<(), Box<serenity::Error>> {
     for info in all_commands() {
         let mut cmd = CreateCommand::new(info.name).description(info.help);
@@ -466,7 +435,6 @@ mod tests {
         }
     }
 
-    /// Shared server/channel/bot ids for the guild-message fixtures below.
     const GUILD_ID: u64 = 1000;
     const CHANNEL_ID: u64 = 5000;
     const BOT_ID: u64 = 999;
@@ -495,7 +463,6 @@ mod tests {
         }))
     }
 
-    /// An unmentioned server channel message from `author`.
     fn chatter(msg_id: u64, author_id: u64, author_name: &str, content: &str) -> Message {
         discord_message(serde_json::json!({
             "id": msg_id,
@@ -515,7 +482,6 @@ mod tests {
         }))
     }
 
-    /// A server channel message from `author` that @mentions the bot.
     fn mention(msg_id: u64, author_id: u64, author_name: &str, content: &str) -> Message {
         discord_message(serde_json::json!({
             "id": msg_id,

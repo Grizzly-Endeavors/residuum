@@ -1,23 +1,3 @@
-//! Shared outbound loop for Discord, Telegram, and Teams.
-//!
-//! Each platform implements [`ChatOutbound`] for its own connection, id
-//! parsing, and send API. This loop is the delivery policy those three
-//! share: where a turn's replies go, typing indicators, and the rule that a
-//! conversation session never falls back to the owner's direct messages.
-//!
-//! Only conversation goes out: agent replies, and a turn's failure in place
-//! of its reply. System notices and errors stay in the web UI. A message the
-//! agent addressed to a conversation that cannot be delivered becomes a web
-//! UI notice and a note to main, never a chat message. Replies that stop
-//! getting through are reported the same way, once per run of failures (see
-//! [`DeliveryHealth`]).
-//!
-//! Text the agent writes before a tool call (intermediate text) reaches the
-//! chat only when the platform's `deliver_intermediate` setting is on. Off,
-//! the chat gets each turn's final reply, and the typing indicator, which
-//! runs from the turn's start to its end, shows the turn is still working.
-//! The web UI shows intermediate text either way.
-
 use std::ops::ControlFlow;
 
 use async_trait::async_trait;
@@ -31,53 +11,34 @@ use residuum_bus::{
 
 use super::BaseSubscribers;
 
-/// What a chat platform provides so [`run`] can deliver bus events.
 #[async_trait]
 pub(crate) trait ChatOutbound: Send + Sync {
-    /// Platform conversation handle (a channel id, chat id, or Teams ref).
     type Target: Clone + Send + Sync + 'static;
 
-    /// Short name used in logs (`"discord"`, `"telegram"`, `"teams"`).
     fn name(&self) -> &'static str;
 
-    /// Product name the owner knows the platform by, for notices.
     fn display_name(&self) -> &'static str;
 
-    /// Whether intermediate (pre-tool-call) text is posted to the chat, from
-    /// the platform's `deliver_intermediate` setting.
     fn delivers_intermediate(&self) -> bool;
 
-    /// What the owner can do about a failed send, in plain language, when the
-    /// platform recognizes the cause in `reason` (the error [`Self::send`]
-    /// returned). `None` when the cause has no known fix.
     fn explain_failure(&self, _reason: &str) -> Option<String> {
         None
     }
 
-    /// Plain-language reason when `conversation_id` does not resolve.
     fn unknown_conversation_reason(&self) -> &'static str;
 
-    /// Publishes delivery-failure notices and notes to main.
     fn publisher(&self) -> &residuum_bus::Publisher;
 
-    /// Where a main-agent turn replies: the conversation that started it, or
-    /// the owner's direct messages for proactive output.
     async fn reply_target(&self, correlation_id: &str) -> Option<Self::Target>;
 
-    /// Drop the reply mapping for a turn that has ended.
     fn release_reply(&self, correlation_id: &str);
 
-    /// Resolve a conversation id to a send target. `None` when the id is not
-    /// one this platform can post to.
     async fn conversation_target(&self, conversation_id: &str) -> Option<Self::Target>;
 
-    /// Human-readable place name for an owner-facing delivery failure.
     async fn describe(&self, conversation_id: &str, target: &Self::Target) -> String;
 
-    /// Log-facing label for a target (an id or a conversation name).
     fn target_label(&self, target: &Self::Target) -> String;
 
-    /// Start a typing indicator. Dropping the sender stops it.
     fn start_typing(&self, target: Self::Target) -> tokio::sync::watch::Sender<()>;
 
     /// Send text, or a file when `attachment` is set.
@@ -96,14 +57,9 @@ pub(crate) trait ChatOutbound: Send + Sync {
     ) -> Result<(), String>;
 }
 
-/// Receive bus events for one chat platform until a subscription closes.
 pub(crate) async fn run<C: ChatOutbound>(mut subs: BaseSubscribers, chat: C) {
-    // One typing loop per in-flight turn, stopped by dropping its sender.
     let mut typing: std::collections::HashMap<String, tokio::sync::watch::Sender<()>> =
         std::collections::HashMap::new();
-    // Same, for conversation sessions' own turns — keyed by conversation id
-    // rather than correlation id, since a session's turn isn't a reply to
-    // any one message.
     let mut conversation_typing: std::collections::HashMap<String, tokio::sync::watch::Sender<()>> =
         std::collections::HashMap::new();
     let mut health = DeliveryHealth::default();
@@ -186,7 +142,6 @@ pub(crate) async fn run<C: ChatOutbound>(mut subs: BaseSubscribers, chat: C) {
     log_subscriber_exit(chat.name(), clean_exit);
 }
 
-/// `Break(true)` is a clean close. `Break(false)` is a failed subscription.
 fn take_event<T>(event: Result<Option<T>, BusError>, interface: &str) -> ControlFlow<bool, T> {
     match event {
         Ok(Some(value)) => ControlFlow::Continue(value),
@@ -198,26 +153,13 @@ fn take_event<T>(event: Result<Option<T>, BusError>, interface: &str) -> Control
     }
 }
 
-/// Whether this interface's replies have been getting through. The loop owns
-/// one per interface. A reply nobody receives looks, from the chat, like the
-/// agent ignoring the message, so the first failure after working delivery
-/// tells the owner and main; the rest of that run of failures stays in the
-/// logs, and the next success logs the recovery and starts over.
-///
-/// Output with nowhere to go because nobody has messaged the bot yet is
-/// reported the same way, once until something is delivered. Main's turn on
-/// that report outputs to the same interface, so the once-only flag is what
-/// keeps it from reporting itself.
 #[derive(Default)]
 struct DeliveryHealth {
-    /// Replies that failed since the last send that got through.
     failures_in_a_row: u32,
-    /// Output was dropped for want of an owner and that has been reported.
     no_owner_reported: bool,
 }
 
 impl DeliveryHealth {
-    /// A send got through.
     fn delivered(&mut self, interface: &str) {
         self.no_owner_reported = false;
         if self.failures_in_a_row > 0 {
@@ -230,8 +172,6 @@ impl DeliveryHealth {
         }
     }
 
-    /// Output had no conversation to go to. Reported the first time since
-    /// the last delivered send.
     async fn no_owner<C: ChatOutbound>(&mut self, chat: &C) {
         if !self.no_owner_reported {
             self.no_owner_reported = true;
@@ -239,8 +179,6 @@ impl DeliveryHealth {
         }
     }
 
-    /// A reply did not get through. Reported when it starts a run of
-    /// failures.
     async fn failed<C: ChatOutbound>(&mut self, chat: &C, reason: &str) {
         self.failures_in_a_row = self.failures_in_a_row.saturating_add(1);
         if self.failures_in_a_row == 1 {
@@ -249,8 +187,6 @@ impl DeliveryHealth {
     }
 }
 
-/// Send a reply to the conversation `correlation_id` answers and record the
-/// outcome in `health`. `what` names the kind of reply in the log.
 async fn send_reply<C: ChatOutbound>(
     chat: &C,
     health: &mut DeliveryHealth,
@@ -282,8 +218,6 @@ async fn deliver_intermediate<C: ChatOutbound>(
     health: &mut DeliveryHealth,
     event: IntermediateEvent,
 ) {
-    // Ahead of `send_reply`, so an unsent intermediate never counts toward
-    // delivery health or warns about a missing owner.
     if !chat.delivers_intermediate() {
         tracing::trace!(
             interface = chat.name(),
@@ -311,9 +245,6 @@ fn log_subscriber_exit(interface: &str, clean_exit: bool) {
     }
 }
 
-/// A reply's failure is reported through `health`. A message the agent
-/// addressed to a conversation is reported every time it fails, since the
-/// cause may be that one conversation and the agent chose to send it there.
 async fn deliver_main<C: ChatOutbound>(
     chat: &C,
     health: &mut DeliveryHealth,
@@ -358,10 +289,6 @@ async fn deliver_main<C: ChatOutbound>(
     }
 }
 
-/// A conversation session's output never falls back to the owner's direct
-/// messages. Either failure mode notifies main instead. Its intermediate
-/// text follows the same `deliver_intermediate` rule as a main turn's, and
-/// is skipped before any target lookup so it is never reported undelivered.
 async fn deliver_session<C: ChatOutbound>(
     chat: &C,
     health: &mut DeliveryHealth,
@@ -402,8 +329,6 @@ async fn deliver_session<C: ChatOutbound>(
     }
 }
 
-/// Where a main-agent turn's output goes. `None` means nobody has messaged
-/// the bot yet, which is logged every time and reported through `health`.
 async fn reply_target<C: ChatOutbound>(
     chat: &C,
     health: &mut DeliveryHealth,
@@ -421,9 +346,6 @@ async fn reply_target<C: ChatOutbound>(
     target
 }
 
-/// A main-agent turn failed. The chat that started it hears why in place of
-/// the reply; proactive turns tell the owner's direct messages, as their
-/// replies would.
 async fn deliver_turn_error<C: ChatOutbound>(
     chat: &C,
     health: &mut DeliveryHealth,
@@ -441,8 +363,6 @@ async fn deliver_turn_error<C: ChatOutbound>(
     .await;
 }
 
-/// The owner's next step for a send `chat` refused for `reason`: the
-/// platform's fix when it knows one, otherwise where to look.
 fn next_step_for<C: ChatOutbound>(chat: &C, reason: &str) -> String {
     chat.explain_failure(reason).unwrap_or_else(|| {
         let platform = chat.display_name();
@@ -453,7 +373,6 @@ fn next_step_for<C: ChatOutbound>(chat: &C, reason: &str) -> String {
     })
 }
 
-/// Publish a `[Delivery Failed]` note to main.
 async fn tell_main<C: ChatOutbound>(chat: &C, note: String) {
     let event = MessageEvent::from_background(format!("[Delivery Failed] {note}"));
     if let Err(e) = chat.publisher().publish(topics::UserMessage, event).await {
@@ -465,10 +384,6 @@ async fn tell_main<C: ChatOutbound>(chat: &C, note: String) {
     }
 }
 
-/// Replies on this interface have started failing, so the chat sees the
-/// agent ignore its messages. The owner gets a plain-language error in the
-/// web UI, with the platform's own wording as its details, and main hears
-/// about it so it knows the chat is not seeing its answers.
 async fn report_failing_replies<C: ChatOutbound>(chat: &C, reason: &str) {
     let platform = chat.display_name();
     let next_step = next_step_for(chat, reason);
@@ -496,9 +411,6 @@ async fn report_failing_replies<C: ChatOutbound>(chat: &C, reason: &str) {
     .await;
 }
 
-/// Main's output on this interface has nowhere to go: nobody has messaged
-/// the bot, so there is no owner conversation to send to. The owner hears how
-/// to set that up, and main hears that the output went nowhere.
 async fn report_no_owner<C: ChatOutbound>(chat: &C) {
     let platform = chat.display_name();
     residuum_bus::notice::publish_notice(
@@ -521,18 +433,11 @@ async fn report_no_owner<C: ChatOutbound>(chat: &C) {
     .await;
 }
 
-/// Why a message the agent addressed to a conversation did not go out.
 enum UndeliveredCause<'a> {
-    /// The conversation id does not resolve; the platform's plain-language
-    /// reason says why.
     UnknownConversation,
-    /// The platform refused the send, with its own error.
     Refused(&'a str),
 }
 
-/// A message the agent addressed to a specific conversation did not go out.
-/// The owner sees it in the web UI and main hears about it, since nobody in
-/// the chat will.
 async fn report_undelivered_message<C: ChatOutbound>(
     chat: &C,
     place: &str,
@@ -590,20 +495,15 @@ mod tests {
 
     const ENDPOINT: &str = "fakechat";
 
-    /// A chat platform that records what it sends. Targets are plain strings:
-    /// `"owner-dm"` for the owner, otherwise a conversation id.
     #[derive(Clone)]
     struct FakeChat {
         publisher: residuum_bus::Publisher,
         replies: HashMap<String, String>,
         conversations: Vec<String>,
         failing: Vec<String>,
-        /// While set, nobody has messaged the bot: turns have no reply target.
         no_owner: Arc<AtomicBool>,
         deliver_intermediate: bool,
         sent: Arc<Mutex<Vec<(String, String)>>>,
-        /// Every typing indicator started, by target. One is still running
-        /// while the loop holds its sender.
         typing: Arc<Mutex<Vec<TypingIndicator>>>,
     }
 
@@ -756,10 +656,6 @@ mod tests {
         }
     }
 
-    /// One turn with a tool call in the middle, as a chat sees it: the
-    /// turn starts, the main agent and a group's session each write text
-    /// before a tool call, then each sends its final reply. The turn is left
-    /// open so the test can look at its typing indicator.
     async fn publish_turn_with_tool_call(handle: &BusHandle) {
         let endpoint = || topics::Endpoint(EndpointName::from(ENDPOINT));
         let publisher = handle.publisher();
@@ -842,8 +738,6 @@ mod tests {
             )
             .await
             .unwrap();
-        // A reply sent after them proves the loop has had its chance to
-        // deliver both.
         publisher
             .publish(
                 topics::Endpoint(EndpointName::from(ENDPOINT)),
@@ -861,8 +755,6 @@ mod tests {
         );
     }
 
-    // Paused clock: every event is in process, so `clock::elapse` returns
-    // only once the loop has nothing left to handle.
     #[tokio::test(start_paused = true)]
     async fn by_default_the_chat_gets_final_replies_and_typing_through_the_turn() {
         let handle = residuum_bus::spawn_broker();
@@ -919,8 +811,6 @@ mod tests {
         );
     }
 
-    // Paused clock, as above. A failing chat proves an unsent intermediate
-    // is not a failure: nothing is reported until the final reply fails.
     #[tokio::test(start_paused = true)]
     async fn an_unsent_intermediate_is_never_reported_as_a_failure() {
         let handle = residuum_bus::spawn_broker();
@@ -1021,8 +911,6 @@ mod tests {
             .await
             .unwrap();
 
-        // Refused by the platform: its fix in the message, its own words in
-        // the details only.
         let refused = next_event("the refused-send error", &mut errors).await;
         assert!(
             refused.message.contains("group-7")
@@ -1042,7 +930,6 @@ mod tests {
             refused_note.content
         );
 
-        // An unknown conversation: the platform's reason is already plain.
         let unknown = next_event("the unknown-conversation error", &mut errors).await;
         assert!(
             unknown.message.contains("gone-1") && unknown.message.contains("no such conversation"),
@@ -1062,10 +949,6 @@ mod tests {
         );
     }
 
-    /// The one event `sub` received before the first whose text names
-    /// `marker`. A message addressed to an unknown conversation is reported
-    /// every time, to the web UI and to main, so the tests use one as a marker
-    /// that every event published before it has been handled.
     async fn only_event_before<E>(
         sub: &mut residuum_bus::Subscriber<E>,
         marker: &str,
@@ -1088,8 +971,6 @@ mod tests {
         event
     }
 
-    /// Exactly one failing-replies error and one note to main came before
-    /// the reports naming `marker`.
     async fn expect_one_report_before(
         errors: &mut residuum_bus::Subscriber<ErrorEvent>,
         main: &mut residuum_bus::Subscriber<MessageEvent>,
@@ -1109,7 +990,6 @@ mod tests {
         &error.message
     }
 
-    /// Waits for the owner-facing error that says `FakeChat` replies are failing.
     async fn expect_failing_replies_error(errors: &mut residuum_bus::Subscriber<ErrorEvent>) {
         let error = next_event("the failing-replies error", errors).await;
         assert_failing_replies_error(&error);
@@ -1172,21 +1052,17 @@ mod tests {
                     .unwrap();
             }
         };
-        // Three failed replies in a row are reported once.
         for id in ["m1", "m2", "m3"] {
             send(id, None).await;
         }
         send("fence-1", Some("gone-1")).await;
         expect_one_report_before(&mut errors, &mut main, "gone-1").await;
 
-        // A reply that gets through ends the run, so the next failure is
-        // reported again.
         send("ok", None).await;
         send("m4", None).await;
         send("fence-2", Some("gone-2")).await;
         expect_one_report_before(&mut errors, &mut main, "gone-2").await;
 
-        // So does a message the agent addressed to a conversation.
         send("to-group-9", Some("group-9")).await;
         send("m5", None).await;
         send("fence-3", Some("gone-3")).await;
@@ -1244,8 +1120,6 @@ mod tests {
         let first_notice = next_event("the no-owner notice", &mut notices).await;
         expect_no_owner_report(&first_note, &first_notice);
 
-        // The owner messages the bot and a reply gets through; when the
-        // owner is gone again, that is reported again.
         chat.no_owner.store(false, Ordering::SeqCst);
         publisher
             .publish(endpoint(), response("m3", "delivered", None))

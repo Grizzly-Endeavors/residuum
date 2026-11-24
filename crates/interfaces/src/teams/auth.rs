@@ -17,15 +17,12 @@ const OPENID_METADATA_URL: &str =
     "https://login.botframework.com/v1/.well-known/openidconfiguration";
 const EXPECTED_ISSUER: &str = "https://api.botframework.com";
 const TEAMS_CHANNEL: &str = "msteams";
-/// Tolerated clock difference between us and Microsoft's token issuer.
 const CLOCK_SKEW_SECS: i64 = 300;
-/// Signing keys rotate rarely; refresh daily regardless.
 const KEY_REFRESH_INTERVAL: Duration = Duration::from_hours(24);
 /// Floor between refetches triggered by an unknown key ID, so junk tokens
 /// cannot make us hammer Microsoft's metadata endpoint.
 const MIN_REFETCH_INTERVAL: Duration = Duration::from_mins(5);
 
-/// Why an inbound request was rejected.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub(super) enum AuthError {
     #[error("missing or non-bearer authorization header")]
@@ -52,7 +49,6 @@ pub(super) enum AuthError {
     KeyFetch(String),
 }
 
-/// One RSA signing key from Microsoft's JWKS document.
 #[derive(Debug, Clone)]
 pub(super) struct SigningKey {
     kid: String,
@@ -113,7 +109,6 @@ impl Audience {
     }
 }
 
-/// Verify a connector token against a known key set. Pure; `now` is unix seconds.
 pub(super) fn verify_token(
     token: &str,
     keys: &[SigningKey],
@@ -196,7 +191,6 @@ struct KeyCache {
     fetched_at: Option<Instant>,
 }
 
-/// Validates inbound tokens, keeping Microsoft's signing keys cached.
 pub(super) struct TokenValidator {
     http: reqwest::Client,
     app_id: String,
@@ -215,8 +209,6 @@ impl TokenValidator {
         }
     }
 
-    /// Validate the `Authorization` header of a request carrying an activity
-    /// whose `serviceUrl` is `service_url`.
     pub(super) async fn validate(
         &self,
         authorization: Option<&str>,
@@ -292,7 +284,6 @@ fn signing_key(entry: JwkEntry) -> Option<SigningKey> {
     })
 }
 
-/// Signing fixtures shared by the auth and endpoint tests.
 #[cfg(test)]
 pub(super) mod test_support {
     use super::*;
@@ -302,7 +293,6 @@ pub(super) mod test_support {
             .unwrap()
     }
 
-    /// The public half of the test key, published under `kid = "key-1"`.
     pub(in crate::teams) fn test_key(endorsements: &[&str]) -> SigningKey {
         let components: ring::signature::RsaPublicKeyComponents<Vec<u8>> =
             test_keypair().public().into();
@@ -314,7 +304,6 @@ pub(super) mod test_support {
         }
     }
 
-    /// Sign a JWT with the test key.
     pub(in crate::teams) fn sign(header: &serde_json::Value, claims: &serde_json::Value) -> String {
         let signed = format!(
             "{}.{}",
@@ -334,7 +323,6 @@ pub(super) mod test_support {
         format!("{signed}.{}", URL_SAFE_NO_PAD.encode(sig))
     }
 
-    /// A currently valid connector token for `app_id` and `service_url`.
     pub(in crate::teams) fn valid_token(app_id: &str, service_url: &str) -> String {
         let now = chrono::Utc::now().timestamp();
         sign(
@@ -350,7 +338,6 @@ pub(super) mod test_support {
     }
 
     impl TokenValidator {
-        /// A validator that already holds the test key, so it never fetches.
         pub(in crate::teams) fn with_test_key(app_id: &str) -> Self {
             Self {
                 http: reqwest::Client::new(),

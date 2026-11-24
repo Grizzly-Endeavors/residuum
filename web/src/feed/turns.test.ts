@@ -12,7 +12,6 @@ import {
   type TurnPart,
 } from "./turns";
 
-/** Each entry in a line of text: a single item's kind and text, or a turn's tools and items. */
 function describeEntries(entries: FeedEntry[]): string[] {
   const text = (item: FeedItem): string => {
     if (item.kind === "user" || item.kind === "assistant" || item.kind === "agent-message") {
@@ -103,7 +102,6 @@ describe("turns in recent history", () => {
     const items = convertHistoryMessages(
       [
         message("user", "Draft the post", { turn_id: "t1" }),
-        // The agent takes a waiting message in at its checkpoint after a tool batch.
         message("assistant", "Drafting now.", {
           turn_id: "t1",
           tool_calls: [{ id: "a", name: "write_file", arguments: {} }],
@@ -159,8 +157,6 @@ describe("turns in recent history", () => {
   });
 
   it("starts a new block at each message that starts a turn, though ids repeat", () => {
-    // Every page load once counted its message ids from web-1 again, and the
-    // agent kept them as turn ids.
     const items = convertHistoryMessages(
       [
         message("user", "First visit", { turn_id: "web-1" }),
@@ -243,8 +239,6 @@ describe("turns in recent history", () => {
 });
 
 describe("turns in a session's transcript", () => {
-  // A transcript carries no turn ids and one timestamp for the whole run, so a
-  // message taken in mid-turn is told by where the agent takes it in.
   const transcript = (messages: RecentMessage[]): string[] =>
     describeEntries(groupTurns(convertHistoryMessages(messages, { mode: "session" }), null));
 
@@ -755,12 +749,9 @@ describe("activity segments", () => {
     const first = segment(0, 2);
     const second = segment(2, 3);
     const gaps = [0, 1, 2, 4, 5];
-    // Before everything: the turn's first segment. Past its steps: at the end of the segment they follow.
     expect(gapsWithin(gaps, first, { first: true, last: false })).toEqual([0, 1, 2]);
     expect(gapsWithin(gaps, second, { first: false, last: true })).toEqual([2, 3]);
-    // A segment later in the turn takes no note for the head of the turn.
     expect(gapsWithin([0], second, { first: false, last: true })).toEqual([]);
-    // A gap past the last step still lands on the last segment.
     expect(gapsWithin([9], second, { first: false, last: true })).toEqual([3]);
     expect(gapsWithin([9], first, { first: true, last: false })).toEqual([]);
   });
@@ -838,7 +829,6 @@ describe("reasoning in turns", () => {
     const block = groupTurns(store.feed, store.activeTurnId).at(-1);
     if (block?.kind !== "turn") throw new Error("expected the turn's block");
     expect(block).toMatchObject({ live: true });
-    // Only the tool calls count where steps may be missing.
     expect(block.parts[0]).toMatchObject({ callsBefore: 0 });
     expect(block.parts[0]?.kind === "activity" ? block.parts[0].calls : []).toHaveLength(2);
   });

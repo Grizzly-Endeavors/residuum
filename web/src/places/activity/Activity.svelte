@@ -25,12 +25,6 @@
   import { notRunningTitle } from "../schedule/schedule-model";
   import RunStatus from "./RunStatus.svelte";
 
-  // What an agent is doing and has done: its live runs and the tasks it sent
-  // to other agents, each with Stop, then its finished runs, paged and
-  // filtered by kind. A run opens in the context panel, and so does a new
-  // session the owner starts. The agent is the bound one, so the lists are
-  // the coordinator's sessions store.
-
   let { agent, inPanel = false }: { agent: string; inPanel?: boolean } = $props();
   const label = $derived(hub.shownName(agent));
 
@@ -65,7 +59,6 @@
     starting = false;
   }
 
-  /** Why a new session can't start now, or null when it can. */
   const newSessionBlocked = $derived.by(() => {
     if (agentState === "running") return null;
     if (agentState === "stopping") return `${label} is stopping.`;
@@ -80,7 +73,6 @@
     void router.openPanel({ kind: "session", agent, runId: run.run_id });
   }
 
-  /** Which of a task's two commands is in flight, by task id. */
   let taskPending = $state<Record<string, "stop" | "unwatch">>({});
 
   async function settleTask(
@@ -409,7 +401,6 @@
       background: var(--color-stone-1);
     }
 
-    /* The run open in the panel. On the tint, text is only text-2 or vein-bright. */
     &[data-current] {
       background: var(--color-vein-tint);
 
@@ -506,7 +497,6 @@
     justify-content: center;
   }
 
-  /* Narrow: the status goes under the text, and a task's two commands stack. */
   @container (max-width: 560px) {
     .row-main {
       grid-template-columns: 30px minmax(0, 1fr);

@@ -13,16 +13,10 @@
   import { Badge, Banner, Button, Skeleton } from "../../lib/ui";
   import CheckpointText from "../../places/files/CheckpointText.svelte";
 
-  // What one checkpoint changed, opened in place in the History list: each
-  // path with its changes or its whole content at that point, Restore for a
-  // path, and Undo for the whole checkpoint. Both go through the config write
-  // coordinator, so a settings form showing a restored file reads it again.
-
   interface Props {
     agent: string | null;
     repo: RepoKind;
     checkpoint: CheckpointSummary;
-    /** A restore or undo wrote files and recorded a checkpoint of its own. */
     onchanged: () => void;
   }
 

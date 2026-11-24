@@ -31,7 +31,6 @@ describe("the Scheduled view routes", () => {
       body: JSON.stringify(body),
     });
 
-  /** A scheduled run of `source` that is live now. */
   function startRun(source: string): SessionSummary {
     const run: SessionSummary = {
       address: "scheduled-run-1",
@@ -64,9 +63,7 @@ describe("the Scheduled view routes", () => {
         problems: [],
         current_run: null,
       });
-      // The last run was an hour ago and the schedule is two hours.
       expect(check?.next_fire_at).toBe(harness.state.env.clock.isoIn(3_600_000));
-      // The newest finished `pulse:inbox_check` run in the sample sessions.
       expect(check?.last_outcome).toMatchObject({ status: "completed", error: null });
       expect(check?.last_outcome?.run_id).toEqual(expect.any(String));
     });
@@ -102,7 +99,6 @@ describe("the Scheduled view routes", () => {
       });
       const [, nightly] = await pulses();
       expect(nightly?.enabled).toBe(true);
-      // Enabled with a last run 20 hours ago on a daily schedule.
       expect(nightly?.next_fire_at).toBe(harness.state.env.clock.isoIn(4 * 3_600_000));
     });
 
@@ -147,7 +143,6 @@ describe("the Scheduled view routes", () => {
         overlap: null,
       };
       expect(check?.current_run).toEqual(run);
-      // The pulse ran now, so its next run is one schedule away.
       expect(check?.next_fire_at).toBe(harness.state.env.clock.isoIn(2 * 3_600_000));
       expect(fireFrames()).toEqual([
         {
@@ -194,7 +189,6 @@ describe("the Scheduled view routes", () => {
     });
 
     it("stops a fire a moment after answering, and answers 404 once it has gone", async () => {
-      // Simulated time moves only when the test moves it, so the stop waits.
       harness.state.env.setTimeMode("manual");
       const fireId = await fire();
       const stop = (): Promise<{ status: number; body: unknown }> =>
@@ -203,7 +197,6 @@ describe("the Scheduled view routes", () => {
         status: 202,
         body: { pulse: "inbox_check", fire_id: fireId },
       });
-      // Asked again while it finishes, it answers the same.
       expect((await stop()).status).toBe(202);
       expect((await pulses())[0]?.current_run).toMatchObject({ fire_id: fireId });
 

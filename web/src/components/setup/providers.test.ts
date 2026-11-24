@@ -43,7 +43,6 @@ describe("setProviderSelected", () => {
     expect(state.roles.observer).toEqual({ provider: "", url: "", model: "" });
     expect(state.backgroundModels.small).toEqual({ provider: "", model: "" });
     expect(state.embeddingModel).toEqual({ provider: "", model: "" });
-    // Choices on the providers that stay are kept.
     expect(state.roles.reflector?.model).toBe("claude-sonnet-4-6");
     expect(state.roles.pulse?.model).toBe("claude-haiku");
     expect(state.backgroundModels.large?.model).toBe("claude-opus");
@@ -54,7 +53,6 @@ describe("setProviderSelected", () => {
     setProviderSelected(state, "anthropic", false);
 
     expect(state.mainProvider).toBe("openai");
-    // A role with no provider of its own used the main one.
     expect(state.roles.reflector).toEqual({ provider: "", url: "", model: "" });
     expect(state.backgroundModels.medium).toEqual({ provider: "", model: "" });
     expect(state.roles.pulse).toEqual({ provider: "", url: "", model: "" });

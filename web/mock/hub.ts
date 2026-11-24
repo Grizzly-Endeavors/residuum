@@ -26,20 +26,14 @@ export function mockAgentSummary(agent: MockAgent): AgentSummary {
   };
 }
 
-/** An agent's main-conversation activity. */
 export function mockActivity(agent: MockAgent): AgentActivity {
   return { busy: agent.busySince !== null, busy_since: agent.busySince, unread: agent.unread };
 }
 
-/** `agent_activity`, the frame that carries an agent's activity after it changes. */
 function activityFrame(agent: MockAgent): HubServerMessage {
   return { type: "agent_activity", name: agent.name, ...mockActivity(agent) };
 }
 
-/**
- * The agents by name with the activity of each and the names whose stop has
- * begun, like the backend's `AgentListResponse`.
- */
 export function mockListing(agents: Iterable<MockAgent>): AgentListResponse {
   const sorted = [...agents].sort((a, b) => byName(a.name, b.name));
   return {
@@ -49,10 +43,6 @@ export function mockListing(agents: Iterable<MockAgent>): AgentListResponse {
   };
 }
 
-/**
- * An agent's conversation begins when it first runs. The agent opens with a
- * greeting, except the first, so its chat is told apart from that one's.
- */
 function startConversation(agent: MockAgent): void {
   seedAgentData(agent.state);
   if (agent.name !== "scout") {
@@ -65,11 +55,6 @@ function startConversation(agent: MockAgent): void {
   }
 }
 
-/**
- * The source label of the session a frame is about: the one on its start
- * frame, or the one its run was registered with, which is how the backend's
- * watcher knows a later event's label.
- */
 function sourceLabelOf(state: MockState, frame: SessionEventFrame): string | null {
   if (frame.type === "session_started") return frame.session.source_label;
   const address = sessionAddressOf(frame);
@@ -80,16 +65,10 @@ function sourceLabelOf(state: MockState, frame: SessionEventFrame): string | nul
 }
 
 export interface HubOptions {
-  /** The clock, delays and timers the hub and its agents share. Live ones by default. */
   env?: MockEnv;
-  /** Creates the agents the hub starts with, and again after every reset. The hub starts with none by default. */
   seed?: (hub: MockHub) => void;
 }
 
-/**
- * The hub: its agents, the hub WebSocket, and the agent WebSockets it opens on
- * the HTTP server.
- */
 export function createHub(
   host: UpgradeHost | null,
   { env = createMockEnv(), seed }: HubOptions = {},
@@ -109,14 +88,11 @@ export function createHub(
   } = openHubSocket(host, bootId, listing, env.clock, (name) => agents.has(name));
   const teamEvents = createTeamEvents(env, bootId, sendToPages);
   const overview = createOverview(env, bootId, agents, sendToPages);
-  // Every frame the hub sends is also read by the log and the overview, as
-  // the backend's recorder and tracker read the hub bus.
   const broadcast = (frame: HubServerMessage): void => {
     sendToPages(frame);
     teamEvents.observeHub(frame);
     overview.observeHub(frame);
   };
-  /** The log of a hub that has just started the agents the scenario created. */
   const beginLog = (): void => {
     teamEvents.begin(
       [...agents.values()].sort((a, b) => byName(a.name, b.name)).map(mockAgentSummary),
@@ -191,7 +167,6 @@ export function createHub(
       if (runState === "running" && !agent.state.hasConversation) startConversation(agent);
       if (runState !== "running") {
         agent.state.dropSockets();
-        // An agent that is no longer running has no turn in progress.
         if (agent.busySince !== null) {
           agent.busySince = null;
           broadcast(activityFrame(agent));
@@ -209,8 +184,6 @@ export function createHub(
       agents.clear();
       hub.deleted.clear();
       hub.appRebuilds = 0;
-      // The state is replaced in place: the artifacts listener holds it, and
-      // the port it listens on is not part of the scenario.
       const { workbenchPort } = hubState;
       Object.assign(hubState, createState(HUB_STATE_NAME, true, env));
       hubState.workbenchPort = workbenchPort;

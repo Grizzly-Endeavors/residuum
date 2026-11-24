@@ -1,30 +1,4 @@
 #!/usr/bin/env bash
-#
-# Chooses the cargo packages that a set of changed paths touches. The changed
-# paths arrive on stdin, one per line, relative to the working directory, which
-# is the repository root; the workspace is read from that same directory.
-#
-#   --affected (default)  the packages the paths touch, plus every package that
-#                         depends on one of them, directly or not, through normal,
-#                         dev or build dependencies
-#   --touched             the member packages the paths are in, without dependents
-#   --covering            the integration test modules to run for the paths, one per
-#                         line: `it:<m>` for tests/it/<m>, and `it:ALL` for a path
-#                         every module reads
-#   --graph               the workspace dependency graph, one "package: deps" line each
-#
-# stdout is the cargo package arguments (`-p residuum-x -p residuum`, or
-# `--workspace` when a path touches every package). stderr says which package was
-# chosen and why. --affected falls back to every package with a warning when a
-# manifest cannot be read, so a failure checks more, never less. --touched and
-# --covering have no fallback of their own: when a manifest or a covers line
-# cannot be read they exit non-zero, and the caller runs every member or every
-# module instead. --graph has no fallback either: it exits non-zero, because its
-# output is compared with the manifests.
-#
-# Bash 3.2 compatible, because the pre-commit hook runs it on developers' machines
-# (no mapfile, no associative arrays). The graph is read with awk, not cargo, so
-# the script runs on CI's light runners.
 set -euo pipefail
 export LC_ALL=C
 
@@ -38,7 +12,6 @@ case "${1:-}" in
     ;;
 esac
 
-# The directory names under crates/ that hold a Cargo.toml, one per line.
 member_dirs() {
     local manifest
     for manifest in crates/*/Cargo.toml; do
@@ -96,7 +69,6 @@ END {
 }
 '
 
-# Prints the graph. Fails, naming the file, when a manifest cannot be read.
 read_graph() {
     local manifest dir
     local -a manifests=(Cargo.toml)
@@ -133,8 +105,6 @@ if [ "$graph_ok" -eq 0 ]; then
     exit 0
 fi
 
-# Sets CLASSIFIED to the package a changed path touches, to ALL when it touches
-# every package, or to nothing when no package builds from it.
 classify_path() {
     local path="$1" rest dir
     CLASSIFIED=""
@@ -164,9 +134,6 @@ classify_path() {
     return 0
 }
 
-# Prints the packages the changed paths in are, one per line, for --touched.
-# Only a member's path counts; a root path or a path no package builds from
-# prints nothing.
 touched_packages() {
     local path
     while IFS= read -r path; do
@@ -179,9 +146,6 @@ touched_packages() {
     done | sort -u
 }
 
-# Prints one "<label> <package>" line for each name on the covers line of each
-# integration module: tests/it/<m>.rs or tests/it/<m>/mod.rs. The container file
-# (tests/it/main.rs) and tests/it/support are not modules.
 covers_table() {
     local file name
     shopt -s nullglob
@@ -219,8 +183,6 @@ covers_of() {
     ' "$2"
 }
 
-# Prints the module label a path under tests/it selects directly, and nothing
-# for any other path. A path that every module reads selects all of them.
 direct_module() {
     local path="$1"
     case "$path" in
@@ -234,9 +196,6 @@ direct_module() {
     return 0
 }
 
-# Prints "<kind>:<module>" for $2, a path relative to the module directory: the
-# first directory name, or the file name without .rs. A file that is not a .rs
-# module, such as a README in the directory, selects every module of the kind.
 module_label() {
     local kind="$1" rest="$2" name
     case "$rest" in
@@ -250,9 +209,6 @@ module_label() {
     echo "$kind:$name"
 }
 
-# Prints the integration test modules to run for the changed paths, one per
-# line, for --covering. A module is one whose covers line names the package a
-# path belongs to; a path under a module directory selects that module alone.
 covering_modules() {
     local table path direct
     table="$(covers_table)"
@@ -281,7 +237,6 @@ if [ "$mode" = "--covering" ]; then
     exit 0
 fi
 
-# The selected packages, space-separated and padded, so membership is a substring test.
 names=" "
 has() {
     case "$names" in

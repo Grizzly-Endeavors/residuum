@@ -1,12 +1,4 @@
 #!/usr/bin/env bash
-# Builds the residuum binary for one profile, debug or release, and leaves it at
-# target/<profile>/residuum in this checkout, wherever cargo built it. The just
-# recipes run this under `scripts/target-pool run`, so cargo builds in a pool
-# dir another build can lease once this one ends; copying the binary out before
-# the lease ends keeps it where people and scripts look for it, and lets a hub
-# started from it run without holding a pool dir.
-#
-# Usage: scripts/build-binary.sh debug|release
 set -euo pipefail
 
 profile="${1:-}"

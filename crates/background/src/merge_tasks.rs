@@ -1,12 +1,3 @@
-//! The memory merges a session runtime runs after its runs have left the
-//! registry, tracked so shutdown can wait for them.
-//!
-//! A finished run frees its address before its merge starts (the merge is
-//! slow LLM work), so the registry no longer covers it. Without this, a
-//! graceful stop would return with merges still running: an in-process agent
-//! restart would then merge the same run a second time from startup
-//! recovery, and a process exit would cut a merge off between its writes.
-
 use std::collections::BTreeSet;
 use std::future::Future;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -14,7 +5,6 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use tokio::time::Instant;
 use tokio_util::task::TaskTracker;
 
-/// Memory merges in flight, by run id.
 #[derive(Clone, Default)]
 pub(crate) struct MergeTasks {
     tracker: TaskTracker,
@@ -22,7 +12,6 @@ pub(crate) struct MergeTasks {
 }
 
 impl MergeTasks {
-    /// Run `merge` for `run_id` on its own task, tracked until it finishes.
     pub(crate) fn spawn<F>(&self, run_id: String, merge: F)
     where
         F: Future<Output = ()> + Send + 'static,
@@ -38,11 +27,6 @@ impl MergeTasks {
         }));
     }
 
-    /// Wait until every merge has finished, or until `deadline`.
-    ///
-    /// A merge still running at the deadline is logged by run id and left
-    /// alone: its record stays `memory_pending`, so startup recovery
-    /// finishes it if the process exits first.
     pub(crate) async fn drain(&self, deadline: Instant) {
         self.tracker.close();
         if self.tracker.is_empty() {
@@ -68,8 +52,6 @@ impl MergeTasks {
     }
 }
 
-/// Drops a run from the pending set when its merge task ends, including by
-/// panic, so the shutdown warning names only merges still running.
 struct PendingGuard {
     pending: Arc<Mutex<BTreeSet<String>>>,
     run_id: String,

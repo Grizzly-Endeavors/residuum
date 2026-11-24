@@ -1,26 +1,8 @@
-//! Durable record of which session run ids have already been merged into an
-//! episode.
-//!
-//! A session run's completion pipeline (live completion or startup recovery
-//! of a run left incomplete by a prior process exit) can run more than once
-//! for the same run id — a crash between a successful merge and the run
-//! record being marked completed leaves the record `running`, and recovery
-//! would otherwise re-run the pipeline from the same transcript. This log is
-//! the durable, O(1)-lookup source of truth [`crate::merge_writer::MemoryMergeWriter`]
-//! consults to refuse a duplicate merge, and background's `SessionStore`
-//! consults to backfill a recovered run's record instead of re-merging.
-
 use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::Context;
 
-/// Load the run-id -> episode-id map from disk.
-///
-/// Returns an empty map if the file does not exist.
-///
-/// # Errors
-/// Returns an error if the file exists but cannot be read or parsed.
 pub(crate) async fn load_merged_runs(path: &Path) -> anyhow::Result<HashMap<String, String>> {
     match tokio::fs::read_to_string(path).await {
         Ok(contents) => serde_json::from_str(&contents)
@@ -33,13 +15,6 @@ pub(crate) async fn load_merged_runs(path: &Path) -> anyhow::Result<HashMap<Stri
     }
 }
 
-/// Record that `run_id` merged into `episode_id`, atomically.
-///
-/// Loads the existing map, inserts the new entry, and saves atomically (temp
-/// file + rename) so a crash mid-write never leaves a corrupt record.
-///
-/// # Errors
-/// Returns an error if the file cannot be read or written.
 pub(crate) async fn record_merged_run(
     path: &Path,
     run_id: &str,

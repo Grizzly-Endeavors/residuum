@@ -6,10 +6,6 @@
   import { Button, Disclosure } from "../../lib/ui";
   import { agentActions } from "./agent-actions.svelte";
 
-  // Recently deleted, collapsed under the board: every deleted agent that can
-  // be restored, with Restore. It shows once there is something to list or a
-  // failed load to try again, and stays while it is open.
-
   let { now }: { now: number } = $props();
 
   let open = $state(false);
@@ -22,7 +18,6 @@
   async function restore(gone: DeletedAgent): Promise<void> {
     await agentActions.restore(gone.name, gone.checkpoint_id);
     await tick();
-    // A restored agent's row goes with its button, so focus goes back to the disclosure.
     if (container !== undefined && !container.contains(document.activeElement)) {
       container.querySelector<HTMLElement>("[aria-expanded]")?.focus();
     }

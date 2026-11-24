@@ -1,17 +1,10 @@
-//! Retry settings for model provider calls.
-
 use std::time::Duration;
 
-/// Configuration for retry behavior.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RetryConfig {
-    /// Maximum number of retry attempts (0 = no retries).
     pub max_retries: u32,
-    /// Initial delay before first retry.
     pub initial_delay: Duration,
-    /// Maximum delay between retries.
     pub max_delay: Duration,
-    /// Multiplier for exponential backoff.
     pub backoff_multiplier: f64,
 }
 
@@ -27,7 +20,6 @@ impl Default for RetryConfig {
 }
 
 impl RetryConfig {
-    /// Create a config that disables retries.
     #[must_use]
     pub fn no_retry() -> Self {
         Self {

@@ -1,8 +1,3 @@
-//! Tests for `/api/agents/{name}/usage/records` and `/usage/summary`, against
-//! the fake directory's agents in every state. The records are written to the
-//! agent's usage files the way the recorder writes them, so the routes read
-//! what a real agent would have left.
-
 use std::path::Path;
 
 use chrono::{DateTime, Duration, Utc};
@@ -45,7 +40,6 @@ fn counts(uncached: u32, cache_read: u32, cache_write: u32, output: u32) -> Usag
     }
 }
 
-/// Four calls on 1 and 2 October 2026, one of them failed and one without usage.
 fn october_calls() -> Vec<UsageRecord> {
     vec![
         call(
@@ -85,8 +79,6 @@ fn october_calls() -> Vec<UsageRecord> {
     ]
 }
 
-/// Write `records` to the agent's usage files, one per UTC month, replacing
-/// whatever they held.
 fn seed_usage(agent_dir: &Path, records: &[UsageRecord]) {
     let dir = WorkspaceLayout::new(agent_dir).usage_records_dir();
     std::fs::create_dir_all(&dir).unwrap();
@@ -103,7 +95,6 @@ fn seed_usage(agent_dir: &Path, records: &[UsageRecord]) {
     }
 }
 
-/// The group of a summary's `groups` with `key`.
 fn group<'a>(summary: &'a Value, key: &str) -> &'a Value {
     summary["groups"]
         .as_array()
@@ -257,7 +248,6 @@ async fn records_filter_by_component_and_read_a_half_open_range() {
     let h = Harness::new();
     seed_usage(&h.agent_dir("scout"), &october_calls());
 
-    // `to` is excluded: the failed main call at 09:00 on the 2nd is out.
     let body = h
         .get_expect(
             "/api/agents/scout/usage/records?from=2026-10-01T09:00:00Z&to=2026-10-02T09:00:00Z&component=main",
@@ -437,7 +427,6 @@ async fn an_unreadable_usage_directory_is_a_500_not_an_empty_answer() {
     let agent = h.agent_dir("scout");
     let dir = WorkspaceLayout::new(&agent).usage_records_dir();
     std::fs::create_dir_all(dir.parent().unwrap()).unwrap();
-    // A file where the directory should be: the records can't be listed.
     std::fs::write(&dir, "not a directory").unwrap();
 
     h.get_expect(

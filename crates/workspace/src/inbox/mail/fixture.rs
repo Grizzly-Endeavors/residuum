@@ -1,5 +1,3 @@
-//! Agents' workspaces with mail items written straight to disk, for the mail tests.
-
 use std::path::PathBuf;
 
 use chrono::{NaiveDate, NaiveDateTime};
@@ -67,7 +65,6 @@ impl Fixture {
         }
     }
 
-    /// A message `agent` sent the user.
     pub async fn user_item(
         &self,
         agent: &str,
@@ -86,14 +83,11 @@ impl Fixture {
         self.write(agent, InboxKind::User, id, &item).await
     }
 
-    /// A user-inbox item whose `in_reply_to` is stored as `raw`.
     pub async fn write_raw_reply(&self, agent: &str, id: &str, title: &str, hour: u32, raw: &str) {
         let item = Self::item(title, "body", "agent", hour, Some(raw.to_string()));
         self.write(agent, InboxKind::User, id, &item).await;
     }
 
-    /// A user message with a copy in each of `to`'s agent inboxes; returns the
-    /// first recipient's copy.
     pub async fn user_mail(
         &self,
         id: &str,
@@ -117,7 +111,6 @@ impl Fixture {
         refs.remove(0)
     }
 
-    /// An agent-inbox item with source `web`.
     pub async fn agent_item(&self, agent: &str, id: &str, title: &str, body: &str, hour: u32) {
         let item = Self::item(title, body, "web", hour, None);
         self.write(agent, InboxKind::Agent, id, &item).await;
@@ -156,8 +149,6 @@ impl Fixture {
         .unwrap();
     }
 
-    /// Put a file in an active user-inbox item's attachment directory and
-    /// record it on the item.
     pub async fn attach_to_user_item(&self, agent: &str, id: &str, filename: &str, bytes: &[u8]) {
         let layout = self.layout(agent);
         let dir = layout.user_inbox_attachments_dir().join(id);
@@ -175,7 +166,6 @@ impl Fixture {
             .unwrap();
     }
 
-    /// The stored item at `item`, active or archived.
     pub async fn load(&self, item: &InboxRef) -> (InboxItem, bool) {
         let layout = self.layout(item.agent());
         for archived in [false, true] {

@@ -1,6 +1,3 @@
-//! The tool contract the turn loop dispatches through, and the registry that
-//! holds a turn's tools.
-
 use async_trait::async_trait;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
@@ -11,13 +8,9 @@ use residuum_inference::{ToolDefinition, ToolError, ToolResult};
 use super::auto_mode::SharedAutoMode;
 use super::tool_result_store::ToolResultStore;
 
-/// Reported when a tool call is interrupted mid-execution because the turn
-/// was stopped — a user stop, a session's own stop, or daemon shutdown.
 pub(crate) const CANCELLED_WHILE_RUNNING: &str =
     "cancelled: the turn was stopped while this tool was running";
 
-/// Reported for a tool call in a batch that never ran because the turn had
-/// already been stopped by the time its turn came up.
 pub(crate) const CANCELLED_BEFORE_START: &str =
     "cancelled: the turn was stopped before this tool call started";
 
@@ -28,18 +21,8 @@ pub(crate) const CANCELLED_BEFORE_START: &str =
 /// already satisfies.
 const MAX_PLAUSIBLE_TOOL_NAME_LEN: usize = 64;
 
-/// Number of characters kept when a malformed tool name is logged or reported
-/// back to the model, so a large blob of leaked markup doesn't flood the log
-/// or the transcript.
 const TOOL_NAME_DISPLAY_LIMIT: usize = 80;
 
-/// Whether `name` could plausibly be a real tool name.
-///
-/// Every built-in and MCP tool name in this codebase is `[a-zA-Z0-9_-]`, at
-/// most 64 characters. Anything else — whitespace, angle brackets, control
-/// characters — means a model's tool-call name field was not cleanly parsed
-/// by the inference provider, not that a genuinely unknown tool was
-/// requested.
 #[must_use]
 pub(crate) fn is_plausible_tool_name(name: &str) -> bool {
     !name.is_empty()
@@ -49,7 +32,6 @@ pub(crate) fn is_plausible_tool_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
-/// Truncate a raw, possibly-malformed tool name for safe logging or display.
 #[must_use]
 pub(crate) fn truncate_tool_name_for_display(name: &str) -> String {
     if name.chars().count() <= TOOL_NAME_DISPLAY_LIMIT {
@@ -60,34 +42,14 @@ pub(crate) fn truncate_tool_name_for_display(name: &str) -> String {
     }
 }
 
-/// Trait for tool implementations that the agent can invoke.
 #[async_trait]
 pub trait Tool: Send + Sync {
-    /// The unique name of this tool.
     fn name(&self) -> &'static str;
 
-    /// The tool definition sent to the model.
     fn definition(&self) -> ToolDefinition;
 
-    /// Execute the tool with the given arguments.
-    ///
-    /// # Errors
-    /// Returns `ToolError` if the arguments are invalid or execution fails.
     async fn execute(&self, arguments: Value) -> Result<ToolResult, ToolError>;
 
-    /// Execute the tool, racing it against turn-level cancellation.
-    ///
-    /// `cancel` is cancelled when the turn this tool call belongs to is
-    /// stopped — by the user, by a session's own stop, or by daemon
-    /// shutdown. The default implementation drops `execute()`'s future
-    /// outright the moment that happens and reports a generic cancellation
-    /// result, which is correct for every tool that owns no external
-    /// resource needing cleanup. `ExecTool` overrides this to kill its
-    /// child process tree first and return whatever output it had already
-    /// captured, instead of discarding it.
-    ///
-    /// # Errors
-    /// Returns `ToolError` if the arguments are invalid or execution fails.
     async fn execute_cancellable(
         &self,
         arguments: Value,
@@ -101,19 +63,10 @@ pub trait Tool: Send + Sync {
     }
 }
 
-/// The tools a turn can call, with what the turn loop applies around every
-/// call: the agent-key redactor, the Auto Mode check, and the store that
-/// keeps oversized results out of history.
 pub struct ToolRegistry {
     tools: Vec<Box<dyn Tool>>,
-    /// The agent key store: the source of the redactor applied to every tool
-    /// result, and what registration hands the `exec` tool.
     agent_keys: Option<SharedAgentKeys>,
-    /// The agent's Auto Mode, checked before every tool call the turn loop
-    /// dispatches. `None` means no call is checked.
     auto_mode: Option<SharedAutoMode>,
-    /// Where results too long for history are saved. `None` keeps every
-    /// result whole.
     result_store: Option<ToolResultStore>,
 }
 
@@ -124,7 +77,6 @@ impl Default for ToolRegistry {
 }
 
 impl ToolRegistry {
-    /// Create a new empty tool registry.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -135,45 +87,33 @@ impl ToolRegistry {
         }
     }
 
-    /// Attach the agent's Auto Mode, which the turn loop consults before
-    /// dispatching each tool call.
     pub fn set_auto_mode(&mut self, auto_mode: SharedAutoMode) {
         self.auto_mode = Some(auto_mode);
     }
 
-    /// The agent's Auto Mode, if one is attached.
     #[must_use]
     pub fn auto_mode(&self) -> Option<&SharedAutoMode> {
         self.auto_mode.as_ref()
     }
 
-    /// Attach the store the turn loop saves oversized tool results to.
     pub fn set_result_store(&mut self, store: ToolResultStore) {
         self.result_store = Some(store);
     }
 
-    /// The store oversized tool results are saved to, if one is attached.
     #[must_use]
     pub fn result_store(&self) -> Option<&ToolResultStore> {
         self.result_store.as_ref()
     }
 
-    /// Set the agent key store used to redact tool results.
-    ///
-    /// Call before registering the `exec` tool, which takes the store from
-    /// here so it can expose and mint keys.
     pub fn set_agent_keys(&mut self, agent_keys: SharedAgentKeys) {
         self.agent_keys = Some(agent_keys);
     }
 
-    /// The agent key store, if one is attached.
     #[must_use]
     pub fn agent_keys(&self) -> Option<&SharedAgentKeys> {
         self.agent_keys.as_ref()
     }
 
-    /// The redactor for every current agent-key value; empty when no key
-    /// store is attached.
     pub async fn redactor(&self) -> Redactor {
         match &self.agent_keys {
             Some(keys) => keys.redactor().await,
@@ -181,10 +121,6 @@ impl ToolRegistry {
         }
     }
 
-    /// Register a tool, or replace the registered tool with the same name.
-    ///
-    /// A replacement keeps the position of the tool it replaces, so reloading
-    /// a tool never reorders the definitions sent to the model.
     pub fn register(&mut self, tool: Box<dyn Tool>) {
         match self.tools.iter_mut().find(|t| t.name() == tool.name()) {
             Some(existing) => *existing = tool,
@@ -192,37 +128,22 @@ impl ToolRegistry {
         }
     }
 
-    /// Remove a registered tool by name, if present.
-    ///
-    /// Used when a conditionally-registered tool is no longer configured
-    /// (e.g. `ollama_web_search` after a config reload clears the standalone
-    /// web search backend). Returns `true` if a tool was removed.
     pub fn remove(&mut self, name: &str) -> bool {
         let before = self.tools.len();
         self.tools.retain(|t| t.name() != name);
         self.tools.len() != before
     }
 
-    /// Get tool definitions for sending to the model.
     #[must_use]
     pub fn definitions(&self) -> Vec<ToolDefinition> {
         self.tools.iter().map(|t| t.definition()).collect()
     }
 
-    /// Names of all registered tools.
-    ///
-    /// Used to reserve the built-in tool namespace in the MCP registry so a
-    /// colliding MCP tool is shadowed visibly rather than silently.
     #[must_use]
     pub fn tool_names(&self) -> Vec<String> {
         self.tools.iter().map(|t| t.name().to_string()).collect()
     }
 
-    /// Execute a tool by name with the given arguments.
-    ///
-    /// # Errors
-    /// Returns `ToolError::NotFound` if no tool with the given name exists,
-    /// or propagates execution errors from the tool.
     #[tracing::instrument(skip_all, fields(tool.name = %name))]
     pub async fn execute(&self, name: &str, arguments: Value) -> Result<ToolResult, ToolError> {
         let tool = self
@@ -237,14 +158,6 @@ impl ToolRegistry {
         Ok(result)
     }
 
-    /// Execute a tool by name, racing it against turn-level cancellation.
-    ///
-    /// See [`Tool::execute_cancellable`] for what happens when `cancel`
-    /// fires while the tool is running.
-    ///
-    /// # Errors
-    /// Returns `ToolError::NotFound` if no tool with the given name exists,
-    /// or propagates execution errors from the tool.
     #[tracing::instrument(skip_all, fields(tool.name = %name))]
     pub async fn execute_cancellable(
         &self,
@@ -280,10 +193,6 @@ mod tests {
         assert_eq!(result.output, CANCELLED_WHILE_RUNNING);
     }
 
-    /// A tool whose `execute()` blocks forever, so the default
-    /// `execute_cancellable()` can only ever return via the cancellation
-    /// branch — proving it actually races rather than always awaiting
-    /// `execute()` to completion.
     struct ForeverTool;
 
     #[async_trait]
@@ -342,7 +251,6 @@ mod tests {
         );
     }
 
-    /// A tool that only reports a fixed name and description.
     struct NamedTool {
         name: &'static str,
         description: &'static str,
@@ -426,9 +334,6 @@ mod tests {
 
     #[test]
     fn plausible_tool_name_rejects_leaked_glm_markup() {
-        // Mirrors the malformed name Fireworks/vLLM have shipped for GLM tool
-        // calls when the model's native `<arg_key>`/`<arg_value>` template
-        // syntax isn't cleanly parsed into structured `tool_calls`.
         let name = "write_file\tcontent</arg_key><arg_value># Hello";
         assert!(
             !is_plausible_tool_name(name),

@@ -1,5 +1,3 @@
-//! WebSocket connection handler.
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -24,59 +22,29 @@ use residuum_workspace::inbox::attachment::{
 };
 use residuum_workspace::watch::{LIVE_UPDATES_OFF_MESSAGE, WatchHealth, WatchSet};
 
-/// Query parameters of the agent `/ws` upgrade.
 #[derive(serde::Deserialize)]
 pub(super) struct SocketQuery {
-    /// `true` for a socket that only follows files; any other value is ignored.
     watch_only: Option<String>,
 }
 
-/// Axum handler that upgrades an HTTP request to a WebSocket connection.
 pub(super) async fn ws_handler(
     ws: axum::extract::WebSocketUpgrade,
     State(state): State<GatewayState>,
     through_artifacts_origin: Option<Extension<ArtifactsOrigin>>,
     Query(query): Query<SocketQuery>,
 ) -> impl IntoResponse {
-    // The upgraded connection runs in a task axum spawns with no span of its
-    // own; carrying the request's keeps the agent's `agent` log field on it.
     let span = tracing::Span::current();
-    // A workbench page's socket, or one that only follows files, isn't the
-    // user looking at the chat, so it doesn't count as a client (see
-    // `handle_connection`).
     let watch_only = query.watch_only.as_deref() == Some("true");
     let counts_as_client = through_artifacts_origin.is_none() && !watch_only;
     ws.on_upgrade(move |socket| handle_connection(socket, state, counts_as_client).instrument(span))
 }
 
-/// Handle a single WebSocket connection.
-///
-/// Each connection subscribes to typed topics (`Endpoint` for responses, tool
-/// activity, turn lifecycle, and intermediates; `Notification` for system
-/// notices and errors) on the bus. A local channel
-/// carries per-connection messages (pong, errors, inbox confirmations) that
-/// bypass the bus. A forwarding task merges all sources and writes
-/// `ServerMessage` frames to the WebSocket.
-///
-/// Verbose filtering is server-side: tool call and result events (the main
-/// agent's and every session's) are dropped in the forwarding task when
-/// verbose mode is off.
-///
-/// `counts_as_client` is false for a connection opened through the artifacts
-/// origin or with `watch_only=true`: it neither resets the agent's unread
-/// count nor counts as someone being connected. Subscriptions and watches
-/// work the same either way.
 async fn handle_connection(socket: WebSocket, state: GatewayState, counts_as_client: bool) {
-    // While a client connection is open the agent's unread count stays at
-    // zero: a client is there to show new messages.
     let _client = counts_as_client.then(|| state.activity.client_connected());
     let (mut ws_tx, mut ws_rx) = socket.split();
 
-    // The workspace prefixes this connection watches: replaced by the read
-    // loop, read by the forwarding task to filter change-feed batches.
     let (watch_set_tx, watch_set_rx) = tokio::sync::watch::channel(WatchSet::default());
 
-    // Subscribe to typed bus topics for this connection
     let mut subs = match WsSubscribers::new(
         &state.bus_handle,
         &state.team_feed.bus,
@@ -95,23 +63,15 @@ async fn handle_connection(socket: WebSocket, state: GatewayState, counts_as_cli
     };
 
     let resync = subs.resync_requests();
-    // Local channel for per-connection messages (pong, errors, inbox responses)
     let (local_tx, mut local_rx) = mpsc::unbounded_channel::<ServerMessage>();
 
-    // The read loop sees a client's Close frame, but the forwarding task
-    // owns the send half that must answer it; this hands the frame across.
     let (close_tx, mut close_rx) = oneshot::channel::<Option<CloseFrame>>();
 
-    // Per-connection verbose flag shared between read loop and forwarding task
     let verbose = Arc::new(AtomicBool::new(false));
     let verbose_fwd = Arc::clone(&verbose);
 
-    // Forwarding task: bus subscribers + local channel → WebSocket client
     let fwd_handle = residuum_core::util::spawn_in_span(async move {
         loop {
-            // Local frames first: a `message_refused` for a failed publish is
-            // queued as the bus shuts down, and an unbiased pick could take the
-            // ended bus subscription and stop before writing it.
             let msg = tokio::select! {
                 biased;
                 msg = local_rx.recv() => {
@@ -127,9 +87,6 @@ async fn handle_connection(socket: WebSocket, state: GatewayState, counts_as_cli
                     }
                 }
                 frame = &mut close_rx => {
-                    // Answer the client's Close and shut the transport down:
-                    // without both, the client sees code 1006 (abnormal
-                    // closure) instead of its own.
                     if let Ok(frame) = frame {
                         ws_tx.send(WsMessage::Close(frame)).await.ok();
                     }
@@ -146,11 +103,9 @@ async fn handle_connection(socket: WebSocket, state: GatewayState, counts_as_cli
                 break; // client disconnected
             }
         }
-        // Nothing more will be forwarded: close, so the client knows to reconnect.
         ws_tx.close().await.ok();
     });
 
-    // Read loop: WebSocket client → bus / local channel
     while let Some(frame) = ws_rx.next().await {
         let raw = match frame {
             Ok(WsMessage::Text(txt)) => txt,
@@ -195,22 +150,13 @@ async fn handle_connection(socket: WebSocket, state: GatewayState, counts_as_cli
     tracing::debug!("client disconnected");
 }
 
-/// How long the forwarder gets to write its queued frames once the read loop
-/// has ended, before it is aborted.
 const FORWARDER_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
-/// Close the forwarder's inputs, then wait for it to flush its queued frames
-/// and close the socket, aborting it if a stuck socket keeps it past
-/// [`FORWARDER_DRAIN_TIMEOUT`].
 async fn finish_forwarding(
     local_tx: mpsc::UnboundedSender<ServerMessage>,
     close_tx: oneshot::Sender<Option<CloseFrame>>,
     mut fwd_handle: tokio::task::JoinHandle<()>,
 ) {
-    // Dropping the senders lets the forwarder write what is already queued
-    // (above all the `message_refused` for a failed publish, which ends the
-    // read loop) and then close the socket. Aborting it outright lost that
-    // frame, so the client saw a bare close and its message vanished unrefused.
     drop(local_tx);
     drop(close_tx);
     if tokio::time::timeout(FORWARDER_DRAIN_TIMEOUT, &mut fwd_handle)
@@ -225,9 +171,6 @@ async fn finish_forwarding(
     }
 }
 
-/// Hand the client's Close frame to the forwarding task, which owns the send
-/// half, and wait for it to answer before the connection tears down. Without
-/// an answer the client sees code 1006 (abnormal closure) instead of its own.
 async fn answer_client_close(
     close_tx: oneshot::Sender<Option<CloseFrame>>,
     fwd_handle: tokio::task::JoinHandle<()>,
@@ -240,19 +183,13 @@ async fn answer_client_close(
     }
 }
 
-/// The per-connection state a client message can act on.
 struct ConnectionChannels<'a> {
-    /// Replies to this connection only.
     local: &'a mpsc::UnboundedSender<ServerMessage>,
-    /// Whether tool events reach this connection.
     verbose: &'a AtomicBool,
-    /// The workspace prefixes this connection watches.
     watch_set: &'a tokio::sync::watch::Sender<WatchSet>,
-    /// Asks the forwarding task for a `turn_snapshot` frame.
     resync: &'a mpsc::UnboundedSender<()>,
 }
 
-/// Dispatch a single client message. Returns `false` to break the read loop.
 #[expect(
     clippy::too_many_lines,
     reason = "match arms over many message variants"
@@ -274,9 +211,6 @@ async fn handle_client_message(
             content,
             attachments,
         } => {
-            // The id names the turn this message starts or joins in every
-            // frame about it, and an empty one reads as a message posted
-            // outside any turn. A client that sent none gets one made here.
             let id = if id.is_empty() {
                 let generated = format!("ws-{}", uuid::Uuid::new_v4());
                 tracing::warn!(
@@ -367,9 +301,6 @@ async fn handle_client_message(
                 .await
                 .ok();
 
-            // Successful commands are already reflected via the normal bus
-            // broadcast (e.g. Notice/InlineOutput); only a rejection needs
-            // routing back here, scoped to this connection only.
             let err_tx = local_tx.clone();
             residuum_core::util::spawn_in_span(async move {
                 if let Ok(Err(reason)) = reply_rx.await {
@@ -429,7 +360,6 @@ async fn handle_client_message(
         }
         ClientMessage::InboxAdd { body } => {
             tracing::info!("inbox add requested by client");
-            // A note is mail from the user to this agent, so it shows in Sent.
             let mailbox =
                 residuum_workspace::inbox::mail::Mailbox::for_workspace(&state.layout, state.tz);
             let tx = local_tx.clone();
@@ -475,8 +405,6 @@ async fn handle_client_message(
     true
 }
 
-/// Whether live updates are off for either feed a connection can watch: the
-/// agent's own directory or the hub's team directory.
 fn watch_health(state: &GatewayState) -> WatchHealth {
     if *state.team_feed.health.borrow() == WatchHealth::Off {
         WatchHealth::Off
@@ -485,10 +413,6 @@ fn watch_health(state: &GatewayState) -> WatchHealth {
     }
 }
 
-/// Apply a `watch_workspace` request: replace the connection's watch set, or
-/// refuse the request with an `Error` frame and keep the current set. A
-/// connection that starts watching while no watcher runs is told live
-/// updates are off.
 fn replace_watch_set(
     prefixes: Vec<String>,
     health: WatchHealth,
@@ -520,10 +444,6 @@ fn replace_watch_set(
     }
 }
 
-/// Whether `msg` is only sent to clients that turned verbose mode on: tool
-/// call and result events, the main agent's and sessions' alike.
-/// Write one frame to the client. Returns `false` once the client is gone; a
-/// frame that can't be serialized is logged and skipped.
 async fn send_frame(
     ws_tx: &mut futures_util::stream::SplitSink<WebSocket, WsMessage>,
     msg: &ServerMessage,
@@ -538,9 +458,6 @@ async fn send_frame(
     ws_tx.send(WsMessage::text(json)).await.is_ok()
 }
 
-/// Ask the event loop to rerun the failed latest turn `id` names. The rerun
-/// answers with its `turn_started` on the bus; a refusal is sent to this
-/// connection only, as `retry_refused`.
 fn retry_turn(state: &GatewayState, id: String, local_tx: &mpsc::UnboundedSender<ServerMessage>) {
     tracing::info!(turn_id = %id, "retry of a failed turn requested by client");
     let (result_tx, result_rx) = tokio::sync::oneshot::channel();
@@ -574,16 +491,9 @@ fn retry_turn(state: &GatewayState, id: String, local_tx: &mpsc::UnboundedSender
     });
 }
 
-/// A retry that never reached the agent, or that it dropped unanswered (it
-/// was stopping).
 const RETRY_NOT_DELIVERED: &str =
     "The agent couldn't take the retry right now. Try again in a moment.";
 
-/// Send a waiting message now: it is held out of the running turn, which is
-/// stopped, so the message starts the next one. Whichever turn is running is
-/// stopped, since a message left waiting after its own turn ended waits for
-/// the turn now running. A message no longer waiting is answered to this
-/// connection only.
 fn send_queued_now(
     state: &GatewayState,
     id: String,
@@ -605,15 +515,10 @@ fn send_queued_now(
         })
         .is_err()
     {
-        // The message still starts the next turn, ahead of anything else
-        // waiting; only the stop that would have brought that turn sooner is lost.
         tracing::warn!(msg_id = %id, "failed to dispatch the stop for a message to send now: channel closed or full");
     }
 }
 
-/// Take back a waiting message, so the agent never reads it. Every
-/// connection hears it was withdrawn; a message no longer waiting is answered
-/// to this connection only.
 async fn withdraw_queued(
     state: &GatewayState,
     id: String,
@@ -635,15 +540,11 @@ async fn withdraw_queued(
         )
         .await
     {
-        // It is withdrawn either way; only other pages keep showing it as
-        // waiting, until their next snapshot or reload.
         tracing::warn!(error = %e, msg_id = %id, "failed to announce a withdrawn message");
         local_tx.send(ServerMessage::MessageWithdrawn { id }).ok();
     }
 }
 
-/// `msg` as a connection gets it: a connection that isn't verbose gets no
-/// tool frames, neither on their own nor inside a `turn_snapshot`.
 fn shown_frame(mut msg: ServerMessage, verbose: bool) -> Option<ServerMessage> {
     if verbose {
         return Some(msg);
@@ -670,7 +571,6 @@ fn is_verbose_only(msg: &ServerMessage) -> bool {
     )
 }
 
-/// Carry out a session command from the web UI and reply to this connection only.
 async fn handle_session_command(
     command: SessionCommand,
     state: &GatewayState,
@@ -723,8 +623,6 @@ async fn handle_session_command(
     }
 }
 
-/// The session commands the web UI sends, split out of [`ClientMessage`] so
-/// [`handle_session_command`] can own their handling.
 enum SessionCommand {
     SendMessage {
         id: String,
@@ -738,42 +636,26 @@ enum SessionCommand {
     },
 }
 
-/// The platform a web chat attachment's companion item is filed under.
 const CHAT_PLATFORM: &str = "Chat";
 
-/// The author line of a web chat attachment's companion item.
 const CHAT_AUTHOR: &str = "Web chat";
 
-/// What a chat message says when one of its uploads is no longer staged.
 const UPLOAD_UNAVAILABLE_MESSAGE: &str =
     "An attached file wasn't available anymore, so it's uploading again. Send once it's ready.";
 
-/// A chat message once its uploads are saved into the agent's inbox.
 struct AttachedUploads {
-    /// The message text, with an `[Attachment: …]` line for each file.
     content: String,
-    /// Supported images among the files, inlined for the model.
     images: Vec<ImageData>,
-    /// The files, as the message carries them to history and the web.
     attachments: Vec<MessageAttachment>,
-    /// The staged uploads the message used, removed once it is published.
     upload_ids: Vec<String>,
 }
 
-/// An upload whose file is copied into its companion item.
 struct CopiedUpload {
     item: AttachmentItem,
     info: AttachmentInfo,
     saved: SavedAttachment,
 }
 
-/// Turn a chat message's upload ids into the companion inbox items they
-/// stand for, the same attachments a Discord message carries.
-///
-/// All or nothing: every id is resolved before anything is copied, and a
-/// failed copy discards the items already made, so a refused message leaves
-/// no inbox item behind. Returns the plain-language message to send back when
-/// the message is refused. Repeated ids count once.
 async fn attach_uploads(
     state: &GatewayState,
     mut content: String,
@@ -801,8 +683,6 @@ async fn attach_uploads(
     })
 }
 
-/// Resolve each distinct upload id to its staged file, refusing the whole
-/// message on the first id that is not available.
 async fn resolve_uploads(
     state: &GatewayState,
     upload_ids: &[String],
@@ -832,8 +712,6 @@ async fn resolve_uploads(
     Ok(staged)
 }
 
-/// Copy every staged file into its own companion item. If one copy fails,
-/// the items already copied are discarded and the message is refused.
 async fn save_uploads(
     state: &GatewayState,
     staged: &[StagedUpload],
@@ -862,8 +740,6 @@ async fn save_uploads(
     Ok(copied)
 }
 
-/// Reserve a companion item for one staged file and copy the file into it.
-/// A failed copy discards the item it reserved.
 async fn save_upload(state: &GatewayState, upload: &StagedUpload) -> Result<CopiedUpload, String> {
     let info = AttachmentInfo {
         filename: upload.filename.clone(),
@@ -888,9 +764,6 @@ async fn save_upload(state: &GatewayState, upload: &StagedUpload) -> Result<Copi
     }
 }
 
-/// Remove the companion items of a message that did not reach the bus, so a
-/// resend does not file each attachment a second time. The staged uploads stay
-/// for that resend. A failed removal is logged, and the item stays in the inbox.
 async fn discard_companion_items(state: &GatewayState, item_ids: &[String]) {
     for id in item_ids {
         if let Err(e) = residuum_workspace::inbox::remove_item(&state.agent_inbox_dir, id).await {
@@ -903,8 +776,6 @@ async fn discard_companion_items(state: &GatewayState, item_ids: &[String]) {
     }
 }
 
-/// Remove the staged uploads a published message used. A failed removal is
-/// logged; the store's expiry clears the file later.
 async fn consume_uploads(state: &GatewayState, upload_ids: &[String]) {
     for id in upload_ids {
         if let Err(e) = state.uploads.remove(id).await {
@@ -1047,16 +918,10 @@ mod tests {
         assert!(!is_verbose_only(&error));
     }
 
-    /// A minimal but real `GatewayState`, for exercising
-    /// `handle_client_message` directly rather than through the full
-    /// WebSocket stack. Mirrors the helper in `gateway/web/inbox.rs`'s own
-    /// test module.
     fn make_test_gateway_state(workspace_dir: &std::path::Path) -> GatewayState {
         make_test_gateway_state_with_receivers(workspace_dir).0
     }
 
-    /// [`make_test_gateway_state`], with the receivers the event loop would
-    /// read the state's channels from.
     fn make_test_gateway_state_with_receivers(
         workspace_dir: &std::path::Path,
     ) -> (GatewayState, crate::types::CoreReceivers) {
@@ -1119,7 +984,6 @@ mod tests {
         (state, receivers)
     }
 
-    /// Serve [`ws_handler`] for `state` on a loopback port.
     async fn serve_ws_handler(state: GatewayState) -> std::net::SocketAddr {
         let app = axum::Router::new()
             .route("/ws", axum::routing::get(ws_handler))
@@ -1132,10 +996,6 @@ mod tests {
         addr
     }
 
-    /// Open a socket to `path` and return it once its first `pong` arrives.
-    /// The connection sends that pong from its read loop, which runs after
-    /// the handler has done its activity accounting, so the counts can be
-    /// read as soon as this returns.
     async fn open_socket_past_handshake(
         addr: std::net::SocketAddr,
         path: &str,
@@ -1163,8 +1023,6 @@ mod tests {
         socket
     }
 
-    /// How many clients the agent counts as connected once a socket opened
-    /// on `path` has answered a ping.
     async fn connected_clients_after_socket_on(path: &str) -> usize {
         let dir = tempfile::tempdir().unwrap();
         let state = make_test_gateway_state(dir.path());
@@ -1205,8 +1063,6 @@ mod tests {
         wait::next("a message to be sent", local_rx).await
     }
 
-    /// Handle one client message on a connection with no watches, returning
-    /// what was sent back to that connection alone.
     async fn handle_on_connection(
         msg: ClientMessage,
         state: &GatewayState,
@@ -1216,8 +1072,6 @@ mod tests {
         local_rx
     }
 
-    /// [`handle_on_connection`], also returning whether the connection's read
-    /// loop goes on.
     async fn handle_on_connection_with_outcome(
         msg: ClientMessage,
         state: &GatewayState,
@@ -1311,7 +1165,6 @@ mod tests {
     async fn a_retry_the_agent_cannot_take_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         let (state, receivers) = make_test_gateway_state_with_receivers(dir.path());
-        // No event loop reads the channel any more.
         drop(receivers);
 
         let mut local =
@@ -1346,12 +1199,10 @@ mod tests {
         );
     }
 
-    /// Stage a file in the hub's upload store, returning its upload id.
     async fn stage_upload(state: &GatewayState, filename: &str, bytes: &[u8]) -> String {
         state.uploads.stage(filename, bytes).await.unwrap().id
     }
 
-    /// Subscribe to the user messages the bus publishes.
     async fn user_messages(
         state: &GatewayState,
     ) -> residuum_bus::Subscriber<residuum_bus::MessageEvent> {
@@ -1369,7 +1220,6 @@ mod tests {
         let photo_id = stage_upload(&state, "photo.png", b"\x89PNG fake pixels").await;
         let mut inbound = user_messages(&state).await;
 
-        // The same id twice counts once.
         let _local = handle_on_connection(
             ClientMessage::SendMessage {
                 id: "chat-1".into(),
@@ -1448,7 +1298,6 @@ mod tests {
             "expected the unavailable-file refusal, got {reply:?}"
         );
 
-        // Nothing was published: the next message is the first event seen.
         let _local = handle_on_connection(
             ClientMessage::SendMessage {
                 id: "after".into(),
@@ -1476,8 +1325,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut state = make_test_gateway_state(dir.path());
         let photo_id = stage_upload(&state, "photo.txt", b"photo bytes").await;
-        // A publisher not backed by a broker fails every publish, as a stopped
-        // bus does.
         state.publisher = residuum_bus::Publisher::noop();
 
         let (keep_going, mut local) = handle_on_connection_with_outcome(
@@ -1523,8 +1370,6 @@ mod tests {
     async fn a_publish_failure_refusal_reaches_the_socket_before_it_closes() {
         let dir = tempfile::tempdir().unwrap();
         let mut state = make_test_gateway_state(dir.path());
-        // A publisher not backed by a broker fails every publish, as a stopped
-        // bus does, which ends the connection.
         state.publisher = residuum_bus::Publisher::noop();
         let addr = serve_ws_handler(state).await;
         let mut socket = open_socket_past_handshake(addr, "/ws").await;
@@ -1561,7 +1406,6 @@ mod tests {
             }
         }
 
-        // The connection still ends after the refusal.
         loop {
             match wait::guarded("the socket to close", socket.next()).await {
                 None | Some(Err(_) | Ok(WireMessage::Close(_))) => break,
@@ -1582,8 +1426,6 @@ mod tests {
         let state = make_test_gateway_state(dir.path());
         let first_id = stage_upload(&state, "first.txt", b"first").await;
         let second_id = stage_upload(&state, "second.txt", b"second").await;
-        // The second file's bytes vanish after staging, so its copy fails
-        // after the first has been copied into its item.
         let second_path = state.uploads.resolve(&second_id).await.unwrap().path;
         std::fs::remove_file(&second_path).unwrap();
         let mut inbound = user_messages(&state).await;
@@ -1680,8 +1522,6 @@ mod tests {
     #[tokio::test]
     async fn inbox_add_success_notice_reads_as_plain_language() {
         let dir = tempfile::tempdir().unwrap();
-        // The workspace directory's name is the agent's folder name, which a
-        // mail ref must be able to carry.
         let workspace = dir.path().join("atlas");
         let state = make_test_gateway_state(&workspace);
         std::fs::create_dir_all(&state.agent_inbox_dir).unwrap();
@@ -1710,7 +1550,6 @@ mod tests {
             "expected a plain-language Notice, got {msg:?}"
         );
 
-        // The note is the user's mail to this agent, so it is a Sent thread.
         let mailbox =
             residuum_workspace::inbox::mail::Mailbox::for_workspace(&state.layout, state.tz);
         let index = residuum_workspace::inbox::mail::MailIndex::load(&mailbox).await;
@@ -1739,9 +1578,6 @@ mod tests {
     async fn inbox_add_failure_keeps_the_cause_out_of_the_message() {
         let dir = tempfile::tempdir().unwrap();
         let state = make_test_gateway_state(dir.path());
-        // A regular file sits where `agent_inbox_dir` belongs, so claiming an
-        // item id underneath `quick_add` fails and the client should see a
-        // plain-language notice with the cause moved to `details`.
         std::fs::create_dir_all(dir.path().join("inbox")).unwrap();
         std::fs::write(dir.path().join("inbox/agent"), b"not a directory").unwrap();
         let (local_tx, mut local_rx) = mpsc::unbounded_channel();

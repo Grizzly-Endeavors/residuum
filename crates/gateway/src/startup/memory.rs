@@ -1,5 +1,3 @@
-//! Memory system initialization: search index, vector store, and embeddings pipeline.
-
 use std::path::Path;
 use std::sync::Arc;
 
@@ -18,31 +16,12 @@ use residuum_memory::team_wiki::TeamWikiIndex;
 use residuum_memory::types::IndexManifest;
 use residuum_memory::vector_store::VectorStore;
 
-/// Search index and vector store built during initialization.
 pub(super) struct MemoryComponents {
     pub search_index: Arc<MemoryIndex>,
     pub hybrid_searcher: Arc<HybridSearcher>,
     pub vector_store: Option<Arc<VectorStore>>,
 }
 
-/// Build an observer from `Config`'s `[observer]` provider chain.
-///
-/// Used both for the main agent's own observer and, independently, for a
-/// session's own observer instance in `SpawnContext` — the same
-/// configuration, but a separate provider/instance so a session fork never
-/// contends with the main agent's config-reload swaps. A fallback in the
-/// chain that can't be built is dropped and logged; only an unusable
-/// primary observer provider is returned as an error here.
-///
-/// `notices` wires a live fallback/recovery notice into the built chain (see
-/// `FailoverProvider::with_notices`) when `Some`. Only the main agent's own
-/// observer build passes one — the session observer stays quiet so a single
-/// transition doesn't announce itself twice, mirroring how only the main
-/// build's *startup* degradation gets a user-facing notice (see
-/// `build_session_memory_components`'s doc comment).
-///
-/// # Errors
-/// Returns `FatalError::Config` if the primary observer provider cannot be built.
 pub(super) fn build_observer(
     cfg: &Config,
     tz: chrono_tz::Tz,
@@ -78,13 +57,6 @@ pub(super) fn build_observer(
     ))
 }
 
-/// Build observer and reflector from fully-resolved provider specs on `Config`.
-///
-/// The two degrade independently: if the observer's provider chain can't be
-/// built, only the observer falls back to [`Observer::disabled`] and the
-/// reflector still builds normally (and vice versa), so one broken role
-/// never disables the other. Returns any user-facing notices describing
-/// what was disabled, for the caller to publish.
 pub(super) fn build_memory_components(
     cfg: &Config,
     tz: chrono_tz::Tz,
@@ -145,20 +117,12 @@ pub(super) fn build_memory_components(
     (observer, reflector, notices)
 }
 
-/// Build the search index, vector store, and hybrid searcher.
-///
-/// `team_wiki` is the hub's shared team wiki index; the searcher merges its
-/// results with the agent's own memory.
-///
-/// # Errors
-/// Returns `FatalError` if the search index cannot be created.
 pub(super) async fn init_memory(
     cfg: &Config,
     layout: &WorkspaceLayout,
     embedding_provider: Option<&Arc<dyn EmbeddingProvider>>,
     team_wiki: &Arc<TeamWikiIndex>,
 ) -> Result<MemoryComponents, FatalError> {
-    // Search index — schema migration + incremental sync
     let manifest_path = layout.index_manifest_json();
     let manifest = match IndexManifest::load(&manifest_path).await {
         Ok(m) => m,
@@ -168,7 +132,6 @@ pub(super) async fn init_memory(
         }
     };
 
-    // If no manifest exists but old index dir does, clear it (schema migration)
     if manifest.files.is_empty()
         && layout.search_index_dir().exists()
         && let Err(migration_err) = std::fs::remove_dir_all(layout.search_index_dir())
@@ -176,9 +139,6 @@ pub(super) async fn init_memory(
         tracing::warn!(error = %migration_err, "failed to clear old search index for schema migration");
     }
 
-    // A tantivy index stores its own schema, so one written by a build whose
-    // schema differs is unreadable. Episode transcripts are the source of
-    // truth, so discard the index and rebuild rather than serving an empty one.
     let (search_index, index_was_discarded) = match MemoryIndex::open_or_create(
         &layout.search_index_dir(),
     ) {
@@ -201,7 +161,6 @@ pub(super) async fn init_memory(
         }
     };
 
-    // A discarded index has no indexed files left, whatever the manifest says.
     let sync_manifest = if index_was_discarded {
         IndexManifest::default()
     } else {
@@ -210,28 +169,22 @@ pub(super) async fn init_memory(
     let stale_vector_doc_ids =
         sync_search_index(&search_index, &sync_manifest, layout, &manifest_path).await;
 
-    // Vector store (only if embedding provider is configured)
     let vector_store: Option<Arc<VectorStore>> = if let Some(ep) = embedding_provider {
         build_vector_store(ep.as_ref(), layout, &manifest, &manifest_path).await
     } else {
         None
     };
 
-    // Prune vector rows for docs the BM25 sync above just dropped (deleted or
-    // modified episode files), keeping the vector store consistent with the
-    // search index. No-op when there is no vector store to prune.
     if let Some(vs) = &vector_store {
         prune_stale_vectors(vs, &stale_vector_doc_ids);
     }
 
-    // Backfill embeddings for any unembedded files
     if let (Some(vs), Some(ep)) = (&vector_store, embedding_provider) {
         backfill_embeddings(vs, ep.as_ref(), layout, &manifest_path).await;
     }
 
     purge_wiki_documents(&search_index, vector_store.as_deref());
 
-    // Hybrid searcher
     let hybrid_searcher = Arc::new(
         HybridSearcher::new(
             Arc::clone(&search_index),
@@ -249,12 +202,6 @@ pub(super) async fn init_memory(
     })
 }
 
-/// Remove wiki documents from the agent's own index and vectors.
-///
-/// Wiki pages are indexed in the team wiki index, not in an agent's memory. If
-/// an agent's index holds any, this clears them, and finds nothing on later
-/// starts. A failure is logged and leaves the leftovers in place: they
-/// duplicate team wiki hits until the next start clears them.
 fn purge_wiki_documents(search_index: &MemoryIndex, vector_store: Option<&VectorStore>) {
     match search_index.purge_wiki_documents() {
         Ok(0) => {}
@@ -280,7 +227,6 @@ fn purge_wiki_documents(search_index: &MemoryIndex, vector_store: Option<&Vector
     }
 }
 
-/// Perform a full search index rebuild and save the resulting manifest.
 async fn do_full_rebuild(
     search_index: &MemoryIndex,
     layout: &WorkspaceLayout,
@@ -305,12 +251,6 @@ async fn do_full_rebuild(
     }
 }
 
-/// Synchronize the search index (full rebuild or incremental sync).
-///
-/// Returns the doc IDs the sync dropped from the BM25 index (deleted or modified
-/// episode files) so the caller can prune the same rows from the vector store. A
-/// full rebuild returns no IDs — it only runs when the manifest is empty, so there
-/// is nothing prior to consider stale.
 async fn sync_search_index(
     search_index: &MemoryIndex,
     manifest: &IndexManifest,
@@ -344,12 +284,6 @@ async fn sync_search_index(
     }
 }
 
-/// Remove vector rows for docs that the BM25 sync just dropped, keeping the
-/// vector store consistent with the search index.
-///
-/// A failed prune is logged and never blocks startup — BM25 pruning has already
-/// completed independently by the time this runs, so the worst outcome is a few
-/// orphaned rows left for the next sync to catch.
 fn prune_stale_vectors(vs: &VectorStore, doc_ids: &[String]) {
     if doc_ids.is_empty() {
         return;
@@ -369,12 +303,6 @@ fn prune_stale_vectors(vs: &VectorStore, doc_ids: &[String]) {
     }
 }
 
-/// Build the vector store, probing for embedding dimensions.
-///
-/// `manifest` is used only to check whether the embedding model has changed.
-/// The function re-reads the manifest from `manifest_path` before saving, because
-/// `sync_search_index` may have written an updated manifest to disk since the
-/// caller loaded it.
 async fn build_vector_store(
     ep: &dyn EmbeddingProvider,
     layout: &WorkspaceLayout,
@@ -433,7 +361,6 @@ async fn build_vector_store(
     Some(Arc::new(vs))
 }
 
-/// Build an `IndexManifest` from a full rebuild result.
 fn build_manifest_from_rebuild(result: RebuildResult) -> IndexManifest {
     let mut manifest = IndexManifest::new();
     manifest.last_rebuild = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string();
@@ -443,11 +370,6 @@ fn build_manifest_from_rebuild(result: RebuildResult) -> IndexManifest {
     manifest
 }
 
-/// Embed any manifest entries that have `embedded: false` into the vector store.
-///
-/// Reads each unembedded `.obs.json` or `.idx.jsonl` file from disk, calls the
-/// embedding provider, and inserts into the vector store. Failures are warnings
-/// and never block startup.
 async fn backfill_embeddings(
     vs: &VectorStore,
     ep: &dyn EmbeddingProvider,
@@ -511,9 +433,6 @@ async fn backfill_embeddings(
     }
 }
 
-/// Embed a single `.obs.json` file and insert into the vector store.
-///
-/// Skips the embedding API call if vectors already exist in the store.
 async fn backfill_obs_file(
     vs: &VectorStore,
     ep: &dyn EmbeddingProvider,
@@ -524,7 +443,6 @@ async fn backfill_obs_file(
         return Ok(());
     }
 
-    // Check if vectors already exist (e.g. embedded inline but manifest wasn't updated)
     let first_id = format!("{episode_id}-o0");
     if vs.has_observation(&first_id)? {
         tracing::debug!(episode_id, "skipping obs backfill — vectors already exist");
@@ -542,9 +460,6 @@ async fn backfill_obs_file(
     Ok(())
 }
 
-/// Embed a single `.idx.jsonl` file and insert into the vector store.
-///
-/// Skips the embedding API call if vectors already exist in the store.
 async fn backfill_idx_file(
     vs: &VectorStore,
     ep: &dyn EmbeddingProvider,
@@ -555,7 +470,6 @@ async fn backfill_idx_file(
         return Ok(());
     }
 
-    // Check if vectors already exist (e.g. embedded inline but manifest wasn't updated)
     if let Some(first) = chunks.first()
         && vs.has_chunk(&first.chunk_id)?
     {
@@ -584,8 +498,6 @@ mod tests {
     use residuum_inference::{EmbeddingResponse, InferenceError};
     use residuum_memory::types::{Observation, Visibility};
 
-    /// Embedding provider that returns a fixed-dimension vector for every text,
-    /// so tests can exercise the vector store without a real API call.
     struct FakeEmbedder;
 
     #[async_trait]
@@ -631,7 +543,6 @@ mod tests {
 
         let search_index = MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap();
 
-        // First startup: index the episode, then build and backfill the vector store.
         let manifest = IndexManifest::load(&manifest_path).await.unwrap();
         sync_search_index(&search_index, &manifest, &layout, &manifest_path).await;
         let vs = build_vector_store(&ep, &layout, &manifest, &manifest_path)
@@ -644,7 +555,6 @@ mod tests {
             "vector row should exist after the episode is indexed and embedded"
         );
 
-        // Simulate the episode file being deleted, then a second startup's sync.
         std::fs::remove_file(&obs_path).unwrap();
         let manifest2 = IndexManifest::load(&manifest_path).await.unwrap();
         let pruned_doc_ids =
@@ -681,7 +591,6 @@ mod tests {
             "cluster upgrade planning",
         );
 
-        // An agent index and vector store that hold wiki documents alongside episodes.
         let index = MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap();
         let manifest = IndexManifest::load(&manifest_path).await.unwrap();
         sync_search_index(&index, &manifest, &layout, &manifest_path).await;

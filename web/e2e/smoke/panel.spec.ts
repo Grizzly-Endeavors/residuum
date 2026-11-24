@@ -3,29 +3,17 @@ import { expectNoAxeViolations } from "../support/axe";
 import { expect, test } from "../support/fixtures";
 import { expectFileRendered } from "../support/lazy";
 
-/**
- * The context panel: opened and closed by link and by Back, resized at wide
- * width, floating at medium width, a full-screen sheet on phones, and an
- * invalid `panel` corrected.
- *
- * The file editor is scanned here and in `files.spec.ts`, a session run in
- * `activity.spec.ts`, and the conversation size in `composer.spec.ts`.
- */
-
 const RUN = "Compare fallback strategies for notification delivery";
 const RUN_ROW = new RegExp(`^${RUN}`);
 
-/** The panel named `name`: a column beside the main region, or on a phone a full-screen sheet. */
 function contextPanel(page: Page, isMobile: boolean, name: string): Locator {
   return page.getByRole(isMobile ? "dialog" : "complementary", { name });
 }
 
-/** The panel's way out, Close panel, on a phone's sheet as beside the main region. */
 function closeButton(panel: Locator): Locator {
   return panel.getByRole("button", { name: "Close panel", exact: true });
 }
 
-/** The panel's box once it has finished sliding in. */
 async function settledBox(
   panel: Locator,
 ): Promise<{ x: number; y: number; width: number; height: number }> {
@@ -42,7 +30,6 @@ async function settledBox(
   return box;
 }
 
-/** Path and query of the page's URL, decoded, so a test can compare them exactly. */
 function address(page: Page): string {
   const url = new URL(page.url());
   return decodeURIComponent(`${url.pathname}${url.search}`);
@@ -74,7 +61,6 @@ test("a run opens in the panel from Activity, and closing it goes back", async (
   await expect.poll(() => address(page)).toBe("/agent/atlas/activity");
   await expect(row).toBeFocused();
 
-  // Closing went back over the entry that opened the panel, so Forward opens it again.
   await page.goForward();
   await expect(panel).toBeVisible();
   await expect
@@ -114,7 +100,6 @@ test("a linked file opens in the panel, and Esc closes it by replacing the URL",
   await expect(panel).toBeHidden();
   await expect.poll(() => address(page)).toBe("/agent/atlas");
 
-  // The page didn't open the panel, so closing replaced its entry: Back leaves the place.
   await page.goBack();
   await expect.poll(() => address(page)).toBe("/home");
 });
@@ -125,7 +110,6 @@ test("on Shared files, a file is read from the team's folder", async ({ page, is
   await expectFileRendered(page, "Wiki Index");
 });
 
-// Each URL, and where it is corrected to.
 const CORRECTIONS: readonly (readonly [from: string, to: string])[] = [
   ["/agent/atlas?panel=nonsense", "/agent/atlas"],
   ["/agent/atlas?panel=session:atlas", "/agent/atlas"],
@@ -135,14 +119,12 @@ const CORRECTIONS: readonly (readonly [from: string, to: string])[] = [
   ["/team/workbench?panel=file:SOUL.md", "/team/workbench"],
 ];
 
-// One test for each URL: every one is a full page load, so a single test over all of them spends its timeout on the sum of the loads.
 test.describe("a panel value that is invalid, or that its place can't show, is removed", () => {
   for (const [from, to] of CORRECTIONS) {
     test(`${from} is corrected to ${to}`, async ({ page }) => {
       await page.goto(from);
       await expect.poll(() => address(page), from).toBe(to);
       await expect(page.getByRole("main")).toBeVisible();
-      // Home has a complementary landmark of its own, so the panel is told apart by its way out.
       await expect(page.getByRole("button", { name: "Close panel", exact: true })).toHaveCount(0);
       await expect(page.locator("[data-overlay-host] dialog")).toHaveCount(0);
     });
@@ -169,7 +151,6 @@ test.describe("at wide width", () => {
     await expect(grip).toHaveAttribute("aria-valuenow", "440");
     await expectNoAxeViolations(page);
 
-    // Drag the edge 120px to the left, from where the panel starts.
     const before = await settledBox(panel);
     const y = before.y + before.height / 2;
     await page.mouse.move(before.x, y);
@@ -179,7 +160,6 @@ test.describe("at wide width", () => {
     await expect(grip).toHaveAttribute("aria-valuenow", "560");
     expect((await panel.boundingBox())?.width).toBeCloseTo(560, 0);
 
-    // Half the viewport is as wide as it goes.
     await page.mouse.move(before.x - 120, y);
     await page.mouse.down();
     await page.mouse.move(100, y, { steps: 6 });
@@ -196,7 +176,6 @@ test.describe("at wide width", () => {
     await page.keyboard.press("ArrowLeft");
     await expect(grip).toHaveAttribute("aria-valuenow", "456");
 
-    // The width is this viewer's, across a reload and another panel.
     await page.goto("/agent/atlas/files?panel=file:SOUL.md");
     const file = contextPanel(page, false, "SOUL.md");
     await expect(file).toBeVisible();
@@ -227,7 +206,6 @@ test.describe("at medium width", () => {
 
     expect(await settledBox(panel)).toMatchObject({ x: 560, width: 440 });
     const main = await page.getByRole("main").boundingBox();
-    // The main region keeps its width under the panel.
     expect(main === null ? null : main.x + main.width).toBe(1000);
     await expectNoAxeViolations(page);
 
@@ -247,7 +225,6 @@ test.describe("on a phone", () => {
     const sheet = contextPanel(page, true, "Conversation size");
     await expect(sheet).toBeVisible();
     expect(await settledBox(sheet)).toEqual({ x: 0, y: 0, width: 390, height: 844 });
-    // The page under the sheet, the bottom bar with it, is out of reach.
     expect(
       await page.locator(".shell").evaluate((shell) => shell.closest("[inert]") !== null),
     ).toBe(true);

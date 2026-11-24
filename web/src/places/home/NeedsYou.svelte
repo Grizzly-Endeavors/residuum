@@ -14,12 +14,8 @@
   import FailedAgentActions from "./FailedAgentActions.svelte";
   import { followLink } from "./follow-link";
 
-  // What needs the user, worst first, each with the fix beside it. An item
-  // leaves as soon as the hub reports its condition gone.
-
   interface Props {
     actions: ShellActions;
-    /** The clock the relative times read. */
     now: number;
   }
 
@@ -28,13 +24,11 @@
   const uid = $props.id();
   const needs = $derived(overview.needsYou);
 
-  /** The link under the list: threads still unread in the Inbox, counted only when the whole Inbox was searched. */
   const moreInInboxText = $derived.by(() => {
     if (needs.moreInInboxExact) return `${String(needs.moreInInbox)} more in Inbox`;
     return needs.items.some((item) => item.kind === "inbox") ? "More in Inbox" : "Unread in Inbox";
   });
 
-  /** The action in flight on each item, by item key. */
   let pending = $state<Record<string, string | undefined>>({});
 
   const ICONS: Readonly<Record<NeedsYouItem["kind"], IconName>> = {
@@ -58,7 +52,6 @@
     return { ...INBOX, thread: threadId };
   }
 
-  /** An item that clears slides away, so the list shows what changed. */
   function leave(node: Element): ReturnType<typeof slide> {
     const token = getComputedStyle(document.documentElement).getPropertyValue("--duration-base");
     return slide(node, { duration: Number.parseFloat(token) || 0 });

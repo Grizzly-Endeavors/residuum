@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from "vitest";
 import { LiveStreams, MessageIds } from "./feed-stream";
 import type { AssistantFeedItem, FeedItem, ThinkingFeedItem } from "./types";
 
-/** Streams over a plain feed, with frames that run when the test says so. */
 function setup(): { feed: FeedItem[]; streams: LiveStreams; frame: () => void; frames: number } {
   const feed: FeedItem[] = [];
   const queued: Array<() => void> = [];
@@ -276,7 +275,6 @@ describe("streamed reasoning", () => {
 });
 
 describe("when streamed text was sent", () => {
-  /** Streams that stamp each text with the next of a list of times. */
   function stamped(...times: string[]): { feed: FeedItem[]; streams: LiveStreams } {
     const feed: FeedItem[] = [];
     const queue = [...times];
@@ -295,7 +293,6 @@ describe("when streamed text was sent", () => {
     streams.appendText("t1", 0, "Let me", tag);
     expect(assistants(feed)[0]?.timestamp).toBe("2026-10-09T10:05:00");
 
-    // History records a message when its model call is done, so that is the time it shows.
     streams.completeText("t1", 0, "Let me look.", tag);
     expect(assistants(feed)).toMatchObject([
       { content: "Let me look.", streaming: false, timestamp: "2026-10-09T10:06:30" },

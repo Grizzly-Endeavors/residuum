@@ -43,9 +43,6 @@ fn external_channel_kind_macos_variant_exists() {
 
 #[test]
 fn macos_channel_config_loads_from_toml() {
-    // `default_category` is retired. It stays in this fixture on purpose:
-    // a config still carrying it must load, warn, and ignore the key rather
-    // than fail startup.
     let toml_str = r#"
 [channels.macos]
 type = "macos"

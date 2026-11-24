@@ -1,9 +1,3 @@
-//! OTEL span conversion and exporter construction.
-//!
-//! Converts in-memory `CompletedSpan` structs from the span buffer into
-//! OpenTelemetry `SpanData` for export via OTLP HTTP/protobuf, and builds the
-//! exporter that sends them.
-
 use std::borrow::Cow;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::SystemTime;
@@ -18,22 +12,13 @@ use opentelemetry_sdk::trace::{SpanData, SpanEvents, SpanLinks};
 use residuum_config::OtelEndpoint;
 use residuum_core::util::telemetry::CompletedSpan;
 
-/// Service name reported in OTEL traces.
 const SERVICE_NAME: &str = "residuum";
 
-/// An OTLP span exporter together with the transport log of its HTTP client.
 pub(super) struct OtlpExporter {
     pub(super) exporter: opentelemetry_otlp::SpanExporter,
     pub(super) transport: TransportLog,
 }
 
-/// Build an OTLP HTTP/protobuf span exporter for the given endpoint.
-///
-/// The exporter sends through [`DiagnosedClient`], so a failed export can
-/// name the transport error behind it (see [`TransportLog::describe_failure`]).
-///
-/// # Errors
-/// Returns an error if the HTTP client or the exporter cannot be constructed.
 pub(super) fn build_exporter(
     endpoint: &OtelEndpoint,
 ) -> Result<OtlpExporter, opentelemetry_otlp::ExporterBuildError> {
@@ -44,8 +29,6 @@ pub(super) fn build_exporter(
         headers.insert(k.clone(), v.clone());
     }
 
-    // The exporter applies its timeout only to its own built-in client, so a
-    // supplied client carries the same default itself.
     let inner = reqwest::Client::builder()
         .timeout(opentelemetry_otlp::OTEL_EXPORTER_OTLP_TIMEOUT_DEFAULT)
         .build()
@@ -100,7 +83,6 @@ impl TransportLog {
         record.last_error = cause;
     }
 
-    /// Number of HTTP requests the exporter has sent, retries included.
     pub(super) fn attempts(&self) -> usize {
         self.0
             .lock()
@@ -108,8 +90,6 @@ impl TransportLog {
             .attempts
     }
 
-    /// The exporter's error, followed by the transport error of the last
-    /// request when that request failed before getting a response.
     pub(super) fn describe_failure(&self, error: &impl std::fmt::Display) -> String {
         let record = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         match &record.last_error {
@@ -119,8 +99,6 @@ impl TransportLog {
     }
 }
 
-/// An error's message followed by the messages of its sources, skipping a
-/// source whose message the chain already contains.
 fn error_chain(error: &(dyn std::error::Error + 'static)) -> String {
     let mut message = error.to_string();
     let mut source = error.source();
@@ -135,8 +113,6 @@ fn error_chain(error: &(dyn std::error::Error + 'static)) -> String {
     message
 }
 
-/// The OTLP exporter's HTTP client: reqwest, recording each request's outcome
-/// in a [`TransportLog`].
 #[derive(Debug)]
 struct DiagnosedClient {
     inner: reqwest::Client,
@@ -153,8 +129,6 @@ impl HttpClient for DiagnosedClient {
     }
 }
 
-/// Encode a batch of OTEL `SpanData` into the OTLP protobuf wire format
-/// (`ExportTraceServiceRequest`) for embedding in a bug-report payload.
 pub(super) fn encode_otlp_protobuf(spans: Vec<SpanData>) -> Vec<u8> {
     use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
     use opentelemetry_proto::transform::common::tonic::ResourceAttributesWithSchema;
@@ -169,10 +143,7 @@ pub(super) fn encode_otlp_protobuf(spans: Vec<SpanData>) -> Vec<u8> {
     request.encode_to_vec()
 }
 
-/// Convert a batch of `CompletedSpan` into OTEL `SpanData`.
 pub(super) fn convert_spans(spans: &[CompletedSpan]) -> Vec<SpanData> {
-    // Generate a single trace ID for the batch (all spans in one trace dump
-    // get grouped together for coherent viewing in trace UIs).
     let trace_id = TraceId::from_bytes(rand_trace_id());
     let scope = InstrumentationScope::builder(SERVICE_NAME)
         .with_version(env!("CARGO_PKG_VERSION"))
@@ -184,7 +155,6 @@ pub(super) fn convert_spans(spans: &[CompletedSpan]) -> Vec<SpanData> {
         .collect()
 }
 
-/// Convert a single `CompletedSpan` to OTEL `SpanData`.
 fn convert_one(span: &CompletedSpan, trace_id: TraceId, scope: &InstrumentationScope) -> SpanData {
     let span_id = SpanId::from_bytes(span.span_id.to_be_bytes());
     let parent_span_id = span
@@ -253,9 +223,6 @@ fn convert_one(span: &CompletedSpan, trace_id: TraceId, scope: &InstrumentationS
     }
 }
 
-/// One span field as an OTEL attribute. The span buffer keeps every value as
-/// text; the `GenAI` token counts go out as integers, the type the OpenTelemetry
-/// `GenAI` conventions give them, so trace tools can sum them.
 fn span_attribute(key: &str, value: &str) -> KeyValue {
     if key.starts_with("gen_ai.usage.")
         && let Ok(count) = value.parse::<i64>()
@@ -265,7 +232,6 @@ fn span_attribute(key: &str, value: &str) -> KeyValue {
     KeyValue::new(key.to_string(), value.to_string())
 }
 
-/// Generate a random 16-byte trace ID.
 fn rand_trace_id() -> [u8; 16] {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -277,7 +243,6 @@ fn rand_trace_id() -> [u8; 16] {
 
     let mut hasher2 = DefaultHasher::new();
     h1.hash(&mut hasher2);
-    // Mix in some entropy from the thread ID
     std::thread::current().id().hash(&mut hasher2);
     let h2 = hasher2.finish();
 
@@ -411,8 +376,6 @@ mod tests {
         }
     }
 
-    /// Answer every request on `listener` with `401 Unauthorized`, reading
-    /// each request in full first so the client sees the response, not a reset.
     async fn serve_unauthorized(listener: tokio::net::TcpListener) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -449,7 +412,6 @@ mod tests {
 
     #[tokio::test]
     async fn refused_connection_names_the_transport_cause_after_retrying() {
-        // Bound but not listening, so every connection is refused.
         let port = residuum_core::testing::ports::reserve_port();
         let otlp = build_exporter(&endpoint(port.port())).unwrap();
 

@@ -5,19 +5,7 @@
   import IconButton from "./IconButton.svelte";
   import { portal } from "./overlay/host";
 
-  // The toast store's toasts, along the bottom edge. The region lives in the
-  // overlay host above every layer and never joins the overlay stack, so an
-  // Undo stays within reach while a dialog is open. The store sets the
-  // timings: info and success leave after 4 seconds, or 10 with an action,
-  // and errors stay until dismissed. The app mounts one region.
-
   interface Props {
-    /**
-     * What toasts keep clear of: the composer they can reach, wherever it is
-     * and however tall it is now (`composerClearance`), and while a layer
-     * covers it, or there is none, a sheet's footer above the phone's bottom
-     * bar; the phone's bottom bar alone; or just the screen's edge (no bar).
-     */
     clearance?: "composer" | "bar" | "edge";
   }
 
@@ -30,9 +18,7 @@
   };
 
   const toasts = $derived([...toast.toasts.values()]);
-  /** From the foot of the screen to the top of the composer showing, when there is one. */
   const lift = $derived(clearance === "composer" ? composerClearance.px : 0);
-  // "lifted" is above a composer that is measured; "away" is a composer's place with none to reach.
   const keptClear = $derived.by(() => {
     if (clearance !== "composer") return clearance;
     return lift > 0 ? "lifted" : "away";
@@ -104,13 +90,11 @@
   }
 
   .ui-toast {
-    /* Quiet buttons hover darker on the stone-4 card. */
     --ui-quiet-hover: var(--color-stone-3);
 
     display: flex;
     align-items: flex-start;
     gap: var(--space-10);
-    /* Spaced from above, so either group can be empty; the region hangs from the bottom. */
     margin-top: var(--space-8);
     padding: var(--space-6) var(--space-6) var(--space-6) var(--space-14);
     border-radius: var(--corner-lg);
@@ -122,7 +106,6 @@
     animation: ui-toast-in var(--duration-base) var(--ease-out);
   }
 
-  /* Icon and buttons line up with the message's first line when it wraps. */
   .ui-toast-icon {
     display: grid;
     flex: none;
@@ -147,7 +130,6 @@
     overflow-wrap: anywhere;
   }
 
-  /* On stone-4 only a tint carries the accent: vein-bright on vein-tint. */
   .ui-toast-action {
     flex: none;
     height: 28px;
@@ -167,13 +149,11 @@
     }
   }
 
-  /* Above the composer's top edge, however tall it is now. */
   .ui-toasts[data-clearance="lifted"] {
     bottom: calc(var(--toast-lift) + var(--space-12));
   }
 
   @media (max-width: 760px) {
-    /* No composer to reach (a layer covers it): above the bar, clear of the footer of a sheet. */
     .ui-toasts[data-clearance="away"] {
       bottom: calc(var(--layout-bottom-bar-offset) + 96px);
     }

@@ -22,12 +22,9 @@ use tracing::{error, warn};
 use super::engine_limit::PeerRateLimiter;
 use crate::browser_landing::{self, Landing};
 
-/// How long the listener may take to start answering.
 const RESPONSE_START_TIMEOUT: Duration = Duration::from_secs(120);
-/// How long connecting to a local listener may take.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Headers that describe one hop and never travel through a proxy.
 const HOP_BY_HOP: [&str; 8] = [
     "connection",
     "keep-alive",
@@ -39,8 +36,6 @@ const HOP_BY_HOP: [&str; 8] = [
     "upgrade",
 ];
 
-/// Request headers the proxy never forwards: the peer's `Host` (the upstream
-/// gets its own) and forwarding headers the peer could forge.
 const REQUEST_STRIP: [&str; 6] = [
     "host",
     "forwarded",
@@ -50,19 +45,12 @@ const REQUEST_STRIP: [&str; 6] = [
     "x-real-ip",
 ];
 
-/// Where the local listeners are right now.
 pub(crate) struct InstanceTargets<'a> {
-    /// The hub's A2A listener, when it is running.
     pub(crate) a2a_port: Option<u16>,
-    /// Each agent's Teams listener port.
     pub(crate) teams_ports: &'a BTreeMap<String, u16>,
-    /// The web app's origin, when Residuum Cloud has announced it.
     pub(crate) ui_origin: Option<String>,
 }
 
-/// How the instance host answers a request itself: a browser navigation gets
-/// the fallback page saying what this address is for, anything else (another
-/// agent, Microsoft Teams, a script) gets plain text.
 struct Answer {
     navigation: bool,
     ui_origin: Option<String>,
@@ -97,20 +85,14 @@ impl Answer {
     }
 }
 
-/// What the instance host is, for a person who opened it in a browser.
 const INSTANCE_HOST_PURPOSE: &str = "This address is where other agents (over A2A) and Microsoft Teams reach this Residuum instance's agents. It isn't a page to open in a browser.";
 
-/// Serves requests for the instance host.
 pub(crate) struct InstanceProxy {
-    /// `None` when the HTTP client could not be built; every proxied request
-    /// then answers 503.
     client: Option<reqwest::Client>,
     limiter: Mutex<PeerRateLimiter>,
 }
 
 impl InstanceProxy {
-    /// A proxy with an HTTP client that never follows redirects, ignores proxy
-    /// settings (the targets are on this machine) and has no total timeout.
     pub(crate) fn new() -> Self {
         let client = match reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -130,7 +112,6 @@ impl InstanceProxy {
         }
     }
 
-    /// Answer one request addressed to the instance host.
     pub(crate) async fn handle(
         &self,
         req: Request<Body>,
@@ -261,7 +242,6 @@ impl InstanceProxy {
         }
     }
 
-    /// Send `req` to `url` and stream the answer back.
     async fn forward(&self, req: Request<Body>, answer: &Answer, url: String) -> Response<Body> {
         let Some(client) = &self.client else {
             return answer.say(
@@ -306,8 +286,6 @@ impl InstanceProxy {
         };
 
         let status = response.status();
-        // An A2A endpoint answers a browser's GET with an error meant for
-        // another agent; the person gets the page saying what this is.
         if answer.navigation && (status.is_client_error() || status.is_server_error()) {
             tracing::debug!(%status, url = %url, "a browser opened an instance-host address the service refused");
             return answer.page(
@@ -323,7 +301,6 @@ impl InstanceProxy {
     }
 }
 
-/// Names listed in the `Connection` header; they are hop-by-hop too.
 fn connection_listed(headers: &HeaderMap) -> Vec<HeaderName> {
     headers
         .get_all(header::CONNECTION)
@@ -347,9 +324,6 @@ fn forwardable_request_headers(headers: &HeaderMap) -> HeaderMap {
     out
 }
 
-/// Upstream response headers minus hop-by-hop headers and cookies: A2A and
-/// Teams are API surfaces, and a cookie set here would land on the instance
-/// host's origin.
 fn hardened_response_headers(headers: &HeaderMap) -> HeaderMap {
     let listed = connection_listed(headers);
     let mut out = HeaderMap::new();
@@ -366,7 +340,6 @@ fn hardened_response_headers(headers: &HeaderMap) -> HeaderMap {
     out
 }
 
-/// A plain-text answer that no cache keeps.
 pub(crate) fn text_response(status: StatusCode, message: &str) -> Response<Body> {
     let mut response = Response::new(Body::from(format!("{message}\n")));
     *response.status_mut() = status;
@@ -379,14 +352,6 @@ pub(crate) fn text_response(status: StatusCode, message: &str) -> Response<Body>
     response
 }
 
-/// The path on the hub's A2A listener for an A2A request on the instance host:
-/// `/agents/{agent}` followed by the path the request carried (which already
-/// includes any query string), or a plain-language reason the request can't be
-/// dispatched.
-///
-/// The hub's A2A listener has no root-level agent, so a request that names no
-/// agent has nowhere to go. The name is checked against the agent-name rules
-/// because it becomes a path segment on the local listener.
 fn a2a_listener_path(agent: Option<&str>, path: &str) -> Result<String, &'static str> {
     let Some(agent) = agent else {
         return Err("This A2A request didn't name an agent. Agents are reached at /a2a/{agent}.");
@@ -404,12 +369,6 @@ fn a2a_listener_path(agent: Option<&str>, path: &str) -> Result<String, &'static
     ))
 }
 
-/// Whether a browser-supplied path could climb out of `/agents/{agent}` once
-/// the HTTP client normalizes it: any `.` or `..` segment, in plain or
-/// percent-encoded form (`%2e`, `%2E`, mixed), or any backslash. The relay
-/// gates access per agent, so a path that reaches a different agent's routes
-/// would bypass that gating (`/a2a/inst/scout/../vault/...` normalizes to
-/// vault's routes). The query string is not part of the path.
 fn path_escapes_agent(path: &str) -> bool {
     let path_only = path.split(['?', '#']).next().unwrap_or_default();
     let decoded = percent_decode(path_only);
@@ -419,7 +378,6 @@ fn path_escapes_agent(path: &str) -> bool {
             .any(|segment| segment == "." || segment == "..")
 }
 
-/// Decode `%XX` escapes, leaving malformed ones as they are.
 fn percent_decode(input: &str) -> String {
     let bytes = input.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());

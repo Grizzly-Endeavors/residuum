@@ -2,28 +2,4 @@
 import type { DeviceInfo } from "./DeviceInfo";
 import type { PendingPairingInfo } from "./PendingPairingInfo";
 
-/**
- * Answer of `GET /api/hub/devices`.
- */
-export type DeviceListResponse = { 
-/**
- * Every paired browser, oldest first.
- */
-devices: Array<DeviceInfo>, 
-/**
- * Browsers waiting to be paired, oldest first.
- */
-pending: Array<PendingPairingInfo>, 
-/**
- * Unused recovery codes left.
- */
-recovery_codes_remaining: number, 
-/**
- * The address a browser reaches this install at, once Residuum Cloud has
- * announced it. Pairing links point here.
- */
-ui_origin: string | null, 
-/**
- * Whether the request arrived through Residuum Cloud.
- */
-remote: boolean, };
+export type DeviceListResponse = { devices: Array<DeviceInfo>, pending: Array<PendingPairingInfo>, recovery_codes_remaining: number, ui_origin: string | null, remote: boolean, };

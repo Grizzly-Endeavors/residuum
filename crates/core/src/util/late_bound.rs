@@ -1,22 +1,10 @@
-//! A late-bound, weak reference to a shared service.
-
 use std::sync::{Arc, OnceLock, Weak};
 
-/// A late-bound, weak reference to a `T` that is built after the values that
-/// hold the reference.
-///
-/// The hub's agent host is built after the shared services every agent
-/// receives, and each agent's tools are built inside a host-started agent, so
-/// the services carry this handle and the host binds itself into it on
-/// construction. It is weak because the agents hold it and the host holds the
-/// agents; a strong reference would keep the host alive from inside its own
-/// agents. Clones share one binding.
 pub struct LateBound<T: ?Sized> {
     inner: Arc<OnceLock<Weak<T>>>,
 }
 
 impl<T: ?Sized> LateBound<T> {
-    /// A handle that points at nothing until [`Self::bind`] is called.
     #[must_use]
     pub fn unbound() -> Self {
         Self {
@@ -24,14 +12,10 @@ impl<T: ?Sized> LateBound<T> {
         }
     }
 
-    /// Point the handle at `target`. A handle binds once; later calls leave
-    /// the first binding in place.
     pub fn bind(&self, target: Weak<T>) {
         self.inner.set(target).ok();
     }
 
-    /// The target, when it is bound and still alive (the hub is not shutting
-    /// down).
     #[must_use]
     pub fn get(&self) -> Option<Arc<T>> {
         self.inner.get().and_then(Weak::upgrade)

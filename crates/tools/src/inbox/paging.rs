@@ -1,45 +1,25 @@
-//! Paging and text search for the inbox listing tools: `limit`, `before` and
-//! `query` mean the same in `inbox_list` and `user_inbox_list`.
-//!
-//! A list is newest first, ties by ref. A page ends with a cursor
-//! ([`MailCursor`], the one the hub's thread list hands out) that the next call
-//! passes back as `before`.
-
 use serde_json::Value;
 
 use residuum_inference::ToolError;
 use residuum_workspace::inbox::mail::MailCursor;
 
-/// How many items a call lists when it names no `limit`.
 pub(super) const DEFAULT_LIMIT: usize = 50;
 
-/// The most items a call lists; a larger `limit` counts as this.
 pub(super) const MAX_LIMIT: usize = 200;
 
-/// Which page of a list a call asks for.
 pub(super) struct PageRequest {
     limit: usize,
     before: Option<MailCursor>,
     query: Option<String>,
 }
 
-/// The entries of one page, and what the list holds beyond it.
 pub(super) struct Page<T> {
-    /// This page's entries, newest first.
     pub items: Vec<T>,
-    /// How many entries the list holds from the page's start, the page's own
-    /// and those on later pages.
     pub total: usize,
-    /// The cursor of the page's last entry when later pages follow.
     pub next: Option<MailCursor>,
 }
 
 impl PageRequest {
-    /// Read `limit`, `before` and `query` from a call's arguments.
-    ///
-    /// # Errors
-    /// [`ToolError::InvalidArguments`] when `limit` is not a whole number of
-    /// at least 1, or `before` is not a cursor a listing returned.
     pub(super) fn parse(arguments: &Value) -> Result<Self, ToolError> {
         Ok(Self {
             limit: parse_limit(arguments.get("limit"))?,
@@ -53,13 +33,10 @@ impl PageRequest {
         })
     }
 
-    /// The text entries must hold, when the call named some.
     pub(super) fn query(&self) -> Option<&str> {
         self.query.as_deref()
     }
 
-    /// The page `entries` make: sorted, cut to the entries after the `before`
-    /// cursor, and limited. Each entry comes with its own cursor.
     pub(super) fn page<T>(&self, mut entries: Vec<(MailCursor, T)>) -> Page<T> {
         entries.sort_by(|(a, _), (b, _)| a.cmp(b));
         if let Some(before) = &self.before {
@@ -78,8 +55,6 @@ impl PageRequest {
         }
     }
 
-    /// The line that opens a page holding `count` items of `kind` ("inbox",
-    /// "archived" or "user inbox"), counted from the page's start.
     pub(super) fn header(&self, count: usize, kind: &str) -> String {
         let mut header = format!("{count} {kind} item(s)");
         if self.query.is_some() {
@@ -92,7 +67,6 @@ impl PageRequest {
         header
     }
 
-    /// The answer when no items of `kind` are left to list.
     pub(super) fn empty_message(&self, kind: &str) -> String {
         let mut message = format!("No {kind} items");
         match &self.query {
@@ -111,9 +85,6 @@ impl PageRequest {
     }
 }
 
-/// The line that ends a page that later pages follow: how much was shown and
-/// the call that shows the next page. `filters` names the parameters the call
-/// repeats.
 pub(super) fn more_note(shown: usize, total: usize, next: &MailCursor, filters: &str) -> String {
     format!(
         "Showing {shown} of {total}. For the next page, call again with before=\"{next}\" and the same {filters}."
@@ -159,7 +130,6 @@ fn foreign_cursor() -> ToolError {
     )
 }
 
-/// The `limit` property of a listing tool's parameters.
 pub(super) fn limit_schema() -> Value {
     serde_json::json!({
         "type": "integer",
@@ -169,7 +139,6 @@ pub(super) fn limit_schema() -> Value {
     })
 }
 
-/// The `before` property of a listing tool's parameters.
 pub(super) fn before_schema() -> Value {
     serde_json::json!({
         "type": "string",
@@ -177,7 +146,6 @@ pub(super) fn before_schema() -> Value {
     })
 }
 
-/// The `query` property of a listing tool's parameters.
 pub(super) fn query_schema() -> Value {
     serde_json::json!({
         "type": "string",

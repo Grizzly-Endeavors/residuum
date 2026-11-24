@@ -37,7 +37,6 @@ const calls: StepCall[] = [
   },
 ];
 
-/** The same steps as history holds them, which records no timing. */
 function fromHistory(): StepCall[] {
   return calls.map(({ startedAt: _started, endedAt: _ended, ...rest }) => ({
     ...rest,

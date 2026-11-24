@@ -1,71 +1,35 @@
-//! Path resolution for the hub/agent on-disk layout.
-//!
-//! `~/.residuum/` holds `hub/` (hub-level state: hub config, secrets, key
-//! stores, logs, `bin/`, checkpoints, pid/lock/ready/update markers, and
-//! their last-known-good copies), `team/` (the shared team layer), and one
-//! directory per agent, each of which *is* that agent's workspace root. This
-//! module is the only place that resolves the literal `~/.residuum` path,
-//! names the reserved directory names, and validates an agent directory name.
-
 use std::path::{Path, PathBuf};
 
 use residuum_core::util::FatalError;
 
-/// Directory name reserved for hub-level state; never a valid agent name.
 pub const HUB_DIR_NAME: &str = "hub";
 
-/// Directory name reserved for the shared team layer; never a valid agent
-/// name, so onboarding can never collide with it.
 pub const TEAM_DIR_NAME: &str = "team";
 
-/// Every reserved name: not a valid agent name, and skipped when scanning
-/// `~/.residuum/` for agent directories.
 const RESERVED_NAMES: &[&str] = &[HUB_DIR_NAME, TEAM_DIR_NAME, "agents"];
 
-/// Longest accepted agent directory name, matching the relay's own slug
-/// validation (the directory name is also the A2A path segment) — see
-/// `crates/a2a/src/client/siblings.rs`'s `is_valid_sibling_slug`. The name a person
-/// types is checked in `agent_name`.
 pub(crate) const MAX_AGENT_NAME_LEN: usize = 24;
 
-/// The `~/.residuum` root: the only place this literal path is resolved.
-///
-/// # Errors
-/// Returns `FatalError::Config` if the home directory cannot be determined.
 pub fn residuum_root() -> Result<PathBuf, FatalError> {
     dirs::home_dir()
         .map(|h| h.join(".residuum"))
         .ok_or_else(|| FatalError::Config("could not determine home directory".to_string()))
 }
 
-/// The default hub directory (`~/.residuum/hub`).
-///
-/// # Errors
-/// Returns `FatalError::Config` if the home directory cannot be determined.
 pub fn default_hub_dir() -> Result<PathBuf, FatalError> {
     residuum_root().map(|root| hub_dir(&root))
 }
 
-/// `~/.residuum/hub` under `root`: the hub's own directory.
 #[must_use]
 pub fn hub_dir(root: &Path) -> PathBuf {
     root.join(HUB_DIR_NAME)
 }
 
-/// `~/.residuum/<name>` under `root`: an agent's directory (also its
-/// workspace root).
 #[must_use]
 pub fn agent_dir(root: &Path, name: &str) -> PathBuf {
     root.join(name)
 }
 
-/// Validate an agent directory name: 1–24 characters from `[a-z0-9-]`, no
-/// leading or trailing hyphen, and not a reserved name. The name a person
-/// types is checked in `agent_name`; this is the folder, the URL, and the
-/// A2A path segment.
-///
-/// # Errors
-/// Returns a human-readable message naming what is wrong.
 pub fn validate_agent_name(name: &str) -> Result<(), String> {
     if name.is_empty() {
         return Err("agent name must not be empty".to_string());
@@ -95,25 +59,10 @@ pub fn validate_agent_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Whether `name` (a directory entry directly under `~/.residuum/`) should be
-/// considered as a possible agent directory: not reserved, and not starting
-/// with `.` (a hidden directory, or one holding process/lock files rather
-/// than an agent).
 fn is_candidate_agent_dir_name(name: &str) -> bool {
     !name.starts_with('.') && !RESERVED_NAMES.contains(&name)
 }
 
-/// Scan `root` (typically `~/.residuum`) for agent directories: any
-/// immediate subdirectory (other than a reserved or hidden name) holding
-/// `config/config.toml`. Returns names sorted alphabetically.
-///
-/// A symlink to a directory counts as a directory. A missing `root` is a
-/// fresh install and yields no agents.
-///
-/// # Errors
-/// Returns `FatalError::Config` if `root` exists but cannot be read (or one
-/// of its entries cannot be listed), so an unreadable install is never
-/// mistaken for a fresh one.
 pub fn discover_agents(root: &Path) -> Result<Vec<String>, FatalError> {
     let unreadable = |err: &std::io::Error| {
         tracing::error!(root = %root.display(), error = %err, "failed to scan for agent directories");
@@ -137,7 +86,6 @@ pub fn discover_agents(root: &Path) -> Result<Vec<String>, FatalError> {
             continue;
         }
         let path = entry.path();
-        // `metadata` follows symlinks, so a symlinked agent directory counts.
         match std::fs::metadata(&path) {
             Ok(meta) if meta.is_dir() => {}
             Ok(_) => continue,
@@ -154,281 +102,221 @@ pub fn discover_agents(root: &Path) -> Result<Vec<String>, FatalError> {
     Ok(names)
 }
 
-/// Path helpers for the hub directory (`~/.residuum/hub`): hub config,
-/// secrets, key stores, logs, the persistent tools `bin/`, checkpoints, and
-/// the process markers (pid/lock/ready/startup-error/update).
 #[derive(Debug, Clone)]
 pub struct HubPaths {
     root: PathBuf,
 }
 
 impl HubPaths {
-    /// Path helpers rooted at `root` (typically `~/.residuum/hub`).
     #[must_use]
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self { root: root.into() }
     }
 
-    /// The hub's own root directory.
     #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
     }
 
-    /// `hub/config.toml` — hub-level settings.
     #[must_use]
     pub fn config_toml(&self) -> PathBuf {
         self.root.join("config.toml")
     }
 
-    /// `hub/config.last-known-good.toml`.
     #[must_use]
     pub fn config_last_known_good_toml(&self) -> PathBuf {
         self.root.join("config.last-known-good.toml")
     }
 
-    /// `hub/<agent>.config.last-known-good.toml` — the agent's `config.toml`
-    /// copy. Kept in `hub/` so it never enters the agent's workspace.
     #[must_use]
     pub fn agent_config_last_known_good_toml(&self, agent: &str) -> PathBuf {
         self.root
             .join(format!("{agent}.config.last-known-good.toml"))
     }
 
-    /// `hub/<agent>.providers.last-known-good.toml` — the agent's
-    /// `providers.toml` copy (may hold plaintext API keys).
     #[must_use]
     pub fn agent_providers_last_known_good_toml(&self, agent: &str) -> PathBuf {
         self.root
             .join(format!("{agent}.providers.last-known-good.toml"))
     }
 
-    /// `hub/secrets.toml.enc` — the encrypted provider-credential secret store.
     #[must_use]
     pub fn secrets_enc(&self) -> PathBuf {
         self.root.join("secrets.toml.enc")
     }
 
-    /// `hub/secrets.key` — the secret store's machine key. Never checkpointed.
     #[must_use]
     pub fn secrets_key(&self) -> PathBuf {
         self.root.join("secrets.key")
     }
 
-    /// `hub/agent-keys.toml.enc` — the encrypted agent-key store.
     #[must_use]
     pub fn agent_keys_enc(&self) -> PathBuf {
         self.root.join("agent-keys.toml.enc")
     }
 
-    /// `hub/agent-keys.key` — the agent-key store's machine key. Never checkpointed.
     #[must_use]
     pub fn agent_keys_key(&self) -> PathBuf {
         self.root.join("agent-keys.key")
     }
 
-    /// `hub/agent-keys.lock` — cross-process write lock for the agent-key store.
     #[must_use]
     pub fn agent_keys_lock(&self) -> PathBuf {
         self.root.join("agent-keys.lock")
     }
 
-    /// `hub/a2a-keys.toml` — A2A caller keys.
     #[must_use]
     pub fn a2a_keys_toml(&self) -> PathBuf {
         self.root.join("a2a-keys.toml")
     }
 
-    /// `hub/a2a-keys.lock` — cross-process write lock for the A2A key store.
     #[must_use]
     pub fn a2a_keys_lock(&self) -> PathBuf {
         self.root.join("a2a-keys.lock")
     }
 
-    /// `hub/remote-access.json` — the paired devices (as hashes), the unused
-    /// recovery codes (as hashes) and the address Residuum Cloud announced
-    /// (mode 0600). Never checkpointed.
     #[must_use]
     pub fn remote_access_json(&self) -> PathBuf {
         self.root.join("remote-access.json")
     }
 
-    /// `hub/remote-access/` — end-to-end remote access state: the local
-    /// identity, the ACME account key, the certificate and its private key
-    /// (mode 0600 files). Never checkpointed.
     #[must_use]
     pub fn remote_access_dir(&self) -> PathBuf {
         self.root.join("remote-access")
     }
 
-    /// `hub/push-vapid.key` — the Web Push signing key pair (a PKCS#8 P-256
-    /// key, mode 0600). Never checkpointed.
     #[must_use]
     pub fn push_vapid_key(&self) -> PathBuf {
         self.root.join("push-vapid.key")
     }
 
-    /// `hub/push-devices.json` — Web Push subscriptions and their
-    /// preferences (mode 0600). Never checkpointed.
     #[must_use]
     pub fn push_devices_json(&self) -> PathBuf {
         self.root.join("push-devices.json")
     }
 
-    /// `hub/logs/` — daemon log files.
     #[must_use]
     pub fn logs_dir(&self) -> PathBuf {
         self.root.join("logs")
     }
 
-    /// `hub/bin/` — the default persistent tools directory, prepended to
-    /// spawned children's `PATH`.
     #[must_use]
     pub fn bin_dir(&self) -> PathBuf {
         self.root.join("bin")
     }
 
-    /// `hub/checkpoints/` — checkpoint git repositories.
     #[must_use]
     pub fn checkpoints_dir(&self) -> PathBuf {
         self.root.join("checkpoints")
     }
 
-    /// `hub/tool-results/` — the full text of tool results too long to keep
-    /// in history, one subdirectory per agent. Outside every agent's
-    /// workspace, so no checkpoint repository tracks it.
     #[must_use]
     pub fn tool_results_dir(&self) -> PathBuf {
         self.root.join("tool-results")
     }
 
-    /// `hub/residuum.pid`.
     #[must_use]
     pub fn pid_file(&self) -> PathBuf {
         self.root.join("residuum.pid")
     }
 
-    /// `hub/residuum.ready`.
     #[must_use]
     pub fn ready_file(&self) -> PathBuf {
         self.root.join("residuum.ready")
     }
 
-    /// `hub/residuum.startup-error`.
     #[must_use]
     pub fn startup_error_file(&self) -> PathBuf {
         self.root.join("residuum.startup-error")
     }
 
-    /// `hub/crash.log` — last-resort panic/crash output.
     #[must_use]
     pub fn crash_log(&self) -> PathBuf {
         self.root.join("crash.log")
     }
 }
 
-/// `~/.residuum/team` under `root`: the shared team layer.
 #[must_use]
 pub fn team_dir(root: &Path) -> PathBuf {
     root.join(TEAM_DIR_NAME)
 }
 
-/// Path helpers for the shared team layer (`~/.residuum/team`): the files
-/// every agent in the hub shares — team rules, the user's core facts, the
-/// OKF wiki (with one role page per agent), the workbench, team skills, and
-/// the team wiki's search index.
 #[derive(Debug, Clone)]
 pub struct TeamPaths {
     root: PathBuf,
 }
 
 impl TeamPaths {
-    /// Path helpers rooted at `root` (typically `~/.residuum/team`).
     #[must_use]
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self { root: root.into() }
     }
 
-    /// The team layer's root directory.
     #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
     }
 
-    /// `team/AGENTS.md` — team-wide rules.
     #[must_use]
     pub fn agents_md(&self) -> PathBuf {
         self.root.join("AGENTS.md")
     }
 
-    /// `team/USER.md` — the user's core facts.
     #[must_use]
     pub fn user_md(&self) -> PathBuf {
         self.root.join("USER.md")
     }
 
-    /// `team/wiki/` — the shared OKF wiki.
     #[must_use]
     pub fn wiki_dir(&self) -> PathBuf {
         self.root.join("wiki")
     }
 
-    /// `team/wiki/index.md` — the wiki's root catalog.
     #[must_use]
     pub fn wiki_index_md(&self) -> PathBuf {
         self.wiki_dir().join("index.md")
     }
 
-    /// `team/wiki/log.md` — append-only history of wiki changes.
     #[must_use]
     pub fn wiki_log_md(&self) -> PathBuf {
         self.wiki_dir().join("log.md")
     }
 
-    /// `team/wiki/agents/` — one role page per agent.
     #[must_use]
     pub fn wiki_agents_dir(&self) -> PathBuf {
         self.wiki_dir().join("agents")
     }
 
-    /// `team/wiki/agents/index.md` — the team roster catalog.
     #[must_use]
     pub fn wiki_agents_index_md(&self) -> PathBuf {
         self.wiki_agents_dir().join("index.md")
     }
 
-    /// `team/wiki/agents/<name>.md` — an agent's role page.
     #[must_use]
     pub fn agent_role_page(&self, agent: &str) -> PathBuf {
         self.wiki_agents_dir().join(format!("{agent}.md"))
     }
 
-    /// `team/workbench/` — shared workbench artifacts.
     #[must_use]
     pub fn workbench_dir(&self) -> PathBuf {
         self.root.join("workbench")
     }
 
-    /// `team/skills/` — team skills, including the bundled ones.
     #[must_use]
     pub fn skills_dir(&self) -> PathBuf {
         self.root.join("skills")
     }
 
-    /// `team/.index/` — the team wiki's full-text index (hidden from file
-    /// APIs like an agent's memory index).
     #[must_use]
     pub fn search_index_dir(&self) -> PathBuf {
         self.root.join(".index")
     }
 
-    /// `team/vectors.db` — the team wiki's vector store.
     #[must_use]
     pub fn vectors_db(&self) -> PathBuf {
         self.root.join("vectors.db")
     }
 
-    /// Directories the team layer needs on disk, parents first.
     #[must_use]
     pub fn required_dirs(&self) -> Vec<PathBuf> {
         vec![
@@ -504,7 +392,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
 
-        // A real agent dir.
         std::fs::create_dir_all(root.join("assistant").join("config")).unwrap();
         std::fs::write(
             root.join("assistant").join("config").join("config.toml"),
@@ -512,14 +399,11 @@ mod tests {
         )
         .unwrap();
 
-        // hub/ is reserved, never treated as an agent even with a matching file.
         std::fs::create_dir_all(root.join("hub").join("config")).unwrap();
         std::fs::write(root.join("hub").join("config").join("config.toml"), "").unwrap();
 
-        // A dir with no config/config.toml yet (e.g. mid-creation) is not an agent.
         std::fs::create_dir_all(root.join("incomplete")).unwrap();
 
-        // A hidden dir is never a candidate.
         std::fs::create_dir_all(root.join(".git").join("config")).unwrap();
         std::fs::write(root.join(".git").join("config").join("config.toml"), "").unwrap();
 
@@ -572,8 +456,6 @@ mod tests {
     #[test]
     fn discover_agents_reports_an_unreadable_root_instead_of_an_empty_install() {
         let dir = tempfile::tempdir().unwrap();
-        // A regular file where the root directory should be: read_dir fails
-        // with something other than NotFound.
         let not_a_dir = dir.path().join("root-file");
         std::fs::write(&not_a_dir, "").unwrap();
 

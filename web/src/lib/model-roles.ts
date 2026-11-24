@@ -1,24 +1,13 @@
-// What the Model settings section knows about model roles and providers: each
-// role named by the job it does, the providers a role can name, and how a
-// role's `provider/model` value splits into the two.
-
 import { PROVIDER_NAMES, PROVIDER_KEYS } from "../components/setup/providers";
 import { DEFAULT_EMBEDDING_MODELS, DEFAULT_MODELS, EMBEDDING_PROVIDERS } from "./models";
 import type { ModelRoleKey, SettingsModelAssignments, SettingsProviderEntry } from "./types";
 
-/** A role besides the main one, named by its job. */
 export interface JobRole {
   key: Exclude<ModelRoleKey, "main">;
   label: string;
-  /** What the job is, with `{agent}` for the agent's name. */
   description: string;
 }
 
-/**
- * The roles under "Use different models for specific jobs", in the order the
- * section lists them. `default` comes first, since the four after it fall back
- * to it.
- */
 export const JOB_ROLES: readonly JobRole[] = [
   {
     key: "default",
@@ -71,7 +60,6 @@ export const JOB_ROLES: readonly JobRole[] = [
   },
 ];
 
-/** What a role uses while it names no model of its own, as its first choice says. */
 export function unsetChoiceLabel(role: ModelRoleKey, models: SettingsModelAssignments): string {
   switch (role) {
     case "main":
@@ -93,7 +81,6 @@ export function unsetChoiceLabel(role: ModelRoleKey, models: SettingsModelAssign
   }
 }
 
-/** A role's value split at the first `/`: Fireworks model ids carry slashes of their own. */
 export function splitModel(value: string): { provider: string; model: string } {
   const slash = value.indexOf("/");
   return slash < 0
@@ -101,18 +88,13 @@ export function splitModel(value: string): { provider: string; model: string } {
     : { provider: value.slice(0, slash), model: value.slice(slash + 1) };
 }
 
-/** A provider a role can name: an entry in the providers list, or a type whose key comes from the environment. */
 export interface ProviderOption {
-  /** What goes before the `/` in a role's value. */
   name: string;
-  /** The provider's type: `anthropic`, `openai`, `gemini`, `fireworks` or `ollama`. */
   type: string;
   label: string;
-  /** The entry in the providers list, for its key and address. Null for a type named directly. */
   entry: SettingsProviderEntry | null;
 }
 
-/** The environment variable a provider type named directly reads its key from. */
 export function envKeyOf(type: string): string {
   return `${type.toUpperCase()}_API_KEY`;
 }
@@ -121,11 +103,6 @@ export function providerTypeLabel(type: string): string {
   return type in PROVIDER_NAMES ? PROVIDER_NAMES[type as keyof typeof PROVIDER_NAMES] : type;
 }
 
-/**
- * The providers a role can name: each entry in the providers list, then each
- * type no entry is named after, whose key comes from its environment variable.
- * The search index can only use the types that make embeddings.
- */
 export function providerOptions(
   providers: readonly SettingsProviderEntry[],
   role: ModelRoleKey,
@@ -146,7 +123,6 @@ export function providerOptions(
   return [...named, ...direct];
 }
 
-/** Where a provider named by its type gets its key, which its label leaves out. */
 export function directKeyNote(option: ProviderOption): string | undefined {
   if (option.entry !== null) return undefined;
   return option.type === "ollama"
@@ -154,12 +130,10 @@ export function directKeyNote(option: ProviderOption): string | undefined {
     : `Reads its key from ${envKeyOf(option.type)}. Add it under Providers to use another key.`;
 }
 
-/** The model a role starts on when its provider is chosen. */
 export function startingModel(role: ModelRoleKey, type: string): string {
   return (role === "embedding" ? DEFAULT_EMBEDDING_MODELS[type] : DEFAULT_MODELS[type]) ?? "";
 }
 
-/** The thinking levels a model can be set to; empty leaves it to the default. */
 export const THINKING_LEVELS: readonly { value: string; label: string }[] = [
   { value: "", label: "Default" },
   { value: "off", label: "Off" },
@@ -168,14 +142,12 @@ export const THINKING_LEVELS: readonly { value: string; label: string }[] = [
   { value: "high", label: "High" },
 ];
 
-/** The thinking choices, with a value the file holds that isn't among them (such as `on`) kept as its own. */
 export function thinkingChoices(current: string): { value: string; label: string }[] {
   return THINKING_LEVELS.some((level) => level.value === current)
     ? [...THINKING_LEVELS]
     : [...THINKING_LEVELS, { value: current, label: current }];
 }
 
-/** The roles whose model reads the conversation, so images can reach it. The search index doesn't. */
 const CONVERSATION_ROLES: readonly Exclude<ModelRoleKey, "embedding">[] = [
   "main",
   "default",
@@ -188,10 +160,6 @@ const CONVERSATION_ROLES: readonly Exclude<ModelRoleKey, "embedding">[] = [
   "bgLarge",
 ];
 
-/**
- * The models a provider serves: those a role or failover list names through
- * it, then any others with their own settings under it, each once.
- */
 export function providerModelNames(
   entry: SettingsProviderEntry,
   models: SettingsModelAssignments,

@@ -1,8 +1,3 @@
-//! MCP server registry and reconciliation.
-//!
-//! Tracks which MCP servers are running, manages live `McpClient` handles,
-//! and exposes discovered tools to the agent's tool loop.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -18,36 +13,24 @@ use residuum_inference::{ToolError, ToolResult};
 use super::client::{McpClient, McpClientHandle};
 use super::types::McpServerEntry;
 
-/// Shared MCP registry, accessible from the gateway.
 pub type SharedMcpRegistry = Arc<RwLock<McpRegistry>>;
 
-/// Lifecycle status of an MCP server.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum McpStatus {
-    /// Server start has been requested but not yet confirmed.
     Pending,
-    /// Server is running and ready.
     Running,
-    /// Server failed to start or crashed.
     Failed(String),
 }
 
-/// Public snapshot of a single MCP server's state (for external inspection).
 #[derive(Debug, Clone)]
 pub struct McpServerState {
-    /// Server name (matches `McpServerEntry::name`).
     pub name: String,
-    /// Command used to start the server.
     pub command: String,
-    /// Command-line arguments.
     pub args: Vec<String>,
-    /// Current lifecycle status.
     pub status: McpStatus,
-    /// Cached tool definitions from this server.
     pub tools: Vec<ToolDefinition>,
 }
 
-/// Internal tracked server entry (holds the live client handle).
 struct TrackedServer {
     name: String,
     command: String,
@@ -58,7 +41,6 @@ struct TrackedServer {
 }
 
 impl TrackedServer {
-    /// Produce a public snapshot (without the client handle).
     fn snapshot(&self) -> McpServerState {
         McpServerState {
             name: self.name.clone(),
@@ -70,71 +52,30 @@ impl TrackedServer {
     }
 }
 
-/// A server's tools in name order, the order their definitions reach the
-/// model in. A server may list its tools in any order, and that order can
-/// change between its processes, which would change the tool block of every
-/// request.
 fn in_name_order(mut tools: Vec<ToolDefinition>) -> Vec<ToolDefinition> {
     tools.sort_by(|a, b| a.name.cmp(&b.name));
     tools
 }
 
-/// Result of a reconciliation diff (before connections are made).
 #[derive(Debug, Default)]
 pub(crate) struct McpReconcileResult {
-    /// Servers that need to be started (in `desired` but not running).
     pub(crate) to_start: Vec<McpServerEntry>,
-    /// Names of servers that need to be stopped (running but not in `desired`).
     pub(crate) to_stop: Vec<String>,
 }
 
-/// Report from `reconcile_and_connect` — how many servers started, stopped, or failed.
 #[derive(Debug, Default)]
 pub struct McpReconcileReport {
-    /// Number of servers that connected successfully.
     pub started: usize,
-    /// Number of servers that were stopped.
     pub stopped: usize,
-    /// Servers that failed to start, with their errors.
     pub failures: Vec<(String, String)>,
 }
 
-/// Registry tracking MCP server lifecycle state and live client handles.
 pub struct McpRegistry {
-    /// Tracked servers keyed by name. Name order is the order everything else
-    /// sees: tool definitions, which server wins a tool-name collision, and
-    /// where a restarted server sits, none of which depend on connect order.
     servers: BTreeMap<String, TrackedServer>,
-    /// Effective `PATH` handle prepended to stdio servers' `PATH` at spawn.
-    ///
-    /// `None` in bare registries (tests); the gateway injects the configured
-    /// handle so tool dirs become resolvable. An entry's own `PATH` in its
-    /// `env` still wins (applied after the injected value at spawn time).
     tools_path: Option<SharedToolsPath>,
-    /// Agent key store that `${agent-key:<name>}` references in an entry's
-    /// `env` and `headers` resolve against. `None` in bare registries
-    /// (tests), where any such reference fails the connection.
     agent_keys: Option<SharedAgentKeys>,
-    /// Hub config directory the secret store loads from, for `secret:<name>`
-    /// references in an entry's `env` and `headers` — the same store the
-    /// settings model exchanges provider keys and chat tokens into. `None`
-    /// in bare registries (tests), where any such reference fails the
-    /// connection.
     secrets_dir: Option<PathBuf>,
-    /// Names of built-in agent tools that reserve the shared tool namespace.
-    ///
-    /// A built-in always wins a name collision (it is dispatched first in the
-    /// turn loop), so an MCP tool that reuses one of these names is shadowed:
-    /// excluded from [`tool_definitions`](Self::tool_definitions) and never
-    /// reachable. Set once by the gateway after the tool registry is built via
-    /// [`set_reserved_tool_names`](Self::set_reserved_tool_names); empty in
-    /// bare registries (tests). See `crates/mcp/src/CLAUDE.md` for the full policy.
     reserved_tool_names: BTreeSet<String>,
-    /// The agent's workspace root, passed to every spawned stdio server as
-    /// its `current_dir` (see [`McpClient::connect`]) instead of the
-    /// process's current directory, which is shared across every agent
-    /// hosted in the same process. `None` in bare registries (tests), where
-    /// a spawned stdio server inherits the process's current directory.
     workspace_root: Option<PathBuf>,
 }
 
@@ -145,7 +86,6 @@ impl Default for McpRegistry {
 }
 
 impl McpRegistry {
-    /// Create a new empty registry.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -158,17 +98,11 @@ impl McpRegistry {
         }
     }
 
-    /// Create a new shared registry.
     #[must_use]
     pub fn new_shared() -> SharedMcpRegistry {
         Arc::new(RwLock::new(Self::new()))
     }
 
-    /// Create a new shared registry that prepends the configured tool
-    /// directories to the `PATH` of spawned stdio servers, resolves
-    /// `${agent-key:<name>}` references from `agent_keys` and `secret:<name>`
-    /// references from the secret store in `secrets_dir`, and starts every
-    /// spawned stdio server in `workspace_root`.
     #[must_use]
     pub fn new_shared_with_spawn_env(
         tools_path: SharedToolsPath,
@@ -186,9 +120,6 @@ impl McpRegistry {
         }))
     }
 
-    /// `entry` with every `${agent-key:<name>}` reference in its `env` and
-    /// `headers` values resolved. Borrows the entry unchanged when it has no
-    /// references, so a broken key store never blocks unrelated servers.
     async fn resolve_agent_keys<'e>(
         &self,
         entry: &'e McpServerEntry,
@@ -230,18 +161,6 @@ impl McpRegistry {
         Ok(std::borrow::Cow::Owned(resolved))
     }
 
-    /// `entry` with every exact `secret:<name>` value in its `env` and
-    /// `headers` resolved against the hub's secret store — the same store
-    /// the settings model exchanges provider keys and chat tokens into
-    /// (`config::secrets::SecretStore`). Borrows the entry unchanged
-    /// when it has no such value, so a broken secret store never blocks a
-    /// server that doesn't use one.
-    ///
-    /// Unlike `${agent-key:<name>}`, which may appear anywhere inside a
-    /// larger string, a `secret:<name>` reference must be the entry's whole
-    /// value, matching how every other `secret:<name>` consumer in the
-    /// config system (config's `resolve_secret_value`)
-    /// recognizes it.
     async fn resolve_secrets<'e>(
         &self,
         entry: &'e McpServerEntry,
@@ -293,13 +212,6 @@ impl McpRegistry {
         Ok(std::borrow::Cow::Owned(resolved))
     }
 
-    /// Reserve the built-in tool namespace so colliding MCP tools are shadowed
-    /// visibly rather than silently.
-    ///
-    /// Call once after the built-in tool registry is built. Servers that
-    /// connected earlier (e.g. workspace servers started before the tool
-    /// registry existed) are re-scanned here so their collisions are still
-    /// reported; servers that connect later are checked at connect time.
     pub fn set_reserved_tool_names(&mut self, names: impl IntoIterator<Item = String>) {
         self.reserved_tool_names = names.into_iter().collect();
         for server in self
@@ -319,16 +231,12 @@ impl McpRegistry {
         }
     }
 
-    /// Whether `name` is tracked as `Running` or `Pending`, so a start request
-    /// for it is a no-op.
     fn is_active(&self, name: &str) -> bool {
         self.servers
             .get(name)
             .is_some_and(|s| matches!(s.status, McpStatus::Running | McpStatus::Pending))
     }
 
-    /// Track `entry` as `Pending`, replacing any earlier state for its name.
-    /// Replacing keeps the server at its name-ordered position.
     fn track_pending(&mut self, entry: &McpServerEntry) {
         self.servers.insert(
             entry.name.clone(),
@@ -343,10 +251,6 @@ impl McpRegistry {
         );
     }
 
-    /// Reconcile desired servers against current state (pure diff, no connections).
-    ///
-    /// Returns lists of servers to start and stop. The caller is responsible
-    /// for acting on the result.
     pub(crate) fn reconcile(&mut self, desired: &[McpServerEntry]) -> McpReconcileResult {
         let mut result = McpReconcileResult::default();
 
@@ -374,16 +278,9 @@ impl McpRegistry {
         }
     }
 
-    /// Connect to an MCP server, list its tools, and mark it running.
-    ///
-    /// On failure, marks the server as failed.
-    ///
-    /// # Errors
-    /// Returns the connection error (server is already marked failed internally).
     #[tracing::instrument(skip_all, fields(mcp.server = %entry.name))]
     pub async fn connect(&mut self, entry: &McpServerEntry) -> Result<(), anyhow::Error> {
         tracing::debug!("attempting mcp server connection");
-        // Snapshot the effective PATH (read live so config reloads apply).
         let tools_path = match &self.tools_path {
             Some(handle) => handle.read().await.clone(),
             None => None,
@@ -423,9 +320,6 @@ impl McpRegistry {
             }
         };
 
-        // Warn before exposing this server's tools. The check only reads the
-        // other servers and reserved names, so it doesn't matter whether this
-        // server is already marked running.
         self.warn_shadowed_tools(&entry.name, &tools);
 
         if let Some(server) = self.servers.get_mut(&entry.name) {
@@ -443,7 +337,6 @@ impl McpRegistry {
         Ok(())
     }
 
-    /// Disconnect a specific server by name.
     #[tracing::instrument(skip_all, fields(mcp.server = %name))]
     pub async fn disconnect(&mut self, name: &str) {
         if let Some(server) = self.servers.remove(name) {
@@ -454,9 +347,6 @@ impl McpRegistry {
         }
     }
 
-    /// Disconnect all tracked servers.
-    ///
-    /// Returns names of servers that were disconnected.
     #[tracing::instrument(skip_all)]
     pub async fn disconnect_all(&mut self) -> Vec<String> {
         let servers = std::mem::take(&mut self.servers);
@@ -483,11 +373,6 @@ impl McpRegistry {
         }
     }
 
-    /// Connect additional servers without reconciling existing state.
-    ///
-    /// Unlike `reconcile_and_connect`, this is purely additive — it never stops
-    /// or removes servers that are already tracked. Servers that are already
-    /// Running or Pending are silently skipped.
     #[tracing::instrument(skip_all, fields(server_count = entries.len()))]
     pub async fn connect_servers(&mut self, entries: &[McpServerEntry]) -> McpReconcileReport {
         let mut report = McpReconcileReport::default();
@@ -503,9 +388,6 @@ impl McpRegistry {
         report
     }
 
-    /// Reconcile and connect/disconnect in one step.
-    ///
-    /// Runs the state diff, then connects new servers and disconnects removed ones.
     #[tracing::instrument(skip_all)]
     pub async fn reconcile_and_connect(
         &mut self,
@@ -526,15 +408,6 @@ impl McpRegistry {
         report
     }
 
-    /// Warn about tool-name collisions for the server `server_name`, which is
-    /// about to expose `tools`, without changing which tools win.
-    ///
-    /// Precedence is fixed so shadowing is deterministic: a built-in tool
-    /// always wins (it is dispatched first in the turn loop), and among MCP
-    /// servers the one whose name sorts first wins. The losing tool is
-    /// shadowed: excluded from [`tool_definitions`](Self::tool_definitions)
-    /// and never dispatched to. The winner and the losing server's other tools
-    /// keep working. See `crates/mcp/src/CLAUDE.md`.
     fn warn_shadowed_tools(&self, server_name: &str, tools: &[ToolDefinition]) {
         for tool in tools {
             if self.reserved_tool_names.contains(&tool.name) {
@@ -566,7 +439,6 @@ impl McpRegistry {
         }
     }
 
-    /// Name of the first running server, in name order, that exposes `tool_name`, if any.
     fn running_owner_of_tool(&self, tool_name: &str) -> Option<&str> {
         self.servers
             .values()
@@ -575,12 +447,6 @@ impl McpRegistry {
             .map(|s| s.name.as_str())
     }
 
-    /// Name of the MCP server that owns `tool_name`, for attaching to a
-    /// tool call so the web UI's activity line can say "Used `<server>`:
-    /// `<tool>`". `None` when `tool_name` is reserved by a built-in (the
-    /// built-in always wins the name, per the precedence in
-    /// [`tool_definitions`](Self::tool_definitions)) or no running server
-    /// exposes it.
     #[must_use]
     pub fn server_name_for_tool(&self, tool_name: &str) -> Option<String> {
         if self.reserved_tool_names.contains(tool_name) {
@@ -589,9 +455,6 @@ impl McpRegistry {
         self.running_owner_of_tool(tool_name).map(str::to_string)
     }
 
-    /// Add a running server named `name` that offers `tools`, with no live
-    /// client behind it, for tests that need MCP tools in a request. A
-    /// server already under that name is replaced.
     #[cfg(any(test, feature = "test-support"))]
     pub fn insert_running_server(&mut self, name: &str, tools: Vec<ToolDefinition>) {
         self.servers.insert(
@@ -607,14 +470,6 @@ impl McpRegistry {
         );
     }
 
-    /// Get tool definitions from all running servers.
-    ///
-    /// The result is de-duplicated so the model is offered each name exactly
-    /// once, matching what [`call_tool`](Self::call_tool) will dispatch to:
-    /// names reserved by a built-in tool are excluded (the built-in wins), and
-    /// when two MCP servers expose the same name only the definition of the
-    /// running server whose name sorts first is kept. See
-    /// `crates/mcp/src/CLAUDE.md`.
     #[must_use]
     pub fn tool_definitions(&self) -> Vec<ToolDefinition> {
         let mut seen: BTreeSet<&str> = BTreeSet::new();
@@ -625,13 +480,9 @@ impl McpRegistry {
             .filter(|s| s.status == McpStatus::Running)
         {
             for tool in &server.tools {
-                // A built-in tool of this name always wins; skip the shadowed
-                // MCP tool so the model is never offered an unreachable name.
                 if self.reserved_tool_names.contains(&tool.name) {
                     continue;
                 }
-                // The first running server in name order to claim a name wins;
-                // later duplicates are shadowed.
                 if seen.insert(tool.name.as_str()) {
                     defs.push(tool.clone());
                 }
@@ -640,24 +491,6 @@ impl McpRegistry {
         defs
     }
 
-    /// Resolve `name` to a cheap-to-clone handle for the server that owns
-    /// it, without borrowing `self` for the eventual RPC call.
-    ///
-    /// The caller is meant to resolve this while holding the registry's
-    /// lock, then drop that guard *before* awaiting
-    /// [`McpClientHandle::call_tool`] on the returned handle — the point of
-    /// splitting resolution from the call is that a slow or hung MCP server
-    /// then never blocks a config reload's write lock, or another agent's
-    /// next iteration, for as long as the call takes.
-    ///
-    /// When two running servers expose the same name the one whose name sorts
-    /// first wins, matching the de-duplication in
-    /// [`tool_definitions`](Self::tool_definitions). Names reserved by a
-    /// built-in tool never reach here: the turn loop dispatches built-ins
-    /// first and only falls back to MCP when no built-in matches.
-    ///
-    /// # Errors
-    /// Returns `ToolError::NotFound` if no running server has the tool.
     pub fn resolve_tool(&self, name: &str) -> Result<McpClientHandle, ToolError> {
         let server = self
             .servers
@@ -682,24 +515,11 @@ impl McpRegistry {
         Ok(client.handle())
     }
 
-    /// Call a tool by name, routing to the server that owns it and
-    /// awaiting the call in one step.
-    ///
-    /// A convenience wrapper over [`resolve_tool`](Self::resolve_tool) for
-    /// a caller that isn't holding this registry behind a lock it needs to
-    /// release first (tests, callers that already have their own owned
-    /// registry) — see `resolve_tool`'s docs for why the turn loop's own
-    /// dispatch path resolves and awaits separately instead of calling this.
-    ///
-    /// # Errors
-    /// Returns `ToolError::NotFound` if no running server has the tool.
-    /// Returns `ToolError::Execution` if the RPC call fails.
     #[tracing::instrument(skip_all, fields(mcp.tool = %name))]
     pub async fn call_tool(&self, name: &str, args: Value) -> Result<ToolResult, ToolError> {
         self.resolve_tool(name)?.call_tool(name, args).await
     }
 
-    /// Mark a server as running without a live client.
     #[cfg(test)]
     pub(crate) fn mark_running(&mut self, name: &str) {
         if let Some(server) = self.servers.get_mut(name) {
@@ -707,13 +527,11 @@ impl McpRegistry {
         }
     }
 
-    /// Mark a server as stopped and remove it from tracking.
     #[cfg(test)]
     pub(crate) fn mark_stopped(&mut self, name: &str) {
         self.servers.remove(name);
     }
 
-    /// Mark a server as failed with a reason.
     #[cfg(test)]
     pub(crate) fn mark_failed(&mut self, name: &str, reason: &str) {
         if let Some(server) = self.servers.get_mut(name) {
@@ -721,10 +539,6 @@ impl McpRegistry {
         }
     }
 
-    /// Stop all tracked servers without async shutdown.
-    ///
-    /// Returns names of servers that were running or pending.
-    /// Clients are dropped (child processes killed via `ChildWithCleanup::drop`).
     #[cfg(test)]
     pub(crate) fn stop_all(&mut self) -> Vec<String> {
         let names: Vec<String> = self
@@ -738,7 +552,6 @@ impl McpRegistry {
         names
     }
 
-    /// Get a snapshot of all tracked servers.
     #[must_use]
     pub fn servers(&self) -> Vec<McpServerState> {
         self.servers.values().map(TrackedServer::snapshot).collect()
@@ -801,13 +614,11 @@ mod tests {
     fn reconcile_stops_removed_servers() {
         let mut registry = McpRegistry::new();
 
-        // Start with two servers running
         let initial = vec![entry("fs", "mcp-fs"), entry("git", "mcp-git")];
         registry.reconcile(&initial);
         registry.mark_running("fs");
         registry.mark_running("git");
 
-        // Desired now only has fs
         let result = registry.reconcile(&[entry("fs", "mcp-fs")]);
         assert!(result.to_start.is_empty(), "fs already running");
         assert_eq!(result.to_stop, vec!["git"], "git should be stopped");
@@ -837,9 +648,6 @@ mod tests {
         let mut registry = McpRegistry::new();
         push_running_server(&mut registry, "fs", &["read_file"]);
 
-        // The same server is still in mcp.json. Connecting it again would
-        // fail here (the command doesn't exist), so a reported failure or a
-        // lost status would show the reload touched it.
         let report = registry
             .reconcile_and_connect(&[entry("fs", "mcp-fs")])
             .await;
@@ -867,7 +675,6 @@ mod tests {
     #[test]
     fn reconcile_skips_already_pending() {
         let mut registry = McpRegistry::new();
-        // First reconcile adds server as Pending; do NOT call mark_running
         registry.reconcile(&[entry("fs", "mcp-fs")]);
 
         let result = registry.reconcile(&[entry("fs", "mcp-fs")]);
@@ -890,7 +697,6 @@ mod tests {
 
         let result = registry.reconcile(&desired);
         assert_eq!(result.to_start.len(), 1, "the failed server restarts");
-        // The restart succeeds; the server must come back where it was.
         registry.mark_running("beta");
 
         let names: Vec<String> = registry.servers().into_iter().map(|s| s.name).collect();
@@ -921,7 +727,6 @@ mod tests {
         let mut registry = McpRegistry::new();
         registry.reconcile(&[entry("fs", "mcp-fs"), entry("git", "mcp-git")]);
         registry.mark_running("fs");
-        // git stays pending
 
         let stopped = registry.stop_all();
         assert_eq!(stopped.len(), 2, "should return both");
@@ -975,8 +780,6 @@ mod tests {
         }
     }
 
-    /// Push a running server with the given tools directly (bypassing connect,
-    /// which needs a live client).
     fn push_running_server(registry: &mut McpRegistry, name: &str, tools: &[&str]) {
         registry.insert_running_server(name, tools.iter().map(|t| tool_def(t)).collect());
     }
@@ -1015,8 +818,6 @@ mod tests {
     #[test]
     fn tool_definitions_dedupes_mcp_collisions_lowest_name_wins() {
         let mut registry = McpRegistry::new();
-        // Inserted out of name order: the name decides the winner, not the
-        // order servers connected in.
         push_running_server(&mut registry, "second", &["shared", "only_second"]);
         push_running_server(&mut registry, "first", &["shared", "only_first"]);
 
@@ -1063,9 +864,6 @@ mod tests {
 
     #[tokio::test]
     async fn call_tool_routes_collision_to_lowest_name_server() {
-        // Both servers claim "shared"; the name that sorts first wins the routing.
-        // Neither has a live client, so the winner surfaces the "no client"
-        // execution error — proving the call was routed to it, not NotFound.
         let mut registry = McpRegistry::new();
         push_running_server(&mut registry, "first", &["shared"]);
         push_running_server(&mut registry, "second", &["shared"]);
@@ -1108,9 +906,6 @@ mod tests {
         push_running_server(&mut registry, "first", &["shared"]);
         push_running_server(&mut registry, "second", &["shared"]);
 
-        // Neither server has a live client, so the winner surfaces the
-        // "no client" execution error — proving resolution reached it,
-        // not NotFound.
         let err = registry.resolve_tool("shared").unwrap_err();
         assert!(
             matches!(&err, ToolError::Execution(msg) if msg.contains("first")),
@@ -1118,23 +913,18 @@ mod tests {
         );
     }
 
-    // ── connect_servers (additive, no reconciliation) ──────────────────────
-
     #[tokio::test]
     async fn connect_servers_does_not_remove_existing() {
         let mut registry = McpRegistry::new();
 
-        // Pre-populate with two running servers
         registry.reconcile(&[entry("fs", "mcp-fs"), entry("git", "mcp-git")]);
         registry.mark_running("fs");
         registry.mark_running("git");
 
-        // connect_servers with a new entry (will fail to connect, but that's fine)
         let report = registry
             .connect_servers(&[entry("new-server", "/nonexistent")])
             .await;
 
-        // The new server should fail, but existing servers must still be tracked
         assert_eq!(report.failures.len(), 1, "new server should fail");
         assert_eq!(report.stopped, 0, "nothing should be stopped");
 
@@ -1200,18 +990,15 @@ mod tests {
     async fn connect_servers_skips_already_running() {
         let mut registry = McpRegistry::new();
 
-        // Pre-populate with a running server
         registry.reconcile(&[entry("fs", "mcp-fs")]);
         registry.mark_running("fs");
 
-        // Attempt to connect the same server again
         let report = registry.connect_servers(&[entry("fs", "mcp-fs")]).await;
 
         assert_eq!(report.started, 0, "should not re-connect running server");
         assert!(report.failures.is_empty(), "no failures expected");
         assert_eq!(report.stopped, 0, "nothing stopped");
 
-        // Server should still be running (unchanged)
         let servers = registry.servers();
         assert_eq!(servers.len(), 1, "still one server");
         assert_eq!(servers.first().unwrap().status, McpStatus::Running);
@@ -1231,7 +1018,6 @@ mod tests {
             "failed server name"
         );
 
-        // Server should be marked failed
         let servers = registry.servers();
         let server = servers.first().unwrap();
         assert!(

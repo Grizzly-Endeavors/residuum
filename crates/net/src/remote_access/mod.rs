@@ -1,8 +1,3 @@
-//! Remote access: this instance terminates TLS for its own host names and
-//! serves them over a tunnel v2 connection to the relay.
-//!
-//! `docs/systems-usage/remote-access.md` describes the whole system.
-
 pub(crate) mod acme;
 pub(crate) mod caa;
 pub(crate) mod challenge;
@@ -30,9 +25,5 @@ pub(crate) mod types;
 
 pub use siblings::discovery::SecureDiscovery;
 
-/// Path Microsoft posts Teams activities to; configured as the bot's messaging
-/// endpoint. Remote access forwards it, so it owns the path.
 pub const TEAMS_MESSAGES_PATH: &str = "/api/teams/messages";
-/// The path prefix the hub's A2A listener serves each agent under. Remote access
-/// forwards these routes, so it owns the prefix.
 pub const A2A_AGENTS_PATH_PREFIX: &str = "/agents";

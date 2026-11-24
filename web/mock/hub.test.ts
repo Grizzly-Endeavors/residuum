@@ -183,7 +183,6 @@ describe("hub", () => {
   });
 
   describe("start, stop and restart", () => {
-    /** The states the hub socket was told about, once it has seen one that is `until`. */
     async function statesUntil(until: string): Promise<string[]> {
       await hubSocket.next((f) => f.type === "agent_state" && (f.agent as Body).state === until);
       return hubSocket.frames.flatMap((f) =>
@@ -569,7 +568,6 @@ describe("hub socket", () => {
       await socket.nextOfType("agents_snapshot");
     });
 
-    /** What the hub said in answer to a frame the page sent. */
     async function answer(frame: object | string): Promise<Frame[]> {
       if (typeof frame === "string") socket.sendRaw(frame);
       else socket.send(frame);
@@ -632,14 +630,12 @@ describe("hub socket", () => {
     let socket: TestSocket;
 
     beforeEach(async () => {
-      // A fixed clock, so a report goes stale when the test says it does.
       await harness.close();
       harness = await startMockServer({ deterministic: true });
       socket = await harness.openSocket("/api/hub/ws");
       await socket.nextOfType("agents_snapshot");
     });
 
-    /** Tell the hub a page's window for push device `deviceId` is `active`, and wait for it to be handled. */
     async function report(from: TestSocket, deviceId: string, active: boolean): Promise<Frame[]> {
       from.send({ type: "presence", device_id: deviceId, active });
       return from.quietFrames();

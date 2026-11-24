@@ -1,24 +1,13 @@
-//! TLS-ALPN-01 challenge certificates (RFC 8737).
-
 use anyhow::Context as _;
 use chrono::{Datelike as _, Duration, Utc};
 use rcgen::{CertificateParams, CustomExtension, KeyPair, date_time_ymd};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::sign::CertifiedKey;
 
-/// Length in bytes of the SHA-256 key authorization digest an ACME server expects in the certificate.
 pub(crate) const KEY_AUTHORIZATION_DIGEST_LEN: usize = 32;
 
-/// The ALPN protocol name a CA offers when it validates a TLS-ALPN-01 challenge.
 pub(crate) const ACME_TLS_ALPN: &[u8] = b"acme-tls/1";
 
-/// Build the self-signed certificate that answers a TLS-ALPN-01 challenge for
-/// `name`: its only SAN is `name` and it carries the critical `acmeIdentifier`
-/// extension holding `key_authorization_digest`.
-///
-/// Every call generates a fresh key. The certificate is valid for a few days
-/// (rcgen takes whole days) because the CA validates it within seconds and
-/// nothing else ever trusts it.
 pub(crate) fn acme_identifier_certificate(
     name: &str,
     key_authorization_digest: [u8; KEY_AUTHORIZATION_DIGEST_LEN],
@@ -59,7 +48,6 @@ fn set_validity(params: &mut CertificateParams) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// DNS names in the certificate's subject alternative names, sorted.
 #[cfg(test)]
 pub(crate) fn san_dns_names(der: &[u8]) -> Vec<String> {
     use x509_parser::prelude::{FromDer as _, GeneralName, X509Certificate};
@@ -108,7 +96,6 @@ mod tests {
             ext.critical,
             "RFC 8737 requires the extension to be critical"
         );
-        // extnValue is a DER OCTET STRING wrapping the 32-byte digest.
         assert_eq!(ext.value, [&[0x04, 0x20][..], &digest[..]].concat());
     }
 

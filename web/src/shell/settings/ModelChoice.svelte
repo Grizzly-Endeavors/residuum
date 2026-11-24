@@ -16,12 +16,6 @@
   import { fieldMark } from "./field-focus";
   import { fieldError } from "./sections";
 
-  // A role's provider and model, from its `provider/model` value. The model
-  // list is the provider's own, loaded when the role shows, or a list of
-  // common models with a note when that can't be read; "Other model" takes
-  // any id. A role with a failover list keeps the models after the first,
-  // and says which they are.
-
   interface Props {
     scope: AgentScopeModel;
     role: ModelRoleKey;
@@ -29,9 +23,7 @@
 
   let { scope, role }: Props = $props();
 
-  /** The model select's value for a model the list doesn't have. */
   const OTHER = "__other__";
-  /** How long the list waits after its provider's key or address last changed, so typing one doesn't ask on every key. */
   const RELIST_DELAY_MS = 400;
 
   const value = $derived(scope.models[role]);
@@ -53,7 +45,6 @@
       : []),
   ]);
 
-  // What the list is read with: changes to anything else about the provider don't read it again.
   const listSource = $derived(
     chosen === null
       ? null
@@ -76,7 +67,6 @@
     }
     const { type, key, url } = source;
     if (role === "embedding") {
-      // Providers don't list their embedding models, so the common ones are the list.
       list = EMBEDDING_MODEL_LISTS[type] ?? [];
       listError = null;
       listLoading = false;

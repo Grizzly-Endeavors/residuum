@@ -2,11 +2,6 @@ import type { Locator, Page } from "@playwright/test";
 import { expectNoAxeViolations } from "../support/axe";
 import { expect, test } from "../support/fixtures";
 
-/**
- * Menus, popovers, tooltips, toasts and the Recent notifications dialog,
- * driven from the primitives gallery.
- */
-
 async function openGallery(page: Page): Promise<void> {
   await page.goto("/dev/gallery");
   await expect(page.getByRole("heading", { name: "Primitives", level: 1 })).toBeVisible();
@@ -123,7 +118,6 @@ test.describe("popovers", { tag: "@dev" }, () => {
     expect(box.x + box.width).toBeLessThanOrEqual(viewport.width - 8);
     expect(box.y).toBeGreaterThanOrEqual(0);
     expect(box.y + box.height).toBeLessThanOrEqual(viewport.height);
-    // Below its button, or flipped above it when there is no room below.
     const below = box.y >= anchor.y + anchor.height;
     const above = box.y + box.height <= anchor.y;
     expect(below || above).toBe(true);
@@ -164,8 +158,6 @@ test.describe("toasts", { tag: "@dev" }, () => {
     mock,
   }) => {
     await openGallery(page);
-    // Manual time holds the toasts' own dismiss timers, which on a loaded runner
-    // ran out during the accessibility scan and took the Undo toast before its click.
     await mock.manualTime();
     const section = page.getByRole("region", { name: "Toasts and recent notifications" });
     await section.getByRole("button", { name: "Error" }).click();
@@ -183,7 +175,6 @@ test.describe("toasts", { tag: "@dev" }, () => {
     await expect(others).toBeVisible();
     await expectNoAxeViolations(page);
 
-    // A toast with an action goes after ten seconds; an error stays until it is dismissed.
     await mock.advance(10_000);
     await expect(others).toBeHidden();
     await expect(errors).toBeVisible();

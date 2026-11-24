@@ -1,11 +1,3 @@
-//! Rules the workspace manifests keep, checked by reading `Cargo.toml`.
-//!
-//! The root package is also the workspace root. Members live in `crates/<dir>/`
-//! and are read from every `crates/*/Cargo.toml`. Each rule is one test that
-//! checks the real manifests and then a hand-built workspace that breaks the
-//! rule, so a checker that never fires fails the test. A failure names the
-//! manifest and the key at fault.
-
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
@@ -15,20 +7,15 @@ mod tests {
     use globset::GlobBuilder;
     use toml::{Table, Value};
 
-    /// A manifest the rules read: the root, or one member.
     struct Manifest {
-        /// Relative to the repository root, for messages.
         display: String,
-        /// The member's directory name under `crates/`; `None` for the root.
         dir: Option<String>,
         table: Table,
     }
 
     struct Workspace {
         root: Manifest,
-        /// Every directory under `crates/`, whether or not it holds a manifest.
         crate_dirs: Vec<String>,
-        /// Every `crates/<dir>/Cargo.toml`, in directory order.
         members: Vec<Manifest>,
     }
 
@@ -54,10 +41,6 @@ mod tests {
             }
         }
 
-        /// A workspace built from inline manifests, so a rule can be shown to fire.
-        ///
-        /// `members` pairs each `crates/<dir>` with its `Cargo.toml` text; `extra_dirs`
-        /// are `crates/` directories that hold no manifest.
         fn from_toml(root: &str, members: &[(&str, &str)], extra_dirs: &[&str]) -> Self {
             let root = parse_manifest(root, "Cargo.toml".to_owned(), None);
             let mut crate_dirs: Vec<String> = members
@@ -83,7 +66,6 @@ mod tests {
             }
         }
 
-        /// The root's `[workspace.dependencies]` entry for `key`, if any.
         fn workspace_dependency(&self, key: &str) -> Option<&Table> {
             sub_table(&self.root.table, "workspace")
                 .and_then(|workspace| sub_table(workspace, "dependencies"))
@@ -130,7 +112,6 @@ mod tests {
         table.get(key).and_then(Value::as_table)
     }
 
-    /// Whether `value` is `{ workspace = true }`, the form that inherits from the workspace.
     fn inherits(value: Option<&Value>) -> bool {
         value
             .and_then(Value::as_table)
@@ -153,16 +134,11 @@ mod tests {
 
     const DEPENDENCY_KINDS: [&str; 3] = ["dependencies", "dev-dependencies", "build-dependencies"];
 
-    /// One entry of a manifest's dependency tables, with what it resolves to.
     struct Dependency {
         key: String,
-        /// The package the key names: the key itself, or `package = "…"` when set.
         package: String,
-        /// The features the entry enables, including those its workspace entry enables.
         features: BTreeSet<String>,
-        /// `dependencies`, `dev-dependencies` or `build-dependencies`.
         kind: &'static str,
-        /// The table the entry sits in, for messages: `dev-dependencies`, `target.cfg(unix).dependencies`.
         table: String,
     }
 
@@ -239,7 +215,6 @@ mod tests {
         }
     }
 
-    /// Each workspace package's workspace dependencies, in the tables `kinds` names, read from the manifests.
     fn workspace_graph(ws: &Workspace, kinds: &[&str]) -> BTreeMap<String, BTreeSet<String>> {
         let names: BTreeSet<String> = all(ws).map(package_name).collect();
         all(ws)
@@ -255,7 +230,6 @@ mod tests {
             .collect()
     }
 
-    /// A cycle through `graph` as the packages it visits, first and last equal; a self-loop is a cycle.
     fn find_cycle(graph: &BTreeMap<String, BTreeSet<String>>) -> Option<Vec<String>> {
         fn visit(
             node: &str,
@@ -368,14 +342,12 @@ mod tests {
         problems
     }
 
-    /// Whether a `[features]` value turns on another package's `test-support`: `<package>/test-support` or `<package>?/test-support`.
     fn forwards_test_support(value: &str, packages: &BTreeSet<String>) -> bool {
         value.split_once('/').is_some_and(|(package, feature)| {
             feature == "test-support" && packages.contains(package.trim_end_matches('?'))
         })
     }
 
-    /// Rule 4: a normal build never turns on `test-support`, through a dependency table or a `[features]` entry that lists another package's `test-support` or the crate's own.
     fn test_support_in_normal_build_problems(ws: &Workspace) -> Vec<String> {
         let packages: BTreeSet<String> = all(ws).map(package_name).collect();
         let mut problems = Vec::new();
@@ -392,7 +364,6 @@ mod tests {
                 continue;
             };
             for (feature, values) in features {
-                // A crate's own `test-support` feature is the one entry that may turn on other members' `test-support`: rules 4 and 8 together keep it enabled only from `[dev-dependencies]`.
                 if feature == "test-support" {
                     continue;
                 }
@@ -500,21 +471,17 @@ mod tests {
         problems
     }
 
-    /// The root manifest of a hand-built workspace whose members and default members match `crates/*`.
     const HAND_ROOT: &str =
         "[workspace]\nmembers = [\"crates/*\"]\ndefault-members = [\"crates/*\"]\n";
 
-    /// The package fields every member inherits from the workspace.
     const PACKAGE_INHERITS: &str = "version.workspace = true\nedition.workspace = true\nlicense.workspace = true\npublish.workspace = true\n";
 
-    /// A member manifest that follows every rule, with `rest` appended after its `[lints]`.
     fn member_toml(name: &str, rest: &str) -> String {
         format!(
             "[package]\nname = \"{name}\"\n{PACKAGE_INHERITS}\n[lints]\nworkspace = true\n{rest}"
         )
     }
 
-    /// Asserts that a hand-built workspace breaking a rule is flagged: some problem contains each of `needles`.
     fn assert_flagged(rule: &str, problems: &[String], needles: &[&str]) {
         for needle in needles {
             assert!(
@@ -742,7 +709,6 @@ mod tests {
         );
     }
 
-    /// The graph `scripts/affected-packages.sh --graph` prints for `graph`: one `package: deps` line per package.
     #[cfg(unix)]
     fn graph_text(graph: &BTreeMap<String, BTreeSet<String>>) -> String {
         let mut text = String::new();
@@ -758,9 +724,6 @@ mod tests {
         text
     }
 
-    /// The script reads the graph with awk; the manifests give it through `toml`. A
-    /// mismatch means the package selection reads an edge the manifests do not have, or
-    /// misses one they do. The script is a POSIX shell script, so the Windows run skips it.
     #[cfg(unix)]
     #[test]
     fn affected_packages_graph_matches_manifests() {

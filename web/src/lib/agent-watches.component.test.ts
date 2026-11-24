@@ -9,9 +9,6 @@ import type { WorkspaceChange } from "./types";
 import type { WatchHandler, WatchOwner } from "./watch-registry";
 import { setViewedAgent } from "./viewed-agent";
 
-// Effects decide when an agent's own connection opens and closes, so these run
-// with the component tests.
-
 function agent(name: string, state: AgentState): AgentSummary {
   return {
     name,
@@ -29,7 +26,6 @@ function socketsOf(name: string): FakeWebSocket[] {
   return FakeWebSocket.sockets.filter((s) => new URL(s.url).pathname === `/api/agents/${name}/ws`);
 }
 
-/** The `watch_only` parameter a socket was opened with. */
 function watchOnlyOf(socket: FakeWebSocket): string | null {
   return new URL(socket.url).searchParams.get("watch_only");
 }
@@ -49,7 +45,6 @@ interface Heard {
   unavailable: string[];
 }
 
-/** A handler that writes what it hears into `heard`. */
 function listener(): { handler: WatchHandler; heard: Heard } {
   const heard: Heard = { changes: [], resyncs: [], reconnects: 0, unavailable: [] };
   const handler: WatchHandler = {
@@ -73,7 +68,6 @@ function follow(name: string, handler: WatchHandler = listener().handler): Watch
 
 beforeEach(() => {
   FakeWebSocket.install();
-  // Connecting an agent loads its history and usage; none of it matters here, so it never answers.
   vi.stubGlobal(
     "fetch",
     vi.fn(() => new Promise<Response>(() => {})),
@@ -164,7 +158,6 @@ describe("following an agent's workspace", () => {
     const first = socketsOf("scout")[0];
     if (first === undefined) throw new Error("no connection to scout");
     first.simulateOpen();
-    // The first connection counts too: the file was read before it opened.
     expect(heard.reconnects).toBe(1);
 
     first.simulateClose();
@@ -218,7 +211,6 @@ describe("following an agent's workspace", () => {
     if (own === undefined) throw new Error("no connection to scout");
     own.simulateOpen();
 
-    // A link in the panel: the effect lets go of one file and takes up the next in one flush.
     first.release();
     const { handler, heard } = listener();
     const next = follow("scout", handler);
@@ -306,7 +298,6 @@ describe("following an agent's workspace", () => {
     if (own === undefined) throw new Error("no connection to scout");
     own.simulateOpen();
 
-    // The agent's shutdown closes the socket before the hub reports it stopped.
     own.simulateClose();
     hub.handleFrame({ type: "agent_state", agent: agent("scout", "stopped") });
     await settle();

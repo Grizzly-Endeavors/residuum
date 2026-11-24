@@ -1,7 +1,4 @@
 <script lang="ts">
-  // Text the agent's connection sent for this page only (`inline_output`). It
-  // isn't part of the conversation and is gone after a reload.
-
   let { content }: { content: string } = $props();
 </script>
 

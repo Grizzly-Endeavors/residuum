@@ -8,27 +8,15 @@
 import { formatLocation, placesEqual, type AppLocation, type Place } from "./routes";
 
 export interface EntryState {
-  /** Position among the entries this page lineage pushed; each push is one more than the entry it follows. */
   idx: number;
-  /** The `idx` of the entry this page pushed to open the Settings modal, while the modal is open. */
   settings?: number;
-  /** The same, for a settings section opened from the phone's section list, while it is open. */
   section?: number;
-  /** The same, for the context panel. */
   panel?: number;
-  /** The same, for the thread or New message open in the Inbox, or the artifact selected on the Workbench. */
   item?: number;
-  /**
-   * On an entry that opened a different panel over a panel on the same place:
-   * the address of the panel it replaced. The entry below shows that panel, so
-   * Back returns to it.
-   */
   backUrl?: string;
-  /** Set on an entry pushed for an overlay: same URL as the entry below it. */
   overlay?: string;
 }
 
-/** The address of a location's place and panel, without the Settings modal. */
 export function panelAddress(location: AppLocation): string {
   return formatLocation({ ...location, settings: null });
 }
@@ -41,7 +29,6 @@ function optionalNumber(value: unknown): number | undefined {
   return typeof value === "number" ? value : undefined;
 }
 
-/** The marks on a history entry, or null for an entry this router didn't write. */
 export function readEntry(state: unknown): EntryState | null {
   if (!isRecord(state) || typeof state.idx !== "number") return null;
   const entry: EntryState = { idx: state.idx };
@@ -58,31 +45,17 @@ export function readEntry(state: unknown): EntryState | null {
   return entry;
 }
 
-/**
- * Whether both places are the same list, whatever item is open in it: the
- * Inbox with the same folder and agent filter, or the Workbench.
- */
 function sameList(a: Place, b: Place): boolean {
   if (a.kind === "workbench") return b.kind === "workbench";
   return a.kind === "inbox" && b.kind === "inbox" && a.agent === b.agent && a.folder === b.folder;
 }
 
-/** Whether the location is the Inbox with a thread or New message open, or the Workbench with an artifact selected. */
 function hasItem(location: AppLocation): boolean {
   const { place } = location;
   if (place.kind === "workbench") return place.artifact !== null;
   return place.kind === "inbox" && (place.thread !== null || place.compose !== null);
 }
 
-/**
- * The marks for a new entry pushed after `entry`, which showed `from`. A
- * parameter that appears with this push was opened by it; one that was already
- * open keeps the entry that opened it, or none when the page didn't push that.
- * The open thread or New message and the selected artifact count as one while
- * the list around them stays the same.
- * A push that also changes the place has no other marks: going back would
- * leave the place, and closing a parameter only removes it.
- */
 export function entryAfterPush(entry: EntryState, from: AppLocation, to: AppLocation): EntryState {
   const idx = entry.idx + 1;
   const next: EntryState = { idx };
@@ -95,7 +68,6 @@ export function entryAfterPush(entry: EntryState, from: AppLocation, to: AppLoca
     if (from.settings === null) next.settings = idx;
     else if (entry.settings !== undefined) next.settings = entry.settings;
   }
-  // A section's opener is the scope's section list, so it holds while the scope does.
   if (to.settings?.section != null && from.settings?.scope === to.settings.scope) {
     if (from.settings.section === null) next.section = idx;
     else if (entry.section !== undefined) next.section = entry.section;
@@ -104,7 +76,6 @@ export function entryAfterPush(entry: EntryState, from: AppLocation, to: AppLoca
     if (from.panel === null) next.panel = idx;
     else if (entry.panel !== undefined) next.panel = entry.panel;
   }
-  // A panel opened over another one: the entry below shows the one replaced.
   if (from.panel !== null && to.panel !== null) {
     const replaced = panelAddress(from);
     if (replaced !== panelAddress(to)) next.backUrl = replaced;
@@ -112,12 +83,6 @@ export function entryAfterPush(entry: EntryState, from: AppLocation, to: AppLoca
   return next;
 }
 
-/**
- * The marks for `entry` after its location changes by replace: the parameters
- * that stay open keep their opener, and one that appears was not pushed by
- * this page. A replace that changes the place drops them, for the same reason
- * as a push that does.
- */
 export function entryAfterReplace(
   entry: EntryState,
   from: AppLocation,
@@ -145,7 +110,6 @@ export function entryAfterReplace(
   return next;
 }
 
-/** Whether two entries carry the same marks. */
 export function sameEntry(a: EntryState | null, b: EntryState): boolean {
   return (
     a !== null &&
@@ -159,21 +123,15 @@ export function sameEntry(a: EntryState | null, b: EntryState): boolean {
   );
 }
 
-/** The same entry without the overlay mark, for an entry whose overlay is gone. */
 export function withoutOverlay(entry: EntryState): EntryState {
   const { overlay: _overlay, ...rest } = entry;
   return rest;
 }
 
-/** The entry to push for an overlay opened on `entry`. */
 export function overlayEntryAfter(entry: EntryState, id: string): EntryState {
   return { ...entry, idx: entry.idx + 1, overlay: id };
 }
 
-/**
- * How many entries back closing a parameter goes, when this page pushed the
- * entry that opened it; null when it didn't, so closing replaces instead.
- */
 export function stepsToClose(entry: EntryState, opener: number | undefined): number | null {
   return opener === undefined ? null : entry.idx - opener + 1;
 }

@@ -1,5 +1,3 @@
-//! Teams management subcommands.
-
 use std::path::{Path, PathBuf};
 
 use clap::Subcommand;
@@ -13,130 +11,93 @@ use residuum::interfaces::teams::setup_job::get_or_create_manager;
 use residuum::interfaces::teams::setup_types::CleanupRequest;
 use residuum::util::FatalError;
 
-/// Teams management subcommands.
 #[derive(Subcommand)]
 pub(super) enum TeamsCommand {
-    /// Import credentials and configuration from an ATK project
     ImportAtk {
-        /// Name of the agent to configure
         #[arg(long)]
         agent: String,
-        /// Path to the teams-app project directory (defaults to <agent>/teams-app)
         #[arg(long)]
         dir: Option<PathBuf>,
     },
-    /// Forward an OAuth redirect URL to the local ATK login listener
     ForwardRedirect {
-        /// The redirect URL copied from your browser (e.g. `http://localhost:<port>/?code=...`)
         url: String,
     },
-    /// Manage detached Microsoft 365 Agents Toolkit authentication
     AtkLogin {
-        /// Name of the agent to authenticate
         #[arg(long)]
         agent: String,
-        /// Check authentication status for this agent
         #[arg(long)]
         status: bool,
-        /// Cancel a running detached login process
         #[arg(long)]
         cancel: bool,
     },
-    /// Scaffold a new Microsoft 365 Agents Toolkit project for an agent
     AtkScaffold(Box<AtkScaffoldArgs>),
-    /// Inspect ATK project paths for an agent
     AtkPaths {
-        /// Name of the agent
         #[arg(long)]
         agent: String,
-        /// Output summary as JSON
         #[arg(long)]
         json: bool,
     },
-    /// Clean up local setup files, CLI installation, and/or Microsoft 365 sign-out
     Cleanup {
-        /// Name of the agent to clean up
         #[arg(long)]
         agent: String,
-        /// Remove local teams-app project files and credentials
         #[arg(long)]
         project_files: bool,
-        /// Remove hub-level m365agentstoolkit CLI installation
         #[arg(long)]
         cli: bool,
-        /// Sign out of Microsoft 365 account via ATK CLI
         #[arg(long)]
         sign_out: bool,
-        /// Output summary as JSON
         #[arg(long)]
         json: bool,
     },
 }
 
-/// Arguments for `residuum teams atk-scaffold`.
 #[derive(clap::Args, Debug, Clone)]
 pub(super) struct AtkScaffoldArgs {
-    /// Name of the agent to configure
     #[arg(long)]
     pub agent: String,
 
-    /// Messaging endpoint URL for Microsoft Bot Framework.
-    /// If omitted and Residuum Cloud is connected, defaults to the derived cloud endpoint.
     #[arg(long)]
     pub endpoint: Option<String>,
 
-    /// Path to the teams-app project directory (defaults to <agent>/teams-app)
     #[arg(long)]
     pub dir: Option<PathBuf>,
 
-    /// Bot display name (defaults to agent name)
     #[arg(long)]
     pub bot_name: Option<String>,
 
-    /// Developer name in manifest (defaults to "Residuum")
     #[arg(long)]
     pub developer_name: Option<String>,
 
-    /// Developer website URL in manifest
     #[arg(long)]
     pub developer_url: Option<String>,
 
-    /// Privacy statement URL in manifest
     #[arg(long)]
     pub privacy_url: Option<String>,
 
-    /// Terms of use URL in manifest
     #[arg(long)]
     pub terms_url: Option<String>,
 
-    /// Short description of the bot
     #[arg(long)]
     pub short_description: Option<String>,
 
-    /// Long description of the bot
     #[arg(long)]
     pub long_description: Option<String>,
 
-    /// Path to custom 192x192 PNG color icon
     #[arg(long)]
     pub color_icon: Option<PathBuf>,
 
-    /// Path to custom 32x32 PNG outline icon
     #[arg(long)]
     pub outline_icon: Option<PathBuf>,
 
-    /// Output summary as JSON
     #[arg(long)]
     pub json: bool,
 }
 
-/// Run the `teams` subcommand.
 pub(super) async fn run_teams_command(command: &TeamsCommand) -> Result<(), FatalError> {
     let residuum_root = residuum::config::residuum_root()?;
     run_teams_command_at(&residuum_root, command).await
 }
 
-/// Run the `teams` subcommand against a specific residuum root directory (for testing).
 pub(super) async fn run_teams_command_at(
     residuum_root: &Path,
     command: &TeamsCommand,
@@ -336,7 +297,6 @@ mod tests {
         tokio::fs::create_dir_all(&teams_app).await.unwrap();
         tokio::fs::create_dir_all(&cli_dir).await.unwrap();
 
-        // Error when no flags specified
         let empty_cmd = TeamsCommand::Cleanup {
             agent: "scout".to_string(),
             project_files: false,
@@ -350,7 +310,6 @@ mod tests {
                 .is_err()
         );
 
-        // Success when cleanup flags specified
         let cmd = TeamsCommand::Cleanup {
             agent: "scout".to_string(),
             project_files: true,
@@ -471,7 +430,6 @@ mod tests {
         let teams_app = agent_path.join("teams-app");
         tokio::fs::create_dir_all(&teams_app).await.unwrap();
 
-        // 1. Status when no pid file exists
         let status_cmd = TeamsCommand::AtkLogin {
             agent: "scout".to_string(),
             status: true,
@@ -481,7 +439,6 @@ mod tests {
             .await
             .unwrap();
 
-        // 2. Status with stale pid file (process dead)
         let pid_path = teams_app.join("atk-login.pid");
         let log_path = teams_app.join("atk-login.log");
         tokio::fs::write(&pid_path, "9999999\n").await.unwrap();
@@ -493,7 +450,6 @@ mod tests {
         assert!(status_str.contains("failed (process exited)"));
         assert!(status_str.contains("Login timed out"));
 
-        // 3. Cancel command removes pid file
         let cancel_cmd = TeamsCommand::AtkLogin {
             agent: "scout".to_string(),
             status: false,

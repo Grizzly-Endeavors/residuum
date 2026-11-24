@@ -2,10 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SKIP_WAITING_MESSAGE } from "./protocol";
 import { shellCacheName } from "./rules";
 
-// The worker runs where `self`, `caches` and `fetch` are the worker's. These
-// tests give it small stand-ins for them, import it fresh, and drive its
-// listeners the way a browser does.
-
 const ORIGIN = "https://residuum.test";
 const VERSION = "aaaaaaaaaaaa";
 const FILES = [
@@ -15,7 +11,6 @@ const FILES = [
   "/icons/icon-192.png",
 ];
 
-/** A cache that remembers responses by path. */
 class FakeCache {
   readonly entries = new Map<string, Response>();
 
@@ -53,7 +48,6 @@ class FakeCacheStorage {
     return Promise.resolve(this.stored.delete(name));
   }
 
-  /** The first cache with the path, in the order the caches were made, as a browser looks. */
   async match(path: string): Promise<Response | undefined> {
     for (const cache of this.stored.values()) {
       const found = await cache.match(path);
@@ -73,9 +67,7 @@ interface Loaded {
   caches: FakeCacheStorage;
   claimed: () => boolean;
   skipped: () => boolean;
-  /** Fire a fetch event for `request`; the answer the worker gave it, or null when it left the request alone. */
   fetchEvent: (request: Partial<Request> & { url: string }) => Promise<Response | null>;
-  /** Fire `type` with `event`; settles when the worker's `waitUntil` work has. */
   fire: (
     type:
       | "install"
@@ -86,15 +78,11 @@ interface Loaded {
       | "pushsubscriptionchange",
     event?: object,
   ) => Promise<void>;
-  /** The notifications the worker showed, in order. */
   shown: { title: string; options: NotificationOptions }[];
-  /** What the app badge was set to, in order: a count, or `null` when cleared. */
   badges: (number | null)[];
-  /** The addresses the worker opened windows at. */
   opened: string[];
 }
 
-/** An open window of the app, as `clients.matchAll` gives it, recording what the worker does to it. */
 class FakeWindow {
   readonly posted: unknown[] = [];
   focusCalls = 0;
@@ -119,7 +107,6 @@ async function loadWorker(options: {
   version?: string;
   caches?: FakeCacheStorage;
   windows?: FakeWindow[];
-  /** Answers `self.registration.pushManager.subscribe`, for `pushsubscriptionchange`. */
   subscribe?: () => Promise<{ toJSON: () => unknown }>;
 }): Promise<Loaded> {
   const listeners = new Map<string, Handler>();
@@ -207,7 +194,6 @@ async function loadWorker(options: {
 
 const ok = (body = "body", init: ResponseInit = {}): Response => new Response(body, init);
 
-/** A network that serves every file and records what was asked for. */
 function serving(asked: string[] = []): Network {
   return (request) => {
     const url = urlOf(request);
@@ -511,7 +497,6 @@ describe("taking over", () => {
 });
 
 describe("push", () => {
-  /** A push carrying `payload` as its decrypted JSON. */
   const pushOf = (payload: unknown): object => ({
     data: {
       json: () => {
@@ -616,7 +601,6 @@ describe("a rotated subscription", () => {
     body: unknown;
   }
 
-  /** Answers the push key and device PUT routes, recording every call. */
   function pushNetwork(calls: Call[], answers: { key?: Response; put?: Response } = {}): Network {
     return (request, init) => {
       const url = urlOf(request);

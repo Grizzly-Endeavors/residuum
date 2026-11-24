@@ -1,5 +1,3 @@
-//! Session turn execution.
-
 use anyhow::Context as _;
 use std::sync::Arc;
 #[cfg(test)]
@@ -31,58 +29,21 @@ use super::fork_failure::ForkFailure;
 use super::session_tools::SessionToolScope;
 use super::types::SubAgentBuildConfig;
 
-/// What kicks off one of a session's turns.
-///
-/// A run's first turn is always [`Self::Initial`], unless the session was
-/// started by a conversation message, in which case it's [`Self::External`]
-/// from the start too. Every later turn in the same run started because a
-/// message reached the session while it was idle is either
-/// [`Self::AgentMessage`] (another agent addressed it) or [`Self::External`]
-/// (a new message arrived in its conversation).
 pub(crate) enum TurnKickoff {
-    /// The run's first turn: the task prompt, plus any source-specific
-    /// context (a pulse/action/webhook payload, or a resume pointer).
     Initial {
         prompt: String,
         context: Option<String>,
-        /// Hop count of this run's first turn (see [`super::types::SubAgentConfig::hop_count`]).
         hop_count: u32,
-        /// Who sent this kickoff, for a conversation-triggered session —
-        /// attributes the opening message the same way main attributes an
-        /// inbound chat message. `None` for every other trigger, which keeps
-        /// the original single-message rendering (no attribution line).
         sender: Option<MessageSender>,
-        /// Images attached to the triggering message, for a
-        /// conversation-triggered spawn or resume. Empty for every other
-        /// trigger.
         images: Vec<ImageData>,
-        /// The agent messages a resume delivers: the turn opens with each
-        /// as its own entry, after `context` and ahead of `prompt` (which
-        /// then holds only the resume's chat messages, combined, or is
-        /// empty), and reports each as read. Empty for every other trigger.
         delivered: Vec<AgentMessageEvent>,
-        /// Whether this is a resume whose `prompt` is the chat messages it
-        /// delivers, combined (see
-        /// [`super::types::SubAgentConfig::delivered_chat_messages`]). Such a
-        /// resume opens with `context` as its own entry, as one with
-        /// `delivered` messages does, even when it delivers no agent
-        /// messages. `false` for every other trigger.
         resumed_by_chat: bool,
     },
-    /// A later turn, started because another agent's message reached this
-    /// session while it was idle.
     AgentMessage(AgentMessageEvent),
-    /// A turn — the run's first, or a later one reached while idle — kicked
-    /// off by an inbound conversation message: sender attribution and any
-    /// buffered context arrive with it exactly as they do for the main
-    /// agent (see [`MessageEvent::into_history_messages`]). Always hop
-    /// count 0: inbound conversation messages are external input.
     External(MessageEvent),
 }
 
 impl TurnKickoff {
-    /// This turn's driving hop count, before it's consumed into message text
-    /// — the session's hop counter is set to this at the top of the turn.
     fn hop_count(&self) -> u32 {
         match self {
             Self::Initial { hop_count, .. } => *hop_count,
@@ -91,9 +52,6 @@ impl TurnKickoff {
         }
     }
 
-    /// The messages from other agents, the owner or an artifact this
-    /// kickoff hands the turn, which the turn reports as read once it has
-    /// started.
     pub(crate) fn delivered_messages(&self) -> &[AgentMessageEvent] {
         match self {
             Self::Initial { delivered, .. } => delivered,
@@ -102,7 +60,6 @@ impl TurnKickoff {
         }
     }
 
-    /// Render this kickoff as the turn's opening message(s).
     fn into_messages(self) -> Vec<Message> {
         match self {
             Self::Initial {
@@ -114,9 +71,6 @@ impl TurnKickoff {
                 resumed_by_chat,
                 ..
             } if !delivered.is_empty() || resumed_by_chat => {
-                // A resume by messages: the pointer to the previous run, then
-                // each agent message as its own entry with its own id and
-                // sender, then the chat messages that came with them.
                 let mut msgs: Vec<Message> = context
                     .into_iter()
                     .map(|ctx| Message::user(ctx).as_context())
@@ -139,9 +93,6 @@ impl TurnKickoff {
                 images,
                 ..
             } => {
-                // No sender: preserve the original single-message rendering
-                // exactly, for every trigger that isn't a conversation
-                // (pulses, actions, webhooks, agent spawns).
                 let mut parts = Vec::new();
                 if let Some(ctx) = context {
                     parts.push(ctx);
@@ -180,52 +131,27 @@ impl TurnKickoff {
     }
 }
 
-/// Everything needed to run a session turn, gathered at fork time.
 pub struct SubAgentResources {
     pub provider: Box<dyn InferenceProvider>,
     pub tools: ToolRegistry,
-    /// Shared MCP registry (ref-counted, not isolated).
     pub mcp_registry: SharedMcpRegistry,
-    /// This session's own isolated skill state.
     pub skill_state: SharedSkillState,
     pub identity: IdentityFiles,
     pub options: CompletionOptions,
-    /// Maximum tool-call iterations for this session's turns before the turn
-    /// stops itself gracefully. `None` means unlimited — see
-    /// [`residuum_config::AgentAbilitiesConfig::max_tool_iterations`].
     pub max_tool_iterations: Option<usize>,
-    /// Guards against a model repeating the exact same tool call — see
-    /// [`residuum_config::AgentAbilitiesConfig::repeat_call_guard`].
     pub repeat_call_guard: residuum_config::RepeatCallGuardConfig,
-    /// What the chat interfaces post, for the session's `HARNESS` section.
     pub intermediate_delivery: residuum_agent::context::IntermediateDelivery,
-    /// Formatted skill index for the system prompt (built at fork time).
     pub skills_index: Option<String>,
-    /// Snapshot of the global observation log, taken at fork time.
     pub observations: Option<String>,
-    /// Snapshot of the recent-context narrative, taken at fork time.
     pub recent_context: Option<String>,
-    /// Workspace layout, for the completion memory pipeline (episode
-    /// storage, observer guidance files).
     pub layout: residuum_config::WorkspaceLayout,
-    /// This session's own observer instance, for per-run threshold checks
-    /// and extraction.
     pub observer: Arc<Observer>,
-    /// The single serialized writer for global memory.
     pub merge_writer: Arc<MemoryMergeWriter>,
-    /// Token floor below which a completed run with nothing staged produces
-    /// no episode.
     pub episode_skip_token_floor: usize,
-    /// This session's current-turn hop counter, shared with its
-    /// `message_agent`/`subagent_spawn` tools (see
-    /// [`super::types::SubAgentBuildConfig::hop_counter`]).
     pub hop_counter: HopCounter,
 }
 
 impl SubAgentResources {
-    /// These resources with every model call keyed to the run `run_id`. A
-    /// session's calls follow each other closely within a turn, so they keep
-    /// the provider's default retention.
     #[must_use]
     pub(crate) fn keyed_to_run(mut self, run_id: &str) -> Self {
         self.options.cache = CacheHints {
@@ -235,7 +161,6 @@ impl SubAgentResources {
         self
     }
 
-    /// Owned copies of the memory handles the run's completion merge needs.
     pub(crate) fn merge_handles(&self) -> crate::session_memory::MergeHandles {
         crate::session_memory::MergeHandles {
             observer: Arc::clone(&self.observer),
@@ -246,17 +171,6 @@ impl SubAgentResources {
     }
 }
 
-/// Build an isolated `SkillState` for a new sub-agent, cloned from
-/// `main_skill_state`'s index and dirs, with `skill` (if any) activated up
-/// front so its body renders as the sub-agent's role instructions through
-/// the normal active-skill path. Also returns the formatted skill index for
-/// the system prompt. Split out of [`build_subagent_resources`] to keep that
-/// function's line count down.
-///
-/// # Errors
-/// Returns an error if `skill` names a skill that cannot be resolved or
-/// read — a session without the instructions that define its job is not
-/// worth running, so the spawn fails instead.
 async fn prepare_session_skill_state(
     main_skill_state: &SharedSkillState,
     skill: Option<&str>,
@@ -296,21 +210,6 @@ async fn prepare_session_skill_state(
     Ok((skill_state, skills_index))
 }
 
-/// Build isolated session resources from the main agent's shared state.
-///
-/// Clones the skill index so the session starts with the same view of
-/// available skills, but operates on its own independent copy of
-/// `SkillState`. The `McpRegistry` is shared (ref-counted) with the main
-/// agent, so servers are not duplicated. The session's tools come from
-/// `config.session_tools`, scoped to this session and its own skill state.
-///
-/// When `config.skill` is set, that skill is activated on the session's own
-/// skill state so its body arrives as the session's role instructions.
-///
-/// # Errors
-/// Returns an error if `config.skill` names a skill that cannot be resolved or
-/// read — a session without the instructions that define its job is not worth
-/// running, so the spawn fails instead.
 #[tracing::instrument(skip_all)]
 pub async fn build_subagent_resources(
     provider: Box<dyn InferenceProvider>,
@@ -374,77 +273,25 @@ pub async fn build_subagent_resources(
     })
 }
 
-/// Which run a session turn belongs to, and the publisher its streaming
-/// events (tool activity, intermediate text) go out on, tagged with the
-/// session's address and run id.
 pub(crate) struct SessionTurnIdentity<'a> {
     pub(crate) publisher: &'a Publisher,
     pub(crate) address: &'a SessionAddress,
     pub(crate) run_id: &'a str,
-    /// Identifies this turn within the run (the id its `TurnStarted` carries).
     pub(crate) turn_id: &'a str,
 }
 
-/// Where a conversation session additionally delivers its intermediate turn
-/// text: the interface endpoint its conversation lives on, and the
-/// conversation id itself. Reuses `identity`'s address and publisher rather
-/// than carrying its own — every session already has both for the
-/// unconditional session-stream event, so a conversation session's extra
-/// chat delivery only needs to name the conversation.
 pub(crate) struct ConversationOutput<'a> {
     pub(crate) endpoint: &'a str,
     pub(crate) conversation_id: &'a str,
 }
 
-/// A turn's control-flow handles — cancellation, transcript persistence, and
-/// the run's own interrupt channel — grouped into one argument so
-/// `execute_subagent`'s parameter count stays within clippy's limit.
 pub(crate) struct TurnExecution<'a> {
-    /// The session's own token: cancelling it (via `stop_agent`) aborts an
-    /// in-flight model call or ends the turn at its next checkpoint, leaving
-    /// `recent_messages` — and therefore the transcript — intact up to that
-    /// point.
     pub(crate) stop_token: &'a CancellationToken,
-    /// When given, receives every message as it's produced (the kickoff
-    /// message, then each model response and tool result inside
-    /// `execute_turn`) so the run's transcript survives a crash mid-turn in
-    /// the session store.
     pub(crate) transcript_sink: Option<&'a dyn residuum_agent::turn::TranscriptSink>,
-    /// Where this turn's model-call usage accumulates, for the session panel's
-    /// spent tokens. `None` for a turn that doesn't track session-level totals.
     pub(crate) usage_sink: Option<&'a dyn residuum_agent::usage::UsageSink>,
-    /// The run's own long-lived interrupt channel: draining it is what
-    /// delivers an agent message to a *running* turn at its next tool-call
-    /// boundary. Between turns, the caller drains the same channel itself to
-    /// decide whether to wake for another turn (see
-    /// `crate::runtime`).
     pub(crate) interrupt_rx: &'a mut dyn residuum_bus::interrupt::InterruptSource,
 }
 
-/// Execute one turn of a session's run.
-///
-/// `recent_messages` is the run's whole history so far — empty on the run's
-/// first turn, carrying every prior turn's messages on a later one, so a
-/// session that wakes from idle to handle an agent message still has its
-/// earlier context. `kickoff` becomes this turn's opening user message:
-/// identity, the observation snapshot, and skills are carried in the system
-/// message that `execute_turn` assembles itself, the same way the main
-/// agent's turns are, so nothing is injected twice.
-///
-/// `turn` groups this turn's control-flow handles — see
-/// [`TurnExecution`]'s field docs for what each one does.
-///
-/// `conversation_output`, when given, is where this turn's intermediate
-/// (pre-tool-call) text is additionally delivered — a conversation
-/// session's own conversation, alongside the session-stream event every
-/// session's turn publishes via `identity`. `None` for every other session
-/// category: they have no conversation of their own to send it to.
-///
-/// Returns this turn's final text response. The full transcript is left in
-/// `recent_messages` for the caller.
-///
-/// # Errors
-/// Returns an error if the model call fails.
 #[tracing::instrument(skip_all, fields(run.id = %identity.run_id))]
 pub(crate) async fn execute_subagent(
     identity: &SessionTurnIdentity<'_>,
@@ -460,7 +307,6 @@ pub(crate) async fn execute_subagent(
         usage_sink,
         interrupt_rx,
     } = turn;
-    // Build skills context from this session's isolated skill state
     let active_instructions: Option<String> = {
         let guard = resources.skill_state.lock().await;
         guard.format_active_for_prompt()
@@ -470,15 +316,10 @@ pub(crate) async fn execute_subagent(
         active_instructions: active_instructions.as_deref(),
     };
 
-    // Reset the run's hop counter to this turn's driving input before it's
-    // consumed into message text — later `Interrupt::AgentMessage`s drained
-    // during the turn raise it further (see `agent::turn::drain_interrupts`).
     resources.hop_counter.set(kickoff.hop_count());
 
     let delivered = kickoff.delivered_messages().to_vec();
-    // No identity/wiki/skills content here — that lives in the system message.
     let kickoff_messages = kickoff.into_messages();
-    // The turn begins at its first kickoff message: a kickoff can hold several.
     let turn_start = recent_messages.len();
     recent_messages.extend(kickoff_messages.clone());
     if let Some(sink) = transcript_sink {
@@ -523,12 +364,9 @@ pub(crate) async fn execute_subagent(
             conversation_id: out.conversation_id,
         }),
     };
-    // The messages that started this turn are read now: they are in the
-    // transcript, and nothing else has been published since `TurnStarted`.
     for msg in &delivered {
         events.publish_message_read(msg).await;
     }
-    // Session turns are not watched by the subconscious (main agent only).
     let mut texts: Vec<String> = execute_turn(
         turn_start,
         &turn_resources,
@@ -560,8 +398,6 @@ mod tests {
     use residuum_mcp::McpRegistry;
     use residuum_skills::{SkillIndex, SkillState};
 
-    /// A turn identity with no broker behind it: these tests exercise the
-    /// turn itself, not the events it publishes (see the runtime's tests).
     fn test_identity(run_id: &'static str) -> SessionTurnIdentity<'static> {
         SessionTurnIdentity {
             publisher: Box::leak(Box::new(Publisher::noop())),
@@ -646,9 +482,6 @@ mod tests {
         );
     }
 
-    /// A skill that lives only in `team/skills/` resolves as a session role:
-    /// sub-agent spawns, pulses (`agent: <skill>`), and artifact sessions all
-    /// build their skill state here.
     #[tokio::test]
     async fn team_skill_activates_as_session_role() {
         let agent_skills = tempfile::tempdir().unwrap();
@@ -694,7 +527,6 @@ mod tests {
     async fn session_fork_rescans_when_requested_skill_was_added_after_startup() {
         let agent_skills = tempfile::tempdir().unwrap();
         let dirs = vec![SkillDir::agent(agent_skills.path())];
-        // Startup scan runs before `newly-added` exists on disk.
         let index = SkillIndex::scan(&dirs).await.unwrap();
         let main_state = SkillState::new_shared(index, dirs);
 
@@ -907,9 +739,6 @@ mod tests {
         .unwrap();
 
         let first = recent_messages.messages().first().unwrap();
-        // Attribution is structured metadata (`sender`), not baked into
-        // `content` — the raw prompt stays clean, matching how the main
-        // agent stores its own attributed messages.
         assert_eq!(first.content, "can you look at this?");
         assert_eq!(first.sender.as_ref().map(|s| s.name.as_str()), Some("Jane"));
     }
@@ -958,8 +787,6 @@ mod tests {
 
     #[tokio::test]
     async fn initial_kickoff_with_images_attaches_them_to_the_user_message() {
-        // Regression test: a conversation spawn's or resume's first turn
-        // must not silently drop images attached to the triggering message.
         let resources = make_resources("ack");
         let mut recent_messages = RecentMessages::new();
         let mut interrupt_rx = dead_interrupt_rx();
@@ -1162,13 +989,6 @@ mod tests {
 
     #[tokio::test]
     async fn queued_agent_message_is_drained_within_the_same_running_turn() {
-        // A message already sitting in the interrupt channel before the
-        // turn's tool loop starts is drained at the loop's first checkpoint
-        // — the same "next tool-call boundary" delivery a message arriving
-        // mid-turn gets. This is what distinguishes delivery to a *running*
-        // session from delivery to an *idle* one: no second
-        // `execute_subagent` call, no second kickoff — it lands inside the
-        // run's existing turn.
         let resources = make_resources("wrapping up");
 
         let (tx, mut rx) = mpsc::unbounded_channel::<Interrupt>();
@@ -1212,10 +1032,6 @@ mod tests {
 
     #[tokio::test]
     async fn queued_conversation_message_is_drained_within_the_same_running_turn() {
-        // Mirrors `queued_agent_message_is_drained_within_the_same_running_turn`
-        // for `Interrupt::UserMessage`: a conversation session's running turn
-        // must pick up a new message from its own conversation the same way,
-        // via the shared `execute_turn` interrupt draining.
         let resources = make_resources("wrapping up");
 
         let (tx, mut rx) = mpsc::unbounded_channel::<Interrupt>();
@@ -1266,8 +1082,6 @@ mod tests {
         );
     }
 
-    /// Captures every message list it was called with, so a test can assert on
-    /// the assembled system message rather than a canned response.
     struct CapturingProvider {
         response: String,
         seen: Arc<std::sync::Mutex<Vec<Vec<Message>>>>,
@@ -1358,7 +1172,6 @@ mod tests {
             "wiki catalog",
             "episode ep-1: learned something",
             "we were mid-refactor",
-            // The session's HARNESS follows the agent's chat settings.
             "On Discord, the text you write before each tool call",
         ] {
             let count = system.content.matches(needle).count();
@@ -1379,9 +1192,6 @@ mod tests {
         );
     }
 
-    /// Returns a tool call plus text on its first call (so `execute_turn`
-    /// takes the intermediate-publish branch and executes a tool), then
-    /// plain text with no tool calls on every call after (ending the turn).
     struct ToolCallThenTextProvider {
         call_count: std::sync::atomic::AtomicUsize,
     }
@@ -1419,12 +1229,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_conversation_sessions_intermediate_text_reaches_its_own_conversation() {
-        // Regression test: a conversation session's pre-tool-call text used
-        // to go nowhere (sessions always ran with a noop publisher and no
-        // output endpoint). With `conversation_output` set, it must reach
-        // the session's own conversation as a `SessionResponseEvent` — the
-        // same event and delivery path its final turn output uses — not
-        // main's `IntermediateEvent`.
         let skill_state = SkillState::new_shared(SkillIndex::default(), vec![]);
         let mcp_registry = McpRegistry::new_shared();
         let (layout, observer, merge_writer) = test_memory_extras();
@@ -1519,10 +1323,6 @@ mod tests {
 
     #[tokio::test]
     async fn stopping_a_session_keeps_its_partial_transcript() {
-        // A blocking provider paired with a pre-cancelled stop token exercises
-        // the same cooperative-cancellation path `stop_agent` uses: the turn
-        // ends at its next checkpoint instead of the whole future being
-        // dropped, so the user message that was already pushed survives.
         struct BlockingProvider;
 
         #[async_trait]
@@ -1594,11 +1394,6 @@ mod tests {
 
     #[tokio::test]
     async fn stopping_a_session_records_the_stop_note_in_the_transcript_sink() {
-        // A stop mid-model-call pushes a system "stop note" onto
-        // `recent_messages` (see `agent::turn::STOP_NOTE`). It must reach the
-        // durable transcript sink the same way every other message in the
-        // turn does, not just the in-memory buffer, so a crash right after
-        // the stop doesn't lose the note startup recovery relies on.
         struct BlockingProvider;
 
         #[async_trait]

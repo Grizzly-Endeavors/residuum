@@ -1,14 +1,8 @@
-//! Hosted and standalone web-search settings.
-
 use super::super::deserialize::WebSearchConfigFile;
 use super::super::provider::ProviderKind;
 use super::super::secrets::SecretStore;
 use super::super::types::{ProviderNativeSearchConfig, StandaloneBackendConfig, WebSearchConfig};
 
-/// Resolve web search configuration from TOML section.
-///
-/// Provider-native search is enabled automatically when the main provider supports it
-/// (Anthropic, `OpenAI`, Gemini). Standalone backends are resolved from the `backend` field.
 pub(super) fn resolve_web_search_config(
     section: Option<&WebSearchConfigFile>,
     main_chain: &[super::super::provider::ProviderSpec],
@@ -16,7 +10,6 @@ pub(super) fn resolve_web_search_config(
 ) -> WebSearchConfig {
     let mut cfg = WebSearchConfig::default();
 
-    // Determine the main provider kind for native search detection
     let main_kind = main_chain.first().map(|p| p.model.kind);
 
     let has_native = main_chain.first().is_some_and(offers_native_web_search);
@@ -49,7 +42,6 @@ pub(super) fn resolve_web_search_config(
         cfg.provider_native = Some(native);
     }
 
-    // Standalone backend
     if let Some(s) = section
         && let Some(ref backend_name) = s.backend
     {
@@ -99,8 +91,6 @@ pub(super) fn resolve_web_search_config(
     cfg
 }
 
-/// Resolve a standalone web search backend by looking up the API key from config,
-/// secrets, or an environment variable fallback.
 fn resolve_standalone_backend(
     name: &str,
     api_key: Option<&str>,

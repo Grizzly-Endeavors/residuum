@@ -1,10 +1,3 @@
-//! Shared debounce-window batch aggregator for native notification channels.
-//!
-//! Collects notifications during a configurable window and flushes them as
-//! individual or summary notifications to prevent flooding. Platform
-//! channels (macOS, Windows) each implement [`NotificationBridge`] to plug
-//! their delivery mechanism into the shared debounce/flush logic here.
-
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -13,30 +6,17 @@ use tokio::time::{Instant, sleep_until};
 
 use residuum_bus::NotificationEvent;
 
-/// Platform-specific delivery for an already-batched notification.
-///
-/// Implementors own only the platform's notification API; the debounce
-/// window, the 3-notification flush cap (SC-004), and the summary-body
-/// fallback all live in [`run`] and are shared across platforms.
 #[async_trait]
 pub trait NotificationBridge: Send + Sync {
-    /// Deliver a single notification.
     async fn deliver_individual(&self, notif: &NotificationEvent);
 
-    /// Deliver a rolled-up summary for the notifications that didn't get
-    /// individual delivery. `urgent` is set if any summarized notification
-    /// was urgent, so the platform can escalate delivery priority.
     async fn deliver_summary(&self, title: &str, body: &str, urgent: bool);
 
-    /// Channel display name used in summary titles (e.g. `"Residuum"`).
     fn app_name(&self) -> &str;
 
-    /// Platform label for tracing messages (e.g. `"macOS"`, `"Windows"`).
     fn platform_label(&self) -> &'static str;
 }
 
-/// Run the batch aggregator loop: buffer incoming notifications for
-/// `throttle_window_secs` after the first arrival, then flush the batch.
 pub async fn run<B: NotificationBridge>(
     mut rx: mpsc::Receiver<NotificationEvent>,
     bridge: B,
@@ -55,7 +35,6 @@ pub async fn run<B: NotificationBridge>(
                         window_deadline = Some(Instant::now() + throttle_duration);
                     }
                 } else {
-                    // Channel closed — flush remaining and exit
                     if !buffer.is_empty() {
                         flush(&bridge, &buffer).await;
                     }
@@ -173,8 +152,6 @@ mod tests {
         }
     }
 
-    // ── Truncation tests ────────────────────────────────────────────────
-
     #[test]
     fn truncate_body_short_string() {
         let result = truncate_body("hello", 200);
@@ -202,7 +179,6 @@ mod tests {
 
     #[test]
     fn truncate_body_unicode_within_char_limit() {
-        // 10 emoji (4 bytes each) = 40 bytes but only 10 chars
         let s = "\u{1F980}".repeat(10);
         let result = truncate_body(&s, 200);
         assert_eq!(result, s, "should not truncate — char count is under limit");
@@ -211,9 +187,6 @@ mod tests {
 
     #[test]
     fn truncate_body_unicode_over_byte_limit_but_within_char_limit() {
-        // 60 emoji (4 bytes each) = 240 bytes but only 60 chars — exceeds the
-        // 200 byte-length guard but stays under the 200 char-count limit, so
-        // this only passes untruncated once the guard counts chars, not bytes.
         let s = "\u{1F980}".repeat(60);
         let result = truncate_body(&s, 200);
         assert_eq!(
@@ -222,8 +195,6 @@ mod tests {
         );
         assert!(!result.ends_with('\u{2026}'));
     }
-
-    // ── Summary body tests ──────────────────────────────────────────────
 
     #[test]
     fn build_summary_body_empty() {

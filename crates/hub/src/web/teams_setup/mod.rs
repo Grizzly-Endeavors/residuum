@@ -1,7 +1,3 @@
-//! Microsoft Teams setup wizard endpoints.
-//!
-//! Route handlers and background job runner integration for Microsoft 365 Agents Toolkit.
-
 use std::path::PathBuf;
 
 use axum::extract::{Json, Query, State};
@@ -16,7 +12,6 @@ use residuum_interfaces::teams::setup_types::{
     CleanupRequest, TeamsSetupRedirect, TeamsSetupStart,
 };
 
-/// Helper to resolve the root `~/.residuum` directory from `ConfigApiState`.
 fn get_residuum_root(state: &ConfigApiState) -> PathBuf {
     state
         .hub_dir
@@ -25,13 +20,11 @@ fn get_residuum_root(state: &ConfigApiState) -> PathBuf {
         .to_path_buf()
 }
 
-/// Query parameter for log filtering in `GET /api/teams-setup/job`.
 #[derive(Debug, Deserialize)]
 struct JobQuery {
     log_since: Option<u64>,
 }
 
-/// Router for the Microsoft Teams setup wizard API endpoints.
 pub fn teams_setup_api_router() -> axum::Router<ConfigApiState> {
     axum::Router::new()
         .route("/api/teams-setup/prereqs", get(api_teams_setup_prereqs))
@@ -64,7 +57,6 @@ pub fn teams_setup_api_router() -> axum::Router<ConfigApiState> {
         .route("/api/teams-setup/cleanup", post(api_teams_setup_cleanup))
 }
 
-/// `GET /api/teams-setup/prereqs`
 async fn api_teams_setup_prereqs(State(state): State<ConfigApiState>) -> impl IntoResponse {
     let root = get_residuum_root(&state);
     let manager = get_or_create_manager(&root);
@@ -72,7 +64,6 @@ async fn api_teams_setup_prereqs(State(state): State<ConfigApiState>) -> impl In
     Json(prereqs)
 }
 
-/// `GET /api/teams-setup/job`
 async fn api_teams_setup_job_get(
     State(state): State<ConfigApiState>,
     Query(query): Query<JobQuery>,
@@ -91,7 +82,6 @@ async fn api_teams_setup_job_get(
     }
 }
 
-/// `POST /api/teams-setup/job`
 async fn api_teams_setup_job_post(
     State(state): State<ConfigApiState>,
     Json(payload): Json<TeamsSetupStart>,
@@ -114,7 +104,6 @@ async fn api_teams_setup_job_post(
     }
 }
 
-/// `POST /api/teams-setup/job/redirect`
 async fn api_teams_setup_job_redirect(
     State(state): State<ConfigApiState>,
     Json(payload): Json<TeamsSetupRedirect>,
@@ -144,7 +133,6 @@ async fn api_teams_setup_job_redirect(
     }
 }
 
-/// `POST /api/teams-setup/job/cancel`
 async fn api_teams_setup_job_cancel(State(state): State<ConfigApiState>) -> Response {
     let root = get_residuum_root(&state);
     let manager = get_or_create_manager(&root);
@@ -163,7 +151,6 @@ async fn api_teams_setup_job_cancel(State(state): State<ConfigApiState>) -> Resp
     }
 }
 
-/// `POST /api/teams-setup/job/retry`
 async fn api_teams_setup_job_retry(State(state): State<ConfigApiState>) -> Response {
     let root = get_residuum_root(&state);
     let manager = get_or_create_manager(&root);
@@ -188,7 +175,6 @@ async fn api_teams_setup_job_retry(State(state): State<ConfigApiState>) -> Respo
     }
 }
 
-/// `POST /api/teams-setup/job/install-app`
 async fn api_teams_setup_job_install_app(State(state): State<ConfigApiState>) -> Response {
     let root = get_residuum_root(&state);
     let manager = get_or_create_manager(&root);
@@ -212,7 +198,6 @@ async fn api_teams_setup_job_install_app(State(state): State<ConfigApiState>) ->
     }
 }
 
-/// `GET /api/teams-setup/job/package`
 async fn api_teams_setup_job_package(State(state): State<ConfigApiState>) -> Response {
     let root = get_residuum_root(&state);
     let manager = get_or_create_manager(&root);
@@ -247,7 +232,6 @@ async fn api_teams_setup_job_package(State(state): State<ConfigApiState>) -> Res
     }
 }
 
-/// `DELETE /api/teams-setup/job`
 async fn api_teams_setup_job_delete(State(state): State<ConfigApiState>) -> Response {
     let root = get_residuum_root(&state);
     let manager = get_or_create_manager(&root);
@@ -273,7 +257,6 @@ async fn api_teams_setup_job_delete(State(state): State<ConfigApiState>) -> Resp
     }
 }
 
-/// `POST /api/teams-setup/cleanup`
 async fn api_teams_setup_cleanup(
     State(state): State<ConfigApiState>,
     Json(payload): Json<CleanupRequest>,
@@ -413,10 +396,6 @@ exit 0
             );
         }
 
-        // No probe or sign-in check may time out in these tests: a timeout is a failure on
-        // elapsed time, and on a loaded runner it would send the job down another path. Each
-        // test waits for the process to exit instead, and `Duration::MAX` is a deadline no
-        // run reaches.
         let overrides = AtkRunnerOverrides {
             node_bin: Some(mock_node),
             npm_bin: Some(mock_npm),
@@ -506,7 +485,6 @@ exit 0
         let state = test_state(&root, "agent-flow");
         let app = teams_setup_api_router().with_state(state.clone());
 
-        // 1. Validation failure: empty bot name
         let bad_payload = serde_json::json!({
             "form": {
                 "bot_name": "",
@@ -544,7 +522,6 @@ exit 0
                 .contains("Bot name is required.")
         );
 
-        // 2. Start valid job
         let valid_payload = serde_json::json!({
             "form": {
                 "bot_name": "My Flow Bot",
@@ -577,7 +554,6 @@ exit 0
         let job = body_json(resp).await;
         assert_eq!(job["agent"], "agent-flow");
 
-        // 3. Duplicate start returns 409 Conflict with running job
         let resp_dup = app
             .clone()
             .oneshot(
@@ -594,7 +570,6 @@ exit 0
         let dup_job = body_json(resp_dup).await;
         assert_eq!(dup_job["agent"], "agent-flow");
 
-        // 4. Poll job with log_since
         let resp_poll = app
             .clone()
             .oneshot(
@@ -609,7 +584,6 @@ exit 0
         let poll_job = body_json(resp_poll).await;
         assert_eq!(poll_job["agent"], "agent-flow");
 
-        // 5. Cancel job
         let resp_cancel = app
             .clone()
             .oneshot(
@@ -625,7 +599,6 @@ exit 0
         let cancelled_job = body_json(resp_cancel).await;
         assert_eq!(cancelled_job["state"], "cancelled");
 
-        // 6. Delete job
         let resp_del = app
             .clone()
             .oneshot(
@@ -639,7 +612,6 @@ exit 0
             .unwrap();
         assert_eq!(resp_del.status(), StatusCode::NO_CONTENT);
 
-        // 7. Verify 404 after delete
         let resp_after_del = app
             .clone()
             .oneshot(
@@ -652,7 +624,6 @@ exit 0
             .unwrap();
         assert_eq!(resp_after_del.status(), StatusCode::NOT_FOUND);
 
-        // 8. Cleanup endpoint
         let cleanup_payload = serde_json::json!({
             "project_files": true,
             "cli": false,
@@ -680,7 +651,6 @@ exit 0
                 .any(|v| v == "project_files")
         );
 
-        // 9. Package download when package zip exists
         let pkg_file = root.join("agent-flow/teams-app/appPackage/build/appPackage.residuum.zip");
         fs::create_dir_all(pkg_file.parent().unwrap()).unwrap();
         fs::write(&pkg_file, b"PK\x03\x04mock-zip").unwrap();

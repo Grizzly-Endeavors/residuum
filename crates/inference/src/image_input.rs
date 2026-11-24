@@ -1,13 +1,3 @@
-//! Keeping images away from models that can't take them.
-//!
-//! Every provider a chain builds is wrapped in an [`ImageInputGuard`], so the
-//! rewrite happens once, before any provider-specific conversion, for every
-//! provider and every failover hop alike. The conversation itself is never
-//! changed: only the outgoing request is, so switching back to a model that
-//! takes images sends them again. Which hop of a failover chain gets a
-//! request that carries images is decided in `failover`, which prefers a hop
-//! that takes them.
-
 use std::collections::HashSet;
 use std::sync::{Arc, LazyLock, Mutex};
 
@@ -25,54 +15,35 @@ use residuum_config::{ImageInput, ProviderSpec};
 /// accept for an inline image.
 const MAX_IMAGE_DIMENSION: u32 = 8000;
 
-/// Stands in for the images of a user (or system) message.
 const IMAGE_PLACEHOLDER: &str = "(image omitted: this model can't view images)";
 
-/// Stands in for the images of a tool result.
 const TOOL_IMAGE_PLACEHOLDER: &str = "(tool image omitted: this model can't view images)";
 
-/// Stands in for an oversized image in stored history whose bytes could not
-/// be decoded to downscale.
 const CORRUPT_OVERSIZED_IMAGE_PLACEHOLDER: &str =
     "(image omitted: image exceeds 8000 pixels and could not be decoded to downscale)";
 
-/// Stands in for an oversized tool-result image in stored history whose
-/// bytes could not be decoded to downscale.
 const CORRUPT_OVERSIZED_TOOL_IMAGE_PLACEHOLDER: &str =
     "(tool image omitted: image exceeds 8000 pixels and could not be decoded to downscale)";
 
-/// Images a request left out because its model can't take them, reported on
-/// the response so the turn can tell the user once.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImagesOmitted {
-    /// The model the request went to.
     pub model: String,
-    /// How many images were replaced with a placeholder.
     pub count: usize,
     /// The model was found to be text-only when its provider turned an
     /// earlier request down, rather than declared so in `providers.toml`.
     pub learned: bool,
 }
 
-/// Models found to be text-only this run, keyed by endpoint and model.
-///
-/// Process-wide because a model's input kinds don't depend on which agent or
-/// role asked, and chains are rebuilt (per background session, on reload)
-/// far more often than the answer changes. Not persisted: a restart sends
-/// images again, which the provider's next rejection corrects.
 #[derive(Default)]
 pub(crate) struct LearnedTextOnly(Mutex<HashSet<String>>);
 
 impl LearnedTextOnly {
-    /// The registry every provider built from config shares.
     pub(crate) fn shared() -> Arc<Self> {
         static SHARED: LazyLock<Arc<LearnedTextOnly>> =
             LazyLock::new(|| Arc::new(LearnedTextOnly::default()));
         Arc::clone(&SHARED)
     }
 
-    /// The set, still usable after a panic elsewhere poisoned its lock: it
-    /// holds only names, which a panic can't leave half-written.
     fn models(&self) -> std::sync::MutexGuard<'_, HashSet<String>> {
         self.0
             .lock()
@@ -83,26 +54,19 @@ impl LearnedTextOnly {
         self.models().contains(key)
     }
 
-    /// Record `key` as text-only. Returns whether it is newly recorded.
     fn insert(&self, key: &str) -> bool {
         self.models().insert(key.to_string())
     }
 }
 
-/// Wraps one provider and keeps images away from its model when the model
-/// can't take them: up front when `providers.toml` declares it text-only or
-/// an earlier request found it so, and by retrying once without them when
-/// the provider turns a request down for carrying images.
 pub(crate) struct ImageInputGuard {
     inner: Box<dyn InferenceProvider>,
     declared: ImageInput,
-    /// Identifies the model in `learned`: its endpoint and name.
     learned_key: String,
     learned: Arc<LearnedTextOnly>,
 }
 
 impl ImageInputGuard {
-    /// Guard `inner`, built from `spec`, recording what it learns in `learned`.
     pub(crate) fn new(
         inner: Box<dyn InferenceProvider>,
         spec: &ProviderSpec,
@@ -116,8 +80,6 @@ impl ImageInputGuard {
         }
     }
 
-    /// Whether the model is known to be text-only, and whether a rejection
-    /// taught it. `Some` means requests to it go without images from the start.
     fn strip_up_front(&self) -> Option<bool> {
         match self.declared {
             ImageInput::TextOnly => Some(false),
@@ -126,9 +88,6 @@ impl ImageInputGuard {
         }
     }
 
-    /// The request as it goes out from the start, when the model is known to
-    /// be text-only and the request carries images, with whether a rejection
-    /// taught it. `None` means the request goes out as it is.
     fn stripped_up_front(&self, messages: &[Message]) -> Option<(StrippedRequest, bool)> {
         let learned = self.strip_up_front()?;
         strip_images(messages).map(|stripped| (stripped, learned))
@@ -151,7 +110,6 @@ impl ImageInputGuard {
         }
     }
 
-    /// Send `stripped` and report the images it left out on the response.
     async fn send_without_images(
         &self,
         stripped: &StrippedRequest,
@@ -169,10 +127,6 @@ impl ImageInputGuard {
         Ok(response)
     }
 
-    /// Send the request, keeping images from a model that can't take them.
-    /// `image_fallback` says a later hop of the chain takes images, so an
-    /// image rejection goes back to the chain, with the model remembered as
-    /// text-only, instead of being retried here.
     async fn run(
         &self,
         messages: &[Message],
@@ -201,18 +155,12 @@ impl ImageInputGuard {
             return Err(err);
         };
         if image_fallback {
-            // A later hop takes images, so a wrong verdict here only sends
-            // image requests there: remember it now, and the chain passes
-            // this hop over for every later request with images instead of
-            // paying a refused request each time.
             self.learn(&err);
             return Err(err);
         }
         if let Some(sink) = sink {
             sink.restart_if_needed();
         }
-        // Only a retry that succeeds without the images shows they were the
-        // problem; a retry refused again leaves the model's images alone.
         let response = self
             .send_without_images(&stripped, tools, options, sink, true)
             .await
@@ -221,7 +169,6 @@ impl ImageInputGuard {
         Ok(response)
     }
 
-    /// Remember the model as text-only, logging it the first time.
     fn learn(&self, rejection: &InferenceError) {
         if self.learned.insert(&self.learned_key) {
             tracing::warn!(
@@ -274,9 +221,6 @@ impl InferenceProvider for ImageInputGuard {
         self.strip_up_front().is_none()
     }
 
-    /// The inner provider's, over the request as this guard sends it: with
-    /// the images left out when they are stripped up front, and any oversized
-    /// images in history downscaled tomatch the outbound request.
     fn replayed_reasoning(
         &self,
         messages: &[Message],
@@ -298,16 +242,11 @@ impl InferenceProvider for ImageInputGuard {
     }
 }
 
-/// A request rewritten without its images.
 struct StrippedRequest {
     messages: Vec<Message>,
-    /// How many images were left out.
     omitted: usize,
 }
 
-/// `messages` with every image replaced by a placeholder in its message's
-/// text, one placeholder per message however many images it held. `None`
-/// when there are no images to leave out.
 fn strip_images(messages: &[Message]) -> Option<StrippedRequest> {
     let omitted: usize = messages.iter().map(|message| message.images.len()).sum();
     if omitted == 0 {
@@ -338,21 +277,8 @@ fn strip_images(messages: &[Message]) -> Option<StrippedRequest> {
     Some(StrippedRequest { messages, omitted })
 }
 
-/// Original and downscaled `(width, height)` pixel dimensions.
 pub type DownscaledDimensions = ((u32, u32), (u32, u32));
 
-/// Encode `bytes` as an inline [`ImageData`], downscaling the image in memory
-/// when its width or height exceeds `8000` pixels.
-///
-/// Images within `8000×8000` pixels (and inputs whose dimensions cannot be
-/// read from a supported image header) pass through untouched without
-/// decoding or re-encoding. When the image is downscaled, returns the
-/// `((original_width, original_height), (resized_width, resized_height))`
-/// alongside the [`ImageData`].
-///
-/// # Errors
-/// Returns an error if the image header declares a dimension over `8000`
-/// pixels and the image bytes cannot be decoded or re-encoded.
 pub fn prepare_inline_image(
     bytes: &[u8],
     fallback_media_type: &str,
@@ -384,8 +310,6 @@ pub fn prepare_inline_image(
     ))
 }
 
-/// Read the image format and `(width, height)` from `bytes` without decoding
-/// the full pixel payload.
 fn inspect_image_header(bytes: &[u8]) -> Option<(image::ImageFormat, u32, u32)> {
     let reader = image::ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
@@ -398,14 +322,6 @@ fn inspect_image_header(bytes: &[u8]) -> Option<(image::ImageFormat, u32, u32)> 
     Some((format, width, height))
 }
 
-/// Whether `bytes` has a valid GIF header and Logical Screen Descriptor
-/// followed by a GIF block introducer (`0x21` extension, `0x2C` image
-/// descriptor, or `0x3B` trailer).
-///
-/// Unlike PNG, JPEG, and WebP header readers, the GIF header reader only reads
-/// bytes `6..10` as little-endian `(u16, u16)` without checking any framing
-/// byte after the descriptor, which would treat arbitrary ASCII after
-/// `"GIF89a"` (e.g. `"GIF89a fake gif"`) as a `26144×27489` image.
 fn has_valid_gif_header(bytes: &[u8]) -> bool {
     let Some(&packed) = bytes.get(10) else {
         return false;
@@ -427,8 +343,6 @@ struct DownscaledImage {
     dims: (u32, u32),
 }
 
-/// Decode `bytes`, resize so the longest side is at most [`MAX_IMAGE_DIMENSION`]
-/// preserving aspect ratio, and re-encode in `format`.
 fn downscale_image_bytes(
     bytes: &[u8],
     format: image::ImageFormat,
@@ -490,17 +404,11 @@ fn downscale_image_bytes(
     })
 }
 
-/// Check whether a stored [`ImageData`] in conversation history exceeds
-/// [`MAX_IMAGE_DIMENSION`] in width or height, returning its decoded bytes,
-/// format, and `(width, height)` when it does.
 fn stored_image_exceeds_limit(
     image: &ImageData,
 ) -> Option<(Vec<u8>, image::ImageFormat, u32, u32)> {
     use base64::Engine as _;
 
-    // PNG, GIF, and WebP store their width and height in the first 30 bytes
-    // (40 base64 characters). Checking a 64-byte (88-char) prefix avoids
-    // decoding the full base64 payload when the image already fits.
     if (image.data.starts_with("iVBOR")
         || image.data.starts_with("R0lGO")
         || image.data.starts_with("UklGR"))
@@ -521,10 +429,6 @@ fn stored_image_exceeds_limit(
         .then_some((bytes, format, width, height))
 }
 
-/// Rewrite `messages` when any stored image exceeds [`MAX_IMAGE_DIMENSION`],
-/// downscaling it for the outbound request (or replacing it with a placeholder
-/// if its bytes are corrupt) so an already-stored oversized image in history
-/// never bricks the conversation. Returns `None` when every image fits.
 fn normalize_oversized_images(messages: &[Message]) -> Option<Vec<Message>> {
     use base64::Engine as _;
 
@@ -608,8 +512,6 @@ mod tests {
     use crate::{ImageData, StreamDelta};
     use residuum_config::{ModelSpec, ProviderKind};
 
-    /// Records each request it gets and answers from a script, then with a
-    /// plain reply once the script runs out.
     struct ScriptedProvider {
         requests: Arc<Mutex<Vec<Vec<Message>>>>,
         script: Mutex<VecDeque<Result<InferenceResponse, InferenceError>>>,
@@ -627,8 +529,6 @@ mod tests {
             (provider, requests)
         }
 
-        /// Turns down every request that carries an image, the way Z.ai did
-        /// in issue #463, and answers the rest.
         fn rejecting_images() -> (Self, Arc<Mutex<Vec<Vec<Message>>>>) {
             Self::new(Vec::new())
         }
@@ -694,7 +594,6 @@ mod tests {
         )
     }
 
-    /// A conversation with a user image and a two-image tool result.
     fn conversation_with_images() -> Vec<Message> {
         vec![
             Message::system("be helpful"),
@@ -1002,8 +901,6 @@ mod tests {
         );
     }
 
-    /// Streams a piece of its answer before turning down a request with
-    /// images, and answers one without them.
     struct StreamingRejecter {
         requests: Arc<Mutex<Vec<Vec<Message>>>>,
     }
@@ -1162,9 +1059,6 @@ mod tests {
     }
 
     fn corrupt_oversized_png() -> Vec<u8> {
-        // Keep the PNG signature, IHDR chunk, and IDAT chunk header intact so
-        // `into_dimensions()` reads the 8448x32 header, then truncate mid-IDAT
-        // so full pixel decoding fails.
         let mut bytes = encode_test_image(8448, 32, image::ImageFormat::Png);
         bytes.truncate(48);
         bytes

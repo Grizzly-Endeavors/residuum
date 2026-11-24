@@ -1,5 +1,3 @@
-//! Ollama Cloud web search tool.
-
 use std::fmt::Write as _;
 
 use async_trait::async_trait;
@@ -13,20 +11,15 @@ use residuum_inference::{ToolError, ToolResult};
 
 use super::split_chars;
 
-/// Default number of search results to return.
 const DEFAULT_MAX_RESULTS: u64 = 5;
 
 /// The most results the Ollama Cloud search API returns per call.
 const MAX_RESULTS: u64 = 10;
 
-/// Snippet characters shown per result; the rest is left out with a note.
 const SNIPPET_MAX_CHARS: usize = 500;
 
-/// Characters of an unrecognised response shown raw; the rest is left out.
 const RAW_RESPONSE_MAX_CHARS: usize = 2_000;
 
-/// The `max_results` the call asks for: the default when it names none, and
-/// never more than [`MAX_RESULTS`].
 fn requested_max_results(arguments: &Value) -> u64 {
     arguments
         .get("max_results")
@@ -35,7 +28,6 @@ fn requested_max_results(arguments: &Value) -> u64 {
         .min(MAX_RESULTS)
 }
 
-/// Tool for searching the web using Ollama Cloud's web search API.
 pub(crate) struct OllamaWebSearchTool {
     api_key: String,
     base_url: String,
@@ -43,7 +35,6 @@ pub(crate) struct OllamaWebSearchTool {
 }
 
 impl OllamaWebSearchTool {
-    /// Create a new Ollama web search tool.
     pub(crate) fn new(api_key: String, base_url: String) -> Self {
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
@@ -139,11 +130,9 @@ impl Tool for OllamaWebSearchTool {
     }
 }
 
-/// Format search results from the Ollama Cloud API response into readable text.
 fn format_search_results(response: &Value) -> String {
     let mut output = String::new();
 
-    // Try to extract results from common response shapes
     let results = response
         .get("results")
         .and_then(Value::as_array)
@@ -190,8 +179,6 @@ fn format_search_results(response: &Value) -> String {
     output
 }
 
-/// A result's snippet, cut to [`SNIPPET_MAX_CHARS`] with a note that says how
-/// much was left out and where the rest is.
 fn snippet_text(snippet: &str) -> String {
     let (shown, omitted) = split_chars(snippet, SNIPPET_MAX_CHARS);
     if omitted == 0 {
@@ -200,8 +187,6 @@ fn snippet_text(snippet: &str) -> String {
     format!("{shown}… [snippet cut, {omitted} more characters; open the URL for the rest]")
 }
 
-/// An unrecognised response, dumped raw up to [`RAW_RESPONSE_MAX_CHARS`]. The
-/// note gives the full length so the reader knows what was left out.
 fn raw_response(response: &Value) -> String {
     let text = response.to_string();
     let (shown, omitted) = split_chars(&text, RAW_RESPONSE_MAX_CHARS);

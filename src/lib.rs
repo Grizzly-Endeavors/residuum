@@ -23,8 +23,6 @@ pub use residuum_tracing_service as tracing_service;
 pub use residuum_workspace as workspace;
 pub use residuum_workspace::inbox;
 
-/// The version and commit of this binary. Only this crate reads the build
-/// variables; everything else takes the value passed down from here.
 pub const BUILD_INFO: build_info::BuildInfo = build_info::BuildInfo {
     version: env!("RESIDUUM_VERSION"),
     commit: option_env!("RESIDUUM_GIT_COMMIT"),

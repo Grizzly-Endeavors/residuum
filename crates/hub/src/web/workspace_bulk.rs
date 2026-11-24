@@ -20,21 +20,12 @@ use residuum_workspace::version::{modified_unix_ms, version_token};
 use super::ConfigApiState;
 use super::workspace::canonicalize_workspace_root;
 
-/// Maximum content size embedded in a tree or batch-read entry, per file
-/// (1 MiB). Larger files still get their metadata, with `skipped`/`error`
-/// set to `"too_large"`.
 const PER_FILE_CONTENT_LIMIT_BYTES: u64 = 1024 * 1024;
 
-/// Maximum number of entries a tree listing returns before it stops
-/// walking and sets `listing_truncated`.
 const TREE_ENTRY_LIMIT: usize = 20_000;
 
-/// Serialized response budget for bulk reads, in bytes (8 MiB). Once adding a
-/// file's content would push the response past this, the content is
-/// dropped (`skipped`/`error`: `"budget"`) but the entry's metadata stays.
 const RESPONSE_BUDGET_BYTES: usize = 8 * 1024 * 1024;
 
-/// One entry in a `GET /api/agents/{name}/workspace/tree` listing.
 #[derive(Debug, Serialize)]
 struct TreeEntry {
     path: String,
@@ -50,7 +41,6 @@ struct TreeEntry {
     skipped: Option<&'static str>,
 }
 
-/// Response body for `GET /api/agents/{name}/workspace/tree`.
 #[derive(Debug, Serialize)]
 pub(super) struct TreeResponse {
     path: String,
@@ -59,7 +49,6 @@ pub(super) struct TreeResponse {
     content_truncated: bool,
 }
 
-/// Parsed and validated query parameters for `GET /api/agents/{name}/workspace/tree`.
 struct TreeParams {
     path: String,
     content: bool,
@@ -108,16 +97,12 @@ fn parse_tree_query(raw: Option<&str>) -> Result<TreeParams, (StatusCode, String
     })
 }
 
-/// Compiled `glob` filters for a tree walk, split by whether each pattern
-/// names a bare file name or a path relative to the walk's root.
 struct CompiledGlobs {
     by_name: Option<GlobSet>,
     by_relative_path: Option<GlobSet>,
 }
 
 impl CompiledGlobs {
-    /// Returns true if `basename` or `relative_path` matches any configured
-    /// pattern.
     fn matches(&self, basename: &str, relative_path: &str) -> bool {
         self.by_name
             .as_ref()
@@ -129,13 +114,6 @@ impl CompiledGlobs {
     }
 }
 
-/// Compile `glob` query values into matchers.
-///
-/// A pattern without `/` matches a file name at any depth; a pattern with
-/// `/` matches the path relative to the walk's root. Both use
-/// `literal_separator` so a bare `*` never crosses a `/` on its own —
-/// matching ordinary glob and `.gitignore` intuition — while `**` still
-/// spans directories.
 fn compile_globs(patterns: &[String]) -> Result<Option<CompiledGlobs>, (StatusCode, String)> {
     if patterns.is_empty() {
         return Ok(None);
@@ -185,15 +163,12 @@ fn compile_globs(patterns: &[String]) -> Result<Option<CompiledGlobs>, (StatusCo
     }))
 }
 
-/// One entry collected during the walk, before content is attached.
 struct RawEntry {
-    /// Workspace-relative path (root-relative `path` plus the walk suffix).
     path: String,
     entry_type: &'static str,
     size: Option<u64>,
     modified: u64,
     version: String,
-    /// Absolute on-disk path, only set for files (used to read content).
     disk_path: Option<PathBuf>,
 }
 
@@ -211,7 +186,6 @@ impl RawEntry {
     }
 }
 
-/// Mutable state threaded through the recursive walk.
 struct WalkState<'a> {
     root_relative: &'a str,
     depth_limit: Option<u32>,
@@ -221,8 +195,6 @@ struct WalkState<'a> {
 }
 
 impl WalkState<'_> {
-    /// Build the workspace-relative path for `sub` (relative to the walk's
-    /// root, `/`-separated regardless of platform).
     fn workspace_relative(&self, sub: &str) -> String {
         if self.root_relative.is_empty() {
             sub.to_string()
@@ -234,13 +206,6 @@ impl WalkState<'_> {
     }
 }
 
-/// Recursively walk `disk_dir`, appending entries to `state`.
-///
-/// `rel_sub` is the path of `disk_dir` relative to the walk's root
-/// (`""` for the root itself), and `depth` is the depth level of the
-/// entries this call will add (`1` for the root's direct children).
-/// Symlinks are never followed and never listed. Blocked paths (and
-/// anything under a blocked directory) are omitted entirely.
 fn walk_dir(
     disk_dir: &Path,
     rel_sub: &str,
@@ -318,19 +283,10 @@ fn walk_dir(
     Ok(())
 }
 
-/// Serialized JSON length of `value`, plus one byte for its separator in
-/// the surrounding array — used to track the response budget against the
-/// same escaped form that ships on the wire, not raw byte counts.
 fn json_len<T: Serialize>(value: &T) -> usize {
     serde_json::to_string(value).map_or(0, |s| s.len() + 1)
 }
 
-/// Read `disk_path`'s content for a tree or batch-read entry, honoring the
-/// per-file size limit and UTF-8 requirement.
-///
-/// Returns `(content, skip_reason)`; exactly one is `Some`, unless the read
-/// itself failed (a benign race with a concurrent delete), in which case
-/// both are `None` and the caller falls back to metadata only.
 fn read_file_content(
     disk_path: &Path,
     path_for_log: &str,
@@ -356,9 +312,6 @@ fn read_file_content(
     }
 }
 
-/// Attach content to `raw.entries()` in path order, honoring the per-file
-/// and whole-response budgets. Returns the finished entries and whether any
-/// file's content was dropped for budget.
 fn attach_tree_content(
     mut raw_entries: Vec<RawEntry>,
     content_requested: bool,
@@ -383,8 +336,6 @@ fn attach_tree_content(
         let mut entry = if raw.entry_type == "file" {
             let disk_path = raw.disk_path.clone();
             let size = raw.size.unwrap_or(0);
-            // A file's raw size is a lower bound on its escaped JSON size, so
-            // one that can't fit is skipped without reading it from disk.
             let cannot_fit = size <= PER_FILE_CONTENT_LIMIT_BYTES
                 && usize::try_from(size).map_or(true, |len| {
                     used_bytes.saturating_add(len) > RESPONSE_BUDGET_BYTES
@@ -426,9 +377,6 @@ fn attach_tree_content(
     (out, content_truncated)
 }
 
-/// Add the team directory to a walk of the whole workspace, as a `team`
-/// folder at the top of the tree. Nothing is added when the team directory
-/// doesn't exist yet.
 fn walk_team_mount(team_root: &Path, state: &mut WalkState<'_>) -> anyhow::Result<()> {
     let metadata = match std::fs::metadata(team_root) {
         Ok(metadata) if metadata.is_dir() => metadata,
@@ -453,8 +401,6 @@ fn walk_team_mount(team_root: &Path, state: &mut WalkState<'_>) -> anyhow::Resul
     Ok(())
 }
 
-/// Walk the directory at `root_disk` (workspace-relative path
-/// `root_relative`) and build the tree response.
 fn build_tree(
     root_disk: &Path,
     root_relative: &str,
@@ -521,7 +467,6 @@ pub(super) async fn api_workspace_tree(
     } else {
         located.existing().await?
     };
-    // A walk of the whole workspace also covers the team directory.
     let team_mount = state.team_mount().filter(|_| params.path.is_empty());
 
     let root_metadata = tokio::fs::metadata(&root_disk).await.map_err(|e| {
@@ -567,13 +512,11 @@ pub(super) async fn api_workspace_tree(
     Ok(Json(response))
 }
 
-/// Request body for `POST /api/agents/{name}/workspace/read`.
 #[derive(Deserialize)]
 pub(super) struct BatchReadRequest {
     paths: Vec<String>,
 }
 
-/// One entry in a `POST /api/agents/{name}/workspace/read` response, in request order.
 #[derive(Debug, Serialize)]
 struct BatchFileResult {
     path: String,
@@ -590,8 +533,6 @@ struct BatchFileResult {
 }
 
 impl BatchFileResult {
-    /// A structural failure (`not_found`, `blocked`, `is_directory`): the
-    /// path carries no metadata because none was resolved, or none applies.
     fn structural_error(path: String, error: &'static str) -> Self {
         Self {
             path,
@@ -603,9 +544,6 @@ impl BatchFileResult {
         }
     }
 
-    /// A content-specific skip (`binary`, `too_large`, `budget`): the file
-    /// exists and was stat'd, so its metadata is included alongside the
-    /// error naming why its content isn't.
     fn content_error(
         path: String,
         size: u64,
@@ -635,19 +573,12 @@ impl BatchFileResult {
     }
 }
 
-/// Response body for `POST /api/agents/{name}/workspace/read`.
 #[derive(Debug, Serialize)]
 pub(super) struct BatchReadResponse {
     files: Vec<BatchFileResult>,
     content_truncated: bool,
 }
 
-/// Resolve and classify one requested path, without content or budget.
-///
-/// A path that is blocked, or that canonicalizes outside the workspace
-/// (paths that escape count as blocked, same as any other blocked path),
-/// answers `blocked`. A path that doesn't exist, or that some other I/O
-/// error prevented resolving (logged for diagnosis), answers `not_found`.
 fn classify_batch_path(
     workspace_dir: &Path,
     canonical_root: &Path,
@@ -704,14 +635,10 @@ fn classify_batch_path(
         (None, Some(reason)) => {
             BatchFileResult::content_error(label.to_string(), size, modified, version, reason)
         }
-        // The read itself raced with a concurrent delete: no content, no
-        // specific reason. Report it as gone rather than inventing a
-        // status outside the documented error set.
         (None, None) => BatchFileResult::structural_error(label.to_string(), "not_found"),
     }
 }
 
-/// Resolve, read, and budget one requested path.
 fn resolve_and_read_one(
     root: &BatchRoot<'_>,
     label: &str,
@@ -731,16 +658,13 @@ fn resolve_and_read_one(
     result
 }
 
-/// The directory a batch-read path is relative to, with its canonical form.
 struct BatchRoot<'a> {
     dir: &'a Path,
     canonical: &'a Path,
-    /// Whether the paths it serves carry a `team/` prefix to strip.
     is_team: bool,
 }
 
 impl BatchRoot<'_> {
-    /// `label` (the path as requested) relative to this root.
     fn relative<'l>(&self, label: &'l str) -> &'l str {
         if self.is_team {
             label
@@ -752,8 +676,6 @@ impl BatchRoot<'_> {
     }
 }
 
-/// Read every path in `paths`, in order, within the shared response budget.
-/// `team_root` is the team directory, when `team/...` paths address it.
 fn batch_read(
     workspace_dir: &Path,
     team_root: Option<&Path>,
@@ -975,9 +897,6 @@ mod tests {
             .unwrap();
         let state = make_state(ws_dir);
 
-        // "notes/*.md" is relative to the walk's root ("" here), so it only
-        // matches a file directly inside a top-level "notes/", not one
-        // nested further inside "notes/sub/".
         let response = tree(&state, "glob=notes%2F*.md").await;
         let paths: Vec<&str> = response.entries.iter().map(|e| e.path.as_str()).collect();
         assert_eq!(paths, vec!["notes/a.md"]);
@@ -1068,8 +987,6 @@ mod tests {
         let ws_dir = dir.path().join("workspace");
         tokio::fs::create_dir_all(&ws_dir).await.unwrap();
 
-        // Nine ~1 MiB files comfortably exceed the 8 MiB response budget
-        // once their content is embedded and JSON-escaped.
         let file_count = 9;
         let file_size = usize::try_from(PER_FILE_CONTENT_LIMIT_BYTES).unwrap();
         for i in 0..file_count {
@@ -1158,9 +1075,6 @@ mod tests {
             .await
             .unwrap();
         tokio::fs::create_dir(ws_dir.join("adir")).await.unwrap();
-        // A real file outside the workspace, so the escape actually resolves
-        // (rather than failing to canonicalize) and exercises the
-        // prefix-mismatch branch of the blocked check.
         tokio::fs::write(dir.path().join("escape.md"), "secret")
             .await
             .unwrap();
@@ -1209,8 +1123,6 @@ mod tests {
 
     #[tokio::test]
     async fn batch_read_accepts_more_than_the_old_path_limit() {
-        // There is no cap on path count: the response budget already
-        // bounds the total size regardless of how many paths are named.
         let dir = tempfile::tempdir().unwrap();
         let ws_dir = dir.path().join("workspace");
         tokio::fs::create_dir_all(&ws_dir).await.unwrap();

@@ -1,19 +1,3 @@
-//! Keeps the relay's copy of the hub's agent list current.
-//!
-//! The relay builds its A2A directory from the list the tunnel sends after every (re)connect. This
-//! module computes that list from the agent directory and republishes it
-//! whenever an agent is created or deleted, changes state, or changes A2A
-//! visibility, or the hub's `[a2a] enabled` flips. The tunnel sends whatever
-//! list is current; see `docs/systems-usage/cloud-tunnel.md`.
-//!
-//! An agent is advertised as A2A-enabled while the hub's A2A listener is
-//! enabled and the agent is running. A stopped or failed agent can't answer,
-//! so the relay hides it from its directory and answers `404` for it instead
-//! of forwarding requests the listener would refuse. An agent whose stop has
-//! begun (see [`HubEvent::AgentStopping`]) is hidden the same way, even
-//! though it still reports `Running`, so the relay stops forwarding to it as
-//! soon as the team router does rather than waiting for the stop to finish.
-
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
@@ -28,16 +12,8 @@ use super::types::HubEvent;
 use residuum_background::team::{A2aVisibility, AgentState, AgentSummary};
 use residuum_net::tunnel::AgentInfo;
 
-/// How long a burst of changes is allowed to gather before one update goes
-/// out. Creating an agent publishes a creation and then a start-up state
-/// change within moments; this makes them one update.
 const SETTLE: Duration = Duration::from_millis(250);
 
-/// The relay-facing description of `agents`: one entry per agent, in the
-/// order given, with `a2a_enabled` set for running agents when the hub's A2A
-/// listener is enabled, excluding names in `stopping` (see
-/// [`AgentDirectory::stopping`]). `name` is the folder; `display_name` is
-/// the name people see.
 #[must_use]
 pub(crate) fn agent_infos(
     agents: &[AgentSummary],
@@ -57,13 +33,10 @@ pub(crate) fn agent_infos(
         .collect()
 }
 
-/// `directory`'s currently-stopping agent names, as a set [`agent_infos`]
-/// can check against.
 fn stopping_set(directory: &dyn AgentDirectory) -> HashSet<String> {
     directory.stopping().into_iter().collect()
 }
 
-/// Whether `event` can change what [`agent_infos`] returns.
 fn changes_agent_list(event: &HubEvent) -> bool {
     matches!(
         event,
@@ -75,8 +48,6 @@ fn changes_agent_list(event: &HubEvent) -> bool {
     )
 }
 
-/// The hub's current agent list for the relay, and the handles that keep it
-/// current.
 pub struct RelayAgents {
     list: Arc<watch::Sender<Vec<AgentInfo>>>,
     a2a_enabled: watch::Sender<bool>,
@@ -84,11 +55,7 @@ pub struct RelayAgents {
 }
 
 impl RelayAgents {
-    /// Compute the current list from `directory` and start keeping it
-    /// current. `a2a_listener_enabled` is the hub's `[a2a] enabled`.
     pub fn spawn(directory: Arc<dyn AgentDirectory>, a2a_listener_enabled: bool) -> Self {
-        // Subscribed before the list is read, so a change between the two
-        // is seen as an event rather than lost.
         let events = directory.subscribe();
         let (a2a_enabled, a2a_enabled_rx) = watch::channel(a2a_listener_enabled);
         let initial = agent_infos(
@@ -108,13 +75,11 @@ impl RelayAgents {
         }
     }
 
-    /// A receiver on the current list, for a tunnel to send from.
     #[must_use]
     pub fn subscribe(&self) -> watch::Receiver<Vec<AgentInfo>> {
         self.list.subscribe()
     }
 
-    /// Record a change to the hub's `[a2a] enabled`.
     pub(crate) fn set_a2a_listener_enabled(&self, enabled: bool) {
         self.a2a_enabled.send_if_modified(|current| {
             let changed = *current != enabled;
@@ -123,14 +88,11 @@ impl RelayAgents {
         });
     }
 
-    /// Stop keeping the list current.
     pub fn stop(&self) {
         self.task.abort();
     }
 }
 
-/// Recompute the list on every relevant hub event and every change to the
-/// A2A switch, settling for [`SETTLE`] first so a burst becomes one update.
 async fn keep_current(
     directory: Arc<dyn AgentDirectory>,
     mut events: broadcast::Receiver<HubEvent>,
@@ -171,8 +133,6 @@ async fn keep_current(
     }
 }
 
-/// Wait out [`SETTLE`], draining the events that arrive meanwhile. `false`
-/// when the event channel closed.
 async fn settle(events: &mut broadcast::Receiver<HubEvent>) -> bool {
     let deadline = Instant::now() + SETTLE;
     loop {
@@ -346,13 +306,10 @@ mod tests {
         let relay_agents = RelayAgents::spawn(Arc::clone(&directory) as _, true);
         let mut rx = relay_agents.subscribe();
 
-        // The stop begins, but the agent still reports `Running` until its
-        // event loop actually exits.
         directory.begin_stopping("scout");
         let stopping = next_list(&mut rx).await;
         assert_eq!(stopping.first().map(|a| a.a2a_enabled), Some(false));
 
-        // Restarted without ever finishing the stop: re-enabled again.
         directory.set_state("scout", AgentState::Running);
         let running = next_list(&mut rx).await;
         assert_eq!(running.first().map(|a| a.a2a_enabled), Some(true));
@@ -420,7 +377,6 @@ mod tests {
         let relay_agents = RelayAgents::spawn(Arc::clone(&directory) as _, true);
         let mut rx = relay_agents.subscribe();
 
-        // A state event that leaves the relay-facing description as it was.
         directory.set_state("scout", AgentState::Running);
 
         no_update_within(&mut rx, SETTLE * 3).await;

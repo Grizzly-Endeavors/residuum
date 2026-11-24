@@ -14,17 +14,10 @@
     thinkingBadge,
   } from "./main-model.svelte";
 
-  // The composer's model and thinking control: the agent's main
-  // model and how hard it thinks, opened beside the message box in a popover,
-  // or in a sheet on phones. A change is written through the config write
-  // coordinator, and the agent reloads to take it up from its next reply.
-
   let { agent }: { agent: string } = $props();
 
   const uid = $props.id();
   const phone = new MediaQuery(PHONE_QUERY);
-  // The popover says a change applies from the next reply, so the reload it
-  // asks for doesn't announce itself again.
   const main = untrack(
     () =>
       new MainModel(agent, () => {
@@ -43,11 +36,6 @@
     return modelControlLabel(main.modelName, main.thinking);
   });
 
-  /**
-   * On phones the model name and the thinking level render apart, so the level
-   * keeps its place when a long model name is truncated. Null when there is no
-   * level word to split off: the full label is then the visible text.
-   */
   const phoneParts = $derived.by(() => {
     if (!phone.current || main.loadError !== null || !main.loaded) return null;
     if (main.model === "") return null;
@@ -56,7 +44,6 @@
     return { model: main.modelName, level };
   });
 
-  /** The provider's models, with the one in use first when its list doesn't have it. */
   const shownModels = $derived(
     main.models.some((entry) => entry.id === main.model)
       ? main.models
@@ -77,8 +64,6 @@
     void router.openSettings({ scope: agent, section: "model" });
   }
 
-  // Up and Down move along the models; choosing one is a press.
-  /** Up and Down move between the models, from the one with focus. */
   function moveAlong(event: KeyboardEvent & { currentTarget: HTMLElement }): void {
     if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
     const list = event.currentTarget.parentElement;

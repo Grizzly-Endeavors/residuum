@@ -1,6 +1,3 @@
-//! The agent inbox's one write endpoint for workbench artifacts
-//! (`POST /api/agents/{name}/agent-inbox`), served by the running agent.
-
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Json;
@@ -8,35 +5,23 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::GatewayState;
 
-/// Build the agent-inbox API router (`POST /api/agents/{name}/agent-inbox`).
-///
-/// A workbench artifact's only way to hand the agent something to triage
-/// later — there is no equivalent write endpoint for the user inbox, which
-/// only the agent's `user_inbox_add` tool may populate.
 pub(crate) fn agent_inbox_api_router(state: GatewayState) -> axum::Router {
     axum::Router::new()
         .route("/api/agent-inbox", axum::routing::post(api_agent_inbox_add))
         .with_state(state)
 }
 
-/// The source of an item posted without the artifact identity header: an API
-/// client the request doesn't name.
 const API_SOURCE: &str = "api";
 
-/// Request body for `POST /api/agents/{name}/agent-inbox`.
 #[derive(Debug, Deserialize)]
 pub(super) struct AgentInboxAddRequest {
-    /// Defaults to the body's first line, in full, when absent or blank.
     #[serde(default)]
     pub title: Option<String>,
     pub body: String,
 }
 
-/// Response body for `POST /api/agents/{name}/agent-inbox`.
 #[derive(Debug, Serialize)]
 pub(super) struct AgentInboxAddResponse {
-    /// The new item's ID (its filename stem), as used by `inbox_read` and
-    /// `inbox_archive`.
     pub id: String,
 }
 
@@ -101,8 +86,6 @@ pub(super) async fn api_agent_inbox_add(
 mod tests {
     use super::*;
 
-    /// A minimal but real `GatewayState`, for exercising the agent-inbox
-    /// handler directly rather than through the full HTTP stack.
     fn make_gateway_state(workspace_dir: &std::path::Path) -> GatewayState {
         let (core, _receivers) = crate::types::GatewayCore::new(
             workspace_dir.to_path_buf(),

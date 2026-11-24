@@ -14,7 +14,6 @@ interface Step {
   body?: unknown;
 }
 
-/** An interaction across the mock's areas: reads, writes, lifecycle changes and ids it hands out. */
 const STEPS: readonly Step[] = [
   { method: "GET", path: "/api/hub/status" },
   { method: "GET", path: "/api/hub/agents" },
@@ -51,7 +50,6 @@ const STEPS: readonly Step[] = [
   { method: "GET", path: "/api/hub/events" },
 ];
 
-/** Run the steps, and record each response exactly as the server sent it. */
 async function respond(mock: MockServerHarness): Promise<string[]> {
   const seen: string[] = [];
   for (const step of STEPS) {
@@ -65,7 +63,6 @@ async function respond(mock: MockServerHarness): Promise<string[]> {
   return seen;
 }
 
-/** Chat with scout and keep every frame of its turn, tool calls included. */
 async function chat(mock: MockServerHarness): Promise<Frame[]> {
   const socket: TestSocket = await mock.openSocket("/api/agents/scout/ws");
   socket.send({ type: "set_verbose", enabled: true });
@@ -105,7 +102,6 @@ describe("a deterministic mock", () => {
     await reset(server);
     const second = await respond(server);
     expect(second).toEqual(first);
-    // Not an interaction that changed nothing.
     expect(first.join("\n")).toContain("rsdm_a2a_mock");
     expect(first.join("\n")).toContain("ckpt-atlas-");
   });
@@ -138,7 +134,6 @@ describe("a deterministic mock", () => {
         }>
       )[0]?.next_fire_at ?? "";
     const before = await now();
-    // The wall clock moves an hour on; a clock that followed it would move too.
     vi.useFakeTimers({ toFake: ["Date"], now: Date.now() });
     vi.setSystemTime(Date.now() + 3_600_000);
     expect(await now()).toBe(before);
@@ -244,7 +239,6 @@ describe("a deterministic mock", () => {
     await reset(server);
     const hub = await server.openSocket("/api/hub/ws");
     await hub.nextOfType("agents_snapshot");
-    // The turn would have ended, and reported scout idle, within this span.
     expect(await hub.quietFrames(() => advanceMockTime(server.hub.env, 60_000))).toEqual([]);
     expect(hub.frames.map((frame) => frame.type).filter((type) => type !== "pong")).toEqual([
       "hub_boot",

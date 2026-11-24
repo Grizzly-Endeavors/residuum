@@ -11,9 +11,6 @@
   import Workbench from "../places/workbench/Workbench.svelte";
   import type { ShellActions } from "./shell-actions";
 
-  // The main region's place: Home, Inbox, an agent's Chat, Activity, Schedule
-  // or Files, the Workbench, Shared files, or Not Found.
-
   let { actions }: { actions: ShellActions } = $props();
 
   const place = $derived(router.place);

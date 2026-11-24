@@ -22,14 +22,6 @@
   import RunStatus from "./RunStatus.svelte";
   import SessionMessageBox from "./SessionMessageBox.svelte";
 
-  // A session run in the context panel: what it is and how it's doing, its
-  // transcript with live output, Stop, and, floating over the transcript's
-  // foot, a message box that reaches the run, or starts the session again
-  // once it has finished, with the session's own actions under `/`. A message
-  // sent from it waits at the transcript's foot until the session reads it.
-  // The run's state lives in `run`, which the panel host keeps while the
-  // frame redraws.
-
   let { run }: { run: SessionRun } = $props();
 
   const summary = $derived(run.summary);
@@ -237,7 +229,6 @@
 
 <style>
   .session-panel {
-    /* The message box floats over the transcript's foot on the panel's own surface. */
     --feed-surface: var(--color-stone-1);
 
     display: flex;

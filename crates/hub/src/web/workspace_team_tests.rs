@@ -1,6 +1,3 @@
-//! The `team/` namespace in the workspace file API, and the team write
-//! coordination its writes and restores go through.
-
 use std::path::PathBuf;
 
 use axum::body::Bytes;
@@ -30,8 +27,6 @@ fn fixture() -> Fixture {
     let agent_dir = hub.agent_dir("scout");
     let hub_dir = hub.dir.path().join("hub");
     std::fs::create_dir_all(&hub_dir).unwrap();
-    // A real engine: its team repository watches the hub's team directory, so
-    // the checkpoints the handlers return can be restored from.
     let checkpoints = std::sync::Arc::new(
         residuum_checkpoints::CheckpointEngine::new(
             "test-agent",
@@ -70,21 +65,18 @@ async fn body_bytes(response: Response) -> Vec<u8> {
         .to_vec()
 }
 
-/// `value[key]`, panicking with the missing key named.
 fn field<'a>(value: &'a Value, key: &str) -> &'a Value {
     value
         .get(key)
         .unwrap_or_else(|| panic!("missing field {key} in {value}"))
 }
 
-/// `value[index]`, panicking with the missing index named.
 fn item(value: &Value, index: usize) -> &Value {
     value
         .get(index)
         .unwrap_or_else(|| panic!("missing item {index} in {value}"))
 }
 
-/// The `path` of every entry in a serialized tree response.
 fn entry_paths(tree: &Value) -> Vec<String> {
     field(tree, "entries")
         .as_array()
@@ -326,7 +318,6 @@ async fn mkdir_move_and_delete_work_inside_and_across_the_namespace() {
     assert_eq!(created.status(), StatusCode::OK);
     assert!(team.join("wiki").join("people").is_dir());
 
-    // Agent folder into the team folder.
     let moved = api_workspace_move(
         State(f.state.clone()),
         HeaderMap::new(),
@@ -342,7 +333,6 @@ async fn mkdir_move_and_delete_work_inside_and_across_the_namespace() {
     assert!(team.join("wiki").join("people").join("draft.md").exists());
     assert!(!f.agent_dir.join("draft.md").exists());
 
-    // Within the team folder, then back out.
     let renamed = api_workspace_move(
         State(f.state.clone()),
         HeaderMap::new(),
@@ -483,8 +473,6 @@ async fn saving_the_team_identity_files_signals_a_workspace_reload() {
     assert!(rx.try_recv().is_err(), "other team files signal nothing");
 }
 
-// ── Undo: checkpoints for destructive actions on team paths ─────────
-
 use residuum_checkpoints::{CheckpointContext, CheckpointTrigger, RepoKind};
 
 async fn json_of(response: Response) -> Value {
@@ -492,8 +480,6 @@ async fn json_of(response: Response) -> Value {
     serde_json::from_slice(&body_bytes(response).await).unwrap()
 }
 
-/// The `(id, repo)` of the single checkpoint a response names, checking the
-/// response uses the one-checkpoint shape.
 fn single_checkpoint(body: &Value) -> (String, String) {
     assert!(
         body.get("checkpoints").is_none(),
@@ -505,7 +491,6 @@ fn single_checkpoint(body: &Value) -> (String, String) {
     )
 }
 
-/// Restore `path` (relative to the repository's root) from checkpoint `id`.
 async fn restore(f: &Fixture, repo: RepoKind, id: &str, path: &str) {
     f.state
         .checkpoints
@@ -709,8 +694,6 @@ async fn agent_only_actions_keep_the_workspace_checkpoint_shape() {
         "a text write takes no checkpoint: {text_write}"
     );
 }
-
-// ── Restore and undo go through the team write coordinator ──────────
 
 #[tokio::test]
 async fn a_restore_waits_for_a_write_holding_the_path_lock() {

@@ -1,10 +1,6 @@
 <script lang="ts">
   import { hub } from "../lib/hub.svelte";
   import { Banner, Button } from "../lib/ui";
-
-  // Shown across the top of the main region while the hub socket is down,
-  // which is the only connection state the shell shows. The socket retries on
-  // its own; Retry skips the wait.
 </script>
 
 {#if hub.transport.lost}

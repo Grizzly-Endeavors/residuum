@@ -1,29 +1,3 @@
-//! The hub's HTTP surface: one router for everything the backend serves.
-//!
-//! [`hub_router`] takes the [`AgentDirectory`] and the hub-level handles in
-//! [`HubHttpState`] and returns the whole app, laid out as
-//! `docs/systems-usage/hub-http.md` places it:
-//!
-//! - `/api/hub/...`: agent lifecycle and status (`lifecycle`), the hub
-//!   WebSocket (`ws`, with its artifact events in `artifact_events` and
-//!   its session relay in `session_relay`), the user's mail with every
-//!   agent (`mail`), staged uploads (`uploads`), the team event
-//!   log (`events`), the team overview (`overview`), Web Push devices
-//!   (`push`), device pairing (`pairing`), and the routes that
-//!   exist once per process: hub config, secrets, keys, cloud, update,
-//!   shutdown, tracing, and the hub and team checkpoint repositories
-//!   (`process`).
-//! - `/api/team/...`: the team's file API and workbench.
-//! - `/api/agents/{name}/...` and `/webhook/{agent}/{name}`: resolved against
-//!   the directory on every request and handed to the agent's own routers
-//!   (`dispatch`).
-//! - `/cloud/callback`, and the embedded web app for every other path.
-//!
-//! The device gate refuses remote requests from browsers that aren't paired
-//! (see [`residuum_net::pairing`]). The cross-site guard covers the whole app. The remote-control guard covers
-//! hub shutdown and cloud disconnect. Requests the artifacts listener forwards
-//! here are refused on the routes in `artifacts_origin`.
-
 mod artifact_events;
 mod artifacts_origin;
 mod dispatch;
@@ -59,8 +33,6 @@ pub use state::HubHttpState;
 use crate::AgentDirectory;
 use crate::web;
 
-/// Build the hub's whole HTTP app over `directory`, with the process-wide
-/// handles in `hub`. Serve it on the gateway address.
 pub fn hub_router(directory: Arc<dyn AgentDirectory>, hub: HubHttpState) -> Router {
     let assets = hub.assets;
     let lifecycle_state = lifecycle::LifecycleState {
@@ -120,14 +92,10 @@ pub fn hub_router(directory: Arc<dyn AgentDirectory>, hub: HubHttpState) -> Rout
             },
             residuum_net::pairing::device_gate,
         ));
-    // The routers above hold their own clones of the handles they need.
     drop(hub);
     app
 }
 
-/// `POST /api/sessions`: sessions belong to an agent, so an artifact starts
-/// one at `/api/agents/{name}/sessions`. A request that names no agent gets
-/// this explanation instead of a bare "not found".
 async fn sessions_need_an_agent() -> Response {
     error::json_error(
         StatusCode::BAD_REQUEST,

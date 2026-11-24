@@ -10,48 +10,19 @@
   import FeedTurn from "./FeedTurn.svelte";
   import { groupTurns } from "./turns";
 
-  // A conversation in the reading column: the main chat, or a session's
-  // transcript, with each turn's output grouped (`turns.ts`). It follows new
-  // content until the reader scrolls up, offers Jump to latest once they are
-  // away from the end (and says when something new has landed below them), and
-  // with `history` loads older parts as they near the top, keeping what they
-  // were reading in place. Opening or closing something in it leaves the
-  // control that was pressed where it was.
-  //
-  // The scrolling area runs the whole height of the feed, so its scrollbar
-  // does too. A `dock`, such as the chat's composer, floats over the foot of
-  // it; the column keeps its last lines clear of the dock, and, beside the
-  // dock, leaves room below them: about a quarter of the view on a wide
-  // screen, so the end of the newest reply sits near eye level while the
-  // reader follows it, and a little on a phone.
-
   interface Props {
-    /** The agent the conversation belongs to. */
     agent: string;
     items: FeedItem[];
-    /** The region's accessible name, such as "Conversation with atlas". */
     label: string;
     history?: FeedHistory;
-    /** The items haven't arrived yet: the empty state waits. */
     loading?: boolean;
-    /** Something at the tail is growing (a turn in progress). */
     live?: boolean;
-    /** The correlation id of the turn in flight, whose block is live. */
     liveTurnId?: string | null;
-    /** What the page saw of each turn while it ran: timing, how it ended, missed steps. */
     observed?: ObservedTurnLookup;
-    /** Stops the turn in flight, from the head of its block. */
     onStop?: () => void;
-    /**
-     * What a screen reader is told as the agent works: each a new object, so
-     * the same words twice in a row are read twice.
-     */
     announcement?: { id: number; text: string } | null;
-    /** What shows when there are no items. */
     empty?: Snippet;
-    /** Live content after the items, such as the turn in progress. */
     tail?: Snippet;
-    /** Content floating over the foot of the feed, such as a composer; the feed measures it. */
     dock?: Snippet;
   }
 
@@ -71,7 +42,6 @@
     dock,
   }: Props = $props();
 
-  // A turn that ended before it did anything still shows how it ended.
   const shown = $derived(
     groupTurns(items, liveTurnId, (turnId) => {
       const ending = observed?.(turnId)?.ending;
@@ -85,23 +55,12 @@
   let topSentinel = $state<HTMLDivElement>();
   let dockEl = $state<HTMLDivElement>();
 
-  /** The dock's height now. */
   let dockHeight = $state(0);
-  /**
-   * The room the column keeps for the dock. It follows the dock up at once
-   * and down only when that can't move what the reader is looking at: while
-   * they sit at the true bottom, a dock that shrinks (a sent message empties
-   * the composer) would otherwise pull the whole thread down after it.
-   */
   let reservedHeight = $state(0);
-  /** The width the area's scrollbar takes, which the dock and the pill stay clear of. */
   let scrollbarWidth = $state(0);
 
   const scroller = new FeedScroller({ covered: () => dockHeight });
 
-  // Only the elements may re-attach the scroller: re-attaching drops a held
-  // place and restarts the resize baselines, so nothing read while attaching
-  // (the dock's height among it) is tracked.
   $effect(() => {
     const area = scrollEl;
     const column = innerEl;
@@ -118,9 +77,6 @@
       dockHeight = floating?.offsetHeight ?? 0;
       const appeared = reservedHeight === 0 && dockHeight > 0;
       reservedHeight = Math.max(reservedHeight, dockHeight);
-      // A dock that has just appeared (the feed opened, or the agent started
-      // and its composer came in) isn't the composer resizing: a reader at the
-      // end stays at the end, with the room for it below the last line.
       if (appeared) {
         flushSync();
         scroller.contentChanged();
@@ -138,8 +94,6 @@
     };
   });
 
-  // Room kept for a dock that has shrunk is given back once the reader has
-  // moved far enough from the bottom for that to go unseen, and with new content.
   function releaseSpareRoom(): void {
     const area = scrollEl;
     if (!area || reservedHeight === dockHeight) return;
@@ -156,14 +110,10 @@
     return () => area.removeEventListener("scroll", releaseSpareRoom);
   });
 
-  /** Where `el` sits below the top of the scrolling area. */
   function offsetIn(scroll: HTMLElement, el: HTMLElement): number {
     return el.getBoundingClientRect().top - scroll.getBoundingClientRect().top;
   }
 
-  // ── Older history ──────────────────────────────────────────────────
-
-  /** Within this distance above the view, the top counts as reached. */
   const LOAD_OLDER_MARGIN_PX = 200;
 
   function sentinelNearView(): boolean {
@@ -173,18 +123,11 @@
     return sentinel.bottom >= view.top - LOAD_OLDER_MARGIN_PX && sentinel.top <= view.bottom;
   }
 
-  /**
-   * A load is between measuring where the reader is and putting them back.
-   * Loads run one at a time: one that measured while another's part was in
-   * but not yet compensated for would undo that compensation.
-   */
   let prepending = false;
 
   async function loadOlder(): Promise<void> {
     const el = scrollEl;
     if (!history || !el || !history.hasMore || history.loadingOlder || prepending) return;
-    // While a reload is putting the reader back, that owns the scroll position;
-    // loading resumes once they're back in place.
     if (reloadAnchor !== null) return;
     prepending = true;
     try {
@@ -202,9 +145,6 @@
     } finally {
       prepending = false;
     }
-    // A feed shorter than the view leaves the sentinel in it, so the observer
-    // never fires again: keep loading until it's pushed out or history runs
-    // out. A failed load returned above, so an error isn't repeated.
     if (sentinelNearView()) void loadOlder();
   }
 
@@ -222,9 +162,6 @@
     return () => observer.disconnect();
   });
 
-  // The observer fires when the sentinel first shows, which can be before the
-  // history says there's more; nothing would fire again, so loading resumes
-  // whenever the history's state changes with the sentinel still near.
   $effect(() => {
     void history?.hasMore;
     void history?.loadingOlder;
@@ -234,16 +171,7 @@
     });
   });
 
-  // ── Following ──────────────────────────────────────────────────────
-
-  // Before the items change the content, a scroll position the scroller
-  // hasn't taken in yet is judged against the content it was made over: its
-  // event comes a frame later, after whatever has landed by then. The turn in
-  // flight changing counts as well: its block (the working head, Stop) comes
-  // and goes with it while the items stay as they are.
   $effect.pre(() => {
-    // What the change effect below reacts to, so that each of these is
-    // followed by its `contentChanged` in the same task.
     void items.length;
     void items.at(-1)?.id;
     void live;
@@ -259,10 +187,6 @@
   let lastLiveTurnId: string | null = null;
   let lastGeneration = 0;
 
-  // A reader who follows stays at the bottom as the feed grows, at the tail or by
-  // a prepend at the head. Their own message, and the first items, always
-  // scroll to the bottom. A new item at the tail of a feed whose reader is
-  // elsewhere is told to the pill.
   $effect(() => {
     const tailItem = items.at(-1);
     const generation = history?.generation ?? 0;
@@ -270,7 +194,6 @@
     const force =
       (tailChanged && tailItem?.kind === "user" && !tailItem.sender) ||
       (lastTailId === undefined && tailItem !== undefined);
-    // A reload replaces every item, so its new tail isn't something that arrived.
     const arrived =
       tailChanged &&
       tailItem !== undefined &&
@@ -289,19 +212,12 @@
     if (changed) {
       void tick().then(() => {
         reservedHeight = dockHeight;
-        // The room is in the page before the pin measures the bottom.
         flushSync();
         scroller.contentChanged(force, arrived);
       });
     }
   });
 
-  // ── Reloads ────────────────────────────────────────────────────────
-
-  // A reload replaces every item, so a reader who had scrolled up is anchored
-  // by content: the topmost message in view is found again by its kind and
-  // text and put back where it was, as soon as it's back in the feed, which
-  // may be only once the older part it now belongs to has loaded.
   interface ContentAnchor {
     key: string;
     nth: number;
@@ -314,11 +230,6 @@
     return scrollEl ? Array.from(scrollEl.querySelectorAll<HTMLElement>("[data-feed-item]")) : [];
   }
 
-  /**
-   * What an item says, to find it again after a reload: its kind and its text,
-   * less the quiet details a message carries (its time, Copy), which differ
-   * between an item the page made live and the same one from history.
-   */
   function contentKey(el: HTMLElement): string {
     const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
       acceptNode: (node) =>
@@ -348,7 +259,6 @@
     return { key, nth, offset: offsetIn(el, topmost) };
   }
 
-  /** Put the anchored item back in place; false when it isn't in the feed yet. */
   function restoreAnchor(anchor: ContentAnchor): boolean {
     const el = scrollEl;
     if (!el) return false;
@@ -374,7 +284,6 @@
     const anchor = reloadAnchor;
     if (!anchor) return;
     void tick().then(() => {
-      // The reader scrolling by hand meanwhile ends the hunt.
       if (reloadAnchor !== anchor) return;
       if (!scroller.isHeld || restoreAnchor(anchor)) {
         reloadAnchor = null;
@@ -477,13 +386,11 @@
     --leading: var(--line-height-ui);
   }
 
-  /* A container, so a message can tell whether the margin beside the column has room for its details. */
   .feed-scroll {
     flex: 1;
     min-height: 0;
     overflow-y: auto;
     container: feed / inline-size;
-    /* loadOlder() alone moves the scroll position across a prepend. */
     overflow-anchor: none;
 
     &:focus-visible {
@@ -491,7 +398,6 @@
     }
   }
 
-  /* The column sizes the room under its last line by the view's height. */
   .feed[data-docked] .feed-scroll {
     container-type: size;
   }
@@ -514,7 +420,6 @@
     }
   }
 
-  /* Under a dock the column keeps the dock's room, and a little more. */
   .feed[data-docked] .feed-column {
     padding-bottom: calc(var(--feed-reserved) + var(--space-48));
   }
@@ -524,7 +429,6 @@
     margin-bottom: calc(-1 * var(--space-18));
   }
 
-  /* A fixed slot, so the loading line never shifts the feed. */
   .feed-loading {
     display: flex;
     align-items: center;
@@ -539,7 +443,6 @@
     min-width: 0;
   }
 
-  /* Floats over the foot of the feed, beside the scrollbar, and takes up the dock's height. Its backdrop is the surface the feed sits on: the page's, unless the host sets `--feed-surface`, as the context panel's session panel does. */
   .feed-dock {
     position: absolute;
     right: var(--feed-scrollbar);
@@ -548,7 +451,6 @@
     z-index: var(--z-sticky);
     background: var(--feed-surface, var(--color-stone-0));
 
-    /* The lines scrolling under the dock fade out above it, so they don't stop at its edge. */
     &::before {
       content: "";
       position: absolute;
@@ -561,7 +463,6 @@
     }
   }
 
-  /* Centered above the dock, as wide as its label needs. */
   .feed-pill {
     position: absolute;
     right: var(--feed-scrollbar);
@@ -604,7 +505,6 @@
     }
   }
 
-  /* Something landed below: a vein mark before the arrow. */
   .feed-pill-dot {
     flex: none;
     width: 7px;
@@ -613,7 +513,6 @@
     background: var(--color-vein-bright);
   }
 
-  /* On a wide screen the end of the newest reply rests about a quarter of the view above the foot. */
   @media (min-width: 761px) {
     .feed[data-docked] .feed-column:not(.centered) {
       padding-bottom: calc(var(--feed-reserved) + var(--layout-feed-buffer));

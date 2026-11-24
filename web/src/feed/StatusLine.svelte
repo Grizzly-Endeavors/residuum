@@ -2,9 +2,6 @@
   import { Icon } from "../lib/icons";
   import { Disclosure } from "../lib/ui";
 
-  // A one-line note in a session transcript: a delivery outcome, a command
-  // that failed, the run finishing. Technical detail waits behind a disclosure.
-
   interface Props {
     tone: "info" | "error";
     content: string;

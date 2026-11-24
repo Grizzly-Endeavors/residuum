@@ -1,17 +1,3 @@
-//! A model that answers through a [`Gate`], over HTTP or in process.
-//!
-//! [`GatedModel`] is a small HTTP server an agent's provider config points
-//! at. It waits at its gate, then forwards the call to a wiremock server
-//! behind it, so a test keeps wiremock's scripted replies and request log.
-//! [`GatedProvider`] is the same for code that takes an [`InferenceProvider`]
-//! directly. Either way, a test holds a model call open by closing the gate,
-//! instead of slowing the reply down.
-//!
-//! Other crates' tests (and the root's, through `test-support`) can use
-//! [`GatedModel::in_front_of`], [`GatedModel::uri`], [`GatedModel::gate`] and
-//! [`GatedProvider::new`]. Only inference's own tests can use
-//! `GatedModel::replying`, which answers with a fixed reply.
-
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -27,9 +13,7 @@ use crate::{
 };
 use residuum_core::testing::gate::{Gate, GateEntry};
 
-/// What the server does with a call once the gate lets it through.
 enum Answer {
-    /// Forward it to this base URL and return what comes back.
     Forward {
         upstream: String,
         client: reqwest::Client,
@@ -39,13 +23,11 @@ enum Answer {
     Reply(String),
 }
 
-/// The state each call is answered from.
 struct Shared {
     entry: GateEntry,
     answer: Answer,
 }
 
-/// A model server whose answers wait at a gate. Dropping it stops the server.
 pub struct GatedModel {
     uri: String,
     gate: Gate,
@@ -53,9 +35,6 @@ pub struct GatedModel {
 }
 
 impl GatedModel {
-    /// Serve in front of `upstream` (a wiremock server's URI), forwarding every
-    /// call to it. The gate starts open, so calls pass straight through until
-    /// a test closes it.
     pub async fn in_front_of(upstream: &str) -> Self {
         Self::start(
             Gate::open("model"),
@@ -67,8 +46,6 @@ impl GatedModel {
         .await
     }
 
-    /// Answer every call with `text`. The gate starts closed: no call is
-    /// answered until the test releases it.
     #[cfg(test)]
     pub(crate) async fn replying(text: &str) -> Self {
         Self::start(Gate::closed("model"), Answer::Reply(text.to_string())).await
@@ -92,13 +69,11 @@ impl GatedModel {
         Self { uri, gate, task }
     }
 
-    /// The base URL to point a provider at.
     #[must_use]
     pub fn uri(&self) -> String {
         self.uri.clone()
     }
 
-    /// The gate every call waits at.
     #[must_use]
     pub fn gate(&self) -> &Gate {
         &self.gate
@@ -141,9 +116,6 @@ async fn answer_call(
     }
 }
 
-/// Send the call on to the upstream server and hand back its answer. An
-/// upstream that can't be reached is a 502 naming why, so a broken proxy
-/// shows in the test's failure rather than as a missing reply.
 async fn forward(
     client: &reqwest::Client,
     url: &str,
@@ -175,15 +147,12 @@ async fn forward(
     }
 }
 
-/// An in-process provider whose every completion waits at a gate, then
-/// answers with a fixed reply.
 pub struct GatedProvider {
     entry: GateEntry,
     reply: String,
 }
 
 impl GatedProvider {
-    /// A provider whose completions wait at `gate`, then answer `reply`.
     #[must_use]
     pub fn new(gate: &Gate, reply: &str) -> Self {
         Self {
@@ -265,9 +234,6 @@ mod tests {
 
     #[tokio::test]
     async fn an_unreachable_upstream_is_a_bad_gateway_naming_it() {
-        // A bound socket that never listens refuses connections, and it keeps
-        // its port out of every other test's reach until this test ends. A
-        // released port could be handed to another test's proxy in between.
         let reserved = tokio::net::TcpSocket::new_v4().unwrap();
         reserved.bind("127.0.0.1:0".parse().unwrap()).unwrap();
         let gone = format!("http://{}", reserved.local_addr().unwrap());

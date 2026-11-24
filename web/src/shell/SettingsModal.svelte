@@ -19,25 +19,14 @@
   import { AGENT_SECTION_VIEWS, ALL_SECTION_VIEWS, type SettingsScope } from "./settings/sections";
   import SettingsNav from "./settings/SettingsNav.svelte";
 
-  // The Settings modal, open while the URL names a `settings`
-  // scope. The URL parameter is its history entry, so the layer pushes none
-  // of its own. Switching scope or section never remounts the modal: only the
-  // content pane swaps, with a short fade, once the new scope has loaded. On a
-  // phone a URL with no section shows the section list, and a section shows
-  // with Back.
-
-  /** How long the pane keeps the last scope while a new one loads, before it shows that one loading. */
   const SLOW_LOAD_MS = 250;
 
   const phone = new MediaQuery(PHONE_QUERY);
   const openScope = $derived(router.settings?.scope ?? null);
   const openSection = $derived(router.settings?.section ?? null);
-  /** On a phone with no section named: the section list is the screen. */
   const listing = $derived(phone.current && openSection === null);
 
-  /** The scope the URL names. Set in an effect, because getting one can add it to the registry. */
   let scope = $state.raw<SettingsScope | null>(null);
-  /** What the content pane shows. It moves to a new scope once that scope has loaded. */
   let shown = $state.raw<{ scope: SettingsScope; section: SectionId | null } | null>(null);
 
   $effect(() => {
@@ -48,7 +37,6 @@
     }
     const next = untrack(() => settingsModel.scope(id));
     scope = next;
-    // Read again on every open: another agent's files have no change feed.
     void next.load();
   });
 
@@ -72,7 +60,6 @@
     };
   });
 
-  /** The section in the pane: the URL's, or the scope's default on wider screens. */
   const section = $derived.by((): SectionId | null => {
     if (shown === null) return null;
     return shown.section ?? (phone.current ? null : defaultSection(shown.scope.kind));
@@ -84,7 +71,6 @@
     openScope === null || listing ? null : (openSection ?? defaultSection(scopeKind(openScope))),
   );
 
-  // Staged changes outlive the modal and in-app navigation; only leaving the page loses them.
   $effect(() =>
     router.guard.register((target) =>
       target === null && settingsModel.stagedScopes.length > 0 ? "Unsaved settings changes" : null,
@@ -94,20 +80,16 @@
   $effect(() => {
     const open = scope;
     if (open === null) return;
-    // Registering reads the registry's sources, which this effect mustn't follow.
     return untrack(() => actionRegistry.register("settings-modal", () => modalActions(open)));
   });
 
   let frame = $state<HTMLElement>();
   let body = $state<HTMLElement>();
 
-  // A new section starts at its top.
   $effect(() => {
     if (contentKey !== null && body !== undefined) body.scrollTop = 0;
   });
 
-  // On a phone, moving between the list and a section puts focus on Back, or
-  // back on the section just left.
   let wasListing: boolean | null = null;
   let leftSection: SectionId | null = null;
   $effect(() => {
@@ -220,7 +202,6 @@
 <ChangedOnDiskDialog />
 
 <style>
-  /* A stone-1 card, unlike the stone-3 dialogs, so its quiet buttons hover to stone-3. */
   :global(dialog.ui-modal.settings-modal) {
     --ui-quiet-hover: var(--color-stone-3);
 

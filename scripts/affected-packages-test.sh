@@ -1,15 +1,4 @@
 #!/usr/bin/env bash
-# Runs scripts/affected-packages.sh over a scratch tree with three fake members and
-# checks, for each class of changed path, the packages --affected and --touched
-# print, the integration test modules --covering prints, the failure of the modes that
-# have no fallback of their own, and the graph --graph prints.
-#
-# The tree: crates/a with no workspace dependency, crates/b depending on a,
-# crates/net holding src/browser_landing.rs and depending on a in its dev
-# dependencies, crates/hub with no workspace dependency and no dependents (the
-# package the two paths it reads belong to), and a root manifest depending on
-# a, b and net. It also holds the integration modules that --covering reads, set
-# up below with the cases that use them.
 set -euo pipefail
 
 dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -57,10 +46,6 @@ residuum-a = { workspace = true }
 EOF
 touch crates/net/src/browser_landing.rs
 
-# The integration modules, as tests/it holds them, with the covers line each
-# carries. one covers residuum-a, two residuum-b and the root, three/ (a directory
-# module) residuum-a, four residuum-b, and five residuum-hub. The container files
-# and support are not modules.
 mkdir -p tests/it/three tests/it/support tests/fixtures
 printf 'mod one;\n' >tests/it/main.rs
 printf '//! covers: residuum-a\n' >tests/it/one.rs
@@ -73,9 +58,6 @@ printf '//! covers: residuum-hub\n' >tests/it/five.rs
 
 status=0
 
-# run <label> <mode> <changed path>: sets OUT to the script's stdout. A script that
-# exits non-zero is a failure of the case, so it is reported, and the case's
-# expectation is not compared with the output of a failed run.
 run() {
     if OUT="$(printf '%s\n' "$3" | "$script" "$2" 2>/dev/null)"; then
         return 0
@@ -85,7 +67,6 @@ run() {
     return 1
 }
 
-# check <label> <mode> <changed path> <expected stdout>
 check() {
     run "$1" "$2" "$3" || return 0
     if [ "$OUT" != "$4" ]; then
@@ -94,9 +75,6 @@ check() {
     fi
 }
 
-# check_words <label> <mode> <changed path> <expected words, space-separated>
-# compares the script's output with its lines joined by single spaces, so the
-# expected value fits on one row of a table. Empty output is an empty expectation.
 check_words() {
     local actual
     run "$1" "$2" "$3" || return 0
@@ -110,7 +88,6 @@ check_words() {
 
 all_packages="-p residuum -p residuum-a -p residuum-b -p residuum-net"
 
-# Each row: changed path | expected for --affected.
 while IFS='|' read -r path affected; do
     check "$path" --affected "$path" "$affected"
 done <<CASES
@@ -161,7 +138,6 @@ if [ "$actual_graph" != "$expected_graph" ]; then
     status=1
 fi
 
-# Each row: changed path | expected for --touched | expected for --covering.
 while IFS='|' read -r path touched covering; do
     check_words "$path" --touched "$path" "$touched"
     check_words "$path" --covering "$path" "$covering"
@@ -194,8 +170,6 @@ scripts/affected-packages.sh||
 docs/archive/workspace-split.md||
 CASES
 
-# An unreadable manifest checks more, never less. Root can read any file, so the
-# case needs an unprivileged run.
 chmod 000 crates/b/Cargo.toml
 if [ -r crates/b/Cargo.toml ]; then
     echo "affected-packages-test: skipped the unreadable-manifest case: the manifest is still readable (running as root?)" >&2
@@ -210,8 +184,6 @@ else
         echo "affected-packages: --graph succeeded with an unreadable manifest" >&2
         status=1
     fi
-    # --touched and --covering have no every-package fallback of their own: they
-    # fail, and the hook runs the every-member or every-module fallback.
     for mode in --touched --covering; do
         if printf '%s\n' crates/a/src/lib.rs | "$script" "$mode" >/dev/null 2>&1; then
             echo "affected-packages: $mode succeeded with an unreadable manifest" >&2
@@ -221,7 +193,6 @@ else
 fi
 chmod 644 crates/b/Cargo.toml
 
-# An unreadable module file fails --covering, since its covers line is unknown.
 chmod 000 tests/it/one.rs
 if [ -r tests/it/one.rs ]; then
     echo "affected-packages-test: skipped the unreadable-module case: the module is still readable (running as root?)" >&2

@@ -3,8 +3,6 @@
   import Drawer from "../../lib/ui/Drawer.svelte";
   import Sheet from "../../lib/ui/Sheet.svelte";
 
-  // A trigger and a modal layer of each kind, with a second dialog to open
-  // from inside the first, as a page would hold them.
   let { kind = "dialog", onclose }: { kind?: "dialog" | "sheet" | "drawer"; onclose?: () => void } =
     $props();
 

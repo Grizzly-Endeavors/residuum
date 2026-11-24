@@ -11,7 +11,6 @@ import { byteLength, entryOf, listDirectory, pathKind } from "./workspace-tree";
 const FILE_LIMIT_BYTES = 1024 * 1024;
 const RESPONSE_BUDGET_BYTES = 8 * 1024 * 1024;
 
-/** One entry of a tree listing. */
 export interface TreeEntry {
   path: string;
   type: WorkspaceEntry["entry_type"];
@@ -29,7 +28,6 @@ export interface TreeResponse {
   content_truncated: boolean;
 }
 
-/** One file of a batch read, in request order. */
 export interface BatchFile {
   path: string;
   size?: number;
@@ -44,30 +42,22 @@ export interface BatchReadResponse {
   content_truncated: boolean;
 }
 
-/** A path in a state's workspace. */
 export interface Place {
   state: MockState;
   key: string;
 }
 
-/** Where a walk finds each directory, and how it names the paths it reports. */
 export interface Walker {
-  /** The state holding the workspace path `key`. */
   stateAt: (key: string) => MockState;
-  /** `key` as the client names it: relative to the tree it addressed. */
   label: (key: string) => string;
 }
 
 export interface TreeOptions {
-  /** Whether files carry their content. */
   content: boolean;
-  /** Patterns a file has to match: a pattern without `/` names a file at any depth, one with it a path below the root. */
   globs: readonly string[];
-  /** How many levels below the root to list, or `null` for all. */
   depth: number | null;
 }
 
-/** A glob as a regular expression: `*` and `?` stay within a path segment, `**` crosses them. */
 function globPattern(glob: string): RegExp {
   const source = glob
     .replace(/[.+^${}()|[\]\\]/g, "\\$&")
@@ -78,13 +68,11 @@ function globPattern(glob: string): RegExp {
   return new RegExp(`^${source}$`);
 }
 
-/** Whether a file at `relative` (below the walk's root) matches any pattern. */
 function matchesGlobs(globs: readonly string[], relative: string): boolean {
   const name = relative.slice(relative.lastIndexOf("/") + 1);
   return globs.some((glob) => globPattern(glob).test(glob.includes("/") ? relative : name));
 }
 
-/** Every file and directory below the directory at `root`, in path order, as `GET .../workspace/tree` lists them. */
 export function buildTree(root: string, walker: Walker, options: TreeOptions): TreeResponse {
   const found: Array<{ key: string; entry: TreeEntry }> = [];
   const visit = (dirKey: string, relativeDir: string, level: number): void => {
@@ -131,11 +119,6 @@ export function buildTree(root: string, walker: Walker, options: TreeOptions): T
   };
 }
 
-/**
- * Read the chosen files in order, as `POST .../workspace/read` does. One that
- * can't be read, or that doesn't fit the budget, carries an `error` and the
- * request still succeeds. `place` finds a path, or `null` for one outside the workspace.
- */
 export function batchRead(
   paths: readonly string[],
   place: (path: string) => Place | null,

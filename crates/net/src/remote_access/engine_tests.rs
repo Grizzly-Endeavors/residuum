@@ -1,5 +1,3 @@
-//! In-process tests: a TLS client over a duplex pipe into `Engine::serve`.
-
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -34,7 +32,6 @@ struct Harness {
     engine: Arc<Engine>,
     names: Hostnames,
     client_config: Arc<ClientConfig>,
-    // Held so the watch channels stay open.
     _hostnames_tx: watch::Sender<Option<Hostnames>>,
     _teams_tx: watch::Sender<BTreeMap<String, u16>>,
 }
@@ -154,8 +151,6 @@ fn harness(a2a_port: Option<u16>, teams: BTreeMap<String, u16>, with_identity: b
 }
 
 impl Harness {
-    /// Open a TLS connection to the engine presenting `sni` and `alpn`; the
-    /// relay host the engine is told is always the UI name.
     async fn connect(&self, sni: &str, alpn: &[&[u8]]) -> std::io::Result<Client> {
         let (client_io, server_io) = tokio::io::duplex(64 * 1024);
         let engine = Arc::clone(&self.engine);
@@ -179,7 +174,6 @@ struct Reply {
     body: String,
 }
 
-/// One request over a fresh connection. HTTP/2 when the connection negotiated it.
 async fn request(
     client: Client,
     method: Method,
@@ -273,7 +267,6 @@ async fn unknown_host_over_valid_sni_gets_421() {
 #[tokio::test]
 async fn coalesced_connection_routes_by_host_not_sni() {
     let h = harness(None, BTreeMap::new(), true);
-    // SNI is the UI name; the request is for the workbench name.
     let reply = get_h1(&h, &h.names.workbench.clone(), "/whoami").await;
     assert_eq!(reply.body, "workbench");
 }
@@ -281,7 +274,6 @@ async fn coalesced_connection_routes_by_host_not_sni() {
 #[tokio::test]
 async fn sni_other_than_relay_host_is_closed() {
     let h = harness(None, BTreeMap::new(), true);
-    // A valid name of this instance, but not the one the relay opened the stream for.
     let result = h.connect(&h.names.workbench.clone(), &[b"http/1.1"]).await;
     assert!(result.is_err(), "handshake must not complete");
 }
@@ -362,7 +354,6 @@ async fn a_remote_shutdown_or_disconnect_is_refused_through_the_engine() {
             reply.body
         );
     }
-    // The rest of the router stays reachable remotely.
     let client = h.connect(&host, &[b"http/1.1"]).await.expect("connect");
     let reply = request(client, Method::GET, &host, "/whoami", &[]).await;
     assert_eq!(reply.status, StatusCode::OK);
@@ -391,12 +382,7 @@ async fn http2_and_http1_both_work() {
 #[tokio::test]
 async fn acme_alpn_connection_ends_after_handshake() {
     let h = harness(None, BTreeMap::new(), true);
-    // The test certificate isn't an RFC 8737 challenge certificate, but the
-    // engine's behavior depends only on the negotiated ALPN protocol.
     let result = h.connect(&h.names.ui.clone(), &[b"acme-tls/1"]).await;
-    // Whether the resolver offers acme-tls/1 depends on a challenge being set;
-    // with none set the server falls back to a protocol the client didn't
-    // offer, so the handshake may be refused. Both outcomes end without HTTP.
     if let Ok(mut client) = result {
         use tokio::io::AsyncReadExt;
         let mut buf = Vec::new();
@@ -433,7 +419,6 @@ async fn websocket_upgrade_reaches_ui_router() {
     assert_eq!(reply.into_text().expect("text").as_str(), "echo:hi");
 }
 
-/// A fake A2A/Teams listener on loopback.
 async fn spawn_upstream(release_second_chunk: Arc<Notify>) -> u16 {
     async fn echo(method: Method, uri: axum::http::Uri, headers: HeaderMap) -> impl IntoResponse {
         let body = format!(
@@ -618,7 +603,6 @@ async fn a2a_without_agent_is_404() {
 
 #[tokio::test]
 async fn a2a_listener_down_is_bad_gateway() {
-    // Port 1 on loopback has no listener.
     let h = harness(Some(1), BTreeMap::new(), true);
     let host = h.names.instance.clone();
     let client = h
@@ -719,7 +703,6 @@ async fn sibling_join_paths_are_served_in_process_on_the_instance_host_only() {
         reply.body
     );
 
-    // The UI host has no such route, so the device gate's surface is unchanged.
     let ui = h.names.ui.clone();
     let on_ui = get_h1(&h, &ui, "/_sibling/join/nonce").await;
     assert_eq!(on_ui.status, StatusCode::NOT_FOUND);

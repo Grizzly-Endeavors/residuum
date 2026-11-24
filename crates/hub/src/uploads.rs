@@ -1,15 +1,3 @@
-//! Hub-staged uploads: files a client sends before the message that uses them.
-//!
-//! A client posts a file to `POST /api/hub/uploads` and gets an upload id back.
-//! A later send (a chat message, or mail) names that id, and the sender moves
-//! the staged file into its destination. The store lives in the hub directory
-//! under `uploads/`, so it works while no agent runs. Each upload is one
-//! directory: `<id>/content/<filename>` holds the bytes under the name the
-//! client gave, so a sender that copies the file by path keeps that name, and
-//! `<id>/meta.json` holds the filename, size, content type, and creation time. Uploads older than
-//! [`RETENTION`] are removed when the store prunes, which happens at startup
-//! and before every stage.
-
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
@@ -19,91 +7,51 @@ use thiserror::Error;
 
 use residuum_bus::attachment::detect_mime_type;
 
-/// The largest upload the store accepts, in bytes.
 pub const MAX_UPLOAD_BYTES: usize = 50 * 1024 * 1024;
 
-/// How long an unsent upload is kept before the store removes it.
 pub const RETENTION: Duration = Duration::hours(24);
 
-/// The directory under the hub directory that holds the uploads.
 const UPLOADS_DIR: &str = "uploads";
-/// The directory holding an upload's bytes, as one file under its filename.
 const CONTENT_DIR: &str = "content";
-/// The sidecar file holding an upload's metadata.
 const META_FILE: &str = "meta.json";
-/// Prefix of the directory a new upload is written into before it is renamed
-/// to its id. A leftover one is a crashed write and is removed at startup.
 const STAGING_PREFIX: &str = ".staging-";
 
-/// Staged uploads under one hub directory.
-///
-/// The store is cheap to clone: it holds only its directory. Every clone reads
-/// and writes the same files, so the hub's routes and the mail and chat sends
-/// share one store.
 #[derive(Debug, Clone)]
 pub struct UploadStore {
     dir: PathBuf,
 }
 
-/// An upload the store holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StagedUpload {
-    /// The id a send names to use the upload.
     pub id: String,
-    /// The base name the client gave the file.
     pub filename: String,
-    /// The size of the content in bytes.
     pub size: u64,
-    /// The MIME type detected from the filename's extension.
     pub content_type: String,
-    /// When the upload was staged.
     pub created_at: DateTime<Utc>,
-    /// The file holding the content, for a sender to copy or move. Its file
-    /// name is [`Self::filename`].
     pub path: PathBuf,
 }
 
-/// Why an upload operation failed. The messages are plain enough to show a
-/// user; the `Io` variant carries the path and source for the log.
 #[derive(Debug, Error)]
 pub enum UploadError {
-    /// The body had no bytes.
     #[error("the upload is empty")]
     Empty,
-    /// The body is larger than [`MAX_UPLOAD_BYTES`].
     #[error("the upload is {size} bytes, more than the {limit}-byte limit")]
-    TooLarge {
-        /// The size of the body.
-        size: usize,
-        /// The limit it exceeds.
-        limit: usize,
-    },
-    /// The filename is not a usable base name.
+    TooLarge { size: usize, limit: usize },
     #[error("the filename {reason}")]
-    InvalidFilename {
-        /// What is wrong with it, for the end of the sentence "the filename ...".
-        reason: &'static str,
-    },
-    /// The id is not one the store issues, so no upload can have it.
+    InvalidFilename { reason: &'static str },
     #[error("`{0}` is not an upload id")]
     InvalidId(String),
-    /// No staged upload has the id.
     #[error("no staged upload has the id `{0}`")]
     NotFound(String),
-    /// The store's files could not be read or written.
     #[error("failed to {action} the staged upload at {path}")]
     Io {
-        /// What the store was doing, such as "write" or "read".
         action: &'static str,
-        /// The file or directory the operation used.
         path: PathBuf,
-        /// The underlying failure.
         #[source]
         source: std::io::Error,
     },
 }
 
-/// The sidecar file's contents.
 #[derive(Debug, Serialize, Deserialize)]
 struct UploadMeta {
     filename: String,
@@ -113,14 +61,6 @@ struct UploadMeta {
 }
 
 impl UploadStore {
-    /// Open the store under `hub_dir`, creating `uploads/` if it is missing.
-    ///
-    /// Removes the staging directories a crashed write left behind. Call it
-    /// before the store is shared: it is not safe alongside a stage in flight.
-    /// The hub prunes expired uploads separately, with [`Self::prune`].
-    ///
-    /// # Errors
-    /// Returns [`UploadError::Io`] when the directory cannot be created or read.
     pub fn open(hub_dir: &Path) -> Result<Self, UploadError> {
         let dir = hub_dir.join(UPLOADS_DIR);
         std::fs::create_dir_all(&dir).map_err(|source| UploadError::Io {
@@ -156,24 +96,10 @@ impl UploadStore {
         Ok(Self { dir })
     }
 
-    /// Store `bytes` as an upload named `filename`, pruning expired uploads
-    /// first.
-    ///
-    /// # Errors
-    /// Returns [`UploadError::InvalidFilename`] for a name that is not a base
-    /// name, [`UploadError::Empty`] or [`UploadError::TooLarge`] for a body
-    /// outside the limit, and [`UploadError::Io`] when the upload cannot be
-    /// written. A failed prune is logged and does not fail the stage.
     pub async fn stage(&self, filename: &str, bytes: &[u8]) -> Result<StagedUpload, UploadError> {
         self.stage_at(filename, bytes, Utc::now()).await
     }
 
-    /// The upload with `id`.
-    ///
-    /// # Errors
-    /// Returns [`UploadError::InvalidId`] for an id the store never issues,
-    /// [`UploadError::NotFound`] when no upload has it, and
-    /// [`UploadError::Io`] when its metadata cannot be read.
     pub async fn resolve(&self, id: &str) -> Result<StagedUpload, UploadError> {
         check_id(id)?;
         let dir = self.dir.join(id);
@@ -196,8 +122,6 @@ impl UploadStore {
             path: meta_path.clone(),
             source: std::io::Error::new(ErrorKind::InvalidData, source),
         })?;
-        // The name becomes a path segment, so a hand-edited sidecar can't
-        // point the content path outside the upload's directory.
         if validate_filename(&meta.filename).is_err() {
             return Err(UploadError::Io {
                 action: "parse",
@@ -218,13 +142,6 @@ impl UploadStore {
         })
     }
 
-    /// Remove the upload with `id`, once a sender has copied or moved its
-    /// content.
-    ///
-    /// # Errors
-    /// Returns [`UploadError::InvalidId`] or [`UploadError::NotFound`] as
-    /// [`Self::resolve`] does, and [`UploadError::Io`] when the directory cannot
-    /// be removed.
     pub async fn remove(&self, id: &str) -> Result<(), UploadError> {
         check_id(id)?;
         let dir = self.dir.join(id);
@@ -241,16 +158,6 @@ impl UploadStore {
         }
     }
 
-    /// Remove every upload staged more than [`RETENTION`] before `now`, and
-    /// return how many were removed.
-    ///
-    /// An upload whose metadata is unreadable is logged and kept: removing it
-    /// could drop one that a concurrent stage is still writing.
-    ///
-    /// # Errors
-    /// Returns [`UploadError::Io`] when the store directory cannot be read. A
-    /// directory that fails to remove is logged and skipped, so one bad entry
-    /// does not stop the rest.
     pub async fn prune(&self, now: DateTime<Utc>) -> Result<usize, UploadError> {
         let mut entries =
             tokio::fs::read_dir(&self.dir)
@@ -314,8 +221,6 @@ impl UploadStore {
         Ok(removed)
     }
 
-    /// [`Self::stage`] with the creation time given, so tests need not touch
-    /// the clock.
     async fn stage_at(
         &self,
         filename: &str,
@@ -380,7 +285,6 @@ impl UploadStore {
     }
 }
 
-/// Write the content and metadata into the staging directory `dir`.
 async fn write_upload(dir: &Path, meta: &UploadMeta, bytes: &[u8]) -> std::io::Result<()> {
     tokio::fs::create_dir(dir).await?;
     let meta_json = serde_json::to_vec(meta).map_err(std::io::Error::other)?;
@@ -390,11 +294,6 @@ async fn write_upload(dir: &Path, meta: &UploadMeta, bytes: &[u8]) -> std::io::R
     tokio::fs::write(content_dir.join(&meta.filename), bytes).await
 }
 
-/// Accept `filename` only when it is a base name: non-empty, not `.` or `..`,
-/// with no path separators and no control characters.
-///
-/// # Errors
-/// Returns [`UploadError::InvalidFilename`] with the reason otherwise.
 pub fn validate_filename(filename: &str) -> Result<(), UploadError> {
     let reason = if filename.trim().is_empty() {
         "is empty"
@@ -410,8 +309,6 @@ pub fn validate_filename(filename: &str) -> Result<(), UploadError> {
     Err(UploadError::InvalidFilename { reason })
 }
 
-/// Accept `id` only when it is the 32-character lowercase hex form the store
-/// issues, so no id can name a path outside the store.
 fn check_id(id: &str) -> Result<(), UploadError> {
     let valid = id.len() == 32 && id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
     if valid {

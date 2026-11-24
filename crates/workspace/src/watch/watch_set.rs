@@ -1,13 +1,7 @@
-//! A WebSocket connection's watched path prefixes, and which changes they
-//! match.
-
 use residuum_bus::workspace_change::WorkspaceChange;
 
-/// A batch with more matching changes than this reaches a connection as a
-/// resync instead of a change list.
 pub const MAX_CHANGES_PER_FRAME: usize = 500;
 
-/// Why a `watch_workspace` request was refused.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum InvalidWatchPrefix {
     #[error(
@@ -20,37 +14,19 @@ pub enum InvalidWatchPrefix {
     InvalidCharacter(String),
 }
 
-/// The prefixes one connection watches. Empty means not watching.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WatchSet {
-    /// Normalized: `/`-separated, no empty or `.` segments. `""` is the
-    /// whole workspace.
     prefixes: Vec<String>,
 }
 
-/// The part of a batch one connection receives.
 #[derive(Debug, PartialEq, Eq)]
 pub enum WatchedChanges {
-    /// No change matched.
     None,
-    /// The matching changes, in batch order.
     Changes(Vec<WorkspaceChange>),
-    /// More than [`MAX_CHANGES_PER_FRAME`] changes matched.
     TooMany,
 }
 
 impl WatchSet {
-    /// Validate and normalize the prefixes of a `watch_workspace` request.
-    ///
-    /// There is no cap on prefix count or length: a connection watching an
-    /// unreasonable number of paths, or a very long one, just costs more to
-    /// match against each batch — and a batch that matches too much already
-    /// degrades to a resync (see [`MAX_CHANGES_PER_FRAME`]) rather than
-    /// failing.
-    ///
-    /// # Errors
-    /// Returns [`InvalidWatchPrefix`] for an absolute path, a `..` segment,
-    /// or a backslash or NUL.
     pub fn parse(prefixes: Vec<String>) -> Result<Self, InvalidWatchPrefix> {
         let mut normalized = Vec::with_capacity(prefixes.len());
         for prefix in prefixes {
@@ -64,16 +40,11 @@ impl WatchSet {
         })
     }
 
-    /// Whether this connection watches nothing.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.prefixes.is_empty()
     }
 
-    /// Whether a change at `path` concerns a watched prefix: the prefix
-    /// itself, anything under it (by whole segments, so `wiki` never matches
-    /// `wikipedia`), or a directory containing it, since creating, removing,
-    /// or renaming that directory carries the prefix with it.
     #[must_use]
     pub fn matches(&self, path: &str) -> bool {
         self.prefixes
@@ -81,7 +52,6 @@ impl WatchSet {
             .any(|prefix| is_within(path, prefix) || is_within(prefix, path))
     }
 
-    /// The changes of one batch this connection receives.
     #[must_use]
     pub fn filter(&self, changes: &[WorkspaceChange]) -> WatchedChanges {
         if self.is_empty() {
@@ -102,8 +72,6 @@ impl WatchSet {
     }
 }
 
-/// Whether `path` is `ancestor` or lies under it, by whole segments. The
-/// empty path is the workspace root and contains everything.
 fn is_within(path: &str, ancestor: &str) -> bool {
     ancestor.is_empty()
         || path
@@ -116,7 +84,6 @@ fn normalize_prefix(prefix: String) -> Result<String, InvalidWatchPrefix> {
         return Err(InvalidWatchPrefix::InvalidCharacter(prefix));
     }
     let first = prefix.split('/').next().unwrap_or_default();
-    // A leading `/` or a drive letter (`C:`) names a path outside the workspace.
     if prefix.starts_with('/') || first.contains(':') {
         return Err(InvalidWatchPrefix::Absolute(prefix));
     }
@@ -282,7 +249,6 @@ mod tests {
         let mut over = at_limit;
         over.push(change("wiki/one-more.md"));
         assert_eq!(set(&["wiki"]).filter(&over), WatchedChanges::TooMany);
-        // Changes outside the prefixes don't count toward the limit.
         assert!(matches!(
             set(&["wiki/1.md"]).filter(&over),
             WatchedChanges::Changes(c) if c.len() == 1

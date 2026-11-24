@@ -1,5 +1,3 @@
-//! Agent turn handling and message processing in the event loop.
-
 use std::sync::Arc;
 
 use tokio::sync::mpsc;
@@ -27,9 +25,6 @@ use residuum_tracing_service::TracingService;
 use crate::memory::MemorySubsystems;
 use residuum_agent::context::loading::build_skill_context_strings;
 
-/// Raw prompt context strings for constructing a `PromptContext`.
-///
-/// Held as owned `Option<String>` so that `PromptContext` can borrow via `as_deref()`.
 pub struct PromptContextStrings {
     pub skill_index: Option<String>,
     pub skill_active: Option<String>,
@@ -37,7 +32,6 @@ pub struct PromptContextStrings {
 }
 
 impl PromptContextStrings {
-    /// Build a borrowed `PromptContext` from these owned strings.
     pub(super) fn as_prompt_context(&self) -> PromptContext<'_> {
         PromptContext {
             skills: SkillsContext {
@@ -49,8 +43,6 @@ impl PromptContextStrings {
     }
 }
 
-/// Load prompt context strings from skill state, and what the chat
-/// interfaces post from `cfg`.
 pub async fn load_prompt_context_strings(
     skill_state: &SharedSkillState,
     cfg: &Config,
@@ -63,26 +55,6 @@ pub async fn load_prompt_context_strings(
     }
 }
 
-/// Process leftover interrupts that arrived during an agent turn after its
-/// last checkpoint drain, so no model call ever saw them.
-///
-/// Message-bearing leftovers (a user message or an agent message) are
-/// returned, oldest first, for the caller to run as turns of their own: the
-/// sender is waiting on a reply, and injecting the text into history as
-/// context would leave the agent never acting on it. Each keeps its content,
-/// images, context and sender attribution, and its hop count is recorded on
-/// `messenger` so the turn that handles it starts from the hop count the
-/// message carried. They are not injected into `agent`'s history here; the
-/// turn that handles them records them.
-///
-/// A subconscious finding has no sender waiting on it, so it degrades to a
-/// note in `agent`'s history for whichever turn comes next. A stop marker
-/// needs nothing: the stop note was already injected where the stop was
-/// observed.
-///
-/// Also resets the hop counter to zero: everything this turn consumed has
-/// been replied to, and whatever a returned message still carries travels
-/// with that message (see `handle_inbound_message`), not in the counter.
 pub fn process_leftover_interrupts(
     leftovers: Vec<Interrupt>,
     agent: &mut Agent,
@@ -92,13 +64,6 @@ pub fn process_leftover_interrupts(
     for intr in leftovers {
         match intr {
             Interrupt::UserMessage(leftover_msg) => {
-                // Its own hop, if any — this may be an agent message relayed
-                // to main (see `AgentMessenger::deliver_to_main`), which
-                // carries no hop count of its own in `MessageEvent` — noted
-                // when the turn took it in (see `handle_mid_turn_message`).
-                // The shared counter holds every input's hops combined, so
-                // reading it here would hand a plain user message the
-                // teammate traffic's hop count.
                 let own_hop = messenger.mid_turn_hop(&leftover_msg.id);
                 messenger.restore_main_hop(&leftover_msg.id, own_hop);
                 late_messages.push(leftover_msg);
@@ -112,10 +77,6 @@ pub fn process_leftover_interrupts(
                 agent.inject_system_message(content);
             }
             Interrupt::Stopped => {
-                // The turn already ended by the time this was drained — the
-                // stop note was injected where it was actually observed
-                // (mid-generation cancellation or the tool-loop checkpoint
-                // inside `execute_turn`). Nothing left to do here.
                 tracing::debug!("leftover stop marker drained after turn already ended");
             }
         }
@@ -131,16 +92,6 @@ pub fn process_leftover_interrupts(
     late_messages
 }
 
-/// Fold messages that will not get a turn of their own into `agent`'s
-/// history as context, so they stay visible to whatever runs next, and
-/// persist them to the recent-messages log so they survive a restart. Used
-/// when the agent is stopping and there is no next turn to run them as; the
-/// senders were already told these were delivered.
-///
-/// Web clients are not sent a `user_message` echo for them: the echo names the
-/// turn a message started or joined, none runs for these, and the bus the
-/// frame would travel on shuts down right after. History shows them once the
-/// agent is running again.
 pub(super) async fn inject_undelivered_messages(
     agent: &mut Agent,
     messenger: &residuum_background::messaging::AgentMessenger,
@@ -150,8 +101,6 @@ pub(super) async fn inject_undelivered_messages(
 ) {
     let mut senders = Vec::new();
     for message in messages {
-        // Discard the hop entry `process_leftover_interrupts` recorded;
-        // nothing will look it up now.
         messenger.forget_main_hop(&message.id);
         let visibility = if message.origin.endpoint == "background" {
             Visibility::Background
@@ -195,7 +144,6 @@ pub(super) async fn inject_undelivered_messages(
     }
 }
 
-/// Drain remaining interrupts from an interrupt channel after a turn completes.
 pub fn drain_interrupts(interrupt_rx: &mut mpsc::UnboundedReceiver<Interrupt>) -> Vec<Interrupt> {
     let mut leftovers = Vec::new();
     while let Ok(intr) = interrupt_rx.try_recv() {
@@ -204,12 +152,6 @@ pub fn drain_interrupts(interrupt_rx: &mut mpsc::UnboundedReceiver<Interrupt>) -
     leftovers
 }
 
-/// Drain every stop request already queued on `stop_rx` and answer each one
-/// `false` ("nothing is running"), without waiting for more to arrive.
-///
-/// Called right before a turn's own select loop starts watching this same
-/// channel, so anything found here necessarily predates the turn about to
-/// run and cannot have been meant for it.
 fn drain_stale_stop_requests(stop_rx: &mut mpsc::Receiver<StopRequest>) {
     while let Ok(req) = stop_rx.try_recv() {
         tracing::debug!(
@@ -222,10 +164,6 @@ fn drain_stale_stop_requests(stop_rx: &mut mpsc::Receiver<StopRequest>) {
     }
 }
 
-/// Persist new messages and run observation if thresholds are exceeded.
-///
-/// `turn_id` is the correlation id of the turn that produced these messages
-/// (the same id sent as `reply_to` on `turn_started`/`turn_ended`).
 pub async fn persist_and_maybe_observe(
     rt: &mut AgentRuntime,
     new_messages: &[residuum_inference::Message],
@@ -246,17 +184,10 @@ pub async fn persist_and_maybe_observe(
     .await;
     if apply_observe_action(action, observe_deadline, rt.observer.cooldown_secs()) {
         let mem = MemorySubsystems::from_runtime(rt);
-        // Fire-and-forget: the background worker (see
-        // `crate::post_turn`) runs the cycle and reports its
-        // `Agent`-touching tail back over `post_turn_result_rx`, which the
-        // main loop applies — this call must not block the turn that
-        // triggered it from returning, or the whole point of backgrounding
-        // this is lost.
         rt.memory_worker.trigger(mem);
     }
 }
 
-/// Helper to apply observe action and update deadline.
 fn apply_observe_action(
     action: residuum_memory::observer::ObserveAction,
     observe_deadline: &mut Option<tokio::time::Instant>,
@@ -277,13 +208,6 @@ fn apply_observe_action(
     }
 }
 
-/// Stop the turn because the hub asked the agent to stop, exactly the way an
-/// ordinary user stop does — cancel the model-call race and queue the same
-/// `Interrupt::Stopped` marker — so partial turn state is persisted
-/// identically either way.
-///
-/// Split out of `run_agent_turn_with_interrupts` purely to keep that
-/// function's line count down.
 fn stop_turn_for_agent_stop(
     correlation_id: &str,
     stop_token: &CancellationToken,
@@ -298,13 +222,9 @@ fn stop_turn_for_agent_stop(
     }
 }
 
-/// The main turn's interrupt channel as the turn loop drains it, asking
-/// [`QueuedMessages`] about each person's message first: a withdrawn one is
-/// dropped, and one to send now is held back for the turn after this one.
 struct MainInterrupts<'a> {
     rx: mpsc::UnboundedReceiver<Interrupt>,
     queued: &'a QueuedMessages,
-    /// Messages to send now, drained at a checkpoint but kept out of the turn.
     held: Vec<MessageEvent>,
 }
 
@@ -317,9 +237,6 @@ impl<'a> MainInterrupts<'a> {
         }
     }
 
-    /// What is still queued once the turn has ended: the messages to send
-    /// now first, so they start the next turn, then the rest in order, less
-    /// any withdrawn since.
     fn into_leftovers(mut self) -> Vec<Interrupt> {
         let mut leftovers: Vec<Interrupt> =
             self.held.drain(..).map(Interrupt::UserMessage).collect();
@@ -357,14 +274,6 @@ impl InterruptSource for MainInterrupts<'_> {
     }
 }
 
-/// Fold one mid-turn message-bus event into the turn: inject it if it
-/// belongs to main, route it elsewhere (off this select loop) otherwise, or
-/// just log a closed channel / type mismatch. In an agent-started turn
-/// (`follow` is set), a person's message also moves the owner's routing and
-/// the rest of the turn to where it came from (see [`OwnerFollow`]).
-///
-/// Split out of `run_agent_turn_with_interrupts` purely to keep that
-/// function's line count down.
 async fn handle_mid_turn_message(
     next_msg: Result<Option<MessageEvent>, residuum_bus::BusError>,
     agent_messenger: &residuum_background::messaging::AgentMessenger,
@@ -383,20 +292,8 @@ async fn handle_mid_turn_message(
                     let endpoint = EndpointName::from(inbound.origin.endpoint.as_str());
                     follow.owner_wrote_from(endpoint, waiting.1).await;
                 }
-                // A mid-turn message on this topic may be a genuine user
-                // message (hop 0) or an agent message relayed to main (see
-                // `AgentMessenger::deliver_to_main`) — either way, it's one
-                // more input driving this turn. `take_main_hop` is looked up
-                // unconditionally (it removes the entry either way, so a
-                // message this channel refuses shouldn't leave the entry
-                // stranded), but the counter is only bumped once the message
-                // is actually queued into the turn — bumping on a failed
-                // send would claim a hop the turn never actually received.
                 let hop = agent_messenger.take_main_hop(&inbound.id);
                 let id = inbound.id.clone();
-                // A person's message waits until the turn reads it, and is
-                // announced as waiting first: the turn can't read it before
-                // it is on the channel, so its "read" always follows.
                 if let Some(queued_event) = MainConversationEvent::message_queued(&inbound) {
                     let (queued, publisher) = waiting;
                     queued.enqueue(&id);
@@ -409,11 +306,6 @@ async fn handle_mid_turn_message(
                     tracing::warn!("interrupt channel closed, dropping user message mid-turn");
                 }
             } else {
-                // Not main's: a group chat, a channel, or a non-owner DM
-                // message that arrived while main's own turn is running. It
-                // must never be folded into main's turn — route it to its
-                // conversation's session instead, off the turn's own select
-                // loop so a completing target's teardown can't stall main.
                 let router = Arc::clone(conversation_router);
                 residuum_core::util::spawn_in_span(async move { router.route(inbound).await });
             }
@@ -427,13 +319,6 @@ async fn handle_mid_turn_message(
     }
 }
 
-/// Handle one stop request observed while a turn is running: cancel and
-/// queue an `Interrupt::Stopped` marker when it matches this turn, and
-/// reply with whether it did. A `None` (the stop channel itself closed) is
-/// just logged.
-///
-/// Split out of `run_agent_turn_with_interrupts` purely to keep that
-/// function's line count down.
 fn handle_mid_turn_stop_request(
     stop_req: Option<StopRequest>,
     correlation_id: &str,
@@ -468,21 +353,15 @@ fn handle_mid_turn_stop_request(
     }
 }
 
-/// What opens a main turn.
 enum TurnOpening<'m> {
-    /// A message starts the turn and joins history as it starts.
     Message {
         content: &'m str,
         origin: Option<&'m MessageOrigin>,
         images: &'m [ImageData],
     },
-    /// The failed latest turn runs again on the message that started it,
-    /// already in history.
     Rerun(FailedTurn),
 }
 
-/// Refuse a retry that arrived while a turn runs: the failed turn it names
-/// is no longer the latest, or is the one running again.
 fn refuse_retry_mid_turn(request: RetryTurnRequest, correlation_id: &str) {
     tracing::info!(
         requested = %request.id,
@@ -495,10 +374,8 @@ fn refuse_retry_mid_turn(request: RetryTurnRequest, correlation_id: &str) {
         .ok();
 }
 
-/// Why a retry sent while a turn runs is refused.
 const RETRY_REFUSED_TURN_RUNNING: &str = "The agent is working on a reply right now. Wait for it to finish, then try again if you still need to.";
 
-/// Why a retry is refused when the turn it names isn't the latest failed one.
 const RETRY_REFUSED_MOVED_ON: &str = "That message can't be retried anymore because the conversation has moved on. Send it again to try once more.";
 
 #[expect(
@@ -527,37 +404,14 @@ async fn run_agent_turn_with_interrupts(
     Option<Arc<std::sync::Mutex<residuum_agent::subconscious::TurnScratch>>>,
     bool,
 ) {
-    // A request that arrived in the gap between the previous turn's own
-    // select loop below ending and this one starting sits unread in
-    // `stop_rx` until something drains it — nobody polls this channel in
-    // that gap (persisting, triggering the post-turn background workers —
-    // see `crate::post_turn` — updating the idle timer, and so on
-    // all happen there, none of them touching `stop_rx`). Left alone, the
-    // inner loop's `stop_req = stop_rx.recv()` arm would read it as its very
-    // first event and, since a chat command's stop carries `reply_to: None`
-    // ("stop whichever turn is running"), apply it to this brand new,
-    // unrelated turn. Draining and answering every such request here —
-    // before this turn's own loop ever starts
-    // watching the channel — makes that impossible by construction: nothing
-    // left over from before this turn can survive into it.
     drain_stale_stop_requests(stop_rx);
 
-    // Cloned before the mutable borrow below (`agent.hop_counter()` borrows
-    // `agent`, and `process_message` needs it mutably) — a clone still
-    // refers to the same shared cell, so mid-turn bumps below and reads from
-    // the `message_agent`/`subagent_spawn` tools stay in sync regardless.
     let hop_counter = agent.hop_counter().clone();
     let (interrupt_tx, interrupt_rx) = mpsc::unbounded_channel::<Interrupt>();
     let mut interrupt_rx = MainInterrupts::new(interrupt_rx, queued);
     let watch = subconscious
         .map(|s| residuum_agent::subconscious::SubconsciousWatch::new(s, interrupt_tx.clone()));
-    // Cancelled to abort an in-flight model call immediately; a stop that
-    // lands between calls is instead observed via `Interrupt::Stopped` at
-    // the tool loop's checkpoint (see `execute_turn`).
     let stop_token = CancellationToken::new();
-    // Set when the hub asks the agent to stop while this turn is running, so
-    // the caller can shut the agent down — the request itself is already
-    // consumed here and won't arrive again for the outer event loop.
     let mut stop_requested = false;
     let turn_result = {
         let interrupts = &mut interrupt_rx;
@@ -620,12 +474,7 @@ async fn run_agent_turn_with_interrupts(
                 stop_req = stop_rx.recv() => {
                     handle_mid_turn_stop_request(stop_req, correlation_id, &stop_token, &interrupt_tx);
                 }
-                // Refused rather than held: by the time this turn ends, the
-                // failed turn it names is no longer the latest.
                 Some(request) = retry_rx.recv() => refuse_retry_mid_turn(request, correlation_id),
-                // The hub's stop request stops this turn the same way a user
-                // stop does (see `stop_turn_for_agent_stop`) and records that
-                // it fired, for the caller to act on once this call returns.
                 _ = agent_stop_rx.recv() => {
                     stop_turn_for_agent_stop(correlation_id, &stop_token, &interrupt_tx);
                     stop_requested = true;
@@ -634,8 +483,6 @@ async fn run_agent_turn_with_interrupts(
         }
     };
 
-    // Capture the mid-turn scratch before the watch drops so the end-of-turn
-    // pass can triage against what already happened this turn.
     let scratch = watch
         .as_ref()
         .map(residuum_agent::subconscious::SubconsciousWatch::scratch);
@@ -646,16 +493,7 @@ async fn run_agent_turn_with_interrupts(
     (turn_result, leftover_interrupts, scratch, stop_requested)
 }
 
-/// Fallback learning trigger for users running without the subconscious
-/// learning path: after a configured number of foreground turns, spawn the
-/// `learner` sub-agent to review the recent conversation.
-///
-/// Skipped when the subconscious learning path is active (that path owns
-/// spawning, so this avoids double-spawns) or when `nudge_after_turns` is zero.
-/// Shares the subconscious learning cooldown.
 async fn maybe_nudge_learner(rt: &mut AgentRuntime) {
-    // When the subconscious learning path is active it already spawns from
-    // detected signals; the dumb fallback must stay out of its way.
     if rt.subconscious.learning_enabled() {
         return;
     }
@@ -683,20 +521,12 @@ async fn maybe_nudge_learner(rt: &mut AgentRuntime) {
     }
 }
 
-/// Publish one event of the main agent's conversation.
 async fn publish_main_conversation(publisher: &Publisher, event: MainConversationEvent) {
     if let Err(e) = publisher.publish(topics::MainConversation, event).await {
         tracing::warn!(error = %e, "failed to publish main conversation event");
     }
 }
 
-/// Announce a turn: its opening person's or agent's message (`opening`,
-/// absent for a rerun, whose message was announced when it first ran) and
-/// its start to the main conversation, whatever endpoint it is delivered to,
-/// and `TurnLifecycleEvent::Started` to the output endpoint when that is a
-/// chat interface (see [`chat_interface_endpoint`]).
-/// Also spawns the turn-start checkpoint, which captures the workspace state
-/// before anything this turn does, attributed as an outside edit.
 async fn publish_turn_started(
     rt: &AgentRuntime,
     output_endpoint: Option<&EndpointName>,
@@ -726,9 +556,6 @@ async fn publish_turn_started(
         ));
 }
 
-/// Publish a `TurnLifecycleEvent::Started` to the chat interface a turn is
-/// delivered to, for its typing indicator. Nothing is published when the turn
-/// is delivered to the web UI or nowhere (see [`chat_interface_endpoint`]).
 async fn publish_turn_started_to_chat_interface(
     publisher: &Publisher,
     output_endpoint: Option<&EndpointName>,
@@ -748,7 +575,6 @@ async fn publish_turn_started_to_chat_interface(
     }
 }
 
-/// Publish a `TurnLifecycleEvent::Ended` closing the turn on an endpoint.
 async fn publish_turn_ended(publisher: &Publisher, endpoint: &EndpointName, correlation_id: &str) {
     if let Err(e) = publisher
         .publish(
@@ -763,9 +589,6 @@ async fn publish_turn_ended(publisher: &Publisher, endpoint: &EndpointName, corr
     }
 }
 
-/// Build the checkpoint context for a main-agent turn boundary. `correlation_id`
-/// (the inbound message id) doubles as the turn id — main has no separate
-/// run id, so `run_id` is left unset.
 fn main_turn_checkpoint_context(
     correlation_id: &str,
     trigger: residuum_checkpoints::CheckpointTrigger,
@@ -780,8 +603,6 @@ fn main_turn_checkpoint_context(
     }
 }
 
-/// A short, one-line description of a main-agent turn's outcome, for the
-/// turn-end checkpoint's commit message.
 fn main_turn_end_summary(turn_result: &anyhow::Result<Vec<String>>) -> String {
     match turn_result {
         Ok(texts) => texts.first().filter(|t| !t.is_empty()).map_or_else(
@@ -792,8 +613,6 @@ fn main_turn_end_summary(turn_result: &anyhow::Result<Vec<String>>) -> String {
     }
 }
 
-/// Spawn the turn-end checkpoint, attributed with a short summary of the
-/// turn's outcome.
 fn spawn_main_turn_end_checkpoint(
     rt: &AgentRuntime,
     correlation_id: &str,
@@ -807,27 +626,6 @@ fn spawn_main_turn_end_checkpoint(
         ));
 }
 
-/// Translate a completed turn's result into the bus events clients observe.
-///
-/// On success, emits one `ResponseEvent` per reply text to the output endpoint,
-/// then closes the turn with `TurnLifecycleEvent::Ended`. When there is no output
-/// endpoint (e.g. a background turn with no prior user endpoint), success publishes
-/// nothing to an endpoint. The web UI's endpoint is no output endpoint for this
-/// purpose: it has no subscriber to a turn's events, and reads the reply, a failure
-/// and the end of the turn from the main conversation and the system channel (see
-/// [`chat_interface_endpoint`]).
-///
-/// However the turn ended, the main conversation gets `TurnEnded` last: it
-/// follows every event the turn published there, and tells a client following
-/// the conversation that the turn is over, whichever endpoint it was
-/// delivered to.
-///
-/// On failure, logs the error, auto-reports the failure through
-/// `failure.tracing_service` (a no-op unless the user has enabled auto error
-/// reporting), and publishes an `ErrorEvent` to the output endpoint, so a chat
-/// interface can answer the conversation that started the turn, and on the
-/// system notification channel regardless of output endpoint, for the web UI.
-/// If there is an output endpoint it still closes the turn with `Ended`.
 async fn publish_turn_outcome(
     turn_result: anyhow::Result<Vec<String>>,
     publisher: &Publisher,
@@ -908,16 +706,12 @@ async fn publish_turn_outcome(
     .await;
 }
 
-/// Where a failed turn reports: the tracing service that auto-reports it, the
-/// config its bug report is gathered from, and the running build.
 struct TurnFailureReport<'a> {
     tracing_service: &'a TracingService,
     cfg: &'a Config,
     build: residuum_core::build_info::BuildInfo,
 }
 
-/// The turn's last reply that has text, read before [`publish_turn_outcome`]
-/// consumes the result.
 fn last_reply_text(result: &anyhow::Result<Vec<String>>) -> Option<String> {
     result
         .as_ref()
@@ -928,9 +722,6 @@ fn last_reply_text(result: &anyhow::Result<Vec<String>>) -> Option<String> {
         .cloned()
 }
 
-/// Tell the activity tracker a main turn is over. Its replies were counted
-/// read or unread as each went out (the agent's reply audience); this runs
-/// the turn hook. Called exactly once per main turn, whatever its outcome.
 fn report_turn_end(
     activity: &ActivityTracker,
     last_reply: Option<String>,
@@ -940,8 +731,6 @@ fn report_turn_end(
     activity.main_turn_ended(user_message, last_reply, visibility);
 }
 
-/// Where a background turn's output goes: the `switch_endpoint` override if
-/// the agent set one since the user last spoke, else the user's last endpoint.
 fn background_output_endpoint(
     switched_to: Option<EndpointName>,
     last_user_endpoint: Option<&EndpointName>,
@@ -949,9 +738,6 @@ fn background_output_endpoint(
     switched_to.or_else(|| last_user_endpoint.cloned())
 }
 
-/// Sort out the interrupts still queued when a main turn ended: messages
-/// among them are queued to run as turns of their own, or, when the agent is
-/// stopping and no turn will follow, added to history as context.
 async fn defer_late_messages(rt: &mut AgentRuntime, leftovers: Vec<Interrupt>, stopping: bool) {
     let late_messages = process_leftover_interrupts(leftovers, &mut rt.agent, &rt.agent_messenger);
     if stopping {
@@ -968,10 +754,6 @@ async fn defer_late_messages(rt: &mut AgentRuntime, leftovers: Vec<Interrupt>, s
     }
 }
 
-/// Where a turn's replies go. Background turns go wherever `switch_endpoint`
-/// last pointed them, else `last_output_endpoint` (the user's last endpoint,
-/// or the idle channel once the idle transition has run); user turns derive
-/// from the origin and become the new last endpoint.
 fn resolve_output_endpoint(
     last_output_endpoint: &mut Option<EndpointName>,
     output_topic_override_tx: &tokio::sync::watch::Sender<Option<EndpointName>>,
@@ -989,8 +771,6 @@ fn resolve_output_endpoint(
     Some(ep)
 }
 
-/// The owner wrote from `endpoint`: later agent-started turns go there, and
-/// any `switch_endpoint` override is cleared so they follow the owner.
 fn follow_owner_to(
     last_output_endpoint: &mut Option<EndpointName>,
     output_topic_override_tx: &tokio::sync::watch::Sender<Option<EndpointName>>,
@@ -1000,8 +780,6 @@ fn follow_owner_to(
     *last_output_endpoint = Some(endpoint.clone());
 }
 
-/// The owner was active at `now`: the idle transition waits `timeout` from
-/// then. A zero timeout leaves idle off.
 fn reset_idle_timer(
     timeout: std::time::Duration,
     now: tokio::time::Instant,
@@ -1015,7 +793,6 @@ fn reset_idle_timer(
     *idle_deadline = Some(now + timeout);
 }
 
-/// The owner was active just now: restart the idle timer from now.
 fn note_owner_active_now(rt: &mut AgentRuntime, idle_deadline: &mut Option<tokio::time::Instant>) {
     reset_idle_timer(
         rt.cfg.idle.timeout,
@@ -1025,14 +802,7 @@ fn note_owner_active_now(rt: &mut AgentRuntime, idle_deadline: &mut Option<tokio
     );
 }
 
-/// An agent-started turn's hold on the routing an owner's message moves.
-/// When a person's message reaches main while the turn runs, it joins the
-/// turn as any mid-turn message does, and the owner counts as back on that
-/// interface from that moment: later agent-started turns go there, the idle
-/// timer restarts, and the rest of this turn (intermediate text, the reply,
-/// a failure, the typing indicator) is delivered there too.
 struct OwnerFollow<'a> {
-    /// The turn's own output endpoint, read each time the turn publishes.
     output: &'a LiveOutputEndpoint,
     correlation_id: &'a str,
     last_output_endpoint: &'a mut Option<EndpointName>,
@@ -1043,7 +813,6 @@ struct OwnerFollow<'a> {
 }
 
 impl OwnerFollow<'_> {
-    /// The owner wrote from `endpoint` while this turn runs.
     async fn owner_wrote_from(&mut self, endpoint: EndpointName, publisher: &Publisher) {
         follow_owner_to(
             self.last_output_endpoint,
@@ -1066,7 +835,6 @@ impl OwnerFollow<'_> {
             to = %endpoint,
             "the owner wrote mid-turn, moving the agent-started turn's output to them"
         );
-        // The chat it was going to stops showing it; the owner's chat starts.
         if let Some(old) = chat_interface_endpoint(previous.as_ref()) {
             publish_turn_ended(publisher, old, self.correlation_id).await;
         }
@@ -1075,38 +843,20 @@ impl OwnerFollow<'_> {
     }
 }
 
-/// Ready the agent for a turn's kickoff message: the context its interface
-/// supplied, and its hop count.
 fn prepare_kickoff(rt: &mut AgentRuntime, message: &MessageEvent) {
     if let Some(context) = message.context.as_deref() {
         rt.agent.inject_system_message(context);
     }
 
-    // This turn's kickoff input's hop count: 0 for a genuine external
-    // message, or the hop count recorded when an agent message was
-    // delivered to main (see `AgentMessenger::deliver_to_main`), or restored
-    // for a message that arrived after the previous turn's last drain (see
-    // `process_leftover_interrupts`). Folded in with `bump`, not overwritten
-    // with `set`, so the counter never drops below what the kickoff carries.
     let kickoff_hop = rt.agent_messenger.take_main_hop(&message.id);
     rt.agent.hop_counter().bump(kickoff_hop);
 }
 
-/// What starts a main turn in the event loop.
 enum MainTurnStart<'m> {
-    /// A message reached the main conversation.
     Message(&'m MessageEvent),
-    /// A person asked to run the failed latest turn again.
     Rerun(FailedTurn),
 }
 
-/// Handle an inbound user message: run agent turn, persist, observe, and process leftovers.
-///
-/// Returns whether the hub's stop request interrupted this turn — the caller
-/// (`handle_bus_event`) must shut the agent down, since the request was
-/// already consumed while stopping the turn (see
-/// `run_agent_turn_with_interrupts`) and won't arrive again for the event
-/// loop's own idle-time handling of it.
 #[tracing::instrument(skip_all, fields(correlation_id = %message.id, origin = %message.origin.endpoint))]
 pub async fn handle_inbound_message(
     message: MessageEvent,
@@ -1126,20 +876,6 @@ pub async fn handle_inbound_message(
     .await
 }
 
-/// Answer a request, made while no turn runs, to run the failed latest main
-/// turn again: rerun it on the message already in history under the same
-/// correlation id, or refuse when the request names any other turn (one that
-/// never failed, was retried already, or is no longer the latest). Messages
-/// waiting to start turns of their own never meet a retry here: the idle loop
-/// runs them first, and the turn they start moves the conversation on. The
-/// answer goes back on the request's channel before the rerun starts.
-///
-/// Returns whether the hub's stop request interrupted the rerun, as
-/// [`handle_inbound_message`] does.
-/// Drop the error notes already queued when a rerun is accepted. They report
-/// the failed attempt, which the failure card already shows; injected after
-/// the rerun's reply, they would stay in the conversation as a stale note.
-/// Returns how many were dropped.
 fn discard_queued_error_notes(errors: &mut Subscriber<ErrorEvent>) -> usize {
     errors.drain().len()
 }
@@ -1180,11 +916,6 @@ pub async fn handle_retry_request(
     .await
 }
 
-/// Where a main turn's messages begin in history (`before` is the history
-/// length before the turn was opened), the text of the message that opened
-/// it, and how the turn is opened. A new message's kickoff is prepared here;
-/// a rerun's message is already in history, so its turn begins at that
-/// message and takes in the failed attempt's work after it.
 fn open_main_turn<'a>(
     start: MainTurnStart<'a>,
     before: usize,
@@ -1217,8 +948,6 @@ fn open_main_turn<'a>(
     (turn_start, opening_text, opening)
 }
 
-/// The end-of-turn evaluation a person's turn gets: the subconscious pass over
-/// what the turn added to history, then the learner nudge.
 async fn evaluate_person_turn(
     rt: &mut AgentRuntime,
     turn_start: usize,
@@ -1235,12 +964,6 @@ async fn evaluate_person_turn(
     maybe_nudge_learner(rt).await;
 }
 
-/// Run one main turn from its start to its leftovers: announce it, run it
-/// with interrupts, persist what it added to history, publish its outcome,
-/// and queue the messages that arrived too late for it. `reply_id` is the
-/// turn's correlation id.
-///
-/// Returns whether the hub's stop request interrupted the turn.
 async fn run_main_turn(
     start: MainTurnStart<'_>,
     reply_id: &str,
@@ -1263,8 +986,6 @@ async fn run_main_turn(
         is_background,
     );
 
-    // Held for the whole turn, so the rail and Home show it busy until it
-    // ends, however the turn ends.
     let _busy = rt.activity.main_turn();
 
     let opening_message = match &start {
@@ -1287,7 +1008,6 @@ async fn run_main_turn(
     let prompt_ctx = ctx_strings.as_prompt_context();
 
     let live_output = LiveOutputEndpoint::new(output_endpoint);
-    // A turn no person started follows the owner when one writes mid-turn.
     let follow = is_background.then_some(OwnerFollow {
         output: &live_output,
         correlation_id: reply_id,
@@ -1317,14 +1037,10 @@ async fn run_main_turn(
             follow,
         )
         .await;
-    // Where the turn ended up delivering: the owner may have moved it.
     let delivered_to = live_output.get();
 
     spawn_main_turn_end_checkpoint(rt, reply_id, &turn_result);
 
-    // The turn goes into history before clients hear it ended, so a page that
-    // reloads history on `turn_ended` finds the turn there. Only what this
-    // run added is new: a rerun's message was recorded when it first ran.
     let new_messages: Vec<_> = rt.agent.messages_since(before).to_vec();
     persist_and_maybe_observe(
         rt,
@@ -1350,19 +1066,15 @@ async fn run_main_turn(
     )
     .await;
 
-    // A background turn was started by no user message.
     let user_message = (!is_background).then_some(opening_text);
     report_turn_end(&rt.activity, last_reply, user_message, visibility);
 
-    // Background turns (including subconscious correction turns) are never
-    // evaluated — this gate is what bounds the correction feedback loop.
     if !is_background {
         evaluate_person_turn(rt, turn_start, reply_id, subconscious_scratch.as_ref()).await;
     }
 
     defer_late_messages(rt, leftover_interrupts, stop_requested).await;
 
-    // Only update idle timer for user messages, not background turns.
     if !is_background {
         note_owner_active_now(rt, idle_deadline);
     }
@@ -1382,14 +1094,10 @@ mod tests {
 
     const TEST_TZ: chrono_tz::Tz = chrono_tz::Tz::UTC;
 
-    /// A chat interface's endpoint: the kind a turn's events are published to.
     fn endpoint() -> EndpointName {
         EndpointName::from("telegram")
     }
 
-    /// A `TracingService` with auto error reporting off — `on_error` calls
-    /// through it are a guaranteed no-op, for tests that don't care about
-    /// auto-reporting behavior.
     fn test_tracing_service() -> TracingService {
         let (_, handle) = SpanBufferLayer::new(&SpanBufferConfig::default());
         TracingService::new(residuum_config::TracingConfig::default(), handle)
@@ -1397,10 +1105,6 @@ mod tests {
 
     #[test]
     fn interrupt_channel_accepts_more_than_the_old_bounded_capacity() {
-        // Regression: the interrupt channel used to be a 32-slot bounded
-        // channel, silently dropping a mid-turn user message (with only a
-        // warn log) once a long turn's queue filled up. It's unbounded now,
-        // so sending well past that old limit must never fail or drop.
         const PAST_OLD_CAPACITY: usize = 100;
         let (tx, mut rx) = mpsc::unbounded_channel::<Interrupt>();
         for _ in 0..PAST_OLD_CAPACITY {
@@ -1434,8 +1138,6 @@ mod tests {
         EndpointName::from(residuum_config::WEB_UI_ENDPOINT)
     }
 
-    /// The web UI and Telegram, both interactive, as a hub with Telegram
-    /// configured registers them.
     fn registry_with_telegram() -> residuum_bus::EndpointRegistry {
         let interactive = |id: &str| residuum_bus::EndpointEntry {
             id: residuum_bus::EndpointId::from(id),
@@ -1458,15 +1160,10 @@ mod tests {
         }
     }
 
-    /// An agent-started main turn: a teammate's or session's message to main.
     fn agent_started() -> MessageOrigin {
         residuum_bus::MessageEvent::from_background(String::new()).origin
     }
 
-    /// The owner talks on Telegram and goes quiet; with no `idle_channel`
-    /// set, the idle transition sends agent-started turns to the web, so the
-    /// Telegram adapter is handed none of such a turn's events. Once the
-    /// owner speaks on Telegram again, routing follows them as before.
     #[tokio::test]
     async fn after_idle_with_the_default_channel_an_agent_started_turn_reaches_only_the_web() {
         let (override_tx, _override_rx) = tokio::sync::watch::channel(None);
@@ -1541,8 +1238,6 @@ mod tests {
         );
     }
 
-    /// An `idle_channel` naming a chat is the owner's choice to have
-    /// agent-started turns reach that chat while they are away.
     #[tokio::test]
     async fn after_idle_an_explicit_chat_channel_receives_agent_started_turns() {
         let (override_tx, _override_rx) = tokio::sync::watch::channel(None);
@@ -1581,10 +1276,6 @@ mod tests {
         assert_eq!(response.correlation_id, "bg-2");
     }
 
-    /// The owner's message moves everything the moment it arrives: where
-    /// later agent-started turns go, the `switch_endpoint` override, the idle
-    /// timer, and the running turn's own output, with the typing indicator
-    /// moving from the chat it was on to the owner's.
     #[tokio::test]
     async fn an_owner_message_mid_turn_moves_routing_and_the_turn_at_once() {
         let handle = residuum_bus::spawn_broker();
@@ -1656,9 +1347,6 @@ mod tests {
         );
     }
 
-    /// A provider for a three-call turn: the first call announces it started
-    /// and waits for the gate, then calls a tool; the second writes text
-    /// beside another tool call (intermediate text); the third answers.
     struct GatedThreeCallProvider {
         started: Arc<tokio::sync::Notify>,
         gate: Arc<tokio::sync::Notify>,
@@ -1705,7 +1393,6 @@ mod tests {
         }
     }
 
-    /// The routing state an agent-started turn left behind, with the rig.
     struct AgentStartedTurnEnd {
         leftovers: Vec<Interrupt>,
         last_output_endpoint: Option<EndpointName>,
@@ -1714,10 +1401,6 @@ mod tests {
         rig: TurnRig,
     }
 
-    /// Run an agent-started turn as the event loop does once the owner, who
-    /// last wrote on Telegram, has gone idle with the default idle channel:
-    /// it starts on the web, may follow the owner, and publishes its outcome
-    /// to wherever it ended up.
     async fn agent_started_turn_after_idle(
         mut rig: TurnRig,
         idle_timeout: std::time::Duration,
@@ -1790,11 +1473,6 @@ mod tests {
         }
     }
 
-    /// After the idle period an agent-started turn delivers to the web. The
-    /// owner writes on Telegram while it runs: the message joins the turn,
-    /// and from then on the turn's intermediate text, its reply and its end
-    /// go to Telegram, routing stays on Telegram, and the idle timer restarts
-    /// from the message's arrival.
     #[tokio::test]
     async fn an_owner_chat_message_during_an_agent_started_turn_after_idle_takes_the_turn_there() {
         let gate = Arc::new(tokio::sync::Notify::new());
@@ -1879,9 +1557,6 @@ mod tests {
         assert_eq!(ended_turn.idle_deadline, Some(at + timeout));
     }
 
-    /// Only a person moves routing: a relayed background message and a
-    /// teammate's message joining an agent-started turn after idle reach the
-    /// model, but leave routing, the idle timer and the turn's output alone.
     #[tokio::test]
     async fn agent_and_background_messages_during_an_agent_started_turn_leave_routing_alone() {
         let gate = Arc::new(tokio::sync::Notify::new());
@@ -1928,8 +1603,6 @@ mod tests {
             )
             .await
             .unwrap();
-        // The teammate's hop count shows the turn took its message in, and
-        // the relayed result was published, and so taken in, before it.
         wait::until_true("the turn to take both messages in", || {
             hop_counter.get() >= 5
         })
@@ -1963,9 +1636,6 @@ mod tests {
         assert_no_event(&bus, &mut chat_responses).await;
     }
 
-    /// Assert `sub` was sent nothing. A bus barrier proves every event published
-    /// before it has been handed to every subscriber, so what `sub` holds is
-    /// everything it was sent.
     async fn assert_no_event<E: Clone + Send + Sync + 'static>(
         bus: &residuum_bus::BusHandle,
         sub: &mut Subscriber<E>,
@@ -2108,9 +1778,6 @@ mod tests {
         assert_no_event(&handle, &mut web).await;
     }
 
-    /// The web UI follows a turn through the main conversation and the system
-    /// channel, so nothing is published to its endpoint topic, where no
-    /// subscriber reads a turn's events.
     #[tokio::test]
     async fn a_turn_delivered_to_the_web_ui_publishes_nothing_to_its_endpoint_topic() {
         let ws = EndpointName::from(residuum_config::WEB_UI_ENDPOINT);
@@ -2171,8 +1838,6 @@ mod tests {
         }
     }
 
-    /// Run `outcome` through `publish_turn_outcome` and say which turn the
-    /// main conversation ended.
     async fn main_conversation_end_of(
         outcome: anyhow::Result<Vec<String>>,
         output_endpoint: Option<&EndpointName>,
@@ -2196,7 +1861,6 @@ mod tests {
         )
         .await;
 
-        // The bus barrier proves every event the turn published has reached `main`.
         bus_barrier(&handle).await;
         match main.drain().into_iter().next() {
             Some(MainConversationEvent::TurnEnded { turn_id }) => Some(turn_id),
@@ -2380,8 +2044,6 @@ mod tests {
         )
         .await;
 
-        // The mock's `.expect(1)` (checked on drop) is the real assertion —
-        // this recv just drains the event the Err arm always publishes.
         errors.recv().await.unwrap().unwrap();
     }
 
@@ -2418,9 +2080,6 @@ mod tests {
             .await
             .unwrap();
 
-        // An `Ok` outcome is what a user-cancelled or otherwise expected turn
-        // ending looks like by the time it reaches `publish_turn_outcome` —
-        // `execute_turn` never turns those into `Err` (see turn.rs).
         publish_turn_outcome(
             Ok(vec!["done".into()]),
             &publisher,
@@ -2438,9 +2097,6 @@ mod tests {
         lifecycle.recv().await.unwrap().unwrap();
     }
 
-    /// A provider that blocks on a shared `Notify` until the test releases
-    /// it, so a mid-turn message can be reliably injected and observed
-    /// before the turn's model call resolves — no sleep-based timing.
     struct GatedProvider {
         gate: Arc<tokio::sync::Notify>,
         response: String,
@@ -2467,8 +2123,6 @@ mod tests {
         }
     }
 
-    /// A `GatedProvider` that also announces when its model call begins, so a
-    /// test can act strictly after the turn's last checkpoint drain.
     struct AnnouncingGatedProvider {
         started: Arc<tokio::sync::Notify>,
         inner: GatedProvider,
@@ -2530,8 +2184,6 @@ mod tests {
             gate: Arc::clone(&gate),
             response: "done".to_string(),
         });
-        // The turn's kickoff input's hop count, as `handle_inbound_message`
-        // would set it from a looked-up `take_main_hop`.
         agent.hop_counter().set(2);
         let hop_counter = agent.hop_counter().clone();
 
@@ -2572,11 +2224,6 @@ mod tests {
             agent
         });
 
-        // Deliver an agent message to main with a higher hop count than the
-        // kickoff while the turn is blocked on the (gated) model call — it
-        // must be observed as a mid-turn arrival and bump the counter. Uses
-        // the same `messenger` instance the spawned turn reads hop counts
-        // from (`take_main_hop` state lives on the instance, not the bus).
         messenger
             .send(
                 "main",
@@ -2590,8 +2237,6 @@ mod tests {
             .await
             .unwrap();
 
-        // Poll the shared hop counter until the mid-turn bump lands, rather
-        // than sleeping a guessed duration.
         wait::until_true(
             "the hop counter to bump to 7 once the mid-turn message is drained",
             || hop_counter.get() >= 7,
@@ -2629,8 +2274,6 @@ mod tests {
         ));
 
         let gate = Arc::new(tokio::sync::Notify::new());
-        // Permit stored ahead of time (Tokio's `Notify` keeps one), so the
-        // model call returns immediately once awaited below.
         gate.notify_one();
         let mut agent = test_agent(GatedProvider {
             gate,
@@ -2643,10 +2286,6 @@ mod tests {
         let (_agent_stop_tx, mut agent_stop_rx) = mpsc::channel::<()>(1);
         let (_retry_tx, mut retry_rx) = mpsc::channel::<RetryTurnRequest>(1);
 
-        // A stop request that arrived in the gap between the *previous*
-        // turn's own select loop ending and this turn's own select loop
-        // starting to watch `stop_rx` — exactly the window nothing used to
-        // drain.
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
         stop_tx
             .send(StopRequest {
@@ -2689,9 +2328,6 @@ mod tests {
             .expect("the new turn must complete normally, not be cancelled by the stale request");
     }
 
-    /// A group-chat message on "chan-1", sent by the owner — the owner
-    /// speaking in a shared conversation still routes to that conversation's
-    /// session, not to main.
     fn group_chat_message() -> residuum_bus::MessageEvent {
         residuum_bus::MessageEvent {
             id: "group-msg-1".to_string(),
@@ -2779,16 +2415,12 @@ mod tests {
             agent
         });
 
-        // A group-chat message — even one the owner sent — must not reach
-        // main's live turn.
         handle
             .publisher()
             .publish(residuum_bus::topics::UserMessage, group_chat_message())
             .await
             .unwrap();
 
-        // The router should start a session for this conversation instead of
-        // ever reaching main's turn.
         let address =
             residuum_background::registry::conversation_session_address("discord", "chan-1");
         let spawn_event = next_event(
@@ -2819,9 +2451,6 @@ mod tests {
         );
     }
 
-    /// A cheap `Agent` for exercising `process_leftover_interrupts` directly
-    /// — none of these tests ever run a turn, so the provider is never
-    /// called.
     fn hop_test_agent() -> Agent {
         test_agent(GatedProvider {
             gate: Arc::new(tokio::sync::Notify::new()),
@@ -2846,8 +2475,6 @@ mod tests {
         }
     }
 
-    /// A messenger over a throwaway bus, for tests that call
-    /// `process_leftover_interrupts` directly.
     fn test_messenger() -> Arc<residuum_background::messaging::AgentMessenger> {
         let handle = residuum_bus::spawn_broker();
         let dir = tempfile::tempdir().unwrap();
@@ -2874,9 +2501,6 @@ mod tests {
     async fn no_leftovers_resets_the_hop_counter_for_a_clean_next_turn() {
         let mut agent = hop_test_agent();
         let messenger = test_messenger();
-        // What a turn's own mid-turn bumps left behind for messages it
-        // actually consumed and already replied to — nothing should carry
-        // forward from that once the turn is over.
         agent.hop_counter().bump(9);
 
         let late = process_leftover_interrupts(vec![], &mut agent, &messenger);
@@ -2892,9 +2516,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_leftover_user_message_is_returned_to_start_a_turn_and_not_injected() {
-        // A message that arrived after the turn's last checkpoint drain: no
-        // model call saw it, so it must start a turn of its own rather than
-        // sit in history as context nobody acts on.
         let mut agent = hop_test_agent();
         let messenger = test_messenger();
         agent.hop_counter().bump(9);
@@ -2982,7 +2603,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_leftover_subconscious_note_degrades_to_history_and_starts_no_turn() {
-        // A subconscious correction has no sender waiting on a reply.
         let mut agent = hop_test_agent();
         let messenger = test_messenger();
         agent.hop_counter().bump(9);
@@ -3051,7 +2671,6 @@ mod tests {
         )
         .await;
 
-        // A restart rebuilds history from this file.
         let persisted =
             residuum_memory::recent_messages::load_recent_messages(&layout.recent_messages_json())
                 .await
@@ -3069,11 +2688,6 @@ mod tests {
 
     #[tokio::test]
     async fn drained_bus_messages_are_folded_in_with_deferred_inbound_at_shutdown() {
-        // Mirrors `graceful_shutdown`'s undelivered-message assembly: a
-        // message still waiting for its turn (`deferred_inbound`) is chained
-        // with whatever was published to the bus but never read
-        // (`agent_subscriber.drain()`) before both are folded into history
-        // and persisted together.
         let mut agent = hop_test_agent();
         let messenger = test_messenger();
         let dir = tempfile::tempdir().unwrap();
@@ -3093,9 +2707,6 @@ mod tests {
             .publish(topics::UserMessage, on_bus)
             .await
             .unwrap();
-        // The broker handles commands one at a time in order, so once a
-        // second subscriber has seen this marker, the broker has already
-        // finished offering the event above to `agent_subscriber` too.
         let mut barrier: Subscriber<MessageEvent> =
             handle.subscribe(topics::UserMessage).await.unwrap();
         let mut marker = sample_inbound("marker");
@@ -3143,8 +2754,6 @@ mod tests {
     async fn a_late_user_message_after_teammate_traffic_restores_hop_zero() {
         let mut agent = hop_test_agent();
         let messenger = test_messenger();
-        // A teammate message the turn consumed mid-turn pushed the shared
-        // counter to 9; the user message that arrived afterwards carried none.
         agent.hop_counter().bump(9);
 
         let late = process_leftover_interrupts(
@@ -3161,8 +2770,6 @@ mod tests {
         );
     }
 
-    /// Everything one main turn needs besides the agent's model, held
-    /// together so a test can hand it to a task and take it back.
     struct TurnRig {
         agent: Agent,
         subscriber: Subscriber<MessageEvent>,
@@ -3173,9 +2780,6 @@ mod tests {
         messenger: Arc<residuum_background::messaging::AgentMessenger>,
         router: Arc<residuum_background::ConversationRouter>,
         queued: Arc<QueuedMessages>,
-        /// Kept alive for the rig's lifetime: the broker, and the stop
-        /// channels' senders (a closed channel would make the turn's select
-        /// arm for it fire on every poll).
         keep_alive: (
             residuum_bus::BusHandle,
             mpsc::Sender<StopRequest>,
@@ -3231,7 +2835,6 @@ mod tests {
             self.keep_alive.3.clone()
         }
 
-        /// Run one turn and return the interrupts left queued when it ended.
         async fn run_turn(
             &mut self,
             content: &str,
@@ -3252,8 +2855,6 @@ mod tests {
             leftovers
         }
 
-        /// Run one turn opened by `opening`, and return its result and the
-        /// interrupts left queued when it ended.
         async fn run(
             &mut self,
             opening: TurnOpening<'_>,
@@ -3282,10 +2883,6 @@ mod tests {
         }
     }
 
-    /// A provider whose model calls each announce they started and then wait
-    /// for the gate: the first answers with a call to a tool (which runs and
-    /// fails, being unknown), so a checkpoint follows it, and the second
-    /// answers with text.
     struct ToolThenTextProvider {
         started: Arc<tokio::sync::Notify>,
         gate: Arc<tokio::sync::Notify>,
@@ -3326,7 +2923,6 @@ mod tests {
         }
     }
 
-    /// A person's message from the web UI.
     fn person_message(id: &str, content: &str) -> MessageEvent {
         MessageEvent {
             id: id.to_string(),
@@ -3344,10 +2940,6 @@ mod tests {
         }
     }
 
-    /// What became of a person's message sent while the first model call of
-    /// a tool-then-text turn ran, after `act` did something to it once it
-    /// was announced as waiting: the turn's leftovers, the main
-    /// conversation's events naming it, and the rig, for its history.
     async fn while_a_message_waits(
         act: impl FnOnce(&QueuedMessages, &str),
     ) -> (Vec<Interrupt>, Vec<String>, TurnRig) {
@@ -3368,8 +2960,6 @@ mod tests {
             let leftovers = rig.run_turn("kickoff", "corr-wait", None).await;
             (leftovers, rig)
         });
-        // Past the checkpoint before the first model call, so the message
-        // waits for the one after the tool call.
         wait::guarded("the first model call to start", started.notified()).await;
         publisher
             .publish(
@@ -3392,7 +2982,6 @@ mod tests {
             }
         }
         act(&queued, "m1");
-        // The tool call, then the reply.
         gate.notify_one();
         gate.notify_one();
         let (leftovers, ended) = wait::guarded("the turn to end", turn).await.unwrap();
@@ -3450,8 +3039,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_message_arriving_during_the_final_model_call_starts_a_turn_and_is_recorded_once() {
-        // The first turn's only model call is also its last: it answers with
-        // text and no tool calls, so no checkpoint follows it.
         let gate = Arc::new(tokio::sync::Notify::new());
         let started = Arc::new(tokio::sync::Notify::new());
         let mut first_rig = TurnRig::new(AnnouncingGatedProvider {
@@ -3472,13 +3059,7 @@ mod tests {
             (first_rig, late)
         });
 
-        // The turn's only checkpoint drain precedes the model call, so once
-        // the call has started any message is necessarily late.
         wait::guarded("the first turn to reach its model call", started.notified()).await;
-        // A teammate's message lands while the model is still producing the
-        // turn's final answer. Its hop count doubles as the signal that the
-        // turn's select loop has taken it into the interrupt queue, so the
-        // gate is released only once the message is provably in flight.
         messenger
             .send(
                 "main",
@@ -3517,7 +3098,6 @@ mod tests {
             "requeueing is local, not a second broadcast on the bus"
         );
 
-        // The event loop runs it as the next turn's kickoff.
         assert_eq!(messenger.take_main_hop(&message.id), 5);
         gate.notify_one();
         let before = rig.agent.message_count();
@@ -3562,8 +3142,6 @@ mod tests {
             Arc::clone(&messenger),
         ));
 
-        // Never notified — the turn must end via the shutdown trigger below,
-        // not because the model call happened to resolve on its own.
         let gate = Arc::new(tokio::sync::Notify::new());
         let mut agent = test_agent(GatedProvider {
             gate: Arc::clone(&gate),
@@ -3603,8 +3181,6 @@ mod tests {
             .await
         });
 
-        // The turn is now blocked on the gated model call; the hub asks the
-        // agent to stop, the way a stop, restart, or hub shutdown does.
         agent_stop_tx.send(()).await.unwrap();
 
         let (turn_result, _leftovers, _scratch, stopped) = wait::guarded(
@@ -3663,10 +3239,6 @@ mod tests {
         }
     }
 
-    /// What `handle_inbound_message` does with a turn that fails: the turn's
-    /// new messages are persisted whatever its result was, so the user's
-    /// message is recorded, with no assistant reply and no note of the
-    /// failure, and stays in the conversation the next turn sends the model.
     #[tokio::test]
     async fn a_failed_turn_keeps_the_users_message_and_records_nothing_else() {
         let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -3765,8 +3337,6 @@ mod tests {
         );
     }
 
-    /// A provider whose first model call fails and whose later calls
-    /// announce they started and then never answer, so only a stop ends them.
     struct FailsThenHangs {
         calls: std::sync::atomic::AtomicUsize,
         started: Arc<tokio::sync::Notify>,
@@ -3817,8 +3387,6 @@ mod tests {
             })
             .await
             .unwrap();
-        // The turn is held at its model call until the gate opens, so the
-        // answer can only come from the running turn's own loop.
         let answer = wait::guarded("the running turn to answer the retry", result_rx)
             .await
             .unwrap();
@@ -3838,7 +3406,6 @@ mod tests {
             started: Arc::clone(&started),
         })
         .await;
-        // A person's message: only a turn with an origin is recorded for a retry.
         let origin = origin_on("ws");
         let (first_attempt, _) = rig
             .run(
@@ -3910,8 +3477,6 @@ mod tests {
             )
             .await
             .unwrap();
-        // The broker handles commands in order, so once this barrier has
-        // been delivered the error above is already queued for `errors`.
         bus_barrier(&handle).await;
 
         assert_eq!(

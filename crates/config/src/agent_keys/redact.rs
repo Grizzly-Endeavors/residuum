@@ -1,20 +1,10 @@
-//! Replaces agent-key values in text with `[agent-key:<name>]` markers.
-
 use std::borrow::Cow;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD};
 
-/// Substring redactor over every agent-key value and its common encodings.
-///
-/// Covers the raw value plus its standard and URL-safe base64 forms (padded
-/// and unpadded) and its percent-encoded form, since those are the shapes a
-/// credential most often takes in command output (HTTP headers, URLs, JSON).
-/// Needles are matched longest first so a longer encoding is never
-/// partially clobbered by a shorter one.
 #[derive(Default, Clone)]
 pub struct Redactor {
-    /// `(needle, replacement)`, sorted by needle length, longest first.
     patterns: Vec<(String, String)>,
 }
 
@@ -27,7 +17,6 @@ impl std::fmt::Debug for Redactor {
 }
 
 impl Redactor {
-    /// Build a redactor over `(name, value)` pairs.
     pub fn from_entries<'a>(entries: impl IntoIterator<Item = (&'a str, &'a str)>) -> Self {
         let mut patterns: Vec<(String, String)> = Vec::new();
         for (name, value) in entries {
@@ -45,7 +34,6 @@ impl Redactor {
         Self { patterns }
     }
 
-    /// A copy of this redactor that also covers one more `(name, value)`.
     #[must_use]
     pub fn with_entry(&self, name: &str, value: &str) -> Self {
         let mut combined = self.clone();
@@ -61,14 +49,11 @@ impl Redactor {
         combined
     }
 
-    /// Whether there is nothing to redact.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.patterns.is_empty()
     }
 
-    /// `text` with every known value replaced by its marker. Borrows when
-    /// nothing matched.
     #[must_use]
     pub fn redact<'a>(&self, text: &'a str) -> Cow<'a, str> {
         let mut out: Cow<'a, str> = Cow::Borrowed(text);
@@ -80,7 +65,6 @@ impl Redactor {
         out
     }
 
-    /// Redact a string in place, returning whether anything changed.
     pub fn redact_in_place(&self, text: &mut String) -> bool {
         if let Cow::Owned(redacted) = self.redact(text) {
             *text = redacted;
@@ -91,13 +75,11 @@ impl Redactor {
     }
 }
 
-/// The marker a key's value is replaced with.
 #[must_use]
 pub fn marker_for(name: &str) -> String {
     format!("[agent-key:{name}]")
 }
 
-/// The raw value and each distinct encoding of it worth matching.
 fn encodings(value: &str) -> Vec<String> {
     let bytes = value.as_bytes();
     let mut out = vec![value.to_string()];

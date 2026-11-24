@@ -47,23 +47,17 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
-/** A stand-in for an agent's schedule routes, recording what was asked of it. */
 interface Server {
   pulses: PulseInfo[];
   actions: ActionInfo[];
-  /** Answer every request with a server fault. */
   failing: boolean;
-  /** Each request as `METHOD path`. */
   requests: string[];
-  /** The status a stop answers with. */
   stopStatus: number;
-  /** Holds for the next pulses loads, in order: each waits for its hold to settle before it answers. */
   pulsesHolds: Promise<void>[];
 }
 
 let server: Server;
 let registry: WatchRegistry;
-/** Every watch set the registry sent, in order. */
 let sent: string[][];
 let frameListeners: Set<(msg: ServerMessage) => void>;
 let sources: ScheduledSources;
@@ -92,7 +86,6 @@ beforeEach(() => {
     if (server.failing) return json({ error: "boom" }, 500);
     if (input.endsWith("/stop")) return json({ error: "atlas is stopped" }, server.stopStatus);
     if (input.endsWith("/scheduled/pulses")) {
-      // Answer with the pulses as they were when asked, however long the hold.
       const answer = json(server.pulses);
       const waitFor = server.pulsesHolds.shift();
       if (waitFor) await waitFor;
@@ -179,7 +172,6 @@ describe("the scheduled store's watch", () => {
     await expect.poll(() => loads("scout")).toBe(2);
     expect(loads("atlas")).toBe(0);
 
-    // Bound back to atlas, the scout watch no longer applies.
     registry.bind("atlas");
     registry.connected();
     expect(registry.prefixes).toEqual([]);
@@ -218,7 +210,6 @@ describe("loading the schedule", () => {
     const olderLoad = scheduled.load();
     await expect.poll(() => loads()).toBe(1);
 
-    // The action's run ends before the newer load asks.
     server.actions = [action("act-1", "weekly_digest")];
     const newerLoad = scheduled.load();
     await expect.poll(() => loads()).toBe(2);
@@ -279,7 +270,6 @@ describe("changing the schedule", () => {
   });
 });
 
-/** A fire of a pulse in flight, running its task scripts. */
 function scriptRun(fireId: string): ScheduledCurrentRun {
   return {
     fire_id: fireId,
@@ -305,7 +295,6 @@ function fireFrame(
   };
 }
 
-/** A hold for a pulses load, and the function that lets it answer. */
 function hold(): { promise: Promise<void>; release: () => void } {
   let release = (): void => {};
   const promise = new Promise<void>((resolve) => {
@@ -342,7 +331,6 @@ describe("pulse fire frames", () => {
       last_outcome: earlier,
     });
     expect(scheduled.pulses[1]?.current_run).toBeNull();
-    // The fire moved the pulse's next run, so the schedule is read again.
     server.pulses = [
       pulse("inbox_check", { last_outcome: earlier, current_run: scriptRun("fire-1") }),
     ];
@@ -361,7 +349,6 @@ describe("pulse fire frames", () => {
     const staleLoad = scheduled.load();
     await expect.poll(() => loads()).toBe(2);
 
-    // The fire starts after the server answered that load.
     server.pulses = [pulse("inbox_check", { current_run: scriptRun("fire-1") })];
     emit(fireFrame("fire-1", scriptRun("fire-1")));
     await expect.poll(() => loads()).toBe(3);
@@ -438,7 +425,6 @@ describe("stopping a run", () => {
     expect(server.requests).toContain("POST /api/agents/atlas/sessions/scheduled-1/stop");
     expect(scheduled.stopping.has("scheduled-1")).toBe(true);
 
-    // The session's frames read the schedule again, which no longer shows the run.
     server.actions = [action("act-1", "weekly_digest")];
     await scheduled.load();
     expect(scheduled.stopping.size).toBe(0);

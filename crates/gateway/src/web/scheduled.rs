@@ -45,7 +45,6 @@ use residuum_protocol::{
     ActionInfo, PulseInfo, ScheduledCurrentRun, ScheduledRunOutcome, SessionRunStatus,
 };
 
-/// Shared state for the Schedule place API.
 #[derive(Clone)]
 pub struct ScheduledApiState {
     pub registry: Arc<SessionRegistry>,
@@ -53,7 +52,6 @@ pub struct ScheduledApiState {
     pub action_store: Arc<tokio::sync::Mutex<ActionStore>>,
     pub layout: WorkspaceLayout,
     pub tz: chrono_tz::Tz,
-    /// Pulse fires in flight, for each pulse's current run and its Stop.
     pub fires: Arc<PulseFires>,
 }
 
@@ -72,7 +70,6 @@ fn json_error(status: StatusCode, message: impl Into<String>) -> Response {
         .into_response()
 }
 
-/// Build the Schedule place API router.
 pub fn scheduled_api_router(state: ScheduledApiState) -> axum::Router {
     use axum::routing::{delete, get, post, put};
     axum::Router::new()
@@ -93,16 +90,12 @@ pub fn scheduled_api_router(state: ScheduledApiState) -> axum::Router {
         .with_state(state)
 }
 
-/// `GET /api/agents/{name}/scheduled/pulses`
 async fn api_scheduled_pulses(State(state): State<ScheduledApiState>) -> Response {
     let heartbeat_path = state.layout.heartbeat_yml();
     let mut last_parse_error = None;
     let mut problems = Vec::new();
     let cfg = load_heartbeat(&heartbeat_path, &mut last_parse_error, &mut problems, &[]);
     let pulses = cfg.map(|c| c.pulses).unwrap_or_default();
-    // Read from the files rather than through a live `PulseScheduler` (this
-    // API has none), the same as the gateway's own hot-reload does for
-    // HEARTBEAT.yml.
     let recorded = load_recorded_state(&state.layout.pulse_state_json());
     let pulse_enabled = pulse_system_enabled(&state.layout);
 
@@ -117,9 +110,6 @@ async fn api_scheduled_pulses(State(state): State<ScheduledApiState>) -> Respons
     Json(infos).into_response()
 }
 
-/// Whether the agent's pulse system is on. A `config.toml` that can't be
-/// read is logged and counts as off, so no pulse promises a run: the same
-/// answer the hub's team overview gives for it.
 fn pulse_system_enabled(layout: &WorkspaceLayout) -> bool {
     match residuum_config::Config::pulse_enabled_at(layout.root()) {
         Ok(enabled) => enabled,
@@ -130,11 +120,6 @@ fn pulse_system_enabled(layout: &WorkspaceLayout) -> bool {
     }
 }
 
-/// Build one `PulseInfo` per pulse that loaded, plus a synthetic entry for
-/// every problem that names a pulse which didn't (a pulse rejected for
-/// using a removed option, a bad schedule, or a per-entry deserialize
-/// failure never makes it into `pulses` at all — the owner still needs to
-/// see it in the Schedule place, not just in a log line).
 async fn build_pulse_infos(
     pulses: &[PulseDef],
     problems: &[HeartbeatProblem],
@@ -183,10 +168,6 @@ async fn build_pulse_infos(
         });
     }
 
-    // Problems naming a pulse that isn't in `pulses` at all — it was
-    // rejected entirely (removed option, bad schedule, per-entry
-    // deserialize failure) rather than just flagged alongside a value that
-    // still loaded.
     let mut rejected_names: Vec<&str> = problems
         .iter()
         .map(|p| p.name.as_str())
@@ -219,8 +200,6 @@ async fn build_pulse_infos(
     infos
 }
 
-/// The most recent completed run's outcome for a given source label
-/// (`pulse:<name>` or `action:<name>`), if any run has ever completed.
 async fn last_outcome(store: &SessionStore, source_label: &str) -> Option<ScheduledRunOutcome> {
     let page = store
         .list_completed_runs(
@@ -243,8 +222,6 @@ async fn last_outcome(store: &SessionStore, source_label: &str) -> Option<Schedu
     })
 }
 
-/// A pulse's last run: the newer of the session store's last completed run
-/// and the pulse's last fire that ended without a session run.
 fn newer_outcome(
     session: Option<ScheduledRunOutcome>,
     fire: Option<&PulseFireOutcome>,
@@ -256,7 +233,6 @@ fn newer_outcome(
     }
 }
 
-/// A scheduled action's live run, if it's running right now.
 fn action_current_run(
     registry: &SessionRegistry,
     source_label: &str,
@@ -270,21 +246,12 @@ fn action_current_run(
         .map(Into::into)
 }
 
-/// `POST /api/agents/{name}/scheduled/pulses/{pulse}/fires/{fire_id}/stop` response.
 #[derive(Debug, Serialize)]
 struct PulseFireStopResponse {
     pulse: String,
     fire_id: String,
 }
 
-/// `POST /api/agents/{name}/scheduled/pulses/{pulse}/fires/{fire_id}/stop` — stop one
-/// fire of a pulse: kill its running script, keep it from starting its
-/// session, or stop its session. Answers `202` once the stop is asked for;
-/// the fire's `pulse_fire_changed` frame reports it stopped.
-///
-/// # Errors
-/// `404` when no fire `fire_id` of `pulse` is in flight: it already
-/// finished, or never existed.
 async fn api_scheduled_pulse_fire_stop(
     State(state): State<ScheduledApiState>,
     Path((name, fire_id)): Path<(String, String)>,
@@ -311,7 +278,6 @@ struct SetEnabledRequest {
     enabled: bool,
 }
 
-/// `PUT /api/agents/{name}/scheduled/pulses/{pulse}/enabled`
 async fn api_scheduled_pulse_set_enabled(
     State(state): State<ScheduledApiState>,
     Path(name): Path<String>,
@@ -360,7 +326,6 @@ async fn api_scheduled_pulse_set_enabled(
     Json(serde_json::json!({ "name": name, "enabled": body.enabled })).into_response()
 }
 
-/// `GET /api/agents/{name}/scheduled/actions`
 async fn api_scheduled_actions(State(state): State<ScheduledApiState>) -> Response {
     let actions: Vec<_> = {
         let store = state.action_store.lock().await;
@@ -389,7 +354,6 @@ async fn api_scheduled_actions(State(state): State<ScheduledApiState>) -> Respon
     Json(infos).into_response()
 }
 
-/// `DELETE /api/agents/{name}/scheduled/actions/{id}`
 async fn api_scheduled_action_cancel(
     State(state): State<ScheduledApiState>,
     Path(id): Path<String>,
@@ -484,7 +448,6 @@ mod tests {
         }
     }
 
-    /// The pulses `sample_pulse` makes, as listed at the start of 2099.
     async fn infos_at(
         dir: &std::path::Path,
         pulses: &[PulseDef],

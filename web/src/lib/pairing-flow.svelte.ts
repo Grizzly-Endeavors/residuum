@@ -1,9 +1,3 @@
-// ── The pairing page's state ─────────────────────────────────────────
-//
-// A browser reaches the pairing page without a credential. It leaves with
-// one by a link made on the machine Residuum runs on (the token in the URL's
-// fragment), by a code a paired device approves, or by a recovery code.
-
 import { userErrorMessage } from "./errors";
 import {
   createPairingRequest,
@@ -15,29 +9,14 @@ import {
 import type { PairingRequestStatus } from "./generated/PairingRequestStatus";
 import { defaultDeviceName, tokenFromFragment } from "./pairing";
 
-/** How often a waiting browser asks whether it was approved. */
 export const POLL_INTERVAL_MS = 2000;
 
-export type PairingPhase =
-  /** Asking the gateway whether this browser needs to pair. */
-  | "checking"
-  /** Opened from a pairing link; waiting for the person to confirm. */
-  | "link"
-  /** Choosing how to pair: ask a paired device, or use a recovery code. */
-  | "choose"
-  /** Waiting for a paired device to approve the code on screen. */
-  | "waiting"
-  /** Paired; moving to the app. */
-  | "done";
+export type PairingPhase = "checking" | "link" | "choose" | "waiting" | "done";
 
-/** What the flow reads and does outside itself; tests replace it. */
 export interface PairingEnvironment {
-  /** The page's URL fragment, `#token=…` when opened from a link. */
   hash: () => string;
-  /** Drop the fragment from the address bar, so a token isn't left in history. */
   clearHash: () => void;
   userAgent: () => string;
-  /** Move the page to the app. */
   openApp: () => void;
 }
 
@@ -56,11 +35,8 @@ export function browserEnvironment(): PairingEnvironment {
 
 export class PairingFlow {
   phase = $state<PairingPhase>("checking");
-  /** What this browser is called in the list of paired devices. */
   deviceName = $state("");
-  /** The code the approving device shows next to this browser's request. */
   code = $state("");
-  /** Why the last step failed, or how a request ended. */
   problem = $state("");
   busy = $state(false);
 
@@ -72,7 +48,6 @@ export class PairingFlow {
     this.deviceName = defaultDeviceName(env.userAgent());
   }
 
-  /** Find out whether this browser needs to pair, and what it arrived with. */
   async start(): Promise<void> {
     this.token = tokenFromFragment(this.env.hash());
     if (this.token !== null) this.env.clearHash();
@@ -88,13 +63,11 @@ export class PairingFlow {
     this.phase = this.token === null ? "choose" : "link";
   }
 
-  /** Stop waiting; the page is going away. */
   stop(): void {
     clearInterval(this.timer);
     this.timer = undefined;
   }
 
-  /** Pair with the link this page was opened from. */
   async pairWithLink(): Promise<void> {
     const token = this.token;
     if (token === null) return;
@@ -104,7 +77,6 @@ export class PairingFlow {
     });
   }
 
-  /** Ask for a code a paired device can approve, and wait for the answer. */
   async requestApproval(): Promise<void> {
     this.busy = true;
     this.problem = "";
@@ -121,14 +93,12 @@ export class PairingFlow {
     }
   }
 
-  /** Give up waiting and go back to choosing. */
   cancelRequest(): void {
     this.stop();
     this.requestId = "";
     this.phase = "choose";
   }
 
-  /** Pair with a recovery code. */
   async pairWithRecoveryCode(code: string): Promise<void> {
     await this.attempt("Couldn't pair with that recovery code.", async () => {
       await redeemRecoveryCode(code, this.deviceName);
@@ -140,7 +110,6 @@ export class PairingFlow {
     try {
       status = (await pollPairingRequest(this.requestId)).status;
     } catch (err) {
-      // A failed check isn't an answer; the next tick tries again.
       this.problem = userErrorMessage(err, { action: "Couldn't check for approval." });
       return;
     }

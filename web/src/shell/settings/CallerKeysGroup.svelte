@@ -12,12 +12,6 @@
   import KeyList from "./KeyList.svelte";
   import SettingsGroup from "./SettingsGroup.svelte";
 
-  // The tokens other agents present to reach this install. Creating and
-  // revoking act at once through the hub's own endpoints and have no part in
-  // the save bar. A new key's token is in the response to creating it and
-  // nowhere after, so it shows here until the user is done with it. A
-  // revocation offers Undo from the checkpoint the hub took just before it.
-
   const COPIED_MS = 1800;
 
   let keys = $state.raw<A2aKeyInfo[] | null>(null);
@@ -120,7 +114,6 @@
         load,
       );
       await load();
-      // The row that held focus is gone.
       await tick();
       addButton?.focus();
     } catch (err) {

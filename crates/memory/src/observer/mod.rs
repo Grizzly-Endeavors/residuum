@@ -1,10 +1,3 @@
-//! Observer: extracts observations and a narrative from recent messages via LLM.
-//!
-//! Runs synchronously after the agent completes a turn when the accumulated
-//! recent message token count exceeds the configured threshold. Extraction
-//! writes no memory — see [`Observer::extract`]; persisting the result as
-//! an episode is [`crate::merge_writer::MemoryMergeWriter`]'s job.
-
 mod parse;
 mod prompt;
 
@@ -26,57 +19,32 @@ use residuum_inference::{
     CompletionOptions, InferenceProvider, ResponseFormat, UsageComponent, UsageRecorder,
 };
 
-/// A single observation extracted from a conversation segment, before it is
-/// assigned an episode id or written anywhere.
 #[derive(Debug, Clone)]
 pub struct ExtractedObservation {
-    /// When the observed event happened, at minute precision.
     pub timestamp: NaiveDateTime,
-    /// Whether the source turn was user-visible or a background turn.
     pub visibility: Visibility,
-    /// The observation content as a single concise sentence.
     pub content: String,
 }
 
-/// Output of a pure extraction pass: observations and a narrative, plus the
-/// plain messages that were extracted from. Carries no side effects — nothing
-/// is written to disk, no episode id is allocated. Persisting an extraction
-/// (episode id allocation, transcript/observation/index writes, embedding,
-/// and the reflector check) is the memory merge writer's job.
 pub struct Extraction {
-    /// Narrative summary of the conversation at the time of extraction.
     pub narrative: Option<String>,
-    /// The extracted observations.
     pub observations: Vec<ExtractedObservation>,
-    /// The messages the extraction was run over (with their timestamp and
-    /// visibility metadata intact), for the merge writer to persist as an
-    /// episode transcript and interaction-pair chunks.
     pub messages: Vec<RecentMessage>,
 }
 
-/// What the observer thinks should happen after checking token thresholds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ObserveAction {
-    /// Token count is below the soft threshold — do nothing.
     None,
-    /// Token count is at or above the soft threshold — start or reset the cooldown timer.
     StartCooldown,
-    /// Token count is at or above the force threshold — observe immediately.
     ForceNow,
 }
 
-/// Observer configuration.
 #[derive(Debug, Clone)]
 pub struct ObserverConfig {
-    /// Minimum estimated tokens in recent messages before observation triggers.
     pub threshold_tokens: usize,
-    /// Cooldown period in seconds after the soft threshold is crossed.
     pub cooldown_secs: u64,
-    /// Token threshold that forces immediate observation (bypasses cooldown).
     pub force_threshold_tokens: usize,
-    /// Timezone used for timestamps in observations.
     pub tz: Tz,
-    /// Per-role overrides for temperature and thinking.
     pub role_overrides: Option<residuum_config::RoleOverrides>,
 }
 
@@ -92,33 +60,17 @@ impl Default for ObserverConfig {
     }
 }
 
-/// Provider and config, guarded together so a config/provider reload never
-/// observes a torn combination of the two.
 struct ObserverInner {
     provider: Arc<dyn InferenceProvider>,
     config: ObserverConfig,
 }
 
-/// The observer extracts structured episodes from recent messages.
-///
-/// Provider and config live behind a lock, not owned directly, so `Observer`
-/// can be shared (`Arc<Observer>`) with the background post-turn worker —
-/// in the gateway's `post_turn` — while a config reload on the main loop
-/// can still swap them in place. `extract` only ever holds the lock briefly,
-/// to clone out an `Arc` and a couple of `Copy`/cheap-`Clone` fields, never
-/// across the LLM call itself.
 pub struct Observer {
     inner: std::sync::RwLock<ObserverInner>,
-    /// Backs off the automatic extract trigger (threshold crossings) after a
-    /// failure, instead of re-attempting — and re-spending, since this is an
-    /// LLM call — on every later threshold crossing while recent messages
-    /// keep accumulating unobserved. Manual observes (`observe --force`)
-    /// bypass this deliberately and always attempt.
     automatic_failure: residuum_core::util::BackoffTracker,
 }
 
 impl Observer {
-    /// Create a new observer with the given provider and config.
     #[must_use]
     pub fn new(provider: Box<dyn InferenceProvider>, config: ObserverConfig) -> Self {
         Self {
@@ -130,10 +82,6 @@ impl Observer {
         }
     }
 
-    /// Create a disabled observer that never triggers.
-    ///
-    /// Uses a `NullProvider` and `usize::MAX` thresholds so observation
-    /// never fires. Used when memory subsystem initialization fails.
     #[must_use]
     pub fn disabled(tz: Tz) -> Self {
         Self {
@@ -163,40 +111,31 @@ impl Observer {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// The configured cooldown period in seconds.
     #[must_use]
     pub fn cooldown_secs(&self) -> u64 {
         self.read_inner().config.cooldown_secs
     }
 
-    /// The soft observation threshold in tokens.
     #[must_use]
     pub fn threshold_tokens(&self) -> usize {
         self.read_inner().config.threshold_tokens
     }
 
-    /// The force observation threshold in tokens (bypasses cooldown).
     #[must_use]
     pub fn force_threshold_tokens(&self) -> usize {
         self.read_inner().config.force_threshold_tokens
     }
 
-    /// The configured timezone.
     #[must_use]
     pub fn timezone(&self) -> Tz {
         self.read_inner().config.tz
     }
 
-    /// Tracks consecutive failures of the *automatic* extract trigger
-    /// (threshold crossings), for backing off retries and telling the user
-    /// once when a failure streak starts or clears. A manually forced
-    /// observe doesn't consult this — it always attempts.
     #[must_use]
     pub fn automatic_failure_tracker(&self) -> &residuum_core::util::BackoffTracker {
         &self.automatic_failure
     }
 
-    /// Replace the observer's configuration (e.g. after a config reload).
     pub fn update_config(&self, config: ObserverConfig) {
         let mut inner = self.write_inner();
         tracing::debug!(
@@ -211,17 +150,12 @@ impl Observer {
         inner.config = config;
     }
 
-    /// Replace the model provider (e.g. after a provider config change).
     pub fn swap_provider(&self, provider: Box<dyn InferenceProvider>) {
         tracing::debug!("swapping observer model provider");
         self.write_inner().provider = Arc::from(provider);
         self.automatic_failure.clear_backoff_wait();
     }
 
-    /// Replace this observer's provider and configuration in place from
-    /// `other`, and clear any active failure-backoff wait so the next
-    /// automatic attempt can run immediately against the reloaded provider
-    /// while preserving streak state for recovery notices.
     pub fn replace_from(&self, other: Self) {
         tracing::debug!("replacing observer provider and config in place");
         let new_inner = other
@@ -232,10 +166,6 @@ impl Observer {
         self.automatic_failure.clear_backoff_wait();
     }
 
-    /// Check token thresholds and return the appropriate action.
-    ///
-    /// Returns `ForceNow` if tokens >= force threshold, `StartCooldown` if
-    /// tokens >= soft threshold, or `None` if below both.
     #[must_use]
     pub fn check_thresholds(&self, recent_messages: &[RecentMessage]) -> ObserveAction {
         let tokens = estimate_recent_tokens(recent_messages);
@@ -249,18 +179,6 @@ impl Observer {
         }
     }
 
-    /// Extract observations and a narrative from recent messages.
-    ///
-    /// No memory is written: persisting the result — allocating an episode
-    /// id, writing the transcript and observation archives, indexing,
-    /// embedding, and checking the reflector — is the memory merge writer's
-    /// job, so that all persistence (main agent and session runs alike) is
-    /// serialized through one writer. The model call's usage is recorded in
-    /// the workspace at `layout`, under `conversation` (the session run the
-    /// messages came from, `None` for the main agent's own).
-    ///
-    /// # Errors
-    /// Returns an error if the LLM call fails or its response cannot be parsed.
     #[tracing::instrument(skip_all, fields(operation = "extract", message_count = recent_messages.len()))]
     pub async fn extract(
         &self,
@@ -272,7 +190,6 @@ impl Observer {
             anyhow::bail!("no recent messages to extract from");
         }
 
-        // Load content guidance from disk, falling back to embedded constant.
         let content_guidance = match tokio::fs::read_to_string(layout.observer_md()).await {
             Ok(s) if !s.trim().is_empty() => s,
             Ok(_) => EXTRACTION_CONTENT_PROMPT.to_string(),
@@ -285,14 +202,8 @@ impl Observer {
             }
         };
 
-        // Build extraction prompt using full RecentMessage metadata (timestamps,
-        // tool calls) so the observer LLM has complete context.
         let extraction_messages = build_extraction_prompt(recent_messages, &content_guidance);
 
-        // Snapshot the provider (a cheap `Arc` clone) and the config fields
-        // this call needs, then drop the lock before the LLM call below —
-        // held only briefly, never across the `.await`, so a concurrent
-        // config reload is never blocked on an in-flight extraction.
         let (provider, role_overrides, tz) = {
             let inner = self.read_inner();
             (
@@ -302,7 +213,6 @@ impl Observer {
             )
         };
 
-        // Call the model with structured output, applying per-role overrides
         let ov = role_overrides.as_ref();
         let options = CompletionOptions {
             temperature: ov.and_then(|o| o.temperature),
@@ -319,7 +229,6 @@ impl Observer {
             .await;
         let response = result.context("observer LLM call failed")?;
 
-        // Parse the response into extraction results and optional narrative.
         let parsed = parse_observer_response(&response, tz)?;
 
         let messages: Vec<RecentMessage> = recent_messages.to_vec();
@@ -341,7 +250,6 @@ impl Observer {
     }
 }
 
-/// Estimate the total token count of recent messages.
 fn estimate_recent_tokens(recent_messages: &[RecentMessage]) -> usize {
     recent_messages
         .iter()
@@ -349,9 +257,6 @@ fn estimate_recent_tokens(recent_messages: &[RecentMessage]) -> usize {
         .sum()
 }
 
-/// Estimated tokens one message adds to an extraction request: its rendered
-/// transcript entry, the same text [`Observer::extract`] sends. Reasoning
-/// text and images are not sent, so they are not counted.
 #[must_use]
 pub fn extraction_tokens(rm: &RecentMessage) -> usize {
     crate::tokens::estimate_tokens(&prompt::format_recent_message(rm))

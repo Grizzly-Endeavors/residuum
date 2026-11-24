@@ -1,10 +1,3 @@
-//! Ring buffer layer for capturing completed tracing spans in memory.
-//!
-//! Provides a custom `tracing_subscriber::Layer` that records finished spans
-//! into a bounded `VecDeque`. The buffer is accessible via a cloneable
-//! `SpanBufferHandle` for on-demand snapshotting (bug reports) or draining
-//! (live export).
-
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
@@ -13,22 +6,14 @@ use tracing::span;
 use tracing_subscriber::layer::Context;
 use tracing_subscriber::registry::LookupSpan;
 
-// ── Configuration ──────────────────────────────────────────────────
-
-/// Default maximum number of completed spans retained in the buffer.
 const DEFAULT_CAPACITY: usize = 4096;
 
-/// Default maximum age before a span is evicted on the next insertion.
 const DEFAULT_MAX_AGE: Duration = Duration::from_mins(10); // 10 minutes
 
-/// Configuration for the span ring buffer.
 #[derive(Debug, Clone)]
 pub struct SpanBufferConfig {
-    /// Maximum number of completed spans to retain.
     pub capacity: usize,
-    /// Maximum age of spans before eviction (`None` = no age limit).
     pub(crate) max_age: Option<Duration>,
-    /// Whether to capture log events attached to spans.
     pub(crate) capture_events: bool,
 }
 
@@ -42,13 +27,8 @@ impl Default for SpanBufferConfig {
     }
 }
 
-/// The span field naming the agent a span belongs to. Set on each agent's root
-/// span and inherited by every span inside it.
 const AGENT_FIELD: &str = "agent";
 
-// ── Captured span types ────────────────────────────────────────────
-
-/// A log event recorded within a span.
 #[derive(Debug, Clone)]
 pub struct SpanEvent {
     pub timestamp: SystemTime,
@@ -57,7 +37,6 @@ pub struct SpanEvent {
     pub fields: Vec<(String, String)>,
 }
 
-/// A completed span captured by the buffer layer.
 #[derive(Debug, Clone)]
 pub struct CompletedSpan {
     pub span_id: u64,
@@ -71,9 +50,6 @@ pub struct CompletedSpan {
     pub events: Vec<SpanEvent>,
 }
 
-// ── In-flight span builder ─────────────────────────────────────────
-
-/// Accumulates data for a span that hasn't closed yet.
 struct SpanBuilder {
     parent_id: Option<u64>,
     name: String,
@@ -101,8 +77,6 @@ impl SpanBuilder {
     }
 }
 
-// ── Buffer internals ───────────────────────────────────────────────
-
 struct SpanBufferInner {
     buffer: VecDeque<CompletedSpan>,
     active: HashMap<u64, SpanBuilder>,
@@ -112,7 +86,6 @@ struct SpanBufferInner {
 
 impl SpanBufferInner {
     fn push(&mut self, span: CompletedSpan) {
-        // Evict stale entries by age
         if let Some(max_age) = self.max_age {
             let cutoff = SystemTime::now()
                 .checked_sub(max_age)
@@ -122,7 +95,6 @@ impl SpanBufferInner {
             }
         }
 
-        // Evict oldest if at capacity
         if self.buffer.len() >= self.capacity {
             self.buffer.pop_front();
         }
@@ -131,19 +103,12 @@ impl SpanBufferInner {
     }
 }
 
-// ── Public handle ──────────────────────────────────────────────────
-
-/// Cloneable handle for reading from the span buffer.
-///
-/// Obtained from [`SpanBufferLayer::new`] and stored globally so that
-/// bug-report and export code can access captured spans.
 #[derive(Clone)]
 pub struct SpanBufferHandle {
     inner: Arc<Mutex<SpanBufferInner>>,
 }
 
 impl SpanBufferHandle {
-    /// Clone all buffered spans without draining.
     #[must_use]
     pub fn snapshot(&self) -> Vec<CompletedSpan> {
         self.inner.lock().map_or_else(
@@ -152,7 +117,6 @@ impl SpanBufferHandle {
         )
     }
 
-    /// Take and return all buffered spans, clearing the buffer.
     #[must_use]
     pub fn drain(&self) -> Vec<CompletedSpan> {
         self.inner
@@ -160,19 +124,16 @@ impl SpanBufferHandle {
             .map_or_else(|_| Vec::new(), |mut guard| guard.buffer.drain(..).collect())
     }
 
-    /// Number of spans currently in the buffer.
     #[must_use]
     pub fn len(&self) -> usize {
         self.inner.lock().map_or(0, |guard| guard.buffer.len())
     }
 
-    /// Whether the buffer is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
-    /// Discard all buffered spans.
     pub fn clear(&self) {
         if let Ok(mut guard) = self.inner.lock() {
             guard.buffer.clear();
@@ -180,16 +141,12 @@ impl SpanBufferHandle {
     }
 }
 
-// ── Layer implementation ───────────────────────────────────────────
-
-/// A `tracing_subscriber::Layer` that captures completed spans into a ring buffer.
 pub struct SpanBufferLayer {
     inner: Arc<Mutex<SpanBufferInner>>,
     capture_events: bool,
 }
 
 impl SpanBufferLayer {
-    /// Create a new buffer layer and its associated handle.
     #[must_use]
     pub fn new(config: &SpanBufferConfig) -> (Self, SpanBufferHandle) {
         let inner = Arc::new(Mutex::new(SpanBufferInner {
@@ -212,7 +169,6 @@ impl SpanBufferLayer {
     }
 }
 
-/// Visitor that collects span/event fields into a `Vec<(String, String)>`.
 struct FieldVisitor {
     fields: Vec<(String, String)>,
 }
@@ -279,8 +235,6 @@ where
         };
 
         if let Ok(mut guard) = self.inner.lock() {
-            // Every span inside an agent's root span belongs to that agent,
-            // so a bug report or trace export can be read per agent.
             if builder.fields.iter().all(|(key, _)| key != AGENT_FIELD)
                 && let Some(agent) = parent_id
                     .and_then(|parent| guard.active.get(&parent))
@@ -317,14 +271,12 @@ where
         let mut visitor = FieldVisitor::new();
         event.record(&mut visitor);
 
-        // Extract "message" field if present
         let message = visitor
             .fields
             .iter()
             .find(|(k, _)| k == "message")
             .map_or_else(String::new, |(_, v)| v.clone());
 
-        // Remove "message" from fields since it's stored separately
         visitor.fields.retain(|(k, _)| k != "message");
 
         let span_event = SpanEvent {
@@ -351,8 +303,6 @@ where
     }
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
-
 #[cfg(test)]
 #[expect(
     clippy::indexing_slicing,
@@ -366,7 +316,6 @@ mod tests {
     use super::*;
     use tracing_subscriber::layer::SubscriberExt;
 
-    /// Install a test subscriber and return the handle + dispatch guard.
     fn setup(config: SpanBufferConfig) -> (SpanBufferHandle, tracing::subscriber::DefaultGuard) {
         let (layer, handle) = SpanBufferLayer::new(&config);
         let subscriber = tracing_subscriber::registry().with(layer);
@@ -497,7 +446,6 @@ mod tests {
         let spans = handle.snapshot();
         assert_eq!(spans.len(), 3, "should retain only capacity-many spans");
 
-        // Oldest spans (index 0, 1) should be evicted; 2, 3, 4 remain
         let indices: Vec<&str> = spans
             .iter()
             .filter_map(|s| {
@@ -607,12 +555,10 @@ mod tests {
 
         {
             let _span = tracing::info_span!("timed").entered();
-            // Span is open briefly — duration should be non-negative
         }
 
         let spans = handle.snapshot();
         assert_eq!(spans.len(), 1, "should capture the span");
-        // Duration should be very small but non-negative
         assert!(
             spans[0].duration.as_nanos() > 0 || spans[0].duration == Duration::ZERO,
             "duration should be recorded"

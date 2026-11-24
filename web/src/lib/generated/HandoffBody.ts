@@ -3,8 +3,4 @@
 /**
  * Body of `POST /api/hub/pairing/handoff`, sent on the workbench host.
  */
-export type HandoffBody = { 
-/**
- * The single-use token a paired UI-host browser minted.
- */
-token: string, };
+export type HandoffBody = { token: string, };

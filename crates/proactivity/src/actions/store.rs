@@ -1,7 +1,3 @@
-//! Persistent storage for scheduled actions (`scheduled_actions.json`).
-//!
-//! Uses atomic write (temp file + rename) to prevent corruption on crash.
-
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -12,46 +8,14 @@ use anyhow::Context;
 
 use super::types::ScheduledAction;
 
-/// Storage for scheduled actions backed by a JSON file.
 pub struct ActionStore {
     actions: Vec<ScheduledAction>,
     path: PathBuf,
-    /// Pending actions whose model can't run, by id, with the reason last
-    /// reported for each — see [`Self::record_model_problems`]. In memory
-    /// only.
     model_problems: HashMap<String, String>,
-    /// Published actions awaiting their fork's outcome, by id. In memory
-    /// only: an in-flight action is not due and not listed, and its fork's
-    /// outcome either drops it (started) or returns it verbatim to
-    /// `actions` (failed) — see `gateway::actions::spawn_due_actions` and
-    /// `SpawnContext::action_outcome`.
     in_flight: HashMap<String, ScheduledAction>,
 }
 
 impl ActionStore {
-    /// Load the store from disk.
-    ///
-    /// Returns an empty store if the file does not exist.
-    ///
-    /// A stored action left over from before `agent: "main"` was removed is
-    /// dropped — never silently reinterpreted as a plain session — with an
-    /// error naming it, while the rest of the store still loads. Every such
-    /// action is also returned alongside the store so the caller can raise an
-    /// owner-facing notice; this only ever runs once, at startup, so unlike
-    /// `HEARTBEAT.yml`'s hot-reloaded pulses there's no repeat-tick spam to
-    /// guard against here.
-    ///
-    /// A file that exists but isn't valid JSON is never overwritten: its raw
-    /// bytes are moved aside to `<path>.corrupt-<unix-timestamp>` and the
-    /// store starts empty at the normal path, so the next save can't clobber
-    /// whatever was in the corrupt file. The third element of the returned
-    /// tuple names that moved-aside file when this happened, so the caller
-    /// can raise an owner-facing notice.
-    ///
-    /// # Errors
-    /// Returns an error if the file exists but cannot be read, or is corrupt
-    /// and could not be moved aside (in which case nothing is touched and the
-    /// caller falls back to an empty in-memory store, same as before).
     #[tracing::instrument(skip_all)]
     pub async fn load(
         path: impl Into<PathBuf>,
@@ -115,14 +79,6 @@ impl ActionStore {
         }
     }
 
-    /// The actions waiting in the file at `path`, read without changing
-    /// anything: no corrupt file is moved aside and nothing is logged, so a
-    /// reader that isn't the agent that owns the file (the hub's overview)
-    /// can look at it. An action [`Self::load`] would drop is left out. A
-    /// missing file has no actions.
-    ///
-    /// # Errors
-    /// Returns an error if the file exists but cannot be read or parsed.
     pub async fn read_pending(path: &Path) -> anyhow::Result<Vec<ScheduledAction>> {
         let contents = match tokio::fs::read_to_string(path).await {
             Ok(contents) => contents,
@@ -139,10 +95,6 @@ impl ActionStore {
         Ok(actions)
     }
 
-    /// Save the store to disk atomically (write temp file, then rename).
-    ///
-    /// # Errors
-    /// Returns an error if serialization or writing fails.
     #[tracing::instrument(skip_all, fields(path = %self.path.display(), count = self.actions.len()))]
     pub async fn save(&self) -> anyhow::Result<()> {
         let json = serde_json::to_string_pretty(&self.actions)
@@ -168,9 +120,6 @@ impl ActionStore {
         Ok(())
     }
 
-    /// Create an in-memory store backed by the given path (not yet saved).
-    ///
-    /// Used as a fallback when the actions file cannot be loaded, and in tests.
     #[must_use]
     pub fn new_empty(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
@@ -182,13 +131,11 @@ impl ActionStore {
         }
     }
 
-    /// Add an action to the store (does not save; call [`ActionStore::save`] separately).
     pub fn add(&mut self, action: ScheduledAction) {
         debug!(id = %action.id, name = %action.name, run_at = %action.run_at, "scheduled action added");
         self.actions.push(action);
     }
 
-    /// Remove an action by ID. Returns true if the action was found and removed.
     pub fn remove(&mut self, id: &str) -> bool {
         let before = self.actions.len();
         self.actions.retain(|a| a.id != id);
@@ -201,16 +148,11 @@ impl ActionStore {
         found
     }
 
-    /// List all pending actions.
     #[must_use]
     pub fn list(&self) -> &[ScheduledAction] {
         &self.actions
     }
 
-    /// Mark a published action in flight: out of `due` and out of `list`
-    /// until its fork reports back through
-    /// [`Self::drop_in_flight_by_id`] or [`Self::restore_in_flight_by_id`].
-    /// Returns `false` when the id is unknown, leaving the store untouched.
     pub fn mark_in_flight(&mut self, id: &str) -> bool {
         if let Some(pos) = self.actions.iter().position(|a| a.id == id) {
             let action = self.actions.remove(pos);
@@ -223,11 +165,6 @@ impl ActionStore {
         }
     }
 
-    /// Return the in-flight action with this exact id to the pending set,
-    /// verbatim, so the next tick retries it. Returns whether it was
-    /// restored. This is the primary fork-outcome path: the id resolves one
-    /// exact action, so same-named actions can't clobber each other's
-    /// outcomes the way a name match would.
     pub fn restore_in_flight_by_id(&mut self, id: &str) -> bool {
         if let Some(action) = self.in_flight.remove(id) {
             debug!(id = %id, name = %action.name, "scheduled action's fork failed; restored to retry");
@@ -239,8 +176,6 @@ impl ActionStore {
         }
     }
 
-    /// Drop the in-flight action with this exact id — its fork started, so
-    /// the action has run its course. Returns whether it was dropped.
     pub fn drop_in_flight_by_id(&mut self, id: &str) -> bool {
         if let Some(action) = self.in_flight.remove(id) {
             debug!(id = %id, name = %action.name, "scheduled action's fork started; dropped");
@@ -251,13 +186,6 @@ impl ActionStore {
         }
     }
 
-    /// Return every in-flight action named `name` to the pending set,
-    /// verbatim, so the next tick retries it. Returns how many were restored.
-    /// Fallback for spawn labels that carry no id suffix; ids are the
-    /// primary key (see [`Self::restore_in_flight_by_id`]). Actions whose
-    /// forks failed are restored here; a fork that keeps
-    /// failing keeps the action scheduled (the failure notice is deduplicated
-    /// upstream), until the owner fixes the cause or cancels the action.
     pub fn restore_in_flight_by_name(&mut self, name: &str) -> usize {
         let restored: Vec<_> = self
             .in_flight
@@ -275,10 +203,6 @@ impl ActionStore {
         restored.len()
     }
 
-    /// Drop every in-flight action named `name` — its fork started, so the
-    /// action has run its course. Returns how many were dropped.
-    /// Fallback for spawn labels that carry no id suffix; ids are the
-    /// primary key (see [`Self::drop_in_flight_by_id`]).
     pub fn drop_in_flight_by_name(&mut self, name: &str) -> usize {
         let dropped: Vec<String> = self
             .in_flight
@@ -295,13 +219,11 @@ impl ActionStore {
         dropped.len()
     }
 
-    /// How many actions are in flight, awaiting their fork's outcome.
     #[must_use]
     pub fn in_flight(&self) -> usize {
         self.in_flight.len()
     }
 
-    /// Drain and return all actions whose `run_at` is at or before `now`.
     #[must_use]
     pub fn take_due(&mut self, now: DateTime<Utc>) -> Vec<ScheduledAction> {
         let due: Vec<_> = self
@@ -317,11 +239,6 @@ impl ActionStore {
         due
     }
 
-    /// Return every action whose `run_at` is at or before `now`, without
-    /// removing them from the store. The caller removes only the ones whose
-    /// spawn actually started (see [`Self::remove`]), so an action a spawn
-    /// attempt failed to publish stays here and is reconsidered due on the
-    /// next call rather than being lost.
     #[must_use]
     pub fn due(&self, now: DateTime<Utc>) -> Vec<ScheduledAction> {
         self.actions
@@ -331,10 +248,6 @@ impl ActionStore {
             .collect()
     }
 
-    /// Replace the set of pending actions whose model can't run (`id` →
-    /// reason) and return the ones that are new or whose reason changed since
-    /// the last call, as `(name, id, reason)`, so a caller checking on every
-    /// tick reports each problem once rather than on every tick.
     pub fn record_model_problems(
         &mut self,
         problems: HashMap<String, String>,
@@ -356,30 +269,23 @@ impl ActionStore {
         fresh
     }
 
-    /// Why the action with this id is held back, when its model can't run
-    /// (see [`Self::record_model_problems`]).
     #[must_use]
     pub fn model_problem(&self, id: &str) -> Option<&str> {
         self.model_problems.get(id).map(String::as_str)
     }
 
-    /// Path to the backing JSON file.
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
     }
 }
 
-/// A stored scheduled action dropped at load because it used the removed
-/// `agent: "main"` routing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RejectedAction {
     pub id: String,
     pub name: String,
 }
 
-/// Whether `action` uses the removed `agent: "main"` routing, which loading
-/// drops.
 fn uses_removed_main_routing(action: &ScheduledAction) -> bool {
     action
         .agent
@@ -387,11 +293,6 @@ fn uses_removed_main_routing(action: &ScheduledAction) -> bool {
         .is_some_and(|agent| agent.eq_ignore_ascii_case("main"))
 }
 
-/// Drop stored actions that still use the removed `agent: "main"` routing,
-/// logging an actionable error naming each offender and returning what was
-/// dropped so the caller can raise an owner-facing notice. Never silently
-/// reinterpreted as a plain session — the owner needs to know this action
-/// will no longer fire the way it used to.
 fn reject_agent_main(actions: &mut Vec<ScheduledAction>) -> Vec<RejectedAction> {
     let mut rejected = Vec::new();
     actions.retain(|action| {
@@ -415,10 +316,6 @@ fn reject_agent_main(actions: &mut Vec<ScheduledAction>) -> Vec<RejectedAction> 
     rejected
 }
 
-/// Build an owner-facing notice naming every scheduled action dropped at load
-/// for using the removed `agent: "main"` routing, pointing at the migration
-/// guide. This is only ever called once, right after startup load, so unlike
-/// the HEARTBEAT.yml pulse notice there's no repeat-tick dedup to do here.
 #[must_use]
 pub fn rejected_actions_notice(rejected: &[RejectedAction]) -> String {
     let details = rejected
@@ -437,10 +334,6 @@ pub fn rejected_actions_notice(rejected: &[RejectedAction]) -> String {
     )
 }
 
-/// Build an owner-facing notice naming the corrupt `scheduled_actions.json`
-/// file moved aside by [`ActionStore::load`], in plain language — the owner
-/// is non-technical, so this says what happened and what to do, not that
-/// JSON parsing failed.
 #[must_use]
 pub fn corrupt_actions_notice(moved_to: &Path) -> String {
     format!(
@@ -452,13 +345,6 @@ pub fn corrupt_actions_notice(moved_to: &Path) -> String {
     )
 }
 
-/// Move a corrupt `scheduled_actions.json` aside to `<path>.corrupt-<unix
-/// timestamp>` in the same directory, preserving its raw bytes rather than
-/// letting the next save silently overwrite them.
-///
-/// # Errors
-/// Returns an error if the rename fails (e.g. the directory isn't
-/// writable).
 async fn move_aside_corrupt_file(path: &Path) -> anyhow::Result<PathBuf> {
     let timestamp = Utc::now().timestamp();
     let mut dest = path.as_os_str().to_owned();
@@ -492,7 +378,6 @@ mod tests {
         assert!(store.mark_in_flight("action-1"));
         assert!(store.mark_in_flight("action-2"));
 
-        // The id path touches exactly one action, never its same-named twin.
         assert!(store.drop_in_flight_by_id("action-1"));
         assert_eq!(store.in_flight(), 1);
         assert!(store.restore_in_flight_by_id("action-2"));
@@ -504,7 +389,6 @@ mod tests {
             "restored verbatim by id"
         );
 
-        // The name path remains only for labels that carry no id suffix.
         assert!(store.mark_in_flight("action-2"));
         assert_eq!(store.restore_in_flight_by_name("duplicate"), 1);
     }
@@ -830,8 +714,6 @@ mod tests {
             "the original corrupt bytes must be preserved, not discarded"
         );
 
-        // The next save must write a fresh file at the normal path, not
-        // touch the moved-aside file again.
         store.save().await.unwrap();
         assert!(path.exists());
         assert_eq!(

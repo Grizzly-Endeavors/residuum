@@ -2,19 +2,8 @@ import type { Page } from "@playwright/test";
 import { expectNoAxeViolations } from "../support/axe";
 import { expect, test } from "../support/fixtures";
 
-/**
- * The service worker: it holds the app shell so a reload with no
- * network still opens the app, it never touches `/api`, and a rebuilt app
- * shows Update ready. The worker is built only into the production build, so
- * these run there (`@preview`).
- *
- * The mock's `POST /api/mock/rebuild` stands in for rebuilding the app: the
- * preview server then serves the worker as another version.
- */
-
 const SHELL_CACHE_PREFIX = "residuum-shell:";
 
-/** Open the app and wait until the worker controls the page and holds the shell. */
 async function openWithWorker(page: Page): Promise<void> {
   await page.goto("/home");
   await expect(page.getByRole("heading", { name: "Home", level: 1 })).toBeVisible();
@@ -30,7 +19,6 @@ async function openWithWorker(page: Page): Promise<void> {
     .toBe(true);
 }
 
-/** The paths each cache holds, by cache name. */
 function cachedPaths(page: Page): Promise<Record<string, string[]>> {
   return page.evaluate(async () => {
     const held: Record<string, string[]> = {};
@@ -42,13 +30,11 @@ function cachedPaths(page: Page): Promise<Record<string, string[]>> {
   });
 }
 
-/** The names of the shell caches: one per version the worker still holds. */
 async function shellCaches(page: Page): Promise<string[]> {
   const names = Object.keys(await cachedPaths(page));
   return names.filter((name) => name.startsWith(SHELL_CACHE_PREFIX)).sort();
 }
 
-/** The shell versions the worker has activated: the one active now, and the one it replaced. */
 function activatedVersions(page: Page): Promise<{ current: string; previous: string | null }> {
   return page.evaluate(async () => {
     const stored = await (await caches.open("residuum-generations")).match("/generations");
@@ -56,7 +42,6 @@ function activatedVersions(page: Page): Promise<{ current: string; previous: str
   });
 }
 
-/** What a browser does when a page is shown again: the app checks whether it was rebuilt. */
 async function showPageAgain(page: Page): Promise<void> {
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
 }
@@ -101,7 +86,6 @@ test.describe("the service worker", { tag: "@preview" }, () => {
     expect(shell).toContain("/index.html");
     expect(shell).toContain("/icons/icon-192.png");
     expect(shell.some((path) => /^\/assets\/index-.+\.js$/.test(path))).toBe(true);
-    // The lazy chunks and the fonts are held too, so an open page keeps them through a rebuild.
     expect(shell.some((path) => /^\/assets\/SettingsModal-.+\.js$/.test(path))).toBe(true);
     expect(shell.some((path) => /^\/assets\/onest-latin-400-.+\.woff2$/.test(path))).toBe(true);
     expect(shell).not.toContain("/manifest.webmanifest");
@@ -118,7 +102,6 @@ test.describe("the service worker", { tag: "@preview" }, () => {
       });
     });
 
-    // Places that read the API, and calls made straight from the page.
     await page.goto("/agent/atlas");
     await expect(page.getByRole("heading", { name: "atlas", level: 1 })).toBeVisible();
     await page.goto("/inbox");
@@ -131,7 +114,6 @@ test.describe("the service worker", { tag: "@preview" }, () => {
     const api = answered.filter((response) => response.path.startsWith("/api/"));
     expect(api.length).toBeGreaterThan(0);
     expect(api.filter((response) => response.fromWorker)).toEqual([]);
-    // The app's own files are answered by the worker, so the check above can tell the two apart.
     expect(
       answered.some((response) => response.path.startsWith("/assets/") && response.fromWorker),
     ).toBe(true);
@@ -150,8 +132,6 @@ test.describe("the service worker", { tag: "@preview" }, () => {
     mock,
   }) => {
     await openWithWorker(page);
-    // Manual time holds the socket's own reconnect timer, which would otherwise
-    // race the click below once the network is back, so only Retry can reconnect it.
     await mock.manualTime();
 
     await context.setOffline(true);
@@ -162,7 +142,6 @@ test.describe("the service worker", { tag: "@preview" }, () => {
     await expect(banner).toBeVisible();
     await expectNoAxeViolations(page);
 
-    // Back online, Retry reconnects and the banner goes.
     const retry = banner.getByRole("button", { name: "Retry" });
     await expect(retry).not.toHaveAttribute("aria-busy", "true");
     await context.setOffline(false);
@@ -199,7 +178,6 @@ test.describe("the service worker", { tag: "@preview" }, () => {
 });
 
 test.describe("an app update", { tag: "@preview" }, () => {
-  /** Press Reload on the banner and wait for the page to load again. */
   async function reload(page: Page): Promise<void> {
     const loaded = page.waitForEvent("load");
     await page
@@ -224,7 +202,6 @@ test.describe("an app update", { tag: "@preview" }, () => {
     const banner = page.getByRole("status").filter({ hasText: "Update ready." });
     await expect(banner).toBeVisible();
     await expectNoAxeViolations(page);
-    // The new worker waits: nothing under the open page has changed.
     expect((await activatedVersions(page)).current).toBe(first);
     const waiting = await page.evaluate(
       async () => (await navigator.serviceWorker.getRegistration())?.waiting != null,
@@ -235,7 +212,6 @@ test.describe("an app update", { tag: "@preview" }, () => {
     await expect(page.getByRole("heading", { name: "Home", level: 1 })).toBeVisible();
     await expect(banner).toBeHidden();
 
-    // The new version is active, and the one it replaced stays for pages still open on it.
     expect(await activatedVersions(page)).toEqual({
       current: `${first}-rebuild-1`,
       previous: first,
@@ -260,7 +236,6 @@ test.describe("an app update", { tag: "@preview" }, () => {
     await showPageAgain(page);
     await expect(page.getByText("Update ready.")).toBeVisible();
 
-    // Another window of the app updates: the new worker takes over this page too, which still runs the old files.
     await page.evaluate(async () => {
       const registration = await navigator.serviceWorker.getRegistration();
       const changed = new Promise((resolve) => {
@@ -273,7 +248,6 @@ test.describe("an app update", { tag: "@preview" }, () => {
       .poll(async () => (await activatedVersions(page)).current)
       .toBe(`${first}-rebuild-1`);
 
-    // The rebuilt app no longer lists the old chunk, and the hub no longer has it.
     await page.evaluate(async ({ name, path }) => (await caches.open(name)).delete(path), {
       name: `${SHELL_CACHE_PREFIX}${first}-rebuild-1`,
       path: chunk,
@@ -309,7 +283,6 @@ test.describe("an app update", { tag: "@preview" }, () => {
     await expect(question).toContainText("Unsaved changes to SOUL.md");
     await question.getByRole("button", { name: "Keep editing" }).click();
     await expect(editor).toHaveValue(/Unsaved\.$/);
-    // Nothing happened to the page or the worker.
     expect((await activatedVersions(page)).current).toBe(first);
     await expect(banner).toBeVisible();
 

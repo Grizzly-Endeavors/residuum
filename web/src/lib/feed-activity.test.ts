@@ -3,9 +3,6 @@ import { groupTurns, type FeedTurn } from "../feed/turns";
 import { FeedStore } from "./feed.svelte";
 import type { ServerMessage, ToolCallState } from "./types";
 
-// The feed store's record of each turn it watched, for the activity line:
-// timing, failures, how the turn ended, and steps the page may have missed.
-
 function toolCall(id: string, name = "read_file", server: string | null = null): ServerMessage {
   return {
     type: "tool_call",
@@ -35,7 +32,6 @@ function liveBlock(store: FeedStore): FeedTurn | undefined {
   );
 }
 
-/** Every tool call in `block`, across its activity segments. */
 function callsOf(block: FeedTurn | undefined): ToolCallState[] {
   return block?.parts.flatMap((part) => (part.kind === "activity" ? part.calls : [])) ?? [];
 }
@@ -131,7 +127,6 @@ describe("a turn the page watched", () => {
     });
     expect(liveBlock(store)).toMatchObject({ key: "turn:t1", parts: [] });
 
-    // The same block, by key, once output arrives.
     store.handleMessage(toolCall("c1"));
     expect(liveBlock(store)?.key).toBe("turn:t1");
   });

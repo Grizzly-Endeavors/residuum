@@ -1,34 +1,4 @@
 #!/usr/bin/env bash
-# Runs a command while the official Playwright container serves a browser, then
-# stops the container. The command reaches the browser through E2E_CONTAINER_WS,
-# which web/playwright.config.ts gives to the visual-* and webkit-phone
-# projects, so visual screenshots render in the same environment on every
-# machine, and WebKit needs no system libraries here:
-#
-#   scripts/with-playwright-container.sh npm --prefix web run e2e:visual
-#
-# With E2E_ALL_IN_CONTAINER=1 the config gives that browser to the desktop,
-# phone, dev-* and preview-* projects too, so the machine needs no Chromium of its
-# own. The CI runners are such machines, and run the whole suite this way:
-#
-#   E2E_ALL_IN_CONTAINER=1 scripts/with-playwright-container.sh npm --prefix web run e2e:fast
-#
-# The image tag is the installed Playwright's version, so the browser builds in
-# the image are the ones that version expects. The test runner, the mock servers
-# and the baselines' comparison stay on this machine, and the container's
-# browser reaches the mock through Playwright's `exposeNetwork` tunnel. The
-# container mounts the installed playwright-core read-only to run its browser
-# server, so both ends are the same version by construction.
-#
-# The port is published on the host's loopback. A command run under
-# scripts/with-loopback-network.sh, which has a network of its own, reaches it
-# through the Unix socket bridge that script sets up.
-#
-# PLAYWRIGHT_IMAGE_REGISTRY pulls the image from a mirror of mcr.microsoft.com
-# instead, such as the CI cluster's registry; the image path under it is the same.
-#
-# Baselines are made for linux/amd64 (the image is pulled for that platform on
-# any host), because rendering can differ between architectures.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -73,8 +43,6 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 echo "Starting $image (the first run pulls it)..." >&2
-# The port is published on loopback only, on whichever host port is free, so
-# two runs at once don't collide.
 docker run --detach --rm --init --ipc=host --platform linux/amd64 --name "$name" \
     --publish 127.0.0.1::3000 \
     --volume "$PWD/$core:/opt/playwright-core:ro" \
@@ -101,5 +69,4 @@ fi
 host_port="$(docker port "$name" 3000/tcp | head -n 1 | sed 's/.*://')"
 export E2E_CONTAINER_WS="ws://127.0.0.1:${host_port}/"
 
-# Not `exec`: the trap has to outlive the command to remove the container.
 "$@"

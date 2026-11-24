@@ -1,14 +1,8 @@
-/**
- * The workbench SDK in a real browser, on an artifact page opened straight
- * from the mock's artifacts origin: no Residuum app around it. Each test
- * writes a blank probe artifact, opens it, and drives `window.residuum`.
- */
 import type { Page, Request, Route } from "@playwright/test";
 import { ARTIFACT_REFUSAL_MESSAGE } from "../../mock/artifacts-origin";
 import type { Frame, Sdk } from "../../src/test/workbench-sdk";
 import { artifactsOrigin, expect, test, type MockControls } from "../support/fixtures";
 
-/** The page's window, with what the SDK and the tests put on it. */
 type ProbeWindow = Window & { residuum: Sdk; seen: Frame[]; marker?: string };
 
 const PROBE = "sdk-probe";
@@ -22,7 +16,6 @@ async function writeProbe(mock: MockControls, title = "SDK probe"): Promise<void
   await mock.post("/api/mock/team-file", { data: { path: PROBE_FILE, content: probeHtml(title) } });
 }
 
-/** Resolves once the page's live connection to Residuum is up. */
 async function connected(page: Page): Promise<void> {
   await page.evaluate(
     () =>
@@ -34,14 +27,12 @@ async function connected(page: Page): Promise<void> {
   );
 }
 
-/** Open the probe artifact on the artifacts origin, connected to Residuum. */
 async function openProbe(page: Page, mock: MockControls): Promise<void> {
   await writeProbe(mock);
   await page.goto(`${artifactsOrigin()}/${PROBE}/`);
   await connected(page);
 }
 
-/** The API requests the page sends from now on. */
 function apiRequests(page: Page): Request[] {
   const sent: Request[] = [];
   page.on("request", (request) => {
@@ -52,13 +43,11 @@ function apiRequests(page: Page): Request[] {
 
 const pathOf = (request: Request): string => new URL(request.url()).pathname;
 
-/** Matches requests to `path` on the artifacts origin, whatever their query. */
 const onProbeOrigin =
   (path: string) =>
   (url: URL): boolean =>
     url.origin === artifactsOrigin() && url.pathname === path;
 
-/** What the page's handlers collected in `window.seen`. */
 async function seen(page: Page): Promise<Frame[]> {
   return page.evaluate(() => (window as unknown as ProbeWindow).seen);
 }
@@ -153,8 +142,6 @@ test.describe("residuum.fetch", () => {
     await expect.poll(() => ordinary.length).toBe(8);
     await expect.poll(() => modelCalls.length).toBe(4);
 
-    // Finishing a model call lets the next one out, and by then the queued
-    // ordinary requests would have gone too if their lane let them.
     await modelCalls[0]?.fulfill({ json: { content: "ok" } });
     await expect.poll(() => modelCalls.length).toBe(5);
     expect(ordinary).toHaveLength(8);
@@ -211,7 +198,6 @@ test.describe("residuum.on and residuum.watch", () => {
       w.seen = [];
       w.residuum.watch("team/notes", (frame) => w.seen.push(frame));
     });
-    // The watch reaches the hub over the socket, so edit until it has.
     let edit = 0;
     await expect
       .poll(async () => {
@@ -257,7 +243,6 @@ test.describe("residuum.on and residuum.watch", () => {
         }),
     );
     expect(sockets).toContain("/api/agents/atlas/ws");
-    // Someone else talks to atlas over a connection of their own.
     await page.evaluate(
       () =>
         new Promise<void>((resolve) => {
@@ -270,7 +255,6 @@ test.describe("residuum.on and residuum.watch", () => {
           };
         }),
     );
-    // Not the pieces the model's text and reasoning stream in as.
     await expect
       .poll(async () =>
         (await seen(page))
@@ -374,7 +358,6 @@ test.describe("residuum.sessions", () => {
     await page.routeWebSocket(/\/api\/hub\/ws$/, (ws) => {
       void ws.close();
     });
-    // The page's ten seconds run only as the spec moves the mock's time.
     await mock.manualTime();
     await writeProbe(mock);
     const sent = apiRequests(page);

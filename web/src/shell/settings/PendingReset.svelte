@@ -5,12 +5,6 @@
   import { Banner, Button } from "../../lib/ui";
   import type { RemoteAct } from "./remote-access-act";
 
-  // A reset by email waiting to take effect. When this instance asked for it,
-  // the line says what happens next; when another instance did, it is a
-  // warning, with a Cancel for an instance that is already set up, because a
-  // reset replaces every other instance's certificate account. What the other
-  // instance says about itself is plain text.
-
   interface Props {
     reset: PendingResetInfo | null;
     busy: string | null;

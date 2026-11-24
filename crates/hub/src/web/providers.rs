@@ -1,5 +1,3 @@
-//! Provider model listing endpoints and types.
-
 use std::time::Duration;
 
 use axum::body::Body;
@@ -14,7 +12,6 @@ use residuum_inference::anthropic::is_oauth_key;
 use super::config::{PatchSavedResponse, ValidateResponse};
 use super::{ConfigApiState, HubDir};
 
-/// Request body for `POST /api/hub/providers/models` (and the same route under an agent).
 #[derive(Deserialize)]
 pub(super) struct ModelsRequest {
     provider: String,
@@ -24,14 +21,12 @@ pub(super) struct ModelsRequest {
     url: Option<String>,
 }
 
-/// A single model entry returned by the listing endpoint.
 #[derive(Serialize)]
 pub(super) struct ModelEntry {
     id: String,
     name: String,
 }
 
-/// Response from the model listing endpoint.
 #[derive(Serialize)]
 pub(super) struct ModelsResponse {
     models: Vec<ModelEntry>,
@@ -39,17 +34,10 @@ pub(super) struct ModelsResponse {
     error: Option<String>,
 }
 
-/// `POST /api/hub/providers/models` (and `/api/agents/{name}/providers/models`)
-/// — fetch available models from a provider API.
-///
-/// Used by onboarding and the Settings modal to populate model dropdowns.
-/// Takes provider type, optional API key, and optional base URL. Needs no
-/// agent: `secret:` keys resolve against the hub's secret store.
 pub(super) async fn api_provider_models(
     State(HubDir(hub_dir)): State<HubDir>,
     Json(req): Json<ModelsRequest>,
 ) -> Json<ModelsResponse> {
-    // Resolve secret: prefixed API keys via the encrypted store
     let resolved_key = if let Some(name) = req
         .api_key
         .as_deref()
@@ -109,7 +97,6 @@ pub(super) async fn api_provider_models(
     }
 }
 
-/// Fetch models from Anthropic's `/v1/models` endpoint.
 async fn fetch_anthropic_models(
     client: &reqwest::Client,
     api_key: Option<&str>,
@@ -121,7 +108,6 @@ async fn fetch_anthropic_models(
 
     let mut req_builder = client.get(&url).header("anthropic-version", "2023-06-01");
 
-    // OAuth tokens use Bearer auth + beta header; standard keys use x-api-key.
     if is_oauth_key(key) {
         req_builder = req_builder
             .header("Authorization", format!("Bearer {key}"))
@@ -169,7 +155,6 @@ async fn fetch_anthropic_models(
         .collect())
 }
 
-/// Fetch models from the `OpenAI` `/models` endpoint.
 async fn fetch_openai_models(
     client: &reqwest::Client,
     api_key: Option<&str>,
@@ -199,7 +184,6 @@ async fn fetch_openai_models(
     parse_openai_models(&json)
 }
 
-/// List every model the endpoint reports, fine-tunes included.
 fn parse_openai_models(json: &serde_json::Value) -> Result<Vec<ModelEntry>, String> {
     let data = json
         .get("data")
@@ -218,7 +202,6 @@ fn parse_openai_models(json: &serde_json::Value) -> Result<Vec<ModelEntry>, Stri
         .collect())
 }
 
-/// Fetch chat-capable models from the Fireworks `/models` endpoint.
 async fn fetch_fireworks_models(
     client: &reqwest::Client,
     api_key: Option<&str>,
@@ -278,7 +261,6 @@ fn parse_fireworks_chat_models(json: &serde_json::Value) -> Result<Vec<ModelEntr
         .collect())
 }
 
-/// Fetch models from Google Gemini's `/models` endpoint.
 async fn fetch_gemini_models(
     client: &reqwest::Client,
     api_key: Option<&str>,
@@ -288,8 +270,6 @@ async fn fetch_gemini_models(
     let base = base_url.unwrap_or("https://generativelanguage.googleapis.com/v1beta");
     let url = format!("{base}/models?pageSize=1000");
 
-    // The key travels in a header, and the errors below drop the URL: this
-    // text is shown in the web UI, and reqwest's error text includes the URL.
     let resp = client
         .get(&url)
         .header("x-goog-api-key", key)
@@ -315,7 +295,6 @@ async fn fetch_gemini_models(
     Ok(models
         .iter()
         .filter_map(|m| {
-            // Only include models that support generateContent
             let methods = m
                 .get("supportedGenerationMethods")
                 .and_then(|v| v.as_array())?;
@@ -341,7 +320,6 @@ async fn fetch_gemini_models(
         .collect())
 }
 
-/// Fetch models from Ollama's `/api/tags` endpoint.
 async fn fetch_ollama_models(
     client: &reqwest::Client,
     base_url: Option<&str>,
@@ -382,7 +360,6 @@ async fn fetch_ollama_models(
         .collect())
 }
 
-/// `GET /api/agents/{name}/providers/raw` — return raw `providers.toml` contents as text.
 pub(super) async fn api_providers_raw_get(
     State(state): State<ConfigApiState>,
 ) -> Result<Response, (StatusCode, String)> {
@@ -406,11 +383,6 @@ pub(super) async fn api_providers_raw_get(
         })
 }
 
-/// `PUT /api/agents/{name}/providers/raw` — write `providers.toml` unconditionally, save,
-/// trigger reload, and report diagnostics.
-///
-/// The save always succeeds, even when `body` fails validation — see
-/// `api_config_raw_put`'s doc comment for why that's safe.
 pub(super) async fn api_providers_raw_put(
     State(state): State<ConfigApiState>,
     body: String,
@@ -434,7 +406,6 @@ pub(super) async fn api_providers_raw_put(
             )
         })?;
 
-    // Trigger agent reload — provider changes affect model resolution
     if let Some(reload_tx) = &state.reload_tx {
         reload_tx
             .send(residuum_bus::control::ReloadSignal::Agent)
@@ -522,7 +493,6 @@ pub(super) async fn api_providers_patch(
             )
         })?;
 
-    // Trigger agent reload — provider changes affect model resolution
     if let Some(reload_tx) = &state.reload_tx {
         reload_tx
             .send(residuum_bus::control::ReloadSignal::Agent)
@@ -532,7 +502,6 @@ pub(super) async fn api_providers_patch(
     Ok(Json(PatchSavedResponse::saved(checkpoint_id)))
 }
 
-/// `POST /api/agents/{name}/providers/validate` — validate providers TOML body without saving.
 pub(super) async fn api_providers_validate(
     State(state): State<ConfigApiState>,
     body: String,
@@ -548,9 +517,6 @@ pub(super) async fn api_providers_validate(
 mod tests {
     use super::*;
 
-    /// A state backed by a real temp directory, for tests that read/write
-    /// `config.toml`/`providers.toml` on disk. Seeds a valid hub `config.toml`
-    /// so diagnosis/validation can resolve the hub side.
     fn tempdir_state(dir: &std::path::Path) -> ConfigApiState {
         let hub_dir = dir.join("hub");
         std::fs::create_dir_all(&hub_dir).unwrap();

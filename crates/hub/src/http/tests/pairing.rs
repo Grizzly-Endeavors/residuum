@@ -1,6 +1,3 @@
-//! Device pairing end to end through the hub router: what a remote request
-//! needs, each way a browser gets paired, and what a paired one still can't do.
-
 use axum::http::request::Builder;
 
 use super::*;
@@ -21,9 +18,6 @@ async fn announce(h: &Harness) {
         .unwrap();
 }
 
-/// A request as the secure tunnel delivers a browser's: marked with the
-/// transport extension no client can send, carrying the peer address, and with
-/// the headers a same-origin fetch carries.
 fn remote(method: Method, uri: &str) -> Builder {
     from_peer(
         Request::builder()
@@ -34,8 +28,6 @@ fn remote(method: Method, uri: &str) -> Builder {
     )
 }
 
-/// `builder` delivered by the transport as coming from `peer_ip`, replacing
-/// any peer it carried.
 fn from_peer(builder: Builder, peer_ip: &str) -> Builder {
     builder.extension(residuum_net::pairing::RemoteTransport {
         peer_ip: Some(peer_ip.to_string()),
@@ -43,8 +35,6 @@ fn from_peer(builder: Builder, peer_ip: &str) -> Builder {
     })
 }
 
-/// `builder` with header `name` set to `value`, replacing any the builder
-/// already carries (`header` would add a second value after the first).
 fn set(mut builder: Builder, name: &'static str, value: &str) -> Builder {
     if let Some(headers) = builder.headers_mut() {
         headers.insert(name, axum::http::HeaderValue::from_str(value).unwrap());
@@ -67,7 +57,6 @@ fn json_request(builder: Builder, payload: &Value) -> Request<Body> {
         .unwrap()
 }
 
-/// The `name=value` the response sets as the device cookie.
 fn cookie_pair(headers: &HeaderMap) -> String {
     let set_cookie = headers
         .get("set-cookie")
@@ -105,8 +94,6 @@ fn redeem_request(token: &str, device_name: &str) -> Request<Body> {
     )
 }
 
-/// Pair a first browser the way a person does: a link made locally, redeemed
-/// remotely. Returns its `name=value` cookie.
 async fn pair_first_device(h: &Harness, device_name: &str) -> String {
     announce(h).await;
     let minted = local_pair_link(h).await;
@@ -453,7 +440,6 @@ async fn a_refused_request_pairs_nothing() {
 #[tokio::test]
 async fn an_eleventh_waiting_request_is_refused() {
     let h = Harness::new();
-    // Different peers, so the per-address limit is not what refuses.
     for n in 0..10 {
         let from_peer = from_peer(
             remote(Method::POST, "/api/hub/pairing/requests"),
@@ -735,10 +721,6 @@ async fn the_state_route_says_whether_a_browser_needs_to_pair() {
     );
 }
 
-// ── The workbench host ───────────────────────────────────────────────
-
-/// The workbench listener's router, serving one artifact `notes`, with the
-/// hub router behind its `/api`.
 struct Workbench {
     router: Router,
 }
@@ -774,7 +756,6 @@ impl Workbench {
     }
 }
 
-/// Mint a handoff token as the paired UI-host browser `laptop`.
 async fn minted_handoff_token(h: &Harness, laptop: &str) -> String {
     let minted = json_of(
         h,
@@ -795,7 +776,6 @@ fn handoff_request(token: &str) -> Request<Body> {
     )
 }
 
-/// Complete a handoff on the workbench host and return its cookie.
 async fn workbench_cookie(h: &Harness, workbench: &Workbench, laptop: &str) -> String {
     let token = minted_handoff_token(h, laptop).await;
     let (outcome, headers) = workbench.send(handoff_request(&token)).await;

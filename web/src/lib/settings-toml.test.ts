@@ -71,7 +71,6 @@ describe("diffConfigFields", () => {
   it("collapses a value that equals its non-empty default to null", () => {
     const baseline = defaultConfigFields();
     const current = { ...baseline, teams_port: "7701" };
-    // 7701 is the default, so setting it explicitly is equivalent to unset
     expect(diffConfigFields(baseline, current)).toEqual({});
   });
 

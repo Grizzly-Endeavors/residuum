@@ -1,9 +1,3 @@
-//! Directory of the conversations each running chat interface can reach.
-//!
-//! Chat interfaces register a [`ConversationSource`] while they run; the
-//! `list_conversations` and `send_message` tools read through the directory to
-//! show the agent where it can post and to check a target before sending.
-
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
@@ -11,33 +5,17 @@ use async_trait::async_trait;
 
 use super::origin::ConversationKind;
 
-/// A conversation the agent can post into.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KnownConversation {
-    /// Interface-specific ID, as `send_message` takes it.
     pub id: String,
-    /// Direct message, group chat, or channel.
     pub kind: ConversationKind,
-    /// Human-readable place, e.g. `"#builds (Eng Team)"`.
     pub label: String,
 }
 
-/// Something that can say which conversations an interface can reach.
 #[async_trait]
 pub trait ConversationSource: Send + Sync {
-    /// Every conversation the interface can currently post into.
-    ///
-    /// # Errors
-    /// Returns an error if the interface has to ask its platform and that fails.
     async fn conversations(&self) -> anyhow::Result<Vec<KnownConversation>>;
 
-    /// The conversation ID of the owner's direct message with the bot, if the
-    /// owner has been claimed yet.
-    ///
-    /// Used by `send_message`'s session guard to tell whether a target
-    /// conversation — or the no-conversation default — reaches the owner
-    /// directly. The default implementation returns `None`, for sources with
-    /// no owner concept.
     async fn owner_dm_conversation_id(&self) -> Option<String> {
         None
     }
@@ -45,7 +23,6 @@ pub trait ConversationSource: Send + Sync {
 
 type SourceMap = HashMap<String, Arc<dyn ConversationSource>>;
 
-/// Shared, cheaply cloneable map from endpoint name to its conversation source.
 #[derive(Clone, Default)]
 pub struct ConversationDirectory {
     sources: Arc<RwLock<SourceMap>>,
@@ -61,8 +38,6 @@ impl std::fmt::Debug for ConversationDirectory {
     }
 }
 
-/// Keeps an interface registered until dropped, so an adapter that stops or
-/// restarts never leaves a stale source behind.
 #[must_use = "the source is unregistered when this guard is dropped"]
 pub struct Registration {
     directory: ConversationDirectory,
@@ -73,7 +48,6 @@ pub struct Registration {
 impl Drop for Registration {
     fn drop(&mut self) {
         let mut sources = self.directory.write();
-        // A restarted adapter may already have replaced this registration.
         if sources
             .get(&self.endpoint)
             .is_some_and(|current| Arc::ptr_eq(current, &self.source))
@@ -85,7 +59,6 @@ impl Drop for Registration {
 
 impl ConversationDirectory {
     fn read(&self) -> std::sync::RwLockReadGuard<'_, SourceMap> {
-        // Plain map of Arcs; a panic mid-insert cannot corrupt it.
         self.sources
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -97,7 +70,6 @@ impl ConversationDirectory {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Register `source` for `endpoint` until the returned guard is dropped.
     pub fn register(&self, endpoint: &str, source: Arc<dyn ConversationSource>) -> Registration {
         self.write()
             .insert(endpoint.to_string(), Arc::clone(&source));
@@ -108,30 +80,20 @@ impl ConversationDirectory {
         }
     }
 
-    /// Endpoints with a registered source.
     #[must_use]
     pub fn endpoints(&self) -> Vec<String> {
         self.read().keys().cloned().collect()
     }
 
-    /// The source for `endpoint`, if its interface is running.
     #[must_use]
     pub fn source(&self, endpoint: &str) -> Option<Arc<dyn ConversationSource>> {
         self.read().get(endpoint).cloned()
     }
 
-    /// The owner's DM conversation ID on `endpoint`, if that endpoint has a
-    /// running chat interface with a claimed owner.
     pub async fn owner_dm(&self, endpoint: &str) -> Option<String> {
         self.source(endpoint)?.owner_dm_conversation_id().await
     }
 
-    /// Look up conversation `id` on `endpoint`, explaining in agent-facing
-    /// terms why it cannot be used when it is not there.
-    ///
-    /// # Errors
-    /// Returns a message if the endpoint has no running chat interface, its
-    /// conversations cannot be listed, or none has this ID.
     pub async fn find(&self, endpoint: &str, id: &str) -> Result<KnownConversation, String> {
         let Some(source) = self.source(endpoint) else {
             return Err(format!(

@@ -1,13 +1,6 @@
-// Ids for the messages this page sends. The agent keeps a message's id as
-// the id of the turn it starts and records it in the conversation, so an id
-// has to stay unique across page loads, tabs and devices, not just within
-// one page.
-
 const HEX = "0123456789abcdef";
 
-/** A version 4 UUID from `bytes`, which must hold 16 random bytes. */
 function formatUuid(bytes: Uint8Array): string {
-  // Version 4, RFC 4122 variant.
   bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x40;
   bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80;
   let out = "";
@@ -41,7 +34,6 @@ function randomUuid(): string {
   return formatUuid(bytes);
 }
 
-/** A new id for a message this page is about to send. */
 export function newMessageId(): string {
   return `web-${randomUuid()}`;
 }

@@ -1,5 +1,3 @@
-//! The Web Push service: the hub's devices, its signing key, and delivery.
-
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
@@ -20,67 +18,48 @@ use super::types::{
 };
 use residuum_config::HubPaths;
 
-/// The VAPID `sub` claim when the hub config sets no `[push] contact`.
 pub const DEFAULT_CONTACT: &str = "https://github.com/Grizzly-Endeavors/residuum";
 
-/// How long a delivery that failed in a way that may pass waits before its
-/// one retry.
 const RETRY_DELAY: Duration = Duration::from_secs(30);
 
-/// The name a device gets when its registration gives none.
 const UNNAMED_DEVICE: &str = "Unnamed device";
 
-/// How many notices for the user can wait for the hub to pick them up. The
-/// hub reads them as they come, so this only absorbs a burst of devices
-/// failing at once.
 const NOTICE_CAPACITY: usize = 16;
 
-/// How many delivery reports a slow follower can fall behind by before it
-/// misses some, which it is told.
 const REPORT_CAPACITY: usize = 256;
 
-/// What became of one background delivery to one device.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeliveryOutcome {
-    /// The first try failed in a way that may pass; one retry follows
-    /// `after` this long, unless the device is removed or re-registered
-    /// first.
     RetryScheduled {
         after: Duration,
         status: Option<u16>,
     },
-    /// The push service accepted the notification.
-    Delivered { retried: bool },
-    /// The notification wasn't delivered; the device records why.
-    Failed { status: Option<u16>, retried: bool },
-    /// The push service no longer knows the device, so it was removed.
+    Delivered {
+        retried: bool,
+    },
+    Failed {
+        status: Option<u16>,
+        retried: bool,
+    },
     DeviceGone,
-    /// The device was removed or re-registered while the retry waited, so
-    /// the notification was dropped.
     DroppedDeviceChanged,
 }
 
 impl DeliveryOutcome {
-    /// Whether the delivery is over: every outcome but a scheduled retry.
     #[must_use]
     pub fn is_final(&self) -> bool {
         !matches!(self, Self::RetryScheduled { .. })
     }
 }
 
-/// A step of one background delivery, as [`PushService`] reports it to the
-/// receivers following its deliveries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeliveryReport {
     pub device_id: String,
     pub event: PushEvent,
-    /// The notification's tag, which tells one notification from another.
     pub tag: String,
     pub outcome: DeliveryOutcome,
 }
 
-/// Counts one background delivery (or one notification's fan-out) as under
-/// way until dropped.
 struct PendingDelivery(Arc<watch::Sender<usize>>);
 
 impl PendingDelivery {
@@ -96,15 +75,6 @@ impl Drop for PendingDelivery {
     }
 }
 
-/// Web Push for the whole hub: registered devices, the signing key, and
-/// sending.
-///
-/// Delivery never blocks or fails the code that triggers it: [`notify`]
-/// returns at once and logs what goes wrong. A device whose delivery fails
-/// shows the failure in its `last_failure`; a device the push service says is
-/// gone is removed.
-///
-/// [`notify`]: PushService::notify
 pub struct PushService {
     key_path: std::path::PathBuf,
     store: DeviceStore,
@@ -114,21 +84,15 @@ pub struct PushService {
     presence: Arc<Presence>,
     notices: broadcast::Sender<String>,
     reports: broadcast::Sender<DeliveryReport>,
-    /// Background deliveries not yet over, counting a notification's
-    /// fan-out until it has started a delivery for each of its devices.
     pending: Arc<watch::Sender<usize>>,
 }
 
 impl PushService {
-    /// The service for the hub directory `hub_dir`, whose key and devices
-    /// files it keeps there. `contact` is the hub config's `[push] contact`.
     #[must_use]
     pub fn new(hub_dir: &Path, contact: Option<&str>) -> Arc<Self> {
         Self::with_retry_delay(hub_dir, contact, RETRY_DELAY)
     }
 
-    /// [`Self::new`], with a failure that may pass retried after
-    /// `retry_delay` rather than the usual 30 seconds.
     #[must_use]
     pub(crate) fn with_retry_delay(
         hub_dir: &Path,
@@ -149,24 +113,18 @@ impl PushService {
         })
     }
 
-    /// Follow every background delivery: a report when one schedules its
-    /// retry, and one when it is over. A receiver hears the deliveries
-    /// reported after it subscribes.
     #[cfg(test)]
     #[must_use]
     pub(crate) fn subscribe_deliveries(&self) -> broadcast::Receiver<DeliveryReport> {
         self.reports.subscribe()
     }
 
-    /// How many background deliveries are still under way, a retry that is
-    /// waiting included.
     #[must_use]
     pub fn deliveries_pending(&self) -> watch::Receiver<usize> {
         self.pending.subscribe()
     }
 
     fn report(&self, device: &PushDevice, message: &PushMessage, outcome: DeliveryOutcome) {
-        // Nobody following is the normal state.
         self.reports
             .send(DeliveryReport {
                 device_id: device.id.clone(),
@@ -177,38 +135,25 @@ impl PushService {
             .ok();
     }
 
-    /// Use `contact` (the hub config's `[push] contact`) as the VAPID `sub`
-    /// claim of every push sent from now on.
     pub fn set_contact(&self, contact: Option<&str>) {
         self.subject.send_replace(subject_for(contact));
     }
 
-    /// The VAPID `sub` claim pushes are sent with now.
     #[must_use]
     pub fn subject(&self) -> String {
         self.subject.borrow().clone()
     }
 
-    /// Which devices have a window in front of their user. Triggers skip
-    /// them, and the hub WebSocket records what clients report.
     #[must_use]
     pub fn presence(&self) -> &Arc<Presence> {
         &self.presence
     }
 
-    /// Notices for the user about how delivery is going: a device that
-    /// stopped receiving notifications, and a device whose notifications
-    /// started failing. The hub shows each as a notice.
     #[must_use]
     pub fn subscribe_notices(&self) -> broadcast::Receiver<String> {
         self.notices.subscribe()
     }
 
-    /// Whether a push for `event` would go to any device: one that has the
-    /// event on and isn't in `skip`. A triggering code path asks before it
-    /// builds a payload, because building one can read every agent's inbox.
-    /// When the devices can't be read this says yes, so [`Self::notify`]
-    /// reports the problem.
     pub async fn would_notify(&self, event: PushEvent, skip: &HashSet<String>) -> bool {
         match self.store.read().await {
             Ok(devices) => devices
@@ -224,19 +169,10 @@ impl PushService {
             .await
     }
 
-    /// The hub's VAPID public key as base64url, which a browser subscribes
-    /// with. The key is created the first time it is needed.
-    ///
-    /// # Errors
-    /// Returns [`PushError::Failed`] if the key can't be read or created.
     pub async fn public_key(&self) -> Result<String, PushError> {
         Ok(self.vapid_key().await?.public_key_base64url())
     }
 
-    /// Every registered device, oldest first.
-    ///
-    /// # Errors
-    /// Returns [`PushError::Failed`] if the devices file can't be read.
     pub async fn devices(&self) -> Result<Vec<PushDevice>, PushError> {
         Ok(self
             .store
@@ -247,15 +183,6 @@ impl PushService {
             .collect())
     }
 
-    /// Register a device, or update the one already registered for the same
-    /// subscription endpoint, which keeps its id and delivery history. When
-    /// `previous_endpoint` names a device instead (a browser's rotated
-    /// subscription, which arrives under a new endpoint), that device is
-    /// updated in place the same way.
-    ///
-    /// # Errors
-    /// Returns [`PushError::BadRequest`] for a blank label and
-    /// [`PushError::Failed`] if the devices file can't be read or written.
     pub async fn upsert_device(
         &self,
         request: PutPushDeviceRequest,
@@ -293,12 +220,6 @@ impl PushService {
         updated.ok_or_else(|| PushError::Failed("the device could not be saved".to_string()))
     }
 
-    /// Change a device's label and/or preferences.
-    ///
-    /// # Errors
-    /// Returns [`PushError::BadRequest`] for a request that changes nothing or
-    /// a blank label, [`PushError::UnknownDevice`] for an unknown id, and
-    /// [`PushError::Failed`] if the devices file can't be read or written.
     pub async fn patch_device(
         &self,
         id: &str,
@@ -326,12 +247,6 @@ impl PushService {
         updated.ok_or_else(|| PushError::UnknownDevice(id.to_string()))
     }
 
-    /// Remove a device. It stops receiving notifications at once; the
-    /// browser's own subscription is the browser's to cancel.
-    ///
-    /// # Errors
-    /// Returns [`PushError::UnknownDevice`] for an unknown id and
-    /// [`PushError::Failed`] if the devices file can't be read or written.
     pub async fn delete_device(&self, id: &str) -> Result<(), PushError> {
         let removed = self
             .store
@@ -344,18 +259,6 @@ impl PushService {
         removed.ok_or_else(|| PushError::UnknownDevice(id.to_string()))
     }
 
-    /// Send the test notification to one device and report how it went. The
-    /// device's preferences don't matter, and the delivery is tried once: the
-    /// person asking is waiting for the answer.
-    ///
-    /// `badge` is the user's total unread inbox count, which the
-    /// notification sets on the app badge as every notification does.
-    ///
-    /// # Errors
-    /// Returns [`PushError::UnknownDevice`] for an unknown id and
-    /// [`PushError::Failed`] if the devices file can't be read or written. A
-    /// notification the push service refuses is not an error: it comes back
-    /// as a result with `delivered` false.
     pub async fn send_test(&self, id: &str, badge: u32) -> Result<PushTestResult, PushError> {
         let stored = self
             .store
@@ -376,10 +279,6 @@ impl PushService {
         Ok(self.deliver(stored, &message, false).await)
     }
 
-    /// Send `message` in the background to every device whose preferences turn
-    /// its event on, except the devices in `skip` (the ones whose user is
-    /// looking at the app). Returns at once: nothing here blocks or fails the
-    /// caller, and what goes wrong is logged and recorded on the device.
     pub fn notify(self: &Arc<Self>, message: PushMessage, skip: HashSet<String>) {
         let service = Arc::clone(self);
         let fan_out = PendingDelivery::start(&self.pending);
@@ -407,11 +306,6 @@ impl PushService {
         });
     }
 
-    /// Deliver `message` to one device and record how it went. A `background`
-    /// delivery tries a failure that may pass once more after the retry
-    /// delay, and tells the user when the device stops receiving
-    /// notifications; one that isn't (the test notification) leaves both to
-    /// the person waiting for its answer.
     async fn deliver(
         &self,
         stored: StoredDevice,
@@ -464,13 +358,8 @@ impl PushService {
         result
     }
 
-    /// Wait out the retry delay for `stored`. `false` as soon as the device
-    /// is removed or re-registered, which drops the retry then rather than
-    /// at the deadline.
     async fn wait_for_retry(&self, stored: &StoredDevice) -> bool {
         let deadline = tokio::time::Instant::now() + self.retry_delay;
-        // Subscribed before the first check, so a change between the two
-        // still wakes the wait.
         let mut changes = self.store.subscribe_changes();
         if !self.still_registered(stored).await {
             return false;
@@ -491,7 +380,6 @@ impl PushService {
         self.still_registered(stored).await
     }
 
-    /// Whether `stored` is still registered with the same subscription.
     async fn still_registered(&self, stored: &StoredDevice) -> bool {
         self.current_subscription(&stored.device.id)
             .await
@@ -532,9 +420,6 @@ impl PushService {
         .await
     }
 
-    /// Record what `attempt` came to on the device, and say how it went. A
-    /// `background` delivery also tells the user when the device is removed
-    /// or starts failing.
     async fn conclude(
         &self,
         device: &PushDevice,
@@ -616,7 +501,6 @@ impl PushService {
         }
     }
 
-    /// Change a device's delivery history, if the device still exists.
     async fn record(&self, id: &str, change: impl FnOnce(&mut PushDevice)) {
         let result = self
             .store
@@ -631,8 +515,6 @@ impl PushService {
         }
     }
 
-    /// Remove a device the push service says is gone. `false` when it was
-    /// already removed, or couldn't be.
     async fn remove_gone(&self, id: &str) -> bool {
         match self.delete_device(id).await {
             Ok(()) => true,
@@ -644,9 +526,6 @@ impl PushService {
         }
     }
 
-    /// Record a failed delivery as the device's `last_failure`. `true` when
-    /// the device was not already failing, so this failure starts a streak
-    /// the user hasn't been told about.
     async fn record_failure(&self, id: &str, failure: PushFailure) -> bool {
         let result = self
             .store
@@ -666,14 +545,11 @@ impl PushService {
         }
     }
 
-    /// Tell the user something about their devices, as a hub notice. Nobody
-    /// listening is the normal state in tests and before the hub starts.
     fn tell_user(&self, message: String) {
         self.notices.send(message).ok();
     }
 }
 
-/// The VAPID `sub` claim for a configured contact.
 fn subject_for(contact: Option<&str>) -> String {
     contact.unwrap_or(DEFAULT_CONTACT).to_string()
 }
@@ -700,11 +576,6 @@ fn new_device(subscription: WebPushSubscription) -> StoredDevice {
     }
 }
 
-/// Check a subscription the API received: an `https:` endpoint, and keys of
-/// the right shape.
-///
-/// # Errors
-/// Returns [`PushError::BadRequest`] saying what is wrong with it.
 pub fn validate_subscription(subscription: &WebPushSubscription) -> Result<(), PushError> {
     let endpoint = url::Url::parse(&subscription.endpoint).map_err(|e| {
         PushError::BadRequest(format!(
@@ -753,7 +624,6 @@ mod tests {
         }
     }
 
-    /// Register a device whose push endpoint is `server`.
     async fn register(service: &PushService, server: &MockServer, label: &str) -> PushDevice {
         service
             .upsert_device(put(
@@ -774,8 +644,6 @@ mod tests {
             .find(|d| d.id == id)
     }
 
-    /// Wait until no background delivery is under way, then read the device
-    /// and check it reached the state `done` describes.
     async fn settle(
         service: &PushService,
         id: &str,
@@ -1040,7 +908,6 @@ mod tests {
         assert_eq!(keys.len(), 1, "concurrent first use creates one key");
         let created = std::fs::read(&key_file).unwrap();
 
-        // A new service over the same directory reads the key back.
         let restarted = service_in(&dir, FAST_RETRY);
         assert_eq!(
             restarted.public_key().await.unwrap(),
@@ -1231,7 +1098,6 @@ mod tests {
     async fn an_unreachable_push_service_is_retried_then_recorded_without_a_status() {
         let dir = tempfile::tempdir().unwrap();
         let service = service_in(&dir, FAST_RETRY);
-        // Nothing listens on port 1.
         let device = service
             .upsert_device(put("http://127.0.0.1:1/push/x", &Browser::new(), "Laptop"))
             .await
@@ -1317,7 +1183,6 @@ mod tests {
         let server = MockServer::start().await;
         accepts(&server, 503).await;
         let dir = tempfile::tempdir().unwrap();
-        // Long enough that only the removal can end the wait.
         let service = service_in(&dir, Duration::from_secs(3600));
         let device = register(&service, &server, "Laptop").await;
         let mut reports = service.subscribe_deliveries();
@@ -1480,17 +1345,10 @@ mod tests {
         );
     }
 
-    /// Wait for the next notice for the user. A notice follows a delivery over
-    /// real HTTP to the fake push service, so this waits on that delivery, not
-    /// on a clock; the bound turns a notice that never comes into a failure
-    /// instead of a hang.
     async fn next_notice(notices: &mut broadcast::Receiver<String>) -> String {
         wait::next("a notice for the user", notices).await
     }
 
-    /// Wait until every background delivery has finished, which is after
-    /// it has recorded its result and told the user, so no notice is still
-    /// to come.
     async fn until_deliveries_finish(service: &PushService) {
         let mut pending = service.deliveries_pending();
         wait::watch_until(
@@ -1501,8 +1359,6 @@ mod tests {
         .await;
     }
 
-    /// Assert that the user has been told nothing since the last notice read,
-    /// once every delivery that could tell them has finished.
     async fn assert_no_further_notice(
         service: &Arc<PushService>,
         notices: &mut broadcast::Receiver<String>,
@@ -1525,7 +1381,6 @@ mod tests {
         let mut notices = service.subscribe_notices();
         register(&service, &server, "Laptop").await;
 
-        // Two notifications go out together and both learn the device is gone.
         service.notify(sample_message(PushEvent::InboxItem), HashSet::new());
         service.notify(sample_message(PushEvent::InboxItem), HashSet::new());
 
@@ -1551,7 +1406,6 @@ mod tests {
         let mut notices = service.subscribe_notices();
         let device = register(&service, &server, "Laptop").await;
 
-        // The first failure starts a streak, and the user is told.
         service.notify(sample_message(PushEvent::InboxItem), HashSet::new());
         let notice = next_notice(&mut notices).await;
         assert!(notice.contains("A notification to Laptop couldn't be delivered"));
@@ -1560,7 +1414,6 @@ mod tests {
             "it carries the plain reason: {notice}"
         );
 
-        // More failures in the same streak are not told again.
         service.notify(sample_message(PushEvent::InboxItem), HashSet::new());
         assert_no_further_notice(
             &service,
@@ -1574,7 +1427,6 @@ mod tests {
             "the second failure reached the push service"
         );
 
-        // A success ends the streak, so the next failure starts another.
         server.reset().await;
         accepts(&server, 201).await;
         service.notify(sample_message(PushEvent::InboxItem), HashSet::new());

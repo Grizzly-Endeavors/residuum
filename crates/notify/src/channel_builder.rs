@@ -4,7 +4,6 @@ use crate::channels::NotificationChannel;
 use crate::external::{NtfyChannel, WebhookChannel};
 use residuum_config::{ExternalChannelConfig, ExternalChannelKind};
 
-/// Build external channel implementations from configs.
 #[tracing::instrument(skip_all, fields(count = configs.len()))]
 pub async fn build_external_channels(
     configs: &[ExternalChannelConfig],
@@ -136,9 +135,6 @@ async fn build_macos_channel(
     None
 }
 
-/// Build a Windows notification channel from raw config fields.
-///
-/// On non-Windows platforms, logs a warning and returns `None`.
 #[cfg(target_os = "windows")]
 fn build_windows_channel(
     name: &str,

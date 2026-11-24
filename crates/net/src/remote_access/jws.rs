@@ -1,45 +1,25 @@
-//! Flattened JWS signed and checked with ES256 account keys: what the pin
-//! service and sibling joins exchange, and the key thumbprint the join's
-//! confirmation code is computed from.
-
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ring::digest::{SHA256, digest};
 use ring::signature::{ECDSA_P256_SHA256_FIXED, UnparsedPublicKey};
 use serde_json::{Value, json};
 
-/// The ES256 key behind an ACME account: it signs requests to the pin service
-/// and to sibling instances. The account URI is its identifier at the pin
-/// service.
 pub(crate) trait AccountSigner: Send + Sync {
-    /// The account URL.
     fn uri(&self) -> &str;
-    /// The public key as a JWK (`kty`, `crv`, `x`, `y`).
     fn jwk(&self) -> Value;
-    /// ES256 signature (raw `r || s`) over `message`.
     fn sign_es256(&self, message: &[u8]) -> anyhow::Result<[u8; 64]>;
 }
 
-/// Why a JWS or JWK was refused.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum JwsError {
-    /// The structure isn't a flattened JWS with the expected parts.
     #[error("the signed request is malformed")]
     Malformed,
-    /// The key isn't a P-256 public key.
     #[error("the signing key is not a P-256 public key")]
     BadKey,
-    /// The signature doesn't match the signed bytes and key.
     #[error("the signature does not verify")]
     BadSignature,
 }
 
-/// A flattened JWS (`protected`, `payload`, `signature`) over `payload` with
-/// `header` as the protected header.
-///
-/// # Errors
-/// Returns an error if the header or payload can't be serialized or signing
-/// fails.
 pub(crate) fn sign_jws(
     signer: &dyn AccountSigner,
     header: &Value,
@@ -55,19 +35,13 @@ pub(crate) fn sign_jws(
     }))
 }
 
-/// A JWS whose signature checked out against the key in its own header.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct VerifiedJws {
     pub(crate) protected: Value,
     pub(crate) payload: Value,
-    /// The signer's public key from the protected header's `jwk`.
     pub(crate) jwk: Value,
 }
 
-/// Check a flattened ES256 JWS against the `jwk` in its protected header.
-///
-/// # Errors
-/// Returns why the request is malformed or the signature is wrong.
 pub(crate) fn verify_jws(jws: &Value) -> Result<VerifiedJws, JwsError> {
     let part = |name: &str| {
         jws.get(name)
@@ -103,7 +77,6 @@ pub(crate) fn verify_jws(jws: &Value) -> Result<VerifiedJws, JwsError> {
     })
 }
 
-/// The SEC1 uncompressed point (`0x04 || x || y`) for a P-256 JWK.
 fn uncompressed_point(jwk: &Value) -> Result<Vec<u8>, JwsError> {
     let coordinate = |name: &str| -> Result<Vec<u8>, JwsError> {
         let bytes = jwk
@@ -128,14 +101,7 @@ fn uncompressed_point(jwk: &Value) -> Result<Vec<u8>, JwsError> {
     Ok(point)
 }
 
-/// The RFC 7638 SHA-256 thumbprint of a P-256 JWK: a digest of the key's
-/// required members in lexicographic order, so any rendering of the same key
-/// gives the same bytes.
-///
-/// # Errors
-/// Returns [`JwsError::BadKey`] if `jwk` isn't a P-256 public key.
 pub(crate) fn thumbprint(jwk: &Value) -> Result<[u8; 32], JwsError> {
-    // Validates the key's shape and coordinate lengths.
     uncompressed_point(jwk)?;
     let member = |name: &str| {
         jwk.get(name)
@@ -153,7 +119,6 @@ pub(crate) fn thumbprint(jwk: &Value) -> Result<[u8; 32], JwsError> {
 
 #[cfg(test)]
 pub(crate) mod test_key {
-    //! An account key for tests that have no ACME server to register with.
 
     use ring::rand::SystemRandom;
     use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPair as _};
@@ -250,7 +215,6 @@ mod tests {
         let forged = with_payload_of(&original, &signed(&account, &json!({ "n": 2 })));
         assert_eq!(verify_jws(&forged), Err(JwsError::BadSignature));
 
-        // The header names another key than the one that signed.
         let header = json!({ "alg": "ES256", "jwk": other.jwk() });
         let swapped = sign_jws(&account, &header, &json!({})).unwrap();
         assert_eq!(verify_jws(&swapped), Err(JwsError::BadSignature));

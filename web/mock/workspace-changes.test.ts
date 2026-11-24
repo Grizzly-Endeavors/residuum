@@ -30,7 +30,6 @@ describe("changing a team file from outside", () => {
     });
   }
 
-  /** An agent's socket, watching `prefixes` once the agent has taken them. */
   async function agentSocket(name: string, prefixes: string[]): Promise<TestSocket> {
     const socket = await mock.openSocket(`/api/agents/${name}/ws`);
     socket.send({ type: "watch_workspace", prefixes });
@@ -38,7 +37,6 @@ describe("changing a team file from outside", () => {
     return socket;
   }
 
-  /** What an agent's socket was sent since it last settled, without the ping's answer. */
   async function sentTo(socket: TestSocket): Promise<Frame[]> {
     return (await socket.settled()).filter((frame) => frame.type !== "pong");
   }
@@ -218,11 +216,6 @@ describe("changing a team file from outside", () => {
       expect(await sentTo(scout)).toEqual([changed({ path: "team/wiki/a.md", kind: "created" })]);
     });
 
-    /**
-     * A hub socket that has taken its `watch_team` frames. The hub answers a
-     * frame it can't read with a notice, so that answer shows the earlier
-     * frames were handled.
-     */
     async function hubSocket(...watches: string[][]): Promise<TestSocket> {
       const socket = await mock.openSocket("/api/hub/ws");
       for (const prefixes of watches) socket.send({ type: "watch_team", prefixes });
@@ -328,7 +321,6 @@ describe("changing a file in an agent's own workspace from outside", () => {
     return socket;
   }
 
-  /** What an agent's socket was sent since it last settled, without the ping's answer. */
   async function sentTo(socket: TestSocket): Promise<Frame[]> {
     return (await socket.settled()).filter((frame) => frame.type !== "pong");
   }

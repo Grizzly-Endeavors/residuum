@@ -1,16 +1,8 @@
-/**
- * Helpers for Svelte component tests.
- *
- * Put a test next to the component under `src/components/`, or name it
- * `*.component.test.ts`. Those files run in jsdom. `npm test` also runs the
- * Node unit tests under `src/lib/`.
- */
 import { act } from "@testing-library/svelte";
 import { vi } from "vitest";
 
 export { fireEvent, render, screen } from "@testing-library/svelte";
 
-/** JSON body the real `apiFetch` helper can parse. */
 export function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -23,10 +15,6 @@ export type FetchHandler = (
   init: RequestInit | undefined,
 ) => Response | Promise<Response>;
 
-/**
- * Replace `fetch` for one test. The handler sees the request URL the component
- * actually called, so a test can answer one endpoint and reject the rest.
- */
 export function mockFetch(handler: FetchHandler): void {
   vi.stubGlobal(
     "fetch",
@@ -62,18 +50,12 @@ export async function settle(): Promise<void> {
   });
 }
 
-/** Move the faked clock forward and let Svelte paint what the poll found. */
 export async function advance(ms: number): Promise<void> {
   await act(async () => {
     await vi.advanceTimersByTimeAsync(ms);
   });
 }
 
-/**
- * Replace `WebSocket` with one that never connects. Choosing an agent
- * (`setViewedAgent`) opens the agent connection, and a component test has
- * no server to answer it.
- */
 export function stubWebSocket(): void {
   class SilentWebSocket {
     static readonly OPEN = 1;

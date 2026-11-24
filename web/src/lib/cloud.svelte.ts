@@ -1,55 +1,32 @@
-// ── Residuum Cloud connection ────────────────────────────────────────
-//
-// What Settings → Residuum Cloud shows and does. The tunnel's state comes
-// from the hub (`GET /api/hub/cloud/status`) and has no change feed, so this
-// reads it when the section opens, when the window gets focus back from the
-// relay's sign-in page, when the hub's config reloads, and every few seconds
-// while the tunnel is connecting or the user has started something that will
-// change it. The actions act at once: they don't go through the staged form.
-
 import { ApiError, disconnectCloud, fetchCloudStatus, startCloudSignIn, storeSecret } from "./api";
 import { configCoordinator, HUB_CONFIG_FILE } from "./config-coordinator";
 import { userErrorMessage } from "./errors";
 import type { CloudStatusResponse, ValidateResponse } from "./types";
 
-/** The relay Residuum Cloud's tunnel dials when `[cloud] relay_url` is empty. */
 export const DEFAULT_RELAY_URL = "wss://agent-residuum.com/tunnel/v2/register";
 
-/** The port the gateway listens on when `[gateway] port` is empty. */
 const DEFAULT_GATEWAY_PORT = "7700";
 
 const POLL_INTERVAL_MS = 3000;
-/** How long after the user starts signing in on the relay's page the section keeps looking for the result. */
 const EXPECT_WINDOW_MS = 120_000;
 
-/** The parts of the Cloud status the Teams messaging endpoint is built from. */
 export type EndpointSource = Pick<CloudStatusResponse, "instance_origin">;
 
 function withoutTrailingSlash(origin: string): string {
   return origin.endsWith("/") ? origin.slice(0, -1) : origin;
 }
 
-/**
- * The messaging endpoint Microsoft posts Teams activities to for one agent: on
- * the instance's own origin. Null while the status has no instance origin.
- */
 export function teamsMessagingEndpoint(source: EndpointSource, agent: string): string | null {
   const instanceOrigin = source.instance_origin;
   if (instanceOrigin == null || instanceOrigin === "") return null;
   return `${withoutTrailingSlash(instanceOrigin)}/teams/${agent}`;
 }
 
-/** A page on the relay, and the host it is on. */
 export interface RelayPage {
   url: string;
   host: string;
 }
 
-/**
- * Where a sign-in goes: the relay URL and gateway port the hub builds the
- * relay's sign-in address from (`POST /api/hub/cloud/connect`), and the
- * relay's host, to name in the section.
- */
 export interface SignInTarget {
   relayUrl: string;
   port: string;
@@ -58,7 +35,6 @@ export interface SignInTarget {
 
 const RELAY_ADDRESS = /^(wss?):\/\/([^/?#\s]+)/i;
 
-/** The relay's web origin and host, from the relay URL the tunnel would dial. Null when that URL isn't a `ws://` or `wss://` address. */
 function relayWeb(relayUrl: string): { origin: string; host: string } | null {
   const found = RELAY_ADDRESS.exec(relayUrl.trim() === "" ? DEFAULT_RELAY_URL : relayUrl.trim());
   if (found === null) return null;
@@ -66,7 +42,6 @@ function relayWeb(relayUrl: string): { origin: string; host: string } | null {
   return { origin: `${scheme.toLowerCase() === "wss" ? "https" : "http"}://${host}`, host };
 }
 
-/** Where a gateway signs in, from the relay URL the tunnel would dial. Null when that URL isn't a `ws://` or `wss://` address. */
 export function signInTarget(relayUrl: string, gatewayPort: string): SignInTarget | null {
   const relay = relayWeb(relayUrl);
   if (relay === null) return null;
@@ -74,7 +49,6 @@ export function signInTarget(relayUrl: string, gatewayPort: string): SignInTarge
   return { relayUrl: relayUrl.trim(), port, host: relay.host };
 }
 
-/** The relay's account dashboard, where the user manages their instances, from the relay URL the tunnel would dial. Null when that URL isn't a `ws://` or `wss://` address. */
 export function accountTarget(relayUrl: string): RelayPage | null {
   const relay = relayWeb(relayUrl);
   return relay === null ? null : { url: `${relay.origin}/dashboard`, host: relay.host };
@@ -82,7 +56,6 @@ export function accountTarget(relayUrl: string): RelayPage | null {
 
 const WEB_ORIGIN = /^https?:\/\/[^/?#\s]+$/i;
 
-/** The account dashboard on the relay's web origin, as the hub reports it. Null when the origin isn't a plain http or https origin, so nothing is linked to a value that isn't one. */
 export function accountDashboardUrl(relayOrigin: string | null | undefined): string | null {
   if (relayOrigin === null || relayOrigin === undefined || !WEB_ORIGIN.test(relayOrigin)) {
     return null;
@@ -90,11 +63,6 @@ export function accountDashboardUrl(relayOrigin: string | null | undefined): str
   return `${relayOrigin}/dashboard`;
 }
 
-/**
- * What the section shows for a tunnel status. A saved token that is switched
- * on counts as connecting: the tunnel is being started, or retrying. Refused
- * is a switched-on token the relay turned away.
- */
 export type CloudPhase = "connected" | "connecting" | "refused" | "disconnected" | "none";
 
 export function phaseOf(status: CloudStatusResponse): CloudPhase {
@@ -104,7 +72,6 @@ export function phaseOf(status: CloudStatusResponse): CloudPhase {
   return status.has_token ? "disconnected" : "none";
 }
 
-/** A config change the server refused, with its reason. */
 class Refused extends Error {
   constructor(result: ValidateResponse) {
     super(result.error ?? result.diagnostics?.[0]?.message ?? "Residuum refused the change.");
@@ -120,11 +87,9 @@ const ACTION_FAILED: Readonly<Record<CloudAction, string>> = {
   token: "Couldn't connect with that token.",
 };
 
-/** What to say when the browser won't let the page open the sign-in tab. */
 export const SIGN_IN_TAB_BLOCKED =
   "Your browser blocked the Residuum Cloud sign-in tab. Allow pop-ups for this page (your browser offers it in or beside the address bar), then try again.";
 
-/** The gateway refuses to disconnect for someone viewing it through the tunnel (`remote_control_guard`); its 403 says so, where `userErrorMessage` would say to reload. */
 function problemOf(kind: CloudAction, err: unknown): string {
   if (err instanceof Refused) return `${ACTION_FAILED[kind]} ${err.message}`;
   if (kind === "disconnect" && err instanceof ApiError && err.status === 403) {
@@ -135,16 +100,12 @@ function problemOf(kind: CloudAction, err: unknown): string {
 
 export class CloudConnection {
   status = $state.raw<CloudStatusResponse | null>(null);
-  /** Why the last read of the status failed. Any status shown with it is the last one that was read. */
   loadError = $state("");
-  /** The action under way, for its button. */
   busy = $state<CloudAction | null>(null);
-  /** Why the last action failed. */
   problem = $state("");
 
   private awaiting: { phase: CloudPhase | null; until: number } | null = null;
 
-  /** Read the status now. */
   async refresh(): Promise<void> {
     try {
       const next = await fetchCloudStatus();
@@ -156,7 +117,6 @@ export class CloudConnection {
     }
   }
 
-  /** Follow the tunnel until the section closes. Returns what stops that. */
   follow(): () => void {
     void this.refresh();
     const timer = setInterval(() => {
@@ -178,7 +138,6 @@ export class CloudConnection {
     return this.awaiting !== null && Date.now() < this.awaiting.until;
   }
 
-  /** Something that changes the status behind this page's back has started, such as signing in on the relay: look for it for a while. */
   expectChange(): void {
     this.awaiting = {
       phase: this.status === null ? null : phaseOf(this.status),
@@ -186,16 +145,6 @@ export class CloudConnection {
     };
   }
 
-  /**
-   * Open the relay's sign-in page in a new tab. The hub hands out the page's
-   * address, with the `state` that ties the sign-in to this install.
-   *
-   * Call it straight from a click. The tab opens before the request to the
-   * hub, while the click still lets the page open one: a tab opened after an
-   * await can be dropped by a pop-up blocker, and with `noopener` the page
-   * couldn't tell. A blocked tab is reported, and a request that fails closes
-   * the tab it opened.
-   */
   async signIn(target: SignInTarget): Promise<void> {
     const tab = window.open("about:blank", "_blank");
     if (tab === null) {
@@ -214,19 +163,16 @@ export class CloudConnection {
     });
   }
 
-  /** Switch the tunnel off, keeping the account. Also cancels a connection that is still starting. */
   async disconnect(): Promise<void> {
     await this.act("disconnect", async () => {
       await disconnectCloud();
     });
   }
 
-  /** Switch the tunnel back on for the account already saved. */
   async reconnect(): Promise<void> {
     await this.act("reconnect", () => this.writeCloud({ enabled: true }));
   }
 
-  /** Keep a token the user pasted as a secret and switch the tunnel on with it. */
   async connectWithToken(token: string): Promise<void> {
     await this.act("token", async () => {
       const { reference } = await storeSecret("cloud_token", token.trim());

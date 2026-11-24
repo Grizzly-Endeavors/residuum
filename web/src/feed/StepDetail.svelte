@@ -8,20 +8,14 @@
   import { autoModeNote } from "./auto-mode";
   import { argumentLines } from "./step-args";
 
-  // A step's details: its arguments, summarized per tool, and what it
-  // returned, shaped by kind: JSON indented, a file with its line numbers, a
-  // list, or text. A long result or quoted text starts clamped, with Show all.
-
   let { call }: { call: StepCall } = $props();
 
-  /** Quoted text longer than this starts clamped. */
   const QUOTE_CLAMP_CHARS = 240;
 
   const lines = $derived(argumentLines(call.name, call.arguments));
   const result = $derived(
     call.result ? formatToolResult(call.result, { isError: call.status === "error" }) : null,
   );
-  /** The result text Show all was pressed for; a new result starts clamped again. */
   let expandedFor = $state<string | null>(null);
   const expanded = $derived(expandedFor !== null && expandedFor === call.result);
   let quoteOpen = $state(false);

@@ -1,5 +1,3 @@
-//! Tests for the hub router, against a fake [`AgentDirectory`].
-
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -63,14 +61,12 @@ mod session_relay;
 mod uploads;
 mod usage;
 
-/// The boot id every harness hub reports.
 const TEST_BOOT_ID: &str = "boot-under-test";
 const TEST_BUILD: residuum_core::build_info::BuildInfo = residuum_core::build_info::BuildInfo {
     version: "9.8.7",
     commit: None,
 };
 
-/// How long the harness overview gathers an agent's changes into a frame.
 const OVERVIEW_WINDOW: Duration = Duration::from_millis(200);
 
 fn summary(name: &str, state: AgentState) -> AgentSummary {
@@ -86,32 +82,19 @@ fn summary(name: &str, state: AgentState) -> AgentSummary {
     }
 }
 
-/// An in-memory directory. Running agents serve a small router that echoes
-/// what it was asked, plus the real file routes over their temp directory;
-/// every agent's repair router and every non-running agent's file router are
-/// the real ones over a temp directory.
 struct FakeDirectory {
     root: PathBuf,
     agents: Mutex<Vec<AgentSummary>>,
     events: broadcast::Sender<HubEvent>,
-    /// Handed out by the next `subscribe`, so a test can start a connection
-    /// with events already lost.
     primed: Mutex<Option<broadcast::Receiver<HubEvent>>>,
     calls: Mutex<Vec<String>>,
     deleted: Mutex<Vec<DeletedAgent>>,
-    /// How many times the hub asked for a non-running agent's file router.
     file_routers_built: AtomicUsize,
-    /// How many times a file route opened an agent's checkpoint repositories.
     checkpoint_opens: Arc<AtomicUsize>,
-    /// Makes those opens fail, as unreadable repositories would.
     checkpoints_unopenable: Arc<AtomicBool>,
-    /// The hub timezone the directory reports, UTC until a test sets one.
     timezone: Mutex<chrono_tz::Tz>,
-    /// What `activity()` reports.
     activity: Mutex<Vec<(String, AgentActivity)>>,
-    /// What `stopping()` reports.
     stopping: Mutex<Vec<String>>,
-    /// What `live_sessions()` reports, by agent.
     sessions: Mutex<Vec<(String, SessionInfo)>>,
 }
 
@@ -163,8 +146,6 @@ impl FakeDirectory {
         Ok(agent.clone())
     }
 
-    /// Make the next `subscribe` return a receiver that has already fallen
-    /// behind.
     fn prime_a_lagged_receiver(&self) {
         let rx = self.events.subscribe();
         for i in 0..10 {
@@ -183,7 +164,6 @@ impl FakeDirectory {
         *self.primed.lock().unwrap() = Some(rx);
     }
 
-    /// A file registry over the agent's saved links, as the hub builds it.
     fn file_registry(&self, name: &str) -> crate::file_server::FileRegistry {
         crate::file_server::FileRegistry::for_agent(
             name,
@@ -467,25 +447,18 @@ impl AgentDirectory for FakeDirectory {
     }
 }
 
-/// A hub router over a fake directory and temp directories, with the
-/// receiving ends of the channels the hub signals on.
 struct Harness {
     app: Router,
     directory: Arc<FakeDirectory>,
     push: Arc<crate::push::PushService>,
     pairing: residuum_net::pairing::DevicePairing,
     root: tempfile::TempDir,
-    /// The upload store the hub serves, for a test to resolve what it staged.
     uploads: crate::uploads::UploadStore,
     reload_rx: mpsc::UnboundedReceiver<ReloadSignal>,
     shutdown_rx: mpsc::Receiver<()>,
     team_bus: residuum_bus::BusHandle,
-    /// The log the hub serves; a test records into it the way the recorder does.
     team_events: Arc<TeamEventLog>,
-    /// The overview the hub serves, gathering an agent's changes for
-    /// `OVERVIEW_WINDOW`.
     overview: Arc<TeamOverview>,
-    /// Where the agents' changes are published, for a tracker to read.
     changes: Arc<AgentChangeFeed>,
     _tunnel_tx: watch::Sender<TunnelStatus>,
     health_tx: watch::Sender<WatchHealth>,
@@ -497,7 +470,6 @@ impl Harness {
         Self::over_team_bus(residuum_bus::spawn_broker())
     }
 
-    /// A harness whose hub reads the team change feed from `team_bus`.
     fn over_team_bus(team_bus: residuum_bus::BusHandle) -> Self {
         let root = tempfile::tempdir().unwrap();
         let hub_dir = root.path().join("hub");
@@ -617,19 +589,15 @@ impl Harness {
         (status, value)
     }
 
-    /// The status of the response to `request`.
     async fn status(&self, request: Request<Body>) -> StatusCode {
         self.send(request).await.0
     }
 
-    /// The status and body of the response to `request`.
     async fn send_body(&self, request: Request<Body>) -> (StatusCode, Vec<u8>) {
         let (status, _headers, body) = self.send(request).await;
         (status, body)
     }
 
-    /// Make a request, assert its status, and return the JSON body (or the
-    /// text of a body that isn't JSON).
     async fn expect(
         &self,
         method: Method,
@@ -650,8 +618,6 @@ impl Harness {
         self.expect(Method::POST, uri, None, want).await
     }
 
-    /// Send a request with a text body, assert that it answered `200`, and
-    /// return the headers and body bytes.
     async fn request_ok(&self, method: Method, uri: &str, body: &str) -> (HeaderMap, Vec<u8>) {
         let (status, headers, bytes) = self
             .send(
@@ -671,13 +637,10 @@ impl Harness {
         (headers, bytes)
     }
 
-    /// The directory of agent `name` on disk.
     fn agent_dir(&self, name: &str) -> PathBuf {
         self.root.path().join(name)
     }
 
-    /// Add a failed agent `broken` beside the running `scout` and the
-    /// stopped `quiet`.
     fn add_failed_agent(&self) {
         self.directory
             .agents
@@ -686,8 +649,6 @@ impl Harness {
             .push(summary("broken", AgentState::Failed));
     }
 
-    /// Start keeping the overview current from the directory's events and the
-    /// harness's feed of agent changes. It stops when the result is dropped.
     fn track_overview(&self) -> OverviewTracker {
         OverviewTracker::spawn(
             Arc::clone(&self.overview),
@@ -696,7 +657,6 @@ impl Harness {
         )
     }
 
-    /// Serve the app on a local port, for the WebSocket tests.
     async fn serve(&self) -> SocketAddr {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -718,8 +678,6 @@ async fn connect(addr: SocketAddr, path: &str) -> ClientSocket {
     socket
 }
 
-/// Open the hub socket and read its `hub_boot` and `system_one_status`
-/// frames, which come first.
 async fn connect_hub(addr: SocketAddr) -> ClientSocket {
     let mut socket = connect(addr, "/api/hub/ws").await;
     let boot = next_frame(&mut socket).await;
@@ -750,8 +708,6 @@ async fn send_client(socket: &mut ClientSocket, frame: &Value) {
         .await
         .unwrap();
 }
-
-// ---- lifecycle API -------------------------------------------------------
 
 fn agent_names(list: &Value) -> Vec<&str> {
     list["agents"]
@@ -1095,8 +1051,6 @@ async fn status_reports_version_uptime_tunnel_and_counts() {
     assert_eq!(hub_status["agents"]["starting"], 0);
 }
 
-// ---- agent dispatch ------------------------------------------------------
-
 #[tokio::test]
 async fn agent_requests_reach_the_agents_router_without_the_hub_prefix() {
     let h = Harness::new();
@@ -1108,7 +1062,6 @@ async fn agent_requests_reach_the_agents_router_without_the_hub_prefix() {
         json!({ "agent": "scout", "route": "running" })
     );
 
-    // The path moves under `/api` in the agent's table and the query survives.
     let echoed_uri = h
         .get_expect("/api/agents/scout/echo/abc?x=1&y=two", StatusCode::OK)
         .await;
@@ -1168,7 +1121,6 @@ async fn repair_routes_use_the_repair_router_so_a_stopped_agent_can_be_fixed() {
     assert_eq!(read_status, StatusCode::OK);
     assert_eq!(String::from_utf8(read_bytes).unwrap(), "# quiet's config\n");
 
-    // A repair write lands on disk for the stopped agent too.
     let write_status = h
         .status(
             Request::put("/api/agents/quiet/config/raw")
@@ -1182,7 +1134,6 @@ async fn repair_routes_use_the_repair_router_so_a_stopped_agent_can_be_fixed() {
         "# fixed\n"
     );
 
-    // Workspace files and checkpoints are repair routes as well.
     h.get_expect("/api/agents/quiet/workspace/files", StatusCode::OK)
         .await;
     h.get_expect(
@@ -1191,7 +1142,6 @@ async fn repair_routes_use_the_repair_router_so_a_stopped_agent_can_be_fixed() {
     )
     .await;
 
-    // Anything else still needs the agent to be running.
     let needs_running = h
         .get_expect("/api/agents/quiet/status", StatusCode::CONFLICT)
         .await;
@@ -1219,13 +1169,8 @@ async fn an_agents_checkpoint_routes_refuse_the_hub_repositories() {
     }
 }
 
-// ---- file-only agent routes ----------------------------------------------
-
-/// A running, a stopped and a failed agent: the file-only routes answer all
-/// of them the same way.
 const EVERY_STATE: [&str; 3] = ["scout", "quiet", "broken"];
 
-/// Write two episodes and one recent message into the agent's memory.
 async fn seed_history(agent_dir: &Path, name: &str) {
     use residuum_inference::Message;
     use residuum_memory::episode_store::write_episode_transcript;
@@ -1338,8 +1283,6 @@ async fn a_stopped_agent_with_no_history_answers_empty_not_an_error() {
     );
 }
 
-/// Write the active user-inbox item `id`, with one attachment holding
-/// `attachment` bytes under the file name `note.txt`.
 async fn seed_inbox_item(agent_dir: &Path, id: &str, title: &str, attachment: &[u8]) {
     let layout = WorkspaceLayout::new(agent_dir);
     let item_dir = layout.user_inbox_attachments_dir().join(id);
@@ -1408,7 +1351,6 @@ async fn the_raw_a2a_settings_are_read_and_saved_in_every_agent_state() {
         let uri = format!("/api/agents/{name}/a2a/agents/raw");
         let path = h.agent_dir(name).join("config/a2a.json");
 
-        // Nothing saved yet: the template.
         let (headers, template) = h.request_ok(Method::GET, &uri, "").await;
         assert_eq!(headers["content-type"], "application/json", "{name}");
         assert_eq!(template, br#"{"agents":{}}"#, "{name}");
@@ -1423,7 +1365,6 @@ async fn the_raw_a2a_settings_are_read_and_saved_in_every_agent_state() {
         let (_, read_back) = h.request_ok(Method::GET, &uri, "").await;
         assert_eq!(read_back, saved.as_bytes(), "{name}");
 
-        // An invalid file is saved anyway and reported.
         let (_, invalid_report) = h.request_ok(Method::PUT, &uri, "not json").await;
         let report: Value = serde_json::from_slice(&invalid_report).unwrap();
         assert_eq!(report["valid"], false, "{name}");
@@ -1444,7 +1385,6 @@ async fn routes_that_describe_the_live_agent_still_need_it_running() {
     let h = Harness::new();
     h.add_failed_agent();
 
-    // The running agent's own `status` answers.
     let status = h
         .get_expect("/api/agents/scout/status", StatusCode::OK)
         .await;
@@ -1476,7 +1416,6 @@ async fn routes_that_describe_the_live_agent_still_need_it_running() {
     }
 }
 
-/// The file routes a reader hits, none of which writes.
 const FILE_READ_ROUTES: [&str; 4] = [
     "chat/history",
     "usage",
@@ -1495,8 +1434,6 @@ async fn reading_the_file_routes_opens_no_checkpoint_repositories() {
     let opens = || h.directory.checkpoint_opens.load(Ordering::SeqCst);
     let routers_built = || h.directory.file_routers_built.load(Ordering::SeqCst);
 
-    // A running agent answers from its own router, which the hub never asks
-    // the directory to build.
     for route in FILE_READ_ROUTES {
         h.request_ok(Method::GET, &format!("/api/agents/scout/{route}"), "")
             .await;
@@ -1504,8 +1441,6 @@ async fn reading_the_file_routes_opens_no_checkpoint_repositories() {
     assert_eq!(routers_built(), 0, "a running agent serves its own routes");
     assert_eq!(opens(), 0);
 
-    // A stopped or failed agent gets the file router, and reading through it
-    // works whether or not its repositories could be opened.
     for unopenable in [false, true] {
         h.directory
             .checkpoints_unopenable
@@ -1599,7 +1534,6 @@ async fn webhooks_reach_the_named_agents_webhook_route() {
     assert_eq!(unknown["error"], "no agent named 'ghost'");
 }
 
-/// A browser opening `uri` in a tab.
 fn tab(uri: &str) -> Request<Body> {
     Request::get(uri)
         .header("sec-fetch-dest", "document")
@@ -1663,7 +1597,6 @@ async fn a_link_to_a_stopped_or_missing_agent_opened_in_a_tab_goes_to_the_app() 
         assert_eq!(status, StatusCode::SEE_OTHER, "{uri}");
         assert_eq!(headers["location"], expected, "{uri}");
     }
-    // A script still gets the contract errors.
     h.get_expect("/api/agents/quiet/sessions", StatusCode::CONFLICT)
         .await;
 }
@@ -1672,8 +1605,6 @@ async fn a_link_to_a_stopped_or_missing_agent_opened_in_a_tab_goes_to_the_app() 
 async fn a_workspace_file_link_is_served_while_the_agent_is_stopped_or_failed() {
     let h = Harness::new();
     h.add_failed_agent();
-    // The workspace is the agent's directory. The secret sits beside it, so
-    // a link that climbs out of the workspace would reach it.
     tokio::fs::write(h.root.path().join("secret.txt"), "the secret contents")
         .await
         .unwrap();
@@ -1745,7 +1676,6 @@ async fn a_workspace_file_link_opened_in_a_tab_on_a_stopped_agent_shows_the_file
 async fn a_token_link_the_agent_saved_is_served_while_it_is_stopped_or_failed() {
     let h = Harness::new();
     h.add_failed_agent();
-    // The attachment sits outside every agent's workspace.
     let outside = h.root.path().join("outside");
     tokio::fs::create_dir_all(&outside).await.unwrap();
     let opens = || h.directory.checkpoint_opens.load(Ordering::SeqCst);
@@ -1756,8 +1686,6 @@ async fn a_token_link_the_agent_saved_is_served_while_it_is_stopped_or_failed() 
         tokio::fs::write(&file, format!("<p>report of {name}</p>"))
             .await
             .unwrap();
-        // The registry that registered the link is gone; the link lives on
-        // in the registrations it saved.
         let id = h
             .directory
             .file_registry(name)
@@ -1808,8 +1736,6 @@ async fn a_workspace_file_link_for_an_unknown_agent_is_not_found() {
     assert_eq!(refused["error"], "no agent named 'ghost'", "{refused}");
 }
 
-// ---- artifact sessions ---------------------------------------------------
-
 #[tokio::test]
 async fn a_session_start_that_names_no_agent_is_refused_with_an_explanation() {
     let h = Harness::new();
@@ -1845,7 +1771,6 @@ async fn a_session_start_needs_a_running_agent() {
         json!({ "error": "quiet is stopped", "state": "stopped" })
     );
 
-    // The running agent sees the artifact identity header intact.
     let (running_status, running_bytes) = h.send_body(start("scout")).await;
     assert_eq!(running_status, StatusCode::OK);
     assert_eq!(
@@ -1853,8 +1778,6 @@ async fn a_session_start_needs_a_running_agent() {
         json!({ "agent": "scout", "artifact": "chart" })
     );
 }
-
-// ---- guards --------------------------------------------------------------
 
 fn cross_site(method: Method, uri: &str) -> Request<Body> {
     Request::builder()
@@ -1865,9 +1788,6 @@ fn cross_site(method: Method, uri: &str) -> Request<Body> {
         .unwrap()
 }
 
-/// `method uri` as a paired browser's same-origin request arrives through
-/// the tunnel: with the transport's mark and the credential of a device paired
-/// just now.
 async fn through_the_tunnel(h: &Harness, method: Method, uri: &str) -> Request<Body> {
     let (cookie, _workbench) = h.pairing.pair_device_for_tests("test browser").await;
     Request::builder()
@@ -1899,8 +1819,6 @@ async fn the_cross_site_guard_covers_the_whole_app() {
     let actual_3 = &h.directory.calls();
     assert!(actual_3.is_empty(), "expected {actual_3:?} to be empty");
 
-    // Reads are side-effect free and stay open; a cross-site WebSocket
-    // upgrade is not.
     let read_status = h.status(cross_site(Method::GET, "/api/hub/agents")).await;
     assert_eq!(read_status, StatusCode::OK);
     let upgrade = Request::get("/api/hub/ws")
@@ -1924,7 +1842,6 @@ async fn the_remote_control_guard_refuses_shutdown_and_disconnect_over_the_tunne
     assert!(h.directory.calls().is_empty(), "no agent was stopped");
     assert!(h.shutdown_rx.try_recv().is_err(), "no shutdown was sent");
 
-    // Other lifecycle routes stay reachable remotely.
     let open_status = h
         .status(through_the_tunnel(&h, Method::POST, "/api/hub/agents/scout/stop").await)
         .await;
@@ -1973,8 +1890,6 @@ async fn cloud_disconnect_works_locally_and_asks_the_hub_to_reload() {
     assert_eq!(disconnected, json!({ "ok": true }));
     assert!(matches!(h.reload_rx.try_recv(), Ok(ReloadSignal::Hub)));
 }
-
-// ---- hub-level routes ----------------------------------------------------
 
 #[tokio::test]
 async fn hub_config_secrets_and_keys_live_under_api_hub() {
@@ -2130,8 +2045,6 @@ async fn onboarding_is_a_hub_route() {
     assert_eq!(refusal["valid"], false);
 }
 
-// ---- team routes ---------------------------------------------------------
-
 #[tokio::test]
 async fn team_files_are_addressed_relative_to_the_team_directory() {
     let h = Harness::new();
@@ -2202,8 +2115,6 @@ async fn the_workbench_lives_under_the_team() {
     assert_eq!(artifacts, json!([]));
 }
 
-// ---- static app and root routes ------------------------------------------
-
 #[tokio::test]
 async fn client_routes_get_the_app_shell_and_unknown_api_paths_404() {
     let h = Harness::new();
@@ -2273,8 +2184,6 @@ async fn the_cross_site_guard_covers_the_embedded_app() {
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
-/// Start a sign-in the way Connect does, and return the `state` the hub put
-/// in the relay's sign-in address.
 async fn start_cloud_sign_in(h: &Harness) -> String {
     let (status, body) = h
         .call(
@@ -2291,7 +2200,6 @@ async fn start_cloud_sign_in(h: &Harness) -> String {
         .unwrap()
 }
 
-/// Whether the hub has saved a cloud sign-in: the token secret, or `[cloud]`.
 fn cloud_sign_in_saved(h: &Harness) -> bool {
     let hub_dir = h.root.path().join("hub");
     let store = residuum_config::secrets::SecretStore::load(&hub_dir).unwrap();
@@ -2430,7 +2338,6 @@ async fn a_cloud_callback_without_a_state_connect_started_saves_nothing() {
     assert!(!cloud_sign_in_saved(&h));
     assert!(h.reload_rx.try_recv().is_err());
 
-    // The sign-in that was open is still there for the real callback.
     let (_, headers, _) = h
         .send(
             Request::get(format!("/cloud/callback?token=rst_mine&state={open}"))
@@ -2489,8 +2396,6 @@ async fn a_cloud_callback_without_a_usable_token_hands_off_to_settings() {
     assert!(!cloud_sign_in_saved(&h));
     assert!(h.reload_rx.try_recv().is_err());
 }
-
-// ---- hub websocket -------------------------------------------------------
 
 #[tokio::test]
 async fn the_hub_socket_opens_with_a_snapshot_then_forwards_events() {
@@ -2721,8 +2626,6 @@ async fn a_lagging_hub_socket_gets_a_fresh_snapshot_instead_of_silence() {
     let addr = h.serve().await;
     let mut socket = connect(addr, "/api/hub/ws").await;
 
-    // The boot id, the connect snapshot, then a second one because events
-    // were lost, then the events that were still buffered.
     assert_eq!(next_frame(&mut socket).await["type"], "hub_boot");
     assert_eq!(next_frame(&mut socket).await["type"], "system_one_status");
     let connect_snapshot = next_frame(&mut socket).await;
@@ -2741,9 +2644,6 @@ fn team_change(path: &str) -> WorkspaceChange {
     }
 }
 
-/// Replace what the socket watches, and wait until the hub has applied it:
-/// the socket handles a client's messages in order, so the answer to a
-/// `ping` sent after the request means the request has taken effect.
 async fn watch_team(socket: &mut ClientSocket, prefixes: Value) {
     send_client(
         socket,
@@ -2754,7 +2654,6 @@ async fn watch_team(socket: &mut ClientSocket, prefixes: Value) {
     assert_eq!(next_frame(socket).await, json!({ "type": "pong" }));
 }
 
-/// Publish one batch of team `changes` on the team bus.
 async fn publish_team_changes(h: &Harness, changes: &[&str]) {
     let batch: Vec<WorkspaceChange> = changes.iter().map(|p| team_change(p)).collect();
     h.team_bus
@@ -2781,11 +2680,6 @@ async fn watched_team_paths_are_forwarded_and_others_are_not() {
         })
     );
 
-    // Watching nothing stops the frames. The wiki change below is followed
-    // on the same feed by a skills change the next watch forwards; the feed
-    // keeps its order, so a forwarded wiki frame would arrive first. Neither
-    // watch takes the wiki path, so the order of the watch and the change
-    // doesn't matter.
     watch_team(&mut socket, json!([])).await;
     publish_team_changes(&h, &["team/wiki/a.md"]).await;
     watch_team(&mut socket, json!(["team/skills"])).await;

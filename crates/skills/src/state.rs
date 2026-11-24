@@ -6,44 +6,28 @@ use residuum_config::SkillDir;
 
 use super::{index::SkillIndex, parser::parse_skill_md, types::ActiveSkill};
 
-/// Shared skill state, guarded by a mutex for concurrent access.
 pub type SharedSkillState = Arc<tokio::sync::Mutex<SkillState>>;
 
-/// Skill state manager: holds the index and active skills.
 pub struct SkillState {
     index: SkillIndex,
     active: Vec<ActiveSkill>,
     dirs: Vec<SkillDir>,
-    /// The notices the owner has been shown: those of the scan that built the
-    /// index, then those of each rescan. A rescan reports as new only the
-    /// notices missing from this list.
     published_notices: Vec<String>,
 }
 
-/// What a rescan reports to the user.
 #[derive(Debug)]
 pub struct RescanReport {
-    /// Active skills this rescan deactivated, one line each. A dropped skill
-    /// is reported once, because the rescan removes it from the active list.
     pub dropped: Vec<String>,
-    /// Problems with skill directories and skills that are still indexed,
-    /// as this scan found them. A notice that persists repeats here on every
-    /// rescan until it is fixed.
     pub notices: Vec<String>,
-    /// The notices in `notices` that the previous scan did not produce. A
-    /// notice that persists is new only the first time it appears.
     pub new_notices: Vec<String>,
 }
 
 impl RescanReport {
-    /// Every user-facing message in the report, dropped skills first.
     pub fn messages(&self) -> impl Iterator<Item = &str> {
         self.dropped.iter().chain(&self.notices).map(String::as_str)
     }
 }
 
-/// The notices a scan of `index` produced: each skipped directory, then the
-/// index's own notices.
 fn scan_notices(index: &SkillIndex) -> Vec<String> {
     index
         .skipped_dirs()
@@ -59,8 +43,6 @@ fn scan_notices(index: &SkillIndex) -> Vec<String> {
 }
 
 impl SkillState {
-    /// Create a new skill state with a pre-built index. The index's notices
-    /// count as shown, because whoever built the index reports them.
     #[must_use]
     pub fn new(index: SkillIndex, dirs: Vec<SkillDir>) -> Self {
         Self {
@@ -71,19 +53,11 @@ impl SkillState {
         }
     }
 
-    /// Create a new shared skill state.
     #[must_use]
     pub fn new_shared(index: SkillIndex, dirs: Vec<SkillDir>) -> SharedSkillState {
         Arc::new(tokio::sync::Mutex::new(Self::new(index, dirs)))
     }
 
-    /// Activate a skill by name.
-    ///
-    /// Reads the full `SKILL.md`, parses the body, and adds it to the active list.
-    ///
-    /// # Errors
-    /// Returns an error if the skill is not found, already active, or the
-    /// file cannot be read.
     #[tracing::instrument(skip_all, fields(name = %name))]
     pub async fn activate(&mut self, name: &str) -> anyhow::Result<&ActiveSkill> {
         if self
@@ -121,10 +95,6 @@ impl SkillState {
             .ok_or_else(|| anyhow::anyhow!("active vec empty after push"))
     }
 
-    /// Deactivate a skill by name.
-    ///
-    /// # Errors
-    /// Returns an error if the skill is not currently active.
     #[tracing::instrument(skip_all, fields(name = %name))]
     pub fn deactivate(&mut self, name: &str) -> anyhow::Result<()> {
         let pos = self
@@ -138,21 +108,6 @@ impl SkillState {
         Ok(())
     }
 
-    /// Rescan skill directories to rebuild the index.
-    ///
-    /// Removes any active skills whose names no longer appear in the new index.
-    /// For an active skill whose name still resolves but whose backing source
-    /// directory changed (e.g. an agent skill shadows a team
-    /// skill of the same name), refreshes its body from the new source, or
-    /// deactivates it if the new source can't be loaded.
-    ///
-    /// The report names every skill this rescan deactivated and carries the
-    /// notices for directories that couldn't be read and skills that loaded
-    /// with a notice or were skipped, with the ones this state has not shown
-    /// before marked as new. Callers choose what to publish from it.
-    ///
-    /// # Errors
-    /// Returns an error if scanning fails.
     #[tracing::instrument(skip_all, fields(dirs = self.dirs.len()))]
     pub async fn rescan(&mut self) -> anyhow::Result<RescanReport> {
         let skills_before = self.index.entries().len();
@@ -167,16 +122,6 @@ impl SkillState {
             "skill rescan complete"
         );
 
-        // Reconcile active skills against the new index. A name surviving the
-        // rescan is not enough on its own: the *same name* can now resolve to
-        // a different physical skill (e.g. an agent `skills/notes/`
-        // shadows a team `notes` skill). An
-        // already-active skill's body was captured at activation time, so if
-        // we only checked the name we'd keep serving stale instructions under
-        // a name the index now attributes to a different source, with no
-        // signal to the agent that anything changed. Refresh from the new
-        // source when the backing directory changed; if the new source can't
-        // be loaded, deactivate rather than silently keep the stale copy.
         let previously_active = std::mem::take(&mut self.active);
         let mut still_active = Vec::with_capacity(previously_active.len());
         let mut dropped = Vec::new();
@@ -246,15 +191,11 @@ impl SkillState {
         })
     }
 
-    /// Format the skill index for the system prompt.
     #[must_use]
     pub fn format_index_for_prompt(&self) -> String {
         self.index.format_for_prompt()
     }
 
-    /// Format active skill instructions for the system prompt.
-    ///
-    /// Returns `None` if no skills are active.
     #[must_use]
     pub fn format_active_for_prompt(&self) -> Option<String> {
         if self.active.is_empty() {
@@ -275,19 +216,16 @@ impl SkillState {
         Some(parts.join("\n\n"))
     }
 
-    /// Get the names of all active skills.
     #[must_use]
     pub fn active_skill_names(&self) -> Vec<&str> {
         self.active.iter().map(|a| a.name.as_str()).collect()
     }
 
-    /// Get a reference to the current skill index.
     #[must_use]
     pub fn index(&self) -> &SkillIndex {
         &self.index
     }
 
-    /// Get the skill scan directories (used when building isolated subagent state).
     #[must_use]
     pub fn dirs(&self) -> &[SkillDir] {
         &self.dirs
@@ -299,8 +237,6 @@ mod tests {
     use super::super::index::SkillIndex;
     use super::SkillState;
     use residuum_config::SkillDir;
-
-    // ── SkillState ───────────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn activate_and_deactivate() {
@@ -396,7 +332,6 @@ mod tests {
         state.activate("test-skill").await.unwrap();
         assert_eq!(state.active_skill_names().len(), 1);
 
-        // Remove the skill directory
         tokio::fs::remove_dir_all(&skill_dir).await.unwrap();
 
         state.rescan().await.unwrap();
@@ -437,7 +372,6 @@ mod tests {
         let ws_dir = tempfile::tempdir().unwrap();
         let user_dir = tempfile::tempdir().unwrap();
 
-        // User-global skill named "notes" is active.
         let user_skill = user_dir.path().join("notes");
         tokio::fs::create_dir(&user_skill).await.unwrap();
         tokio::fs::write(
@@ -457,8 +391,6 @@ mod tests {
         let active = state.activate("notes").await.unwrap();
         assert!(active.body.contains("User-global body."));
 
-        // The workspace defining its own higher-priority "notes" skill becomes
-        // active (mirrors a workspace file being added, then `rescan` running).
         let ws_skill = ws_dir.path().join("notes");
         tokio::fs::create_dir(&ws_skill).await.unwrap();
         tokio::fs::write(
@@ -470,14 +402,8 @@ mod tests {
 
         state.rescan().await.unwrap();
 
-        // The index now attributes "notes" to the workspace skill. The
-        // already-active skill must not keep silently serving the old
-        // user-global body under that name: it must either be refreshed to
-        // reflect the new (workspace) source, or deactivated outright.
         match state.active_skill_names().as_slice() {
-            [] => {
-                // Deactivating instead of refreshing is an acceptable, non-stale outcome.
-            }
+            [] => {}
             ["notes"] => {
                 let prompt = state.format_active_for_prompt().unwrap();
                 assert!(

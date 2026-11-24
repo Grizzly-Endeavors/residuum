@@ -1,11 +1,3 @@
-//! Sessions the owner starts by hand: a clean session from the web UI's
-//! Activity, or a fork of the main conversation with `/multitask`.
-//!
-//! Either is an ordinary `spawned` session, the same as one main starts with
-//! `subagent_spawn`, at depth 1 and with no spawner. Having no spawner is what
-//! keeps its results out of the main conversation: the owner reads them in
-//! the session itself (or, for a fork started from a chat app, in that chat).
-
 use std::path::Path;
 
 use anyhow::Context;
@@ -17,23 +9,14 @@ use residuum_memory::recent_messages::load_recent_messages;
 
 use residuum_bus::session::{MAIN_DEPTH, generate_address};
 
-/// What the owner asked for when starting a session.
 pub struct OwnerSessionStart {
-    /// The task, the session's first message.
     pub prompt: String,
-    /// The model tier or explicit model the session runs on.
     pub model: ModelSelector,
-    /// Main's saved conversation, for a fork of it (`None` for a clean
-    /// session). Empty when main's conversation has all been observed into
-    /// memory, which the fork receives the same way main does.
     pub fork_of: Option<Vec<Message>>,
-    /// The chat a fork started from a chat app replies into. `None` for a
-    /// session started from the web UI, whose replies stay in its own panel.
     pub conversation: Option<ConversationTarget>,
 }
 
 impl OwnerSessionStart {
-    /// The spawn request that starts this session.
     #[must_use]
     pub fn into_spawn_event(self) -> SpawnRequestEvent {
         let (qualifier, source_label, context) = if self.fork_of.is_some() {
@@ -77,18 +60,11 @@ impl OwnerSessionStart {
     }
 }
 
-/// Whether `event` starts (or resumes) a session the owner started by hand:
-/// every `spawned` session an agent starts names its spawner.
 #[must_use]
 pub(crate) fn is_owner_start(event: &SpawnRequestEvent) -> bool {
     matches!(event.source, EventTrigger::Agent) && event.spawner.is_none()
 }
 
-/// Main's saved conversation (`recent_messages.json`), up to its last
-/// finished turn, for a fork of it to start from.
-///
-/// # Errors
-/// Returns an error if the file exists but can't be read or parsed.
 pub async fn load_main_conversation(path: &Path) -> anyhow::Result<Vec<Message>> {
     Ok(load_recent_messages(path)
         .await

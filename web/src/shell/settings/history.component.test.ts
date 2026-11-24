@@ -10,10 +10,6 @@ import { fireEvent, jsonResponse, mockFetch, render, screen, settle } from "../.
 import HistoryBrowser from "./HistoryBrowser.svelte";
 import { waitFor } from "../../test/wait";
 
-// The History browser against a stand-in for the checkpoint routes: the list,
-// a checkpoint opened in place, restore and undo through the config write
-// coordinator, and the hub's repositories.
-
 const summary = (id: string, text: string, count = 1): CheckpointSummary => ({
   id,
   timestamp: "2026-09-30T10:00:00Z",

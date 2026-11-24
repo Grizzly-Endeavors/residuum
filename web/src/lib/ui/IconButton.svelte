@@ -7,14 +7,11 @@
 
   interface Props extends Omit<HTMLButtonAttributes, "children" | "aria-label" | "aria-pressed"> {
     icon: IconName;
-    /** The button's accessible name, and its tooltip unless `tooltip` says otherwise. */
     label: string;
     variant?: ButtonVariant;
     size?: ButtonSize;
-    /** Set for a toggle button: the button reports `aria-pressed` and shows as selected. */
     pressed?: boolean;
     loading?: boolean;
-    /** Tooltip text when it should differ from the label, or `false` for none. */
     tooltip?: string | false;
     element?: HTMLButtonElement;
   }
@@ -119,7 +116,6 @@
       color: var(--color-text);
     }
 
-    /* A floating layer sets --ui-quiet-hover: stone-3 wouldn't show on its stone-3 card. */
     &:hover[data-variant="quiet"]:not([aria-pressed="true"]) {
       background: var(--ui-quiet-hover, var(--color-stone-3));
       color: var(--color-text);

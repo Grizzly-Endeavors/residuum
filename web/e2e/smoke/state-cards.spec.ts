@@ -3,13 +3,6 @@ import { expectNoAxeViolations } from "../support/axe";
 import { expect, test } from "../support/fixtures";
 import { expectSettingsOpen } from "../support/lazy";
 
-/**
- * The state card an agent's Chat shows in place of the composer while the
- * agent isn't running: brittle couldn't start, drifter is stopped, and atlas
- * runs until it is stopped. The conversation above stays readable, and
- * nothing says it is reconnecting to an agent that isn't running.
- */
-
 const ATLAS_GREETING = "Hi, this is atlas. You are in my conversation, not scout's.";
 
 function card(page: Page, title: string): Locator {
@@ -73,7 +66,6 @@ test("Fix settings opens brittle's settings where the problem shows", async ({ p
   await page.goto("/agent/brittle");
   await card(page, "brittle couldn't start").getByRole("button", { name: "Fix settings" }).click();
 
-  // The check names brittle's main model, so it lands on Model with that field flagged.
   await expect(page).toHaveURL(/\/agent\/brittle\?settings=brittle\/model$/);
   const settings = await expectSettingsOpen(page);
   await expect(settings.getByRole("heading", { name: "Model", level: 2 })).toBeVisible();
@@ -112,12 +104,10 @@ test("stopping a running agent keeps its conversation readable", async ({ page, 
   await expect(conversation.getByText(ATLAS_GREETING)).toBeVisible();
   await expect(composer(page)).toBeVisible();
 
-  // Stopping and starting stay in progress until the spec moves the mock's time on.
   await mock.manualTime();
   await page.getByRole("button", { name: "More for atlas" }).click();
   await page.getByRole("menuitem", { name: /^Stop atlas/ }).click();
 
-  // The card follows the hub's announcement, so once it shows, the stop is under way in the mock.
   await expect(card(page, "Stopping atlas")).toBeVisible();
   await expect(composer(page)).toHaveCount(0);
   await mock.advance(1_000);

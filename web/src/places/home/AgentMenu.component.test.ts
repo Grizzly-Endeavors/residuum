@@ -72,10 +72,6 @@ afterEach(() => {
   for (const id of [...toast.toasts.keys()]) toast.dismiss(id);
 });
 
-/**
- * Show the menu of an agent the hub knows, in the state the board gives it.
- * `follow` hands it the hub's summary again, as the board does when the list changes.
- */
 async function openMenu(
   summary: AgentSummary,
   state: StatusDotState = summary.state,

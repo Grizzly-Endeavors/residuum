@@ -5,11 +5,6 @@
   import { Button } from "../../lib/ui";
   import type { RemoteAct } from "./remote-access-act";
 
-  // Other instances asking this one to approve them. What a request says about
-  // itself (its slug and name) is whatever its sender chose, so it is drawn as
-  // plain text and weighed against the six digits, which the person compares
-  // with the ones shown on the other instance.
-
   interface Props {
     joins: readonly PendingJoinInfo[];
     busy: string | null;

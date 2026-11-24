@@ -6,7 +6,6 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-/// Status of a local CLI tool (e.g. Node.js or npm).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct ToolStatus {
@@ -15,7 +14,6 @@ pub struct ToolStatus {
     pub path: Option<String>,
 }
 
-/// Status of the Microsoft 365 Agents Toolkit CLI.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct AtkStatus {
@@ -26,7 +24,6 @@ pub struct AtkStatus {
     pub install_dir: String,
 }
 
-/// Source of a suggested messaging endpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export)]
@@ -34,7 +31,6 @@ pub enum SuggestedEndpointSource {
     ResiduumCloud,
 }
 
-/// Prerequisite check results before running the Teams setup wizard.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct TeamsSetupPrereqs {
@@ -48,7 +44,6 @@ pub struct TeamsSetupPrereqs {
     pub manual_guide_url: String,
 }
 
-/// User-configurable fields for the Teams app manifest and bot registration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct TeamsSetupForm {
@@ -64,7 +59,6 @@ pub struct TeamsSetupForm {
     pub outline_icon_png_base64: Option<String>,
 }
 
-/// Request payload to start or resume a Teams setup job.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct TeamsSetupStart {
@@ -73,7 +67,6 @@ pub struct TeamsSetupStart {
     pub replace_existing: bool,
 }
 
-/// Lifecycle phases of the Teams setup process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export)]
@@ -87,7 +80,6 @@ pub enum TeamsSetupPhase {
     InstallApp,
 }
 
-/// High-level execution state of a Teams setup job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export)]
@@ -99,7 +91,6 @@ pub enum TeamsSetupState {
     Cancelled,
 }
 
-/// Output stream for CLI execution logs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export)]
@@ -109,7 +100,6 @@ pub enum LogStream {
     Info,
 }
 
-/// A single log entry from CLI execution or wizard progress.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct LogLine {
@@ -117,11 +107,9 @@ pub struct LogLine {
     pub seq: u64,
     pub stream: LogStream,
     pub text: String,
-    /// RFC 3339 timestamp.
     pub at: String,
 }
 
-/// Interactive login prompt information when waiting for M365 authentication.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct SignInPrompt {
@@ -130,7 +118,6 @@ pub struct SignInPrompt {
     pub redirect_port: u16,
 }
 
-/// Actionable error surfaced when a phase fails.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct SetupError {
@@ -139,7 +126,6 @@ pub struct SetupError {
     pub detail: Option<String>,
 }
 
-/// Cloud and tenant resources created during provisioning.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct CreatedResources {
@@ -150,7 +136,6 @@ pub struct CreatedResources {
     pub dev_portal_url: String,
 }
 
-/// Resulting artifact details after successful setup.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct SetupResult {
@@ -161,7 +146,6 @@ pub struct SetupResult {
     pub project_dir: String,
 }
 
-/// Full state of a Teams setup job.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct TeamsSetupJob {
@@ -181,14 +165,12 @@ pub struct TeamsSetupJob {
     pub app_installed: bool,
 }
 
-/// Redirect URL submitted after browser login on another machine.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct TeamsSetupRedirect {
     pub url: String,
 }
 
-/// Options for cleaning up local project files, CLI install, and active session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct CleanupRequest {
@@ -197,7 +179,6 @@ pub struct CleanupRequest {
     pub sign_out: bool,
 }
 
-/// Details of an item that failed to be removed during cleanup.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct CleanupFailure {
@@ -205,7 +186,6 @@ pub struct CleanupFailure {
     pub message: String,
 }
 
-/// Outcome of a cleanup operation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct CleanupResult {

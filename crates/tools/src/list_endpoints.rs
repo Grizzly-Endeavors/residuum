@@ -1,5 +1,3 @@
-//! List available I/O endpoints for the agent.
-
 use async_trait::async_trait;
 use serde_json::Value;
 
@@ -9,13 +7,11 @@ use residuum_inference::ToolDefinition;
 use residuum_agent::Tool;
 use residuum_inference::{ToolError, ToolResult};
 
-/// Tool for listing available endpoints grouped by category.
 pub struct ListEndpointsTool {
     registry: EndpointRegistry,
 }
 
 impl ListEndpointsTool {
-    /// Create a new `ListEndpointsTool`.
     #[must_use]
     pub fn new(registry: EndpointRegistry) -> Self {
         Self { registry }

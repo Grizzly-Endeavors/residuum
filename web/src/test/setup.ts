@@ -25,18 +25,12 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  // Real timers before unmount: a component test may have faked the clock
-  // (the update page polls for 90s), and cleanup has to run against the
-  // real event loop or the interval from the previous test leaks.
   if (vi.isFakeTimers()) {
     vi.clearAllTimers();
     vi.useRealTimers();
   }
   await act();
   cleanup();
-  // After unmount: closing an overlay on the way out starts a traversal, and
-  // the router's stop settles it, so no traversal timer outlives the test.
-  // A test that starts the router again gets a fresh start.
   router.stop();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();

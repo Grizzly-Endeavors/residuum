@@ -1,19 +1,3 @@
-//! Encrypted on-disk store of agent keys.
-//!
-//! Lives in `agent-keys.toml.enc` with its own machine key in `agent-keys.key`,
-//! both in the residuum config directory and both separate from the system
-//! secret store (`secrets.toml.enc`) so agent-facing code can never reach a
-//! provider key. Encryption is the same AES-256-GCM-SIV scheme as
-//! [`crate::SecretStore`].
-//!
-//! The plaintext format before encryption:
-//! ```toml
-//! [keys.github_token]
-//! value = "ghp_..."
-//! description = "Fine-grained PAT for Grizzly-Endeavors"
-//! created_by = "user"
-//! ```
-
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -22,26 +6,16 @@ use serde::{Deserialize, Serialize};
 use super::AgentKeyError;
 use crate::secrets::{decrypt, encrypt, load_key, load_or_create_key};
 
-/// Encrypted store file name within the config directory.
 pub(crate) const ENCRYPTED_FILE: &str = "agent-keys.toml.enc";
 
-/// Machine key file name within the config directory.
 pub(crate) const KEY_FILE: &str = "agent-keys.key";
 
-/// Lock file serializing writes across processes.
 pub(crate) const LOCK_FILE: &str = "agent-keys.lock";
 
-/// Longest accepted key name.
 const MAX_NAME_LEN: usize = 64;
 
-/// Key value length below which redaction by substring match becomes
-/// unreliable (a short value is more likely to also appear as ordinary,
-/// unrelated output). Not a hard minimum: a value under this length is still
-/// stored, with a warning naming the risk (see [`short_value_warning`]).
 const SHORT_VALUE_WARNING_LEN: usize = 8;
 
-/// Environment variables a key name must not map onto: overriding them would
-/// break or hijack the spawned shell rather than hand it a credential.
 const RESERVED_ENV_VARS: &[&str] = &[
     "PATH", "HOME", "USER", "SHELL", "PWD", "TMPDIR", "IFS", "ENV", "BASH_ENV", "LANG",
 ];
@@ -50,21 +24,14 @@ const RESERVED_ENV_VARS: &[&str] = &[
 /// loader controls on Linux and macOS).
 const RESERVED_ENV_PREFIXES: &[&str] = &["LD_", "DYLD_"];
 
-/// Who created a key. Recorded for display in listings and to decide
-/// whether overwriting or deleting it through the agent's tools should
-/// carry a user-visible notice — the agent may manage any key regardless of
-/// who created it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum KeyCreator {
-    /// Stored by the user through the CLI or web UI.
     User,
-    /// Minted by the agent with `exec`'s `store_output_as`.
     Agent,
 }
 
 impl KeyCreator {
-    /// Lowercase label, as stored and as shown in listings.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -88,7 +55,6 @@ struct KeysFile {
     keys: BTreeMap<String, KeyEntry>,
 }
 
-/// Everything about a key except its value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AgentKeyInfo {
     pub name: String,
@@ -97,7 +63,6 @@ pub struct AgentKeyInfo {
     pub created_by: KeyCreator,
 }
 
-/// Decrypted agent keys, keyed by name.
 #[derive(Default, Clone)]
 pub struct AgentKeyStore {
     keys: BTreeMap<String, KeyEntry>,
@@ -112,12 +77,6 @@ impl std::fmt::Debug for AgentKeyStore {
 }
 
 impl AgentKeyStore {
-    /// Load from the encrypted file in `config_dir`. A missing file is an
-    /// empty store.
-    ///
-    /// # Errors
-    /// Returns `AgentKeyError::Storage` if the key or store file can't be
-    /// read, or decryption or parsing fails.
     pub fn load(config_dir: &Path) -> Result<Self, AgentKeyError> {
         let enc_path = config_dir.join(ENCRYPTED_FILE);
         if !enc_path.exists() {
@@ -148,13 +107,6 @@ impl AgentKeyStore {
         Ok(Self { keys: file.keys })
     }
 
-    /// Encrypt and write the store to `config_dir`, creating the machine key
-    /// on first use. Writes to a temporary file and renames it into place so
-    /// a crash mid-write can't destroy every stored key.
-    ///
-    /// # Errors
-    /// Returns `AgentKeyError::Storage` if encryption or any file operation
-    /// fails.
     pub fn save(&self, config_dir: &Path) -> Result<(), AgentKeyError> {
         let key = load_or_create_key(&config_dir.join(KEY_FILE))
             .map_err(|e| AgentKeyError::Storage(e.to_string()))?;
@@ -181,20 +133,16 @@ impl AgentKeyStore {
         })
     }
 
-    /// The value of a key, if it exists.
     #[must_use]
     pub fn value(&self, name: &str) -> Option<&str> {
         self.keys.get(name).map(|e| e.value.as_str())
     }
 
-    /// Who created a key, if it exists.
     #[must_use]
     pub fn creator(&self, name: &str) -> Option<KeyCreator> {
         self.keys.get(name).map(|e| e.created_by)
     }
 
-    /// Every key's name, environment variable, description, and creator —
-    /// never values. Sorted by name.
     #[must_use]
     pub fn list(&self) -> Vec<AgentKeyInfo> {
         self.keys
@@ -208,31 +156,17 @@ impl AgentKeyStore {
             .collect()
     }
 
-    /// Sorted key names.
     #[must_use]
     pub fn names(&self) -> Vec<&str> {
         self.keys.keys().map(String::as_str).collect()
     }
 
-    /// `(name, value)` for every key.
     pub fn entries(&self) -> impl Iterator<Item = (&str, &str)> {
         self.keys
             .iter()
             .map(|(name, entry)| (name.as_str(), entry.value.as_str()))
     }
 
-    /// Insert or replace a key in memory, whoever created it — the agent
-    /// may overwrite a key the user created (the config repository is
-    /// checkpointed before every write here, so it's always undoable; see
-    /// `docs/systems-usage/agent-keys.md`). `description: None` keeps an
-    /// existing key's description. The caller persists with
-    /// [`save`](Self::save).
-    ///
-    /// Returns a warning (the key is still stored either way) when `value`
-    /// is short enough that redaction by substring match becomes unreliable.
-    ///
-    /// # Errors
-    /// Returns `AgentKeyError::Invalid` for a bad name or value.
     pub fn set(
         &mut self,
         name: &str,
@@ -259,11 +193,6 @@ impl AgentKeyStore {
         Ok(warning)
     }
 
-    /// Remove a key in memory, whoever created it. The caller persists with
-    /// [`save`](Self::save).
-    ///
-    /// # Errors
-    /// Returns `AgentKeyError::NotFound` for an unknown name.
     pub fn delete(&mut self, name: &str) -> Result<(), AgentKeyError> {
         if self.keys.remove(name).is_none() {
             return Err(AgentKeyError::NotFound(name.to_string()));
@@ -272,17 +201,11 @@ impl AgentKeyStore {
     }
 }
 
-/// The environment variable a key is exposed as: its name uppercased.
 #[must_use]
 pub fn env_var_for(name: &str) -> String {
     name.to_ascii_uppercase()
 }
 
-/// Check a key name: `[a-z][a-z0-9_]*`, at most 64 characters, and not
-/// mapping onto a reserved environment variable.
-///
-/// # Errors
-/// Returns `AgentKeyError::Invalid` describing what is wrong.
 pub fn validate_name(name: &str) -> Result<(), AgentKeyError> {
     let well_formed = name.len() <= MAX_NAME_LEN
         && name.chars().next().is_some_and(|c| c.is_ascii_lowercase())
@@ -306,12 +229,6 @@ pub fn validate_name(name: &str) -> Result<(), AgentKeyError> {
     Ok(())
 }
 
-/// Check a key value: no NUL byte. There is no minimum length — see
-/// `short_value_warning` for the (non-blocking) redaction-risk warning on
-/// a short one.
-///
-/// # Errors
-/// Returns `AgentKeyError::Invalid` describing what is wrong.
 pub fn validate_value(value: &str) -> Result<(), AgentKeyError> {
     if value.contains('\0') {
         return Err(AgentKeyError::Invalid(
@@ -321,10 +238,6 @@ pub fn validate_value(value: &str) -> Result<(), AgentKeyError> {
     Ok(())
 }
 
-/// A warning that `value` is short enough that redacting it from tool/log
-/// output by substring match is unreliable — it's more likely to also occur
-/// as ordinary, unrelated output — or `None` when it's long enough not to
-/// matter. The value is stored either way; this is advisory only.
 #[must_use]
 pub fn short_value_warning(value: &str) -> Option<String> {
     let len = value.chars().count();

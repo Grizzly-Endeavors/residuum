@@ -1,16 +1,3 @@
-//! The main conversation's turn in progress, kept so a connection that opens
-//! partway through a turn can be shown everything the turn has done so far.
-//!
-//! History records a turn only once it ends, and the conversation's frames
-//! go out live only, so without this a page loaded mid-turn shows nothing of
-//! the turn until it ends. The journal follows the `MainConversation` topic,
-//! keeps the events of the turn in flight, and relays every event on to the
-//! connections that follow it, numbered. A connection asks for a
-//! [`TurnSnapshot`] and drops the relayed events it already covers, so it sees
-//! each event once and in order. The journal also keeps the people's messages
-//! still waiting for the agent to read them, from the same events, so a
-//! snapshot's waiting messages agree with the events that follow it.
-
 use std::sync::{Arc, Mutex, PoisonError};
 
 use chrono::{DateTime, Utc};
@@ -19,40 +6,30 @@ use tokio::sync::mpsc;
 use residuum_bus::{BusError, BusHandle, MainConversationEvent, topics};
 use residuum_protocol::QueuedMessage;
 
-/// An event of the main conversation, numbered in the order the journal saw it.
 #[derive(Debug)]
 pub struct JournaledEvent {
-    /// Position in the journal's sequence, counting from one.
     pub seq: u64,
     pub event: MainConversationEvent,
 }
 
-/// One recorded event of the turn in flight and when it happened.
 #[derive(Debug, Clone)]
 pub struct TurnEntry {
-    /// When the event happened, or for merged stream pieces, when the first did.
     pub at: DateTime<Utc>,
     pub event: MainConversationEvent,
 }
 
-/// The turn in flight as recorded so far.
 #[derive(Debug, Clone)]
 pub struct TurnRecord {
     pub turn_id: String,
-    /// When the journal saw the turn's first event.
     pub started_at: DateTime<Utc>,
-    /// The turn's events in order, consecutive stream pieces of one model call merged.
     pub entries: Vec<TurnEntry>,
 }
 
-/// What a connection needs to show the turn in flight.
 #[derive(Debug)]
 pub struct TurnSnapshot {
     /// The last event the snapshot covers: relayed events up to here are in it.
     pub through: u64,
-    /// The turn in flight, or `None` when no turn is running.
     pub turn: Option<TurnRecord>,
-    /// People's messages waiting for the agent to read them, oldest first.
     pub queued: Vec<QueuedMessage>,
 }
 
@@ -62,7 +39,6 @@ struct JournalState {
     turn: Option<TurnRecord>,
     queued: Vec<QueuedMessage>,
     followers: Vec<mpsc::UnboundedSender<JournaledEvent>>,
-    /// The journal no longer reads the conversation: following it ends at once.
     closed: bool,
 }
 
@@ -93,7 +69,6 @@ impl JournalState {
                 self.queued.retain(|queued| &queued.id != id);
                 return;
             }
-            // The agent read it: it waits no longer.
             MainConversationEvent::UserMessage { id, .. } => {
                 self.queued.retain(|queued| &queued.id != id);
             }
@@ -118,8 +93,6 @@ impl JournalState {
             }
             return;
         }
-        // A turn's opening message comes before its `TurnStarted`, so either
-        // can begin the record.
         let turn = match &mut self.turn {
             Some(turn) if turn.turn_id == turn_id => turn,
             slot => slot.insert(TurnRecord {
@@ -129,7 +102,6 @@ impl JournalState {
             }),
         };
         if let MainConversationEvent::TurnUsage(_) = event {
-            // Each usage frame carries the running totals: only the newest counts.
             turn.entries
                 .retain(|entry| !matches!(entry.event, MainConversationEvent::TurnUsage(_)));
         }
@@ -145,7 +117,6 @@ impl JournalState {
     }
 }
 
-/// Add `next` to `last` when both are pieces of the same model call's stream.
 fn merge_piece(last: &mut MainConversationEvent, next: &MainConversationEvent) -> bool {
     match (last, next) {
         (
@@ -171,7 +142,6 @@ fn merge_piece(last: &mut MainConversationEvent, next: &MainConversationEvent) -
     }
 }
 
-/// The turn an event belongs to, or `None` for one of no turn's.
 fn turn_of(event: &MainConversationEvent) -> Option<&str> {
     let turn_id = match event {
         MainConversationEvent::TurnStarted { turn_id, .. }
@@ -192,18 +162,12 @@ fn turn_of(event: &MainConversationEvent) -> Option<&str> {
     Some(turn_id)
 }
 
-/// The main conversation's turn in flight, and the relay to the connections following it.
 #[derive(Clone, Default)]
 pub struct TurnJournal {
     state: Arc<Mutex<JournalState>>,
 }
 
 impl TurnJournal {
-    /// A journal following the agent's `MainConversation` topic until the bus closes.
-    ///
-    /// # Errors
-    ///
-    /// Returns `BusError` if the subscription fails.
     pub async fn spawn(bus: &BusHandle) -> Result<Self, BusError> {
         let mut subscriber = bus.subscribe(topics::MainConversation).await?;
         let journal = Self::default();
@@ -219,15 +183,11 @@ impl TurnJournal {
                     }
                 }
             }
-            // Its followers' connections close, so a page shows it is
-            // disconnected instead of waiting on frames that never come.
             feeder.close();
         });
         Ok(journal)
     }
 
-    /// A journal that reads nothing: every connection that follows it closes
-    /// at once. For an agent whose journal couldn't start.
     #[must_use]
     pub fn closed() -> Self {
         let journal = Self::default();
@@ -241,13 +201,11 @@ impl TurnJournal {
         state.followers.clear();
     }
 
-    /// Record an event and relay it to every follower.
     pub fn observe(&self, event: &MainConversationEvent) {
         let mut state = self.lock();
         state.seq += 1;
         let seq = state.seq;
         state.record(event, Utc::now());
-        // A follower whose connection closed drops its receiver; forget it.
         state.followers.retain(|follower| {
             follower
                 .send(JournaledEvent {
@@ -258,8 +216,6 @@ impl TurnJournal {
         });
     }
 
-    /// Follow the conversation from the next event on. The receiver ends
-    /// when the journal stops reading it.
     #[must_use]
     pub fn follow(&self) -> mpsc::UnboundedReceiver<JournaledEvent> {
         let (tx, rx) = mpsc::unbounded_channel();
@@ -270,7 +226,6 @@ impl TurnJournal {
         rx
     }
 
-    /// The turn in flight as of now.
     #[must_use]
     pub fn snapshot(&self) -> TurnSnapshot {
         let state = self.lock();
@@ -520,7 +475,6 @@ mod tests {
         journal.observe(&queued("c"));
         assert_eq!(waiting(&journal), ["a", "b", "c"]);
 
-        // Read at a checkpoint, withdrawn, and read as the next turn's opening message.
         journal.observe(&read("a", "t1"));
         journal.observe(&MainConversationEvent::MessageWithdrawn { id: "b".into() });
         journal.observe(&MainConversationEvent::TurnEnded {
@@ -562,8 +516,6 @@ mod tests {
         assert_eq!(waiting.attachments, vec![attachment]);
     }
 
-    /// Observe `agent`'s message opening a turn, and check the snapshot keeps
-    /// it as the turn's first entry with its sender.
     fn assert_opening_message_is_kept_with_its_sender(agent: &residuum_inference::AgentSender) {
         let journal = TurnJournal::default();
         journal.observe(&MainConversationEvent::UserMessage {

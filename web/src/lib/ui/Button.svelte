@@ -8,14 +8,8 @@
   interface Props extends Omit<HTMLButtonAttributes, "children"> {
     variant?: ButtonVariant;
     size?: ButtonSize;
-    /** A leading icon. A spinner takes its place while loading. */
     icon?: IconName;
-    /**
-     * The action is in progress: the button shows a spinner and ignores
-     * presses, but stays focusable so keyboard focus isn't dropped.
-     */
     loading?: boolean;
-    /** Set for a toggle button: the button reports `aria-pressed` and shows as selected. */
     pressed?: boolean;
     element?: HTMLButtonElement;
     children: Snippet;
@@ -114,7 +108,6 @@
     color: var(--color-err-text);
   }
 
-  /* A toggle that is on reads as an icon button does: the vein tint under the label. */
   .ui-button[aria-pressed="true"] {
     background: var(--color-vein-tint);
     color: var(--color-text);
@@ -130,13 +123,11 @@
       color: var(--color-text);
     }
 
-    /* A floating layer sets --ui-quiet-hover: stone-3 wouldn't show on its stone-3 card. */
     &:hover[data-variant="quiet"]:not([aria-pressed="true"]) {
       background: var(--ui-quiet-hover, var(--color-stone-3));
       color: var(--color-text);
     }
 
-    /* err-text doesn't sit on a tint, so the label turns to text over the wash. */
     &:hover[data-variant="danger"] {
       background: var(--color-err-tint);
       color: var(--color-text);

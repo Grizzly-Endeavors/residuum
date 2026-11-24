@@ -1,15 +1,9 @@
-//! Tracing and log-level settings.
-
 use residuum_core::util::FatalError;
 
 use super::super::constants::DEFAULT_FEEDBACK_ENDPOINT;
 use super::super::deserialize::TracingConfigFile;
 use super::super::types::{LogLevel, OtelEndpoint, TracingConfig};
 
-/// Resolve tracing configuration from TOML section.
-///
-/// # Errors
-/// Returns `FatalError::Config` if the log level string is invalid.
 pub(super) fn resolve_tracing_config(
     section: Option<&TracingConfigFile>,
 ) -> Result<TracingConfig, FatalError> {

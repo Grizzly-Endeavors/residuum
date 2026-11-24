@@ -10,7 +10,6 @@ import type {
 import { repoStats } from "./checkpoints";
 import { fetchJson, fetchText, startMockServer, type MockServerHarness } from "./test-support";
 
-/** The checkpoint routes through the whole mock, since they are served under two scopes. */
 describe("the checkpoint routes", () => {
   let mock: MockServerHarness;
 

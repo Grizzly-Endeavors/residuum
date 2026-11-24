@@ -1,6 +1,3 @@
-//! Agent messaging tool: sends text from this agent to another by address,
-//! including a remote A2A agent (`a2a:<name>`).
-
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -18,14 +15,10 @@ use residuum_inference::ToolDefinition;
 use residuum_agent::Tool;
 use residuum_inference::{ToolError, ToolResult};
 
-/// Why an `artifact` session's message to `main` is refused: its work
-/// belongs to the artifact that started it, and anything the user needs to
-/// see goes to their inbox instead.
 const ARTIFACT_TO_MAIN_REFUSAL: &str = "artifact sessions can't reach the main conversation: \
      your responses are shown to the artifact that started you. To bring something to the \
      user's attention, file an inbox item with user_inbox_add instead.";
 
-/// The tool description the model sees.
 const MESSAGE_AGENT_DESCRIPTION: &str = "Send a text message to another agent at the address \
     in `to`. Fire-and-forget: a running recipient sees the message at its next tool-call \
     boundary, an idle one starts a turn, a completed session resumes at the same address. \
@@ -33,26 +26,16 @@ const MESSAGE_AGENT_DESCRIPTION: &str = "Send a text message to another agent at
     \"a2a:<name>\". A stopped or failed teammate returns an error and nothing is queued. Use \
     list_agents for addresses.";
 
-/// Tool for sending a message to another agent by address — main, any
-/// session (live or completed), a teammate (`agent:<name>`), or a remote A2A
-/// agent (`a2a:<name>`).
 pub struct MessageAgentTool {
-    /// This agent's own address (`"main"` for the main agent).
     self_address: SessionAddress,
-    /// This agent's own category label (`"main"` for the main agent).
     self_category: String,
     messenger: Arc<AgentMessenger>,
-    /// This agent's current-turn hop counter — the outgoing message carries
-    /// one more than the highest hop count among the inputs driving this
-    /// turn.
     hop_counter: HopCounter,
     a2a_hub: Arc<A2aClientHub>,
     a2a_tracker: Arc<RemoteTaskTracker>,
 }
 
 impl MessageAgentTool {
-    /// Create a new `MessageAgentTool` that identifies itself as `self_address`
-    /// (category `self_category`) to whoever it messages.
     #[must_use]
     pub fn new(
         self_address: SessionAddress,
@@ -125,9 +108,6 @@ impl MessageAgentTool {
             Err(e) => return Ok(ToolResult::error(e.to_string())),
         };
 
-        // A follow-up to an open INPUT_REQUIRED/AUTH_REQUIRED task goes to
-        // that task; otherwise start a new task in the persisted (sender,
-        // agent) context, if one exists.
         let open_task = self
             .a2a_tracker
             .awaiting_reply_task_for(sender, agent_name)
@@ -160,14 +140,10 @@ impl MessageAgentTool {
         };
 
         match client.send_message(&req).await {
-            Ok(a2a::SendMessageResponse::Message(reply)) => {
-                // A2A lets an agent answer directly without opening a task;
-                // there is nothing to track, so the reply is the result.
-                Ok(ToolResult::success(format!(
-                    "Remote agent a2a:{agent_name} replied directly:\n{}",
-                    message_text(&reply)
-                )))
-            }
+            Ok(a2a::SendMessageResponse::Message(reply)) => Ok(ToolResult::success(format!(
+                "Remote agent a2a:{agent_name} replied directly:\n{}",
+                message_text(&reply)
+            ))),
             Ok(resp) => {
                 let Some(task_id) = response_task_id(&resp) else {
                     return Ok(ToolResult::error(format!(
@@ -203,8 +179,6 @@ impl MessageAgentTool {
     }
 }
 
-/// The text parts of a direct reply, joined; non-text parts are named so the
-/// agent knows something was left out.
 fn message_text(reply: &a2a::Message) -> String {
     let parts: Vec<String> = reply
         .parts

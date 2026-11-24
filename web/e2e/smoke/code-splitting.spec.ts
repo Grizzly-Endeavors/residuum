@@ -7,13 +7,6 @@ import {
   expectSetupOpen,
 } from "../support/lazy";
 
-/**
- * The code that loads only when a feature opens: Settings, the
- * command palette, the file view with its editor, and the setup wizard. The
- * production build names each chunk after the module it is imported from.
- */
-
-/** The JavaScript files the page has requested from `/assets/`, by file name. */
 function trackChunks(page: Page): string[] {
   const requested: string[] = [];
   page.on("request", (request) => {
@@ -64,7 +57,6 @@ test.describe("the production build", { tag: "@preview" }, () => {
 
       await expect(page.getByText(/Couldn't open Settings\./)).toBeVisible();
       await expect(page.getByRole("dialog", { name: "Settings" })).toBeHidden();
-      // The URL went back to the place, so the next press asks again.
       await expect.poll(() => new URL(page.url()).search).toBe("");
     });
   });

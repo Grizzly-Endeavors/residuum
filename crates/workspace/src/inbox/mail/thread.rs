@@ -1,5 +1,3 @@
-//! Assembling threads from every agent's mail items.
-
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
@@ -12,92 +10,52 @@ use super::send::is_user_mail_source;
 use super::{Mailbox, MailboxDirectory};
 use crate::inbox::{InboxItem, InboxKind, InboxRef, list_items_or_empty};
 
-/// Who wrote a message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MailSender {
-    /// The user.
     User,
-    /// The agent with this folder name.
     Agent(String),
 }
 
-/// Whether one recipient of a user message has seen its copy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MailSeen {
-    /// The recipient's folder name.
     pub agent: String,
-    /// The recipient's copy is read or archived.
     pub seen: bool,
 }
 
-/// One attachment file of a message, where it is now.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MailAttachment {
-    /// The item copy holding the file: its agent owns the file.
     pub item: InboxRef,
-    /// The file's position in the item's attachment list, which the
-    /// attachment-serving route takes.
     pub index: usize,
-    /// The file's name.
     pub filename: String,
-    /// The file's path relative to the owning agent's workspace, in the
-    /// active or archived attachment directory as the item is now.
     pub path: PathBuf,
-    /// The file's size in bytes.
     pub size: u64,
-    /// The file's MIME type, from its extension.
     pub content_type: String,
 }
 
 impl MailAttachment {
-    /// The folder name of the agent whose workspace holds the file.
     #[must_use]
     pub fn agent(&self) -> &str {
         self.item.agent()
     }
 }
 
-/// One message of a thread. A user message sent to several agents is one
-/// message with a copy per recipient.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MailMessage {
-    /// The message's ref: for a user message, its first recipient's copy
-    /// (by agent name). A ref to any copy resolves to the message.
     pub item_ref: InboxRef,
-    /// Every copy's ref, sorted by agent name; just `item_ref` for an agent's message.
     pub copies: Vec<InboxRef>,
-    /// Who wrote it.
     pub from: MailSender,
-    /// The recipients of a user message, sorted; empty for an agent's
-    /// message, which goes to the user.
     pub to: Vec<String>,
-    /// When it was written.
     pub at: DateTime<Tz>,
-    /// Its title.
     pub title: String,
-    /// Its body, as markdown.
     pub body: String,
-    /// Its attachments whose files exist (from the first copy, for a user
-    /// message); a missing file is left out and logged.
     pub attachments: Vec<MailAttachment>,
-    /// The message it answers, when that is stored as a valid ref. It may
-    /// name a message that no longer exists, which makes this one its
-    /// thread's root.
     pub in_reply_to: Option<InboxRef>,
-    /// Whether the user read it; always true for the user's own message.
     pub read: bool,
-    /// Whether the user archived it. A user message is never archived: only
-    /// the user's mailbox (agents' messages) is, and an agent archiving its
-    /// copy shows in `seen_by`.
     pub archived: bool,
-    /// Per recipient of a user message, whether it has seen its copy; empty
-    /// for an agent's message.
     pub seen_by: Vec<MailSeen>,
 }
 
 impl MailMessage {
-    /// Whether the message's title, body or an attachment's filename holds
-    /// `query`, ignoring case. A blank `query` matches every message.
     #[must_use]
     pub fn matches_text(&self, query: &str) -> bool {
         crate::inbox::text_matches(
@@ -109,19 +67,13 @@ impl MailMessage {
     }
 }
 
-/// A mail folder. A thread can be in Inbox and Sent at once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MailFolder {
-    /// Threads with an active message from an agent.
     Inbox,
-    /// Threads with a message from the user.
     Sent,
-    /// Threads with messages from agents, all archived.
     Archived,
 }
 
-/// A conversation: a root message and every message whose `in_reply_to`
-/// chain reaches it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MailThread {
     root: MailMessage,
@@ -132,7 +84,6 @@ pub struct MailThread {
     has_attachments: bool,
 }
 
-/// Which folders a thread is in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Folders {
     inbox: bool,
@@ -177,53 +128,40 @@ impl MailThread {
         }
     }
 
-    /// The thread's id: its root message's ref.
     #[must_use]
     pub fn thread_id(&self) -> &InboxRef {
         &self.root.item_ref
     }
 
-    /// The root message's title.
     #[must_use]
     pub fn subject(&self) -> &str {
         &self.root.title
     }
 
-    /// Every agent in the thread (each one that wrote, and each recipient of
-    /// the user's messages), sorted.
     #[must_use]
     pub fn participants(&self) -> &[String] {
         &self.participants
     }
 
-    /// Who a reply-all goes to: every agent that wrote in the thread and every
-    /// agent a message of the user's went to, sorted. The same set as
-    /// [`Self::participants`].
     #[must_use]
     pub fn recipients_for_reply(&self) -> &[String] {
         &self.participants
     }
 
-    /// The root message.
     #[must_use]
     pub fn root(&self) -> &MailMessage {
         &self.root
     }
 
-    /// Every message: the root first, then the replies oldest first.
     pub fn messages(&self) -> impl Iterator<Item = &MailMessage> {
         std::iter::once(&self.root).chain(self.replies.iter())
     }
 
-    /// How many messages the thread holds.
     #[must_use]
     pub fn message_count(&self) -> usize {
         1 + self.replies.len()
     }
 
-    /// The message written last: the greatest time, with a tie going to the
-    /// later message in [`Self::messages`] order. Not necessarily the last
-    /// one listed, since a reply can carry an earlier time than its root.
     #[must_use]
     pub fn latest(&self) -> &MailMessage {
         self.messages()
@@ -231,37 +169,31 @@ impl MailThread {
             .unwrap_or(&self.root)
     }
 
-    /// When the latest message was written.
     #[must_use]
     pub fn latest_at(&self) -> DateTime<Tz> {
         self.latest().at
     }
 
-    /// Whether `item` is a copy of one of the thread's messages.
     #[must_use]
     pub fn contains(&self, item: &InboxRef) -> bool {
         self.messages().any(|m| m.copies.contains(item))
     }
 
-    /// In Inbox: an agent's message in it is active.
     #[must_use]
     pub fn in_inbox(&self) -> bool {
         self.folders.inbox
     }
 
-    /// In Sent: the user wrote a message in it.
     #[must_use]
     pub fn in_sent(&self) -> bool {
         self.folders.sent
     }
 
-    /// Archived: it has agents' messages and all of them are archived.
     #[must_use]
     pub fn archived(&self) -> bool {
         self.folders.archived
     }
 
-    /// Whether the thread is in `folder`.
     #[must_use]
     pub fn in_folder(&self, folder: MailFolder) -> bool {
         match folder {
@@ -271,30 +203,24 @@ impl MailThread {
         }
     }
 
-    /// An active agent's message in it is unread.
     #[must_use]
     pub fn unread(&self) -> bool {
         self.unread
     }
 
-    /// A message in it has an attachment.
     #[must_use]
     pub fn has_attachments(&self) -> bool {
         self.has_attachments
     }
 }
 
-/// Which threads [`MailIndex::threads`] lists. The default lists every thread.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ThreadFilter {
-    /// Only threads in this folder.
     pub folder: Option<MailFolder>,
-    /// Only threads this agent takes part in (by folder name).
     pub agent: Option<String>,
 }
 
 impl ThreadFilter {
-    /// Whether `thread` passes the filter.
     #[must_use]
     pub fn matches(&self, thread: &MailThread) -> bool {
         self.folder.is_none_or(|folder| thread.in_folder(folder))
@@ -305,34 +231,21 @@ impl ThreadFilter {
     }
 }
 
-/// An inbox directory that couldn't be read, so its items are missing from
-/// the index.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MailLoadProblem {
-    /// The agent whose directory it is.
     pub agent: String,
-    /// The directory.
     pub dir: PathBuf,
-    /// What went wrong.
     pub error: String,
 }
 
-/// Every agent's mail, assembled into threads.
 #[derive(Debug, Clone, Default)]
 pub struct MailIndex {
-    /// Newest first by latest message.
     threads: Vec<MailThread>,
-    /// Every copy's ref, to the index of its thread in `threads`.
     thread_of: HashMap<InboxRef, usize>,
     problems: Vec<MailLoadProblem>,
 }
 
 impl MailIndex {
-    /// Read every agent's mail items through `directory` and assemble the
-    /// threads.
-    ///
-    /// An inbox directory that can't be read is left out, logged, and listed
-    /// in [`Self::problems`]; a missing one (an agent that never ran) is empty.
     pub async fn load(directory: &dyn MailboxDirectory) -> Self {
         let mut items = Vec::new();
         let mut problems = Vec::new();
@@ -344,14 +257,11 @@ impl MailIndex {
         index
     }
 
-    /// The threads `filter` passes, newest first by latest message.
     pub fn threads(&self, filter: &ThreadFilter) -> impl Iterator<Item = &MailThread> + '_ {
         let filter = filter.clone();
         self.threads.iter().filter(move |t| filter.matches(t))
     }
 
-    /// The thread holding the message `item` names: the ref of any copy of any
-    /// message in it, the root or a reply.
     #[must_use]
     pub fn thread_containing(&self, item: &InboxRef) -> Option<&MailThread> {
         self.thread_of
@@ -359,7 +269,6 @@ impl MailIndex {
             .and_then(|&index| self.threads.get(index))
     }
 
-    /// The inbox directories that couldn't be read.
     #[must_use]
     pub fn problems(&self) -> &[MailLoadProblem] {
         &self.problems
@@ -438,16 +347,12 @@ impl MailIndex {
     }
 }
 
-/// Replies in time order; within one stored minute a parent before its
-/// replies, then by ref so the order is stable.
 fn message_order(a: &MailMessage, depth_a: usize, b: &MailMessage, depth_b: usize) -> Ordering {
     a.at.cmp(&b.at)
         .then(depth_a.cmp(&depth_b))
         .then_with(|| a.item_ref.cmp(&b.item_ref))
 }
 
-/// Cut one link of every `in_reply_to` cycle, at its oldest message, which
-/// becomes a root.
 fn break_cycles(messages: &[MailMessage], parent: &mut [Option<usize>]) {
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum Visit {
@@ -498,7 +403,6 @@ fn break_cycles(messages: &[MailMessage], parent: &mut [Option<usize>]) {
     }
 }
 
-/// The root a message's parent chain ends at. `parent` has no cycles.
 fn root_of(parent: &[Option<usize>], mut i: usize) -> usize {
     while let Some(p) = parent.get(i).copied().flatten() {
         i = p;
@@ -506,7 +410,6 @@ fn root_of(parent: &[Option<usize>], mut i: usize) -> usize {
     i
 }
 
-/// Each message's distance from its root. `parent` has no cycles.
 fn depths(parent: &[Option<usize>]) -> Vec<usize> {
     (0..parent.len())
         .map(|mut i| {
@@ -520,7 +423,6 @@ fn depths(parent: &[Option<usize>]) -> Vec<usize> {
         .collect()
 }
 
-/// One mail item read from disk.
 struct LoadedItem {
     item_ref: InboxRef,
     item: InboxItem,
@@ -529,9 +431,6 @@ struct LoadedItem {
     attachments: Vec<MailAttachment>,
 }
 
-/// Read one agent's four inbox directories into `items`: its user inbox, and
-/// the user-authored items of its agent inbox, active and archived. An item
-/// both active and archived (placed by hand) counts once, as active.
 async fn load_mailbox(
     mailbox: &Mailbox,
     items: &mut Vec<LoadedItem>,
@@ -587,9 +486,6 @@ async fn load_mailbox(
     }
 }
 
-/// The files of `item`'s attachments that exist, in its active or archived
-/// attachment directory. Only each stored path's file name is used, since the
-/// directory part goes stale when the item is archived.
 async fn resolve_attachments(
     layout: &WorkspaceLayout,
     item_ref: &InboxRef,
@@ -628,13 +524,8 @@ async fn resolve_attachments(
     resolved
 }
 
-/// What makes agent-inbox items copies of one user message: the same id,
-/// words and time. Same id alone could be two unrelated notes that happened
-/// to get the same name in two workspaces.
 type CopyKey = (String, String, String, DateTime<Utc>);
 
-/// Turn loaded items into messages: each user-inbox item is one; the
-/// user-authored agent-inbox copies of one send merge into one.
 fn merge_copies(items: Vec<LoadedItem>) -> Vec<MailMessage> {
     let mut messages = Vec::new();
     let mut copies: BTreeMap<CopyKey, Vec<LoadedItem>> = BTreeMap::new();

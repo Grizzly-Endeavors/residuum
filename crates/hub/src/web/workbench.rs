@@ -21,25 +21,16 @@ use residuum_protocol::{WorkbenchInfo, WorkbenchRelayOrigins};
 
 #[derive(Clone)]
 pub struct WorkbenchApiState {
-    /// `team/workbench`.
     pub dir: PathBuf,
     pub serving: WorkbenchServing,
     pub tunnel_status_rx: tokio::sync::watch::Receiver<TunnelStatus>,
     pub checkpoints: std::sync::Arc<residuum_checkpoints::CheckpointEngine>,
-    /// The user's view of the team namespace. A delete takes the team write
-    /// coordinator's locks for the artifact's files and records the user as
-    /// their remover. `None` when there is no team (nothing to coordinate).
     pub team: Option<residuum_workspace::team_files::TeamFiles>,
 }
 
-/// Response from `DELETE /api/team/workbench/artifacts/{name}`.
 #[derive(Debug, Serialize)]
 struct DeleteArtifactResponse {
-    /// Entries removed: the page or folder (`name/`) and any `<name>.*` data files.
     removed: Vec<String>,
-    /// Checkpoint holding the team directory as it was before this delete.
-    /// `None` when that checkpoint could not be recorded; the delete still
-    /// succeeded, and the UI should not offer Undo.
     checkpoint_id: Option<String>,
 }
 
@@ -57,9 +48,6 @@ pub fn workbench_api_router(state: WorkbenchApiState) -> axum::Router {
         .with_state(state)
 }
 
-/// `GET /api/team/workbench/info` — where artifacts are served, locally and
-/// through the relay. The web UI picks the relay origin when it is itself
-/// being viewed through the relay, and the local port otherwise.
 async fn api_workbench_info(State(state): State<WorkbenchApiState>) -> Json<WorkbenchInfo> {
     let (port, unavailable_reason) = match &state.serving {
         WorkbenchServing::Running { port } => (Some(*port), None),
@@ -86,7 +74,6 @@ async fn api_workbench_info(State(state): State<WorkbenchApiState>) -> Json<Work
     })
 }
 
-/// `GET /api/team/workbench/artifacts` — every artifact, most recently modified first.
 async fn api_workbench_artifacts(
     State(state): State<WorkbenchApiState>,
 ) -> Result<Json<Vec<ArtifactSummary>>, (StatusCode, String)> {
@@ -103,7 +90,6 @@ async fn api_workbench_artifacts(
         })
 }
 
-/// `DELETE /api/team/workbench/artifacts/{name}` — remove the artifact and its data files.
 async fn api_workbench_artifact_delete(
     State(state): State<WorkbenchApiState>,
     Path(name): Path<String>,
@@ -140,15 +126,8 @@ async fn api_workbench_artifact_delete(
     }
 }
 
-/// How many times a delete widens its lock set before giving up.
 const DELETE_LOCK_ATTEMPTS: usize = 8;
 
-/// Delete the artifact under the team coordinator's locks: the page, the
-/// folder and everything in it, and the `<name>.*` data files. A file that
-/// appears after the lock set was chosen would be deleted unlocked, so the
-/// set is re-listed once the locks are held and widened until it covers
-/// everything. Each removed path is recorded as removed by the user, so an
-/// agent that read it learns who deleted it.
 async fn delete_coordinated(
     state: &WorkbenchApiState,
     name: &str,

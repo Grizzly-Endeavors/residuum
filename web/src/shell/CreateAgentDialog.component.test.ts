@@ -22,7 +22,6 @@ function agent(name: string): AgentSummary {
   };
 }
 
-/** The bodies of the create requests sent. */
 let created: Record<string, unknown>[] = [];
 let createFails = false;
 
@@ -33,7 +32,6 @@ beforeEach(() => {
 beforeEach(() => {
   created = [];
   createFails = false;
-  // The dialog is a sheet only at phone width.
   vi.stubGlobal("matchMedia", (media: string) => ({
     matches: false,
     media,

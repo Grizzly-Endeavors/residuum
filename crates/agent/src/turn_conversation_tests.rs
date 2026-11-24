@@ -1,7 +1,3 @@
-//! What a turn publishes to the main conversation: the order of its events,
-//! the streamed text and reasoning a provider pushes while a model call runs,
-//! and what goes to the endpoint topic of the chat interface it is delivered to.
-
 use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -28,18 +24,12 @@ use residuum_inference::{
 };
 use residuum_workspace::identity::IdentityFiles;
 
-/// What a scripted provider does while a model call is in flight.
 enum Push {
-    /// Hand the sink a delta.
     Delta(StreamDelta),
-    /// Let time pass.
     Wait(Duration),
-    /// Never return.
     Hang,
 }
 
-/// One model call: what the provider pushes into the sink, then what it
-/// returns.
 struct Step {
     pushes: Vec<Push>,
     response: InferenceResponse,
@@ -136,7 +126,6 @@ impl InferenceProvider for ScriptedProvider {
     }
 }
 
-/// A session's durable transcript, as the turn loop writes it.
 #[derive(Default)]
 struct RecordingSink {
     recorded: Mutex<Vec<Message>>,
@@ -154,21 +143,15 @@ struct Options {
     interrupts: Vec<Interrupt>,
     max_tool_iterations: Option<usize>,
     stop_token: CancellationToken,
-    /// Run as an agent session's turn instead of the main agent's.
     as_session: bool,
-    /// The endpoint the turn is delivered to; the web UI's when unset.
     delivered_to: Option<&'static str>,
 }
 
-/// What a turn did, as the buses saw it.
 struct Run {
     result: anyhow::Result<Vec<String>>,
-    /// The main conversation, in order, up to the sentinel the harness ends it with.
     main: Vec<MainConversationEvent>,
     history: Vec<Message>,
-    /// What the turn wrote to its durable transcript.
     transcript: Vec<Message>,
-    /// What reached the topic of the endpoint the turn was delivered to.
     endpoint_intermediate: Vec<IntermediateEvent>,
 }
 
@@ -254,8 +237,6 @@ async fn run_turn_with(steps: Vec<Step>, options: Options) -> Run {
     )
     .await;
 
-    // The broker handles publishes in order, so by the time the sentinel
-    // arrives everything the turn published has reached every subscriber.
     publisher
         .publish(
             topics::MainConversation,
@@ -282,7 +263,6 @@ async fn run_turn_with(steps: Vec<Step>, options: Options) -> Run {
     }
 }
 
-/// A one-word name per event, for comparing the order a turn published in.
 fn shape(events: &[MainConversationEvent]) -> Vec<String> {
     events
         .iter()
@@ -340,8 +320,6 @@ fn person_message(id: &str, endpoint: &str) -> MessageEvent {
         context: None,
     }
 }
-
-// ── Order and numbering ─────────────────────────────────────────────────
 
 #[tokio::test]
 async fn a_turn_publishes_its_events_in_order_and_numbers_its_model_calls() {
@@ -483,8 +461,6 @@ async fn text_that_ends_a_turn_for_a_limit_is_a_reply_no_model_call_wrote() {
     );
 }
 
-// ── A person's message joining the turn ──────────────────────────────────
-
 #[tokio::test]
 async fn a_person_message_folded_in_mid_turn_is_announced_under_its_own_id() {
     let run = run_turn_with(
@@ -560,8 +536,6 @@ async fn background_input_and_session_to_session_messages_are_not_announced_as_u
     );
 }
 
-/// The `user_message` a turn announced for `delivered`, folded in mid-turn,
-/// checked for what every agent's message carries; returns its sender.
 fn announced_agent_message(
     run: &Run,
     delivered: &MessageEvent,
@@ -651,8 +625,6 @@ async fn a_sessions_message_folded_in_mid_turn_is_announced_with_its_run() {
         "the model reads it"
     );
 }
-
-// ── Streaming ────────────────────────────────────────────────────────────
 
 #[tokio::test(start_paused = true)]
 async fn streamed_text_arrives_batched_ahead_of_the_authoritative_reply() {
@@ -850,8 +822,6 @@ async fn an_empty_response_is_retried_as_the_same_call_after_voiding_what_it_str
         "the retry is the same model request, and its predecessor's reasoning is not kept"
     );
 }
-
-// ── Thinking ─────────────────────────────────────────────────────────────
 
 fn with_thinking(mut response: InferenceResponse, blocks: Vec<ThinkingBlock>) -> InferenceResponse {
     response.thinking = blocks;

@@ -1,20 +1,8 @@
-//! Recent unmentioned messages in a shared conversation, held for the next
-//! @mention.
-//!
-//! Discord, Telegram, and Teams all receive messages in shared conversations
-//! (server channels, groups, team channels) that don't address the bot.
-//! Those messages are kept here, in memory only, and handed to the agent as
-//! background context the next time the bot is addressed in that
-//! conversation. Draining on mention means each message reaches the agent at
-//! most once. DMs/private chats are never buffered — the bot always acts on
-//! them directly, so there is nothing to hold.
-
 use std::collections::{HashMap, VecDeque};
 use std::fmt::Write as _;
 
 use chrono::NaiveDateTime;
 
-/// One message observed in a shared conversation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BufferedMessage {
     pub(crate) sender: String,
@@ -22,13 +10,8 @@ pub(crate) struct BufferedMessage {
     pub(crate) at: NaiveDateTime,
 }
 
-/// Most conversations held at once. A bot in many busy servers or groups
-/// sees chatter in far more conversations than it is ever mentioned in, so
-/// without a bound the map would grow for as long as the process runs. The
-/// conversation that went longest without new chatter is dropped first.
 const MAX_BUFFERED_CONVERSATIONS: usize = 256;
 
-/// One conversation's held messages, plus when it last received one.
 #[derive(Default)]
 struct ConversationBuffer {
     messages: VecDeque<BufferedMessage>,
@@ -38,12 +21,9 @@ struct ConversationBuffer {
 #[derive(Default)]
 struct BufferState {
     conversations: HashMap<String, ConversationBuffer>,
-    /// Monotonic counter ordering `record` calls, for least-recent eviction.
     clock: u64,
 }
 
-/// Per-conversation ring buffers, capped at `capacity` messages each and at
-/// [`MAX_BUFFERED_CONVERSATIONS`] conversations overall.
 pub(crate) struct ContextBuffer {
     capacity: usize,
     max_conversations: usize,
@@ -63,7 +43,6 @@ impl ContextBuffer {
         }
     }
 
-    /// Remember a message, evicting the oldest once the conversation is full.
     pub(crate) fn record(&self, conversation_id: &str, message: BufferedMessage) {
         if self.capacity == 0 || self.max_conversations == 0 {
             return;
@@ -87,7 +66,6 @@ impl ContextBuffer {
         buffer.last_recorded = now;
     }
 
-    /// Take everything buffered for a conversation, oldest first.
     pub(crate) fn drain(&self, conversation_id: &str) -> Vec<BufferedMessage> {
         self.lock()
             .conversations
@@ -97,7 +75,6 @@ impl ContextBuffer {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, BufferState> {
-        // The map holds plain data; a panic mid-update cannot leave it inconsistent.
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -121,7 +98,6 @@ fn evict_least_recent(conversations: &mut HashMap<String, ConversationBuffer>) {
     }
 }
 
-/// Render drained messages as the background note the agent sees before an @mention.
 pub(crate) fn render_context(location: &str, messages: &[BufferedMessage]) -> Option<String> {
     if messages.is_empty() {
         return None;
@@ -131,7 +107,6 @@ pub(crate) fn render_context(location: &str, messages: &[BufferedMessage]) -> Op
          This is background only; the message that mentions you follows.\n"
     );
     for m in messages {
-        // Writing to a String cannot fail.
         _ = writeln!(out, "[{}] {}: {}", m.at.format("%H:%M"), m.sender, m.text);
     }
     Some(out.trim_end().to_string())
@@ -157,7 +132,6 @@ mod tests {
         let buffer = ContextBuffer::with_conversation_limit(5, 2);
         buffer.record("a", msg("Jane", "in a", 1));
         buffer.record("b", msg("Sam", "in b", 2));
-        // "a" is active again, so "b" is now the least recent.
         buffer.record("a", msg("Jane", "again in a", 3));
         buffer.record("c", msg("Kim", "in c", 4));
 

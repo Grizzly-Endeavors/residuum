@@ -32,12 +32,6 @@ use residuum::memory::reflector::{Reflector, ReflectorConfig};
 use residuum::memory::search::{MemoryIndex, SearchFilters};
 use residuum::memory::types::{DocSource, IndexManifest, SourceTag, Visibility};
 
-/// Build a merge writer over a real search index but a disabled
-/// reflector, so tests that only care about the observe→merge path
-/// aren't also exercised by reflection (covered separately below).
-///
-/// # Errors
-/// Returns an error if the search index cannot be created.
 fn make_merge_writer(layout: &WorkspaceLayout) -> anyhow::Result<MemoryMergeWriter> {
     let search_index = Arc::new(MemoryIndex::open_or_create(&layout.search_index_dir())?);
     Ok(MemoryMergeWriter::new(
@@ -49,7 +43,6 @@ fn make_merge_writer(layout: &WorkspaceLayout) -> anyhow::Result<MemoryMergeWrit
     ))
 }
 
-/// Mock provider that returns configurable JSON responses.
 struct MockProvider {
     responses: Vec<String>,
     call_idx: Arc<AtomicUsize>,
@@ -148,14 +141,12 @@ async fn full_memory_flow() {
     let dir = tempfile::tempdir().unwrap();
     let layout = WorkspaceLayout::new(dir.path());
 
-    // Create required directories
     for d in layout.required_dirs() {
         tokio::fs::create_dir_all(&d).await.unwrap();
     }
 
     let recent_path = layout.recent_messages_json();
 
-    // Phase 1: Accumulate messages and observer fires
     let observer = Observer::new(
         Box::new(MockProvider::new(vec![observer_response()])),
         ObserverConfig {
@@ -199,7 +190,6 @@ async fn full_memory_flow() {
         .unwrap();
 
     assert_eq!(episode_id, "ep-001", "first episode should be ep-001");
-    // observer_response has 3 observation strings
     assert_eq!(observations.len(), 3, "should have 3 observations");
     assert_eq!(
         observations.len(),
@@ -208,7 +198,6 @@ async fn full_memory_flow() {
     );
     assert!(!date.is_empty(), "date should not be empty");
 
-    // Verify transcript file was created
     assert!(transcript_path.exists(), "transcript file should exist");
 
     let transcript = tokio::fs::read_to_string(&transcript_path).await.unwrap();
@@ -219,7 +208,6 @@ async fn full_memory_flow() {
         "transcript first line should be JSON with type field"
     );
 
-    // Verify idx.jsonl was created alongside transcript
     let idx_path = transcript_path
         .parent()
         .unwrap()
@@ -229,13 +217,11 @@ async fn full_memory_flow() {
         "idx.jsonl should exist alongside transcript"
     );
 
-    // Verify chunks were extracted (messages alternate user/assistant so should produce pairs)
     assert!(
         !chunks.is_empty(),
         "should have extracted at least one interaction pair"
     );
 
-    // Verify observations.json was updated — 3 observation strings → 3 Observations
     let log = load_observation_log(&layout.observations_json())
         .await
         .unwrap();
@@ -257,14 +243,12 @@ async fn full_memory_flow() {
         "source_episodes should reference ep-001"
     );
 
-    // Verify recent messages were cleared
     let cleared = load_recent_messages(&recent_path).await.unwrap();
     assert!(
         cleared.is_empty(),
         "recent messages should be cleared after episode creation"
     );
 
-    // Phase 2: More messages accumulate, second episode created
     let more_messages = make_messages(10);
     append_recent_messages(
         &recent_path,
@@ -291,14 +275,12 @@ async fn full_memory_flow() {
     let updated_log = load_observation_log(&layout.observations_json())
         .await
         .unwrap();
-    // 3 from ep-001 + 3 from ep-002 = 6 observations
     assert_eq!(
         updated_log.observations.len(),
         6,
         "observation log should have six observations after two episodes"
     );
 
-    // Phase 3: Search indexes observations and chunks
     let index = MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap();
     let result = index.rebuild(&layout.memory_dir()).unwrap();
     assert!(
@@ -307,7 +289,6 @@ async fn full_memory_flow() {
     );
     assert!(result.chunk_count >= 1, "should index at least 1 chunk");
 
-    // Search should find observations
     let obs_results = index
         .search(
             "workspace layout",
@@ -329,7 +310,6 @@ async fn full_memory_flow() {
         "all should be observations"
     );
 
-    // Search should also find chunks
     let chunk_results = index
         .search(
             "workspace layout",
@@ -351,14 +331,12 @@ async fn full_memory_flow() {
         "all should be chunks"
     );
 
-    // Unfiltered search should find both types
     let all_results = index.search("workspace layout", 10, &no_filters()).unwrap();
     assert!(
         all_results.len() >= 2,
         "should find both obs and chunk results"
     );
 
-    // Phase 4: Reflector compresses when threshold hit
     let reflector = Reflector::new(
         Box::new(MockProvider::new(vec![reflector_response()])),
         ReflectorConfig {
@@ -374,14 +352,12 @@ async fn full_memory_flow() {
     );
 
     let compressed = reflector.compress(&layout, &updated_log).await.unwrap();
-    // reflector_response has 2 observation strings → 2 observations
     assert_eq!(
         compressed.observations.len(),
         2,
         "compressed log should have two observations"
     );
 
-    // Reflector observations have no source_episodes
     assert!(
         compressed
             .observations
@@ -401,7 +377,6 @@ async fn messages_persist_across_simulated_restarts() {
 
     let recent_path = layout.recent_messages_json();
 
-    // "Run 1" — add some messages, exit without hitting threshold
     let run1_msgs = make_messages(3);
     append_recent_messages(
         &recent_path,
@@ -413,11 +388,9 @@ async fn messages_persist_across_simulated_restarts() {
     .await
     .unwrap();
 
-    // "Run 2" — load and verify messages survived
     let loaded = load_recent_messages(&recent_path).await.unwrap();
     assert_eq!(loaded.len(), 3, "messages from previous run should persist");
 
-    // Add more messages in run 2
     let run2_msgs = make_messages(3);
     append_recent_messages(
         &recent_path,
@@ -439,11 +412,9 @@ async fn episode_id_generation_is_sequential() {
     let episodes_dir = dir.path().join("episodes");
     tokio::fs::create_dir_all(&episodes_dir).await.unwrap();
 
-    // Empty dir → ep-001
     let id1 = next_episode_id(&episodes_dir).await.unwrap();
     assert_eq!(id1, "ep-001", "first ID should be ep-001");
 
-    // Write ep-001.jsonl → next should be ep-002
     let month_dir = episodes_dir.join("2026-02/19");
     tokio::fs::create_dir_all(&month_dir).await.unwrap();
     tokio::fs::write(month_dir.join("ep-001.jsonl"), "")
@@ -519,7 +490,6 @@ fn check_thresholds_returns_correct_actions() {
         },
     );
 
-    // Below soft threshold — single short message is ~2 tokens
     let few_recent = vec![residuum::memory::recent_messages::RecentMessage {
         message: Message::user("hello"),
         timestamp: chrono::Utc::now().naive_utc(),
@@ -533,7 +503,6 @@ fn check_thresholds_returns_correct_actions() {
         "single short message should be below soft threshold"
     );
 
-    // Above soft threshold but below force — make_messages(10) produces ~1250+ tokens
     let many = make_messages(10);
     let many_recent: Vec<residuum::memory::recent_messages::RecentMessage> = many
         .into_iter()
@@ -606,7 +575,6 @@ async fn backward_compat_legacy_array_format() {
         tokio::fs::create_dir_all(&d).await.unwrap();
     }
 
-    // Use legacy bare-array format
     let observer = Observer::new(
         Box::new(MockProvider::new(vec![observer_response_legacy()])),
         ObserverConfig {
@@ -669,7 +637,6 @@ async fn incremental_sync_simulation() {
         tokio::fs::create_dir_all(&d).await.unwrap();
     }
 
-    // Create first episode with observation + chunk files
     let day_dir = layout.episodes_dir().join("2026-02/19");
     tokio::fs::create_dir_all(&day_dir).await.unwrap();
 
@@ -702,20 +669,17 @@ async fn incremental_sync_simulation() {
     .await
     .unwrap();
 
-    // Build index with full rebuild
     let index = MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap();
     let rebuild_result = index.rebuild(&layout.memory_dir()).unwrap();
     assert_eq!(rebuild_result.obs_count, 1);
     assert_eq!(rebuild_result.chunk_count, 1);
 
-    // Create manifest from rebuild
     let mut manifest = IndexManifest::new();
     manifest.last_rebuild = "2026-02-19T14:00:00".to_string();
     for (path, entry) in rebuild_result.file_entries {
         manifest.files.insert(path, entry);
     }
 
-    // Add a second episode
     let obs2 = vec![residuum::memory::types::Observation {
         timestamp: chrono::Utc::now().naive_utc(),
         source_episodes: Some("ep-002".to_string()),
@@ -730,7 +694,6 @@ async fn incremental_sync_simulation() {
     .await
     .unwrap();
 
-    // Incremental sync should only index the new file
     let (new_manifest, stats) = index
         .incremental_sync(&layout.memory_dir(), &manifest)
         .unwrap();
@@ -741,7 +704,6 @@ async fn incremental_sync_simulation() {
         "manifest should grow"
     );
 
-    // Should find both observations
     let results = index.search("observation", 10, &no_filters()).unwrap();
     assert!(
         results.len() >= 2,
@@ -758,7 +720,6 @@ fn filter_end_to_end() {
     std::fs::create_dir_all(&day_dir_1).unwrap();
     std::fs::create_dir_all(&day_dir_2).unwrap();
 
-    // Early residuum observation
     let obs1 = vec![residuum::memory::types::Observation {
         timestamp: chrono::Utc::now().naive_utc(),
         source_episodes: Some("ep-001".to_string()),
@@ -786,7 +747,6 @@ fn filter_end_to_end() {
     )
     .unwrap();
 
-    // Chunk from ep-001
     let chunk = residuum::memory::types::IndexChunk {
         chunk_id: "ep-001-c0".to_string(),
         episode_id: "ep-001".to_string(),
@@ -805,7 +765,6 @@ fn filter_end_to_end() {
     let index = MemoryIndex::open_or_create(&index_dir).unwrap();
     index.rebuild(&memory_dir).unwrap();
 
-    // Filter: observations only
     let obs_only = index
         .search(
             "search",
@@ -823,7 +782,6 @@ fn filter_end_to_end() {
         "should only return observations"
     );
 
-    // Filter: date range (only 2026-02-18+)
     let date_filtered = index
         .search(
             "search",

@@ -11,24 +11,18 @@
   import { PHONE_QUERY } from "../styles/breakpoints";
   import ActionOption from "./ActionOption.svelte";
 
-  // The command palette: everything in the action registry, found by typing.
-  // The field keeps focus, the arrow keys move through the results, Enter
-  // runs one, and Esc closes. It fills the screen on phones.
-
   let { open = $bindable(false) }: { open?: boolean } = $props();
 
   const uid = $props.id();
   const DESCRIPTION = "Search agents, places, sessions, settings and actions";
   let query = $state("");
   let active = $state(0);
-  /** A phone's field is too narrow for the whole description. */
   let placeholder = $state(DESCRIPTION);
 
   const results = $derived(matchActions(actionRegistry.all, query));
   const runs = $derived(groupRuns(results));
   const optionId = (index: number): string => `${uid}-option-${String(index)}`;
 
-  // Each opening starts from an empty search.
   $effect(() => {
     if (!open) return;
     untrack(() => {
@@ -38,7 +32,6 @@
     });
   });
 
-  // The results change under the highlight as agents and sessions come and go.
   $effect(() => {
     if (active >= results.length) active = Math.max(results.length - 1, 0);
   });

@@ -34,16 +34,8 @@
   import TabTitle from "./TabTitle.svelte";
   import UpdateBanner from "./UpdateBanner.svelte";
 
-  // The frame around every place: the rail beside the main region at medium
-  // and wide widths, and the context panel beside it (wide) or over it
-  // (medium); on phones the bottom bar, with the rail in a drawer and the
-  // panel a full-screen sheet. The shell also owns the overlays its controls
-  // and the action registry open. Settings and the palette are built apart
-  // from the shell and load the first time they open.
-
   router.guard.setConfirm(confirmLeave);
 
-  /** The drawer opens on the row of the place the user is on. */
   const CURRENT_ROW = '[aria-current="page"]';
 
   const settingsModal = new LazyComponent(() => import("./SettingsModal.svelte"), "Settings");
@@ -62,7 +54,6 @@
   let createOpen = $state(false);
   let sideRail = $state<HTMLElement>();
 
-  // A settings URL, from a link or a reload, opens the modal. If its code can't load, the modal is put away so Settings can be asked for again.
   $effect(() => {
     if (router.settings !== null) settingsModal.ensure(() => void router.closeSettings());
   });
@@ -75,12 +66,10 @@
     }
   });
 
-  // The installed app's icon shows the inbox unread total, once it is known.
   $effect(() => {
     if (overview.loaded) showAppBadge(overview.inboxUnread);
   });
 
-  // Arriving on an agent opens its places in the rail.
   $effect(() => {
     accordion.follow(router.viewedAgent);
   });
@@ -92,7 +81,6 @@
     },
     openSettings: () => {
       drawerOpen = false;
-      // The phone's bar stays in reach beside the open modal; pressing Settings there keeps it as it is.
       if (router.settings !== null) return;
       void router.openSettings({ scope: router.viewedAgent ?? ALL_SCOPE, section: null });
     },
@@ -106,21 +94,17 @@
       feedbackTab = tab;
       feedbackOpen = true;
     },
-    // The user stays where they are: the dialog opens over the current place.
     createAgent: () => {
       drawerOpen = false;
       createOpen = true;
     },
   };
 
-  /** A new agent's rail row takes focus, where the rail shows beside the main region (not on phones). */
   async function focusCreatedAgent(name: string): Promise<void> {
     await tick();
     sideRail?.querySelector<HTMLElement>(`[data-rail-agent="${CSS.escape(name)}"]`)?.focus();
   }
 
-  // Whatever an action opens or wherever it goes, the drawer it may have been
-  // run from gets out of the way first.
   onMount(() => {
     const removeActions = registerAppActions(actions);
     const stopListening = actionRegistry.onRun(() => {
@@ -132,11 +116,9 @@
     };
   });
 
-  // The instance switcher in the rail follows the secure tunnel's status.
   onMount(() => remoteAccess.follow());
 
   onMount(() => {
-    // The drawer is the phone's rail; a wider window shows the rail itself.
     const phone = window.matchMedia(PHONE_QUERY);
     const leftPhoneWidth = (): void => {
       if (!phone.matches) drawerOpen = false;
@@ -149,7 +131,6 @@
 
   function handleKeydown(event: KeyboardEvent): void {
     if (event.defaultPrevented) return;
-    // ⌘K or Ctrl+K opens the palette from anywhere, and closes it again.
     const mod = event.metaKey || event.ctrlKey;
     if (mod && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "k") {
       event.preventDefault();
@@ -157,7 +138,6 @@
       else actions.openSearch();
       return;
     }
-    // `?` opens the shortcuts, unless something is taking text.
     if (event.key !== "?") return;
     const target = event.target as HTMLElement | null;
     const tag = target?.tagName;
@@ -228,7 +208,6 @@
     display: grid;
     grid-template-columns: var(--layout-rail-width) minmax(0, 1fr) auto;
     height: 100%;
-    /* Under the status bar, a notch and the home indicator the base surface shows, and the content sits inside. */
     padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left);
     background: var(--color-stone-0);
   }
@@ -247,7 +226,6 @@
     min-height: 0;
   }
 
-  /* Over everything but toasts, while Settings or the palette waits for its code. */
   .shell-opening {
     position: fixed;
     inset: 0;
@@ -271,7 +249,6 @@
   @media (max-width: 760px) {
     .shell {
       grid-template-columns: minmax(0, 1fr);
-      /* The bar covers the bottom inset, so the content only clears the bar. */
       padding-bottom: var(--layout-bottom-bar-offset);
     }
 

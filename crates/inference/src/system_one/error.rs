@@ -1,9 +1,5 @@
-//! Errors from System 1 evaluations, with plain-language messages.
-
 use thiserror::Error;
 
-/// Why a System 1 call failed. `provider` is the display name the user picked
-/// (`TypeSafe`, Ollama, or the custom endpoint's host).
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum SystemOneError {
     #[error("no decision model is set up")]
@@ -35,7 +31,6 @@ pub enum SystemOneError {
 }
 
 impl SystemOneError {
-    /// Whether waiting and trying again may succeed.
     #[must_use]
     pub(crate) fn is_retryable(&self) -> bool {
         matches!(
@@ -47,15 +42,11 @@ impl SystemOneError {
         )
     }
 
-    /// Whether this failure says the service as a whole is unusable, rather
-    /// than one request being bad. A rejected request (an oversized or
-    /// malformed state) leaves the service healthy for the next one.
     #[must_use]
     pub(crate) fn affects_health(&self) -> bool {
         !matches!(self, Self::RequestRejected { .. })
     }
 
-    /// The kind of outage this failure means, for the health status.
     #[must_use]
     pub(crate) fn outage_kind(&self) -> SystemOneOutageKind {
         match self {
@@ -71,7 +62,6 @@ impl SystemOneError {
         }
     }
 
-    /// A sentence for a non-technical user: what went wrong and what to do.
     #[must_use]
     pub fn user_message(&self) -> String {
         match self {
@@ -104,15 +94,11 @@ impl SystemOneError {
     }
 }
 
-/// The broad kind of a System 1 outage, shown to the user.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export)]
 pub enum SystemOneOutageKind {
-    /// Something asked for a decision but no provider is configured.
     NotConfigured,
-    /// The service can't be reached, timed out, or is overloaded.
     Unreachable,
-    /// The service answered but refused: bad key, unknown model, bad reply.
     Rejected,
 }

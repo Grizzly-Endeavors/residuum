@@ -1,39 +1,19 @@
-//! Tracks consecutive failures of an automatic, repeatedly-triggered
-//! operation (e.g. the observer's extract call, the reflector's compress
-//! pass) so a caller can back off between retries instead of re-attempting
-//! — and re-spending, for an LLM call — on every trigger, and so the user
-//! is told once when a failure streak starts and once when it clears,
-//! rather than either never or on every single retry.
-
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-/// Starting backoff after the first failure in a streak.
 const BASE_BACKOFF: Duration = Duration::from_secs(60);
-/// Backoff never grows past this, so a long-broken subsystem still retries
-/// (and can notice its own recovery) at a bounded interval.
 const MAX_BACKOFF: Duration = Duration::from_hours(1);
 
-/// Whether an automatic attempt should proceed right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RetryGate {
-    /// No active backoff (or it has elapsed) — go ahead and attempt.
     Proceed,
-    /// Still backing off from a prior failure; skip this attempt. The user
-    /// was already notified when the streak started, so this is silent.
     Skip,
 }
 
-/// What the caller should tell the user, if anything, after recording an
-/// outcome.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoticeAction {
-    /// A repeat failure or success within an already-known state — say
-    /// nothing new.
     None,
-    /// The first failure of a new streak: notify once, in plain language.
     FailureStarted,
-    /// The first success after a failing streak: notify that it recovered.
     Recovered,
 }
 
@@ -42,8 +22,6 @@ struct State {
     backoff_until: Option<Instant>,
 }
 
-/// Thread-safe failure/backoff tracker. Cheap enough to check on every
-/// automatic trigger attempt; never held across an `await`.
 pub struct BackoffTracker {
     state: Mutex<State>,
 }
@@ -65,8 +43,6 @@ impl BackoffTracker {
         }
     }
 
-    /// Whether an automatic attempt should proceed right now, or be skipped
-    /// because a prior failure's backoff hasn't elapsed yet.
     #[must_use]
     pub fn gate(&self) -> RetryGate {
         let state = self.lock();
@@ -76,9 +52,6 @@ impl BackoffTracker {
         }
     }
 
-    /// Record a failed attempt, advancing the backoff. Returns
-    /// [`NoticeAction::FailureStarted`] exactly when this is the first
-    /// failure of a new streak.
     pub fn record_failure(&self) -> NoticeAction {
         let mut state = self.lock();
         let is_new_streak = state.consecutive_failures == 0;
@@ -91,9 +64,6 @@ impl BackoffTracker {
         }
     }
 
-    /// Record a successful attempt, clearing any backoff. Returns
-    /// [`NoticeAction::Recovered`] exactly when this follows a failing
-    /// streak.
     pub fn record_success(&self) -> NoticeAction {
         let mut state = self.lock();
         let was_failing = state.consecutive_failures > 0;
@@ -106,10 +76,6 @@ impl BackoffTracker {
         }
     }
 
-    /// Clear any active backoff wait while keeping `consecutive_failures`
-    /// intact, so a configuration reload lets the next attempt run immediately
-    /// against the updated config and still emits [`NoticeAction::Recovered`]
-    /// when it succeeds.
     pub fn clear_backoff_wait(&self) {
         self.lock().backoff_until = None;
     }
@@ -121,11 +87,7 @@ impl BackoffTracker {
     }
 }
 
-/// Exponential backoff, doubling per consecutive failure and capped at
-/// [`MAX_BACKOFF`]: 1m, 2m, 4m, 8m, ... up to 1h.
 fn backoff_for(consecutive_failures: u32) -> Duration {
-    // Cap the exponent itself (not just the result) so the shift below
-    // never overflows u64 on a very long failure streak.
     let exponent = consecutive_failures.saturating_sub(1).min(10);
     let secs = BASE_BACKOFF.as_secs().saturating_mul(1_u64 << exponent);
     Duration::from_secs(secs).min(MAX_BACKOFF)

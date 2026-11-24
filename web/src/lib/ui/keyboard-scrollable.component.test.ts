@@ -25,7 +25,6 @@ function runFrames(): void {
   for (const callback of due) callback(0);
 }
 
-/** A region whose content is `size.content` pixels tall in a box `size.box` tall. */
 function region(size: { content: number; box: number }): HTMLElement {
   const element = document.createElement("div");
   Object.defineProperty(element, "clientHeight", { get: () => size.box });

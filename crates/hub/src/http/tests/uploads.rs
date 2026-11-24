@@ -1,9 +1,6 @@
-//! Tests for `POST /api/hub/uploads`, against the harness's hub directory.
-
 use super::*;
 use crate::uploads::{MAX_UPLOAD_BYTES, UploadError};
 
-/// A `POST /api/hub/uploads?filename=<encoded>` request whose body is `bytes`.
 fn upload_request(query: &str, bytes: Vec<u8>) -> Request<Body> {
     Request::builder()
         .method(Method::POST)

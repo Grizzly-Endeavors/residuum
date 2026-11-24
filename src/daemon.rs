@@ -1,10 +1,3 @@
-//! Daemon utilities for backgrounding the gateway process.
-//!
-//! Provides PID file management, process detection, signal sending,
-//! file locking, and the readiness/startup-error markers a startup attempt
-//! leaves for whoever is waiting on it (the CLI reporting `serve`'s outcome,
-//! or the update-rollback watchdog deciding whether to roll back).
-
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -32,28 +25,10 @@ fn lock_path_for(pid_path: &Path) -> PathBuf {
     pid_path.with_extension("lock")
 }
 
-/// Holds an exclusive lock on the daemon's lock file for its lifetime.
-///
-/// When this value is dropped (or the process exits for any reason including
-/// SIGKILL), the OS releases the lock. Other processes can detect a live
-/// daemon by attempting a non-blocking lock on the same file.
-///
-/// The inner guard has a `'static` lifetime because the backing `RwLock` is
-/// heap-allocated via `Box::leak` — a deliberate one-time leak for a
-/// process-lifetime singleton.
 pub struct PidFileLock {
     _guard: fd_lock::RwLockWriteGuard<'static, std::fs::File>,
 }
 
-/// Take the daemon lock for `pid_path` and write the current PID to it.
-///
-/// The returned [`PidFileLock`] must be held for the entire daemon lifetime.
-/// If another process already holds the lock, this returns an error.
-///
-/// # Errors
-///
-/// Returns `FatalError::Gateway` if the lock file cannot be opened, the lock
-/// is already held, or the PID cannot be written.
 pub fn acquire_pid_lock(pid_path: &Path) -> Result<PidFileLock, FatalError> {
     ensure_parent_dir(pid_path)?;
     let lock_path = lock_path_for(pid_path);
@@ -71,8 +46,6 @@ pub fn acquire_pid_lock(pid_path: &Path) -> Result<PidFileLock, FatalError> {
             ))
         })?;
 
-    // Leak the RwLock to get a 'static lifetime for the guard.
-    // This is a one-time allocation for a process-lifetime singleton.
     let rw_lock = Box::leak(Box::new(fd_lock::RwLock::new(file)));
 
     let guard = rw_lock.try_write().map_err(|e| {
@@ -99,22 +72,11 @@ pub fn acquire_pid_lock(pid_path: &Path) -> Result<PidFileLock, FatalError> {
     Ok(PidFileLock { _guard: guard })
 }
 
-/// Check whether a live daemon holds the lock for `pid_path`.
-///
-/// Returns `true` if the lock is held (process is alive), `false` if it can
-/// be acquired (process is dead or never started).
-///
-/// # Errors
-///
-/// Returns `FatalError::Gateway` if a lock file exists but cannot be opened
-/// or probed.
 pub fn is_pid_locked(pid_path: &Path) -> Result<bool, FatalError> {
     let lock_path = lock_path_for(pid_path);
     if is_file_locked(&lock_path)? {
         return Ok(true);
     }
-    // Daemons started by older binaries have no lock file and lock the PID
-    // file itself; one of those is still running if that lock is held.
     if lock_path.exists() {
         Ok(false)
     } else {
@@ -122,8 +84,6 @@ pub fn is_pid_locked(pid_path: &Path) -> Result<bool, FatalError> {
     }
 }
 
-/// Whether another process holds an exclusive lock on `path`. A missing file
-/// is not locked.
 fn is_file_locked(path: &Path) -> Result<bool, FatalError> {
     let file = match std::fs::OpenOptions::new()
         .read(true)
@@ -142,8 +102,6 @@ fn is_file_locked(path: &Path) -> Result<bool, FatalError> {
 
     let mut rw_lock = fd_lock::RwLock::new(file);
     match rw_lock.try_write() {
-        // Acquired: nobody holds it. The guard drops immediately, releasing
-        // this probe's lock.
         Ok(_guard) => Ok(false),
         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(true),
         Err(e) => Err(FatalError::Gateway(format!(
@@ -153,12 +111,6 @@ fn is_file_locked(path: &Path) -> Result<bool, FatalError> {
     }
 }
 
-/// Write a diagnostic message to the crash log.
-///
-/// Used for errors that occur before tracing is initialized
-/// or when the tracing subsystem itself fails. Messages are
-/// appended to `crash.log` in the hub directory (falls back to
-/// `/tmp/residuum-crash.log` if the home directory is unavailable).
 pub fn write_crash_note(msg: &str) {
     let path = crate::config::default_hub_dir().map_or_else(
         |_| std::env::temp_dir().join("residuum-crash.log"),
@@ -178,20 +130,10 @@ pub fn write_crash_note(msg: &str) {
         .ok();
 }
 
-/// Return the path to the PID file in the hub directory.
-///
-/// # Errors
-///
-/// Returns `FatalError::Config` if the home directory cannot be determined.
 pub fn pid_file_path() -> Result<PathBuf, FatalError> {
     crate::config::default_hub_dir().map(|hub_dir| crate::config::HubPaths::new(hub_dir).pid_file())
 }
 
-/// Read a PID from the given file path.
-///
-/// # Errors
-///
-/// Returns `FatalError::Gateway` if the file cannot be read or parsed.
 pub fn read_pid_file(path: &Path) -> Result<u32, FatalError> {
     let content = std::fs::read_to_string(path).map_err(|e| {
         FatalError::Gateway(format!("failed to read pid file {}: {e}", path.display()))
@@ -202,14 +144,6 @@ pub fn read_pid_file(path: &Path) -> Result<u32, FatalError> {
         .map_err(|e| FatalError::Gateway(format!("invalid pid in {}: {e}", path.display())))
 }
 
-/// Remove the PID file at the given path.
-///
-/// Silently succeeds if the file does not exist.
-///
-/// # Errors
-///
-/// Returns `FatalError::Gateway` if removal fails for a reason other than
-/// the file not existing.
 pub fn remove_pid_file(path: &Path) -> Result<(), FatalError> {
     match std::fs::remove_file(path) {
         Ok(()) => {
@@ -224,7 +158,6 @@ pub fn remove_pid_file(path: &Path) -> Result<(), FatalError> {
     }
 }
 
-/// Check whether a process with the given PID is currently running.
 #[must_use]
 #[cfg(unix)]
 pub fn is_process_running(pid: u32) -> bool {
@@ -235,10 +168,6 @@ pub fn is_process_running(pid: u32) -> bool {
         tracing::warn!(pid, "PID out of i32 range; cannot check process status");
         return false;
     };
-    // Signal 0 checks process existence without sending a signal.
-    // Returns Ok if the process exists and we have permission to signal it.
-    // Returns ESRCH if no such process, EPERM if it exists but we lack permission.
-    // EPERM means the process is running, but since we own the daemon this shouldn't occur.
     match kill(nix_pid, None) {
         Ok(()) => true,
         Err(nix::errno::Errno::ESRCH) => false,
@@ -253,7 +182,6 @@ pub fn is_process_running(pid: u32) -> bool {
     }
 }
 
-/// Check whether a process with the given PID is currently running.
 #[must_use]
 #[cfg(windows)]
 #[expect(unsafe_code, reason = "Win32 FFI for process management")]
@@ -330,27 +258,13 @@ pub fn send_sigterm(pid: u32) -> Result<(), FatalError> {
     Ok(())
 }
 
-// ── Readiness and startup-error markers ──────────────────────────────
-
-/// How long a waiter (the CLI reporting `serve`'s outcome, or the
-/// update-rollback watchdog) gives a startup attempt to become healthy
-/// before giving up.
 pub const READINESS_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Path to the marker a gateway process writes once it has finished
-/// initializing (providers, workspace) and its HTTP listener is bound and
-/// accepting connections. Its absence means the process is still starting,
-/// never started, or has exited.
 #[must_use]
 pub fn ready_file_path(hub_dir: &Path) -> PathBuf {
     crate::config::HubPaths::new(hub_dir).ready_file()
 }
 
-/// Write the readiness marker for the current process.
-///
-/// Best-effort: a failure here just means a waiter treats startup as
-/// never becoming ready, which times out visibly rather than reporting
-/// success silently — it never affects the running gateway.
 pub fn write_ready_file(hub_dir: &Path) {
     let path = ready_file_path(hub_dir);
     if let Err(e) = std::fs::write(&path, std::process::id().to_string()) {
@@ -358,12 +272,6 @@ pub fn write_ready_file(hub_dir: &Path) {
     }
 }
 
-/// Remove the readiness marker, e.g. before a fresh startup attempt or on
-/// shutdown, so a later waiter never reads a marker left by a previous run.
-///
-/// Best-effort, matching [`write_ready_file`]: a failure just means a stale
-/// marker might linger, which a fresh attempt clears again before it
-/// matters.
 pub fn remove_ready_file(hub_dir: &Path) {
     let path = ready_file_path(hub_dir);
     if let Err(e) = std::fs::remove_file(&path)
@@ -373,18 +281,11 @@ pub fn remove_ready_file(hub_dir: &Path) {
     }
 }
 
-/// Path to the plain-language message a failed startup attempt leaves
-/// behind, read by the CLI process that spawned it (or the update-rollback
-/// watchdog) to report why.
 #[must_use]
 pub fn startup_error_path(hub_dir: &Path) -> PathBuf {
     crate::config::HubPaths::new(hub_dir).startup_error_file()
 }
 
-/// Record why a startup attempt failed, for whoever is waiting on it.
-///
-/// Best-effort, matching [`write_ready_file`]: on failure the waiter just
-/// falls back to its own generic message.
 pub fn write_startup_error(hub_dir: &Path, message: &str) {
     let path = startup_error_path(hub_dir);
     if let Err(e) = std::fs::write(&path, message) {
@@ -392,7 +293,6 @@ pub fn write_startup_error(hub_dir: &Path, message: &str) {
     }
 }
 
-/// Clear a startup error left by an earlier attempt, e.g. before a fresh one.
 pub fn clear_startup_error(hub_dir: &Path) {
     let path = startup_error_path(hub_dir);
     if let Err(e) = std::fs::remove_file(&path)
@@ -402,29 +302,18 @@ pub fn clear_startup_error(hub_dir: &Path) {
     }
 }
 
-/// Read the plain-language message a failed startup attempt left behind,
-/// if any.
 #[must_use]
 pub fn read_startup_error(hub_dir: &Path) -> Option<String> {
     std::fs::read_to_string(startup_error_path(hub_dir)).ok()
 }
 
-/// How a wait for gateway readiness ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReadinessOutcome {
-    /// The readiness marker appeared before the process exited or the
-    /// timeout elapsed.
     Ready,
-    /// The watched process exited before becoming ready.
     ProcessExited,
-    /// Neither readiness nor exit was observed within the timeout.
     TimedOut,
 }
 
-/// Poll for the readiness marker at `ready_path`, checking `still_running`
-/// on every tick so a process that exits early is reported as such instead
-/// of running out the full timeout. Purely synchronous (blocking sleep) so
-/// it has no dependency on an async runtime being present.
 pub fn wait_for_ready(
     ready_path: &Path,
     timeout: Duration,
@@ -446,8 +335,6 @@ pub fn wait_for_ready(
     }
 }
 
-/// Where a daemon- or watchdog-spawned gateway process's stderr is appended,
-/// so a panic or a pre-tracing startup error is never silently dropped.
 #[must_use]
 pub fn stderr_log_path(hub_dir: &Path) -> PathBuf {
     crate::config::HubPaths::new(hub_dir)
@@ -455,19 +342,6 @@ pub fn stderr_log_path(hub_dir: &Path) -> PathBuf {
         .join("serve.stderr.log")
 }
 
-/// Spawn `exe` with `args` as a detached background process: stdin closed,
-/// stdout discarded (nothing writes anything meaningful there), and stderr
-/// appended to [`stderr_log_path`] rather than discarded, so a crash or an
-/// error before tracing initializes still leaves a trace. Used to start the
-/// gateway itself (by the daemon spawner and by the update-rollback
-/// watchdog) and to hand a restart off to that watchdog (by
-/// `commands::serve::foreground::relaunch`) — anywhere this codebase starts
-/// a detached `residuum` process.
-///
-/// # Errors
-///
-/// Returns an I/O error if the log directory or file can't be created, or
-/// the process can't be spawned.
 pub fn spawn_gateway_process(
     exe: &Path,
     args: &[String],
@@ -551,8 +425,6 @@ mod tests {
 
     #[test]
     fn pid_overflow_returns_false() {
-        // u32::MAX cannot be converted to i32, so this should return false
-        // via the try_from guard rather than panicking.
         assert!(!is_process_running(u32::MAX));
     }
 
@@ -576,7 +448,6 @@ mod tests {
         let pid_path = dir.path().join("test.pid");
         let _lock = acquire_pid_lock(&pid_path).unwrap();
 
-        // A second fd should see the lock as held
         assert!(
             is_pid_locked(&pid_path).unwrap(),
             "lock should be detected as held"
@@ -588,7 +459,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let pid_path = dir.path().join("test.pid");
 
-        // Write a PID file without acquiring a lock
         std::fs::write(&pid_path, "99999").unwrap();
 
         assert!(
@@ -624,8 +494,6 @@ mod tests {
 
     #[test]
     fn pid_file_is_readable_while_the_lock_is_held() {
-        // Windows locks are mandatory, so this fails there if the lock is
-        // taken on the PID file itself.
         let dir = tempfile::tempdir().unwrap();
         let pid_path = dir.path().join("residuum.pid");
         let _lock = acquire_pid_lock(&pid_path).unwrap();
@@ -714,7 +582,6 @@ mod tests {
     #[test]
     fn remove_ready_file_succeeds_when_missing() {
         let dir = tempfile::tempdir().unwrap();
-        // Should not panic or error even though nothing was ever written.
         remove_ready_file(dir.path());
     }
 
@@ -777,9 +644,6 @@ mod tests {
     #[test]
     fn spawn_gateway_process_redirects_stderr_to_the_log_file() {
         let dir = tempfile::tempdir().unwrap();
-        // A native shell on each platform: MSYS `sh` on the Windows runner
-        // wrote nothing to the append-only handle the log file is opened
-        // with, which native processes (the gateway itself) write to fine.
         #[cfg(windows)]
         let (shell, args) = ("cmd", ["/C".to_string(), "echo boom 1>&2".to_string()]);
         #[cfg(not(windows))]

@@ -1,15 +1,9 @@
-//! Resolution of the hub's `[system_one]` section.
-
 use super::super::constants::TYPESAFE_API_KEY_ENV;
 use super::super::deserialize::SystemOneConfigFile;
 use super::super::hub_types::{SystemOneConfig, SystemOneProvider};
 use super::super::secrets::SecretStore;
 use super::resolve_secret_value;
 
-/// Resolve `[system_one]` into an endpoint, or `None` when the section is
-/// absent or missing something no default can fill. Every gap is a notice,
-/// never a failed load: whatever asks for a decision then reports that no
-/// decision model is set up.
 pub(super) fn resolve_system_one_config(
     section: Option<&SystemOneConfigFile>,
     secrets: &SecretStore,
@@ -19,7 +13,6 @@ pub(super) fn resolve_system_one_config(
     resolve_with_env_key(section, secrets, env_key, notices)
 }
 
-/// [`resolve_system_one_config`] with the `TYPESAFE_API_KEY` value passed in.
 fn resolve_with_env_key(
     section: Option<&SystemOneConfigFile>,
     secrets: &SecretStore,
@@ -105,8 +98,6 @@ fn resolve_with_env_key(
 mod tests {
     use super::*;
 
-    /// Resolve `toml_text` as a `[system_one]` section against a secret store
-    /// holding `typesafe = "sk-1"`.
     fn resolve(toml_text: &str, env_key: Option<&str>) -> (Option<SystemOneConfig>, Vec<String>) {
         let dir = tempfile::tempdir().unwrap();
         let mut secrets = SecretStore::load(dir.path()).unwrap();

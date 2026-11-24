@@ -1,10 +1,3 @@
-//! Refs: one string that names an inbox item in any agent's workspace.
-//!
-//! A ref is `<agent>/<kind>/<id>`: the agent's folder name, `user` for the
-//! agent's `inbox/user/` (messages the agent sent the user) or `agent` for its
-//! `inbox/agent/` (messages to the agent), and the item's filename stem. An
-//! active item and its archived self share the ref, since archiving keeps the id.
-
 use std::fmt;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -12,17 +5,13 @@ use std::str::FromStr;
 use residuum_config::WorkspaceLayout;
 use serde::{Deserialize, Serialize};
 
-/// Which of an agent's two inboxes an item lives in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum InboxKind {
-    /// `inbox/user/`: what the agent sent the user.
     User,
-    /// `inbox/agent/`: what was sent to the agent.
     Agent,
 }
 
 impl InboxKind {
-    /// The kind's segment in a ref: `user` or `agent`.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -31,7 +20,6 @@ impl InboxKind {
         }
     }
 
-    /// The directory holding this kind's items, active or archived.
     #[must_use]
     pub fn items_dir(self, layout: &WorkspaceLayout, archived: bool) -> PathBuf {
         match (self, archived) {
@@ -42,8 +30,6 @@ impl InboxKind {
         }
     }
 
-    /// The directory holding this kind's per-item attachment directories,
-    /// active or archived.
     #[must_use]
     pub fn attachments_dir(self, layout: &WorkspaceLayout, archived: bool) -> PathBuf {
         match (self, archived) {
@@ -61,40 +47,18 @@ impl fmt::Display for InboxKind {
     }
 }
 
-/// A ref that couldn't be parsed or built. The message names the ref and what
-/// is wrong with it, so it can be shown to an agent or a user as is.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum InboxRefError {
-    /// Not three `/`-separated parts.
     #[error("'{0}' is not an inbox item ref; a ref looks like '<agent>/<user|agent>/<id>'")]
     Malformed(String),
-    /// The agent part is not a valid agent folder name.
     #[error("inbox item ref '{reference}' names an invalid agent: {problem}")]
-    InvalidAgent {
-        /// The ref as given.
-        reference: String,
-        /// What is wrong with the agent name.
-        problem: String,
-    },
-    /// The kind part is neither `user` nor `agent`.
+    InvalidAgent { reference: String, problem: String },
     #[error("inbox item ref '{reference}' has kind '{kind}'; it must be 'user' or 'agent'")]
-    InvalidKind {
-        /// The ref as given.
-        reference: String,
-        /// The kind part as given.
-        kind: String,
-    },
-    /// The id part can't be an item's filename stem.
+    InvalidKind { reference: String, kind: String },
     #[error("inbox item ref '{reference}' has an invalid id: {problem}")]
-    InvalidId {
-        /// The ref as given.
-        reference: String,
-        /// What is wrong with the id.
-        problem: String,
-    },
+    InvalidId { reference: String, problem: String },
 }
 
-/// One inbox item in one agent's workspace: `<agent>/<user|agent>/<id>`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct InboxRef {
@@ -104,11 +68,6 @@ pub struct InboxRef {
 }
 
 impl InboxRef {
-    /// A ref to item `id` in `agent`'s `kind` inbox.
-    ///
-    /// # Errors
-    /// [`InboxRefError::InvalidAgent`] when `agent` is not a valid agent folder
-    /// name, [`InboxRefError::InvalidId`] when `id` is not a safe filename stem.
     pub fn new(
         agent: impl Into<String>,
         kind: InboxKind,
@@ -132,11 +91,6 @@ impl InboxRef {
         Ok(Self { agent, kind, id })
     }
 
-    /// Parse `<agent>/<user|agent>/<id>`.
-    ///
-    /// # Errors
-    /// [`InboxRefError::Malformed`] when `raw` is not three `/`-separated
-    /// parts, and the errors of [`Self::new`] for a bad part.
     pub fn parse(raw: &str) -> Result<Self, InboxRefError> {
         let mut parts = raw.split('/');
         let (Some(agent), Some(kind), Some(id), None) =
@@ -157,27 +111,22 @@ impl InboxRef {
         Self::new(agent, kind, id)
     }
 
-    /// The agent folder name whose workspace holds the item.
     #[must_use]
     pub fn agent(&self) -> &str {
         &self.agent
     }
 
-    /// Which of the agent's inboxes holds the item.
     #[must_use]
     pub fn kind(&self) -> InboxKind {
         self.kind
     }
 
-    /// The item's filename stem.
     #[must_use]
     pub fn id(&self) -> &str {
         &self.id
     }
 }
 
-/// An item id must be usable as a filename stem in one directory: not empty,
-/// not `.`, no path separators or NUL, and no `..`.
 pub(super) fn validate_item_id(id: &str) -> Result<(), String> {
     if id.is_empty() {
         return Err("the id is empty".to_string());

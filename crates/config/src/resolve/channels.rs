@@ -1,5 +1,3 @@
-//! Discord, Telegram, Teams, webhooks, and idle settings.
-
 use std::collections::HashMap;
 
 use super::super::constants::{
@@ -15,21 +13,12 @@ use super::super::types::{
     WebhookRouting,
 };
 
-/// Resolve a bot token from the raw TOML value, with `${ENV_VAR}` / `secret:name`
-/// expansion. There are no agent-scoped env var overrides (such as
-/// `RESIDUUM_DISCORD_TOKEN`): in a multi-agent hub they would apply the same
-/// value to every agent. A set one gets a startup notice — see
-/// `removed_agent_env_override_notices`.
 pub(super) fn resolve_bot_token(raw_token: Option<&str>, secrets: &SecretStore) -> Option<String> {
     raw_token
         .and_then(|t| super::resolve_secret_value(t, secrets))
         .filter(|t| !t.is_empty())
 }
 
-/// Resolve Discord configuration from the TOML section.
-///
-/// Token resolution: `token` field in TOML (with `${ENV_VAR}` / `secret:name`
-/// expansion) > `None` if section is absent or no token found.
 pub(super) fn resolve_discord_config(
     section: Option<&DiscordConfigFile>,
     secrets: &SecretStore,
@@ -58,10 +47,6 @@ pub(super) fn resolve_discord_config(
     }
 }
 
-/// Resolve Telegram configuration from the TOML section.
-///
-/// Token resolution: `token` field in TOML (with `${ENV_VAR}` / `secret:name`
-/// expansion) > `None` if section is absent or no token found.
 pub(super) fn resolve_telegram_config(
     section: Option<&TelegramConfigFile>,
     secrets: &SecretStore,
@@ -90,15 +75,6 @@ pub(super) fn resolve_telegram_config(
     }
 }
 
-/// Resolve Microsoft Teams configuration from the TOML section.
-///
-/// The client secret comes from the `app_password` field (with `${ENV_VAR}`
-/// / `secret:name` expansion).
-///
-/// Teams is an optional, independent feature: a half-configured `[teams]`
-/// section (missing `app_id`, `tenant_id`, or the app password) disables
-/// Teams with a notice explaining why, rather than failing the whole
-/// config — the rest of the gateway has nothing to do with Teams.
 pub(super) fn resolve_teams_config(
     section: Option<&TeamsConfigFile>,
     secrets: &SecretStore,
@@ -144,11 +120,6 @@ pub(super) fn resolve_teams_config(
     })
 }
 
-/// Resolve named webhook configurations from TOML `[webhooks.<name>]` sections.
-///
-/// Each webhook entry is independent, so a bad `routing`/`format` string or
-/// an empty `content_fields` entry drops just that one entry (with a
-/// notice) rather than failing every configured webhook.
 pub(super) fn resolve_webhooks_config(
     section: Option<&HashMap<String, WebhookEntryFile>>,
     secrets: &SecretStore,
@@ -169,8 +140,6 @@ pub(super) fn resolve_webhooks_config(
     result
 }
 
-/// Resolve one `[webhooks.<name>]` entry, or `None` (with a notice) if its
-/// `routing`, `format`, or `content_fields` is invalid.
 fn resolve_webhook_entry(
     name: &str,
     entry: &WebhookEntryFile,
@@ -228,14 +197,6 @@ fn resolve_webhook_entry(
     })
 }
 
-/// Resolve idle configuration from TOML section, validating the idle channel
-/// against configured interfaces.
-///
-/// An unset `idle_channel` resolves to the web UI (`ws`), so the runtime
-/// always has a concrete endpoint for agent-started turns once the owner is
-/// idle. One naming an unknown or unconfigured interface also resolves to the
-/// web UI, with a notice, rather than failing the whole config over one bad
-/// setting.
 pub(super) fn resolve_idle_config(
     file: Option<&AgentConfigFile>,
     telegram: Option<&TelegramConfig>,
@@ -249,7 +210,6 @@ pub(super) fn resolve_idle_config(
         .unwrap_or(DEFAULT_IDLE_TIMEOUT_MINUTES);
 
     let resolved = match section.and_then(|s| s.idle_channel.as_deref()) {
-        // The web UI's endpoint ID is `ws`; `websocket` is the name users see and write.
         None | Some("websocket" | WEB_UI_ENDPOINT) => Ok(WEB_UI_ENDPOINT),
         Some(channel @ "telegram") if telegram.is_some() => Ok(channel),
         Some(channel @ "discord") if discord.is_some() => Ok(channel),
@@ -284,9 +244,6 @@ pub(super) fn resolve_idle_config(
     }
 }
 
-/// Discord, Telegram, Teams, and the idle channel that names one of them.
-///
-/// Idle validation needs the three chat configs, so they are resolved together.
 #[must_use]
 pub(super) fn resolve_configured_chats(
     file: Option<&AgentConfigFile>,

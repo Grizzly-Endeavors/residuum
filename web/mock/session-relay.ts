@@ -3,7 +3,6 @@ import type { ServerMessage } from "../src/lib/generated/protocol";
 import type { HubClientMessage, HubServerMessage } from "../src/lib/hub-types";
 import { sendFrame } from "./sockets";
 
-/** The `session_*` frames that carry a session's own events: the ones the hub relays. */
 const SESSION_EVENT_TYPES = [
   "session_started",
   "session_state_changed",
@@ -19,7 +18,6 @@ const SESSION_EVENT_TYPES = [
   "session_user_message",
 ] as const;
 
-/** A frame the agent socket sends for an event of one of its sessions. */
 export type SessionEventFrame = Extract<
   ServerMessage,
   { type: (typeof SESSION_EVENT_TYPES)[number] }
@@ -27,17 +25,14 @@ export type SessionEventFrame = Extract<
 
 const sessionEventTypes: ReadonlySet<string> = new Set(SESSION_EVENT_TYPES);
 
-/** Whether `frame` carries an event of a session, rather than an answer to a command or something else. */
 export function isSessionEventFrame(frame: ServerMessage): frame is SessionEventFrame {
   return sessionEventTypes.has(frame.type);
 }
 
-/** The address of the session a session event frame is about. */
 export function sessionAddressOf(frame: SessionEventFrame): string {
   return frame.type === "session_started" ? frame.session.address : frame.address;
 }
 
-/** The client messages that subscribe to sessions, or stop. */
 export type SessionSubscriptionRequest = Extract<
   HubClientMessage,
   {
@@ -49,39 +44,21 @@ export type SessionSubscriptionRequest = Extract<
   }
 >;
 
-/** The source label of an artifact's sessions is this prefix and its name. */
 const ARTIFACT_LABEL_PREFIX = "artifact:";
 
-/** What one page follows: the addresses on each agent, and the artifacts. */
 interface Following {
   sessions: Map<string, Set<string>>;
   artifacts: Set<string>;
 }
 
-/**
- * The hub socket's session relay: which pages follow which sessions, and the
- * frames sent to them. Like the backend's, a page follows by what it
- * subscribed to, so an artifact subscription also follows sessions that start
- * later, on any agent; a subscription ends with the page's connection.
- */
 export interface SessionRelay {
-  /**
-   * Apply a subscription message from `page`. A subscribe is acknowledged with
-   * `subscribed` once it is active; one that names an unknown agent gets a
-   * `notice` and no acknowledgement.
-   */
   handle: (page: WebSocket, request: SessionSubscriptionRequest) => void;
-  /**
-   * Send an event of `agent`'s session to the pages that follow it, as a
-   * `session_frame`. `label` is the source label the session started with.
-   */
   deliver: (
     pages: Iterable<WebSocket>,
     agent: string,
     frame: SessionEventFrame,
     label: string | null,
   ) => void;
-  /** Tell the pages that follow something that frames were lost, as a lagging connection is. The number of pages told. */
   lag: (pages: Iterable<WebSocket>) => number;
 }
 

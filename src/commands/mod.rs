@@ -1,5 +1,3 @@
-//! CLI subcommand dispatch using clap.
-
 mod a2a;
 mod agent;
 mod agent_keys;
@@ -22,9 +20,6 @@ use clap::Parser;
 use residuum::checkpoints::{CheckpointContext, CheckpointEngine, CheckpointTrigger};
 use residuum::util::FatalError;
 
-/// Checkpoint the config repository before a CLI write, if a checkpoint
-/// engine could be opened. Never fails or blocks the command — see
-/// [`CheckpointEngine::open_for_cli`].
 async fn checkpoint_config_before_write(checkpoints: Option<&CheckpointEngine>, summary: String) {
     let Some(engine) = checkpoints else { return };
     engine
@@ -38,9 +33,6 @@ async fn checkpoint_config_before_write(checkpoints: Option<&CheckpointEngine>, 
 fn resolve_gateway_addr(residuum_root: &std::path::Path) -> String {
     use residuum::config::{GatewayConfig, HubConfig};
     let hub_dir = residuum::config::paths::hub_dir(residuum_root);
-    // First launch has no timezone yet. Loading the way startup does still
-    // resolves the gateway address, including RESIDUUM_GATEWAY_PORT, so the
-    // welcome message names the address the hub will actually bind.
     HubConfig::load_at_for_start(&hub_dir, residuum_root).map_or_else(
         |_| GatewayConfig::default().addr(),
         |hub| hub.gateway.addr(),
@@ -56,78 +48,53 @@ struct Cli {
 
 #[derive(clap::Subcommand)]
 enum Command {
-    /// Start the gateway (default when no subcommand is given)
     Serve(serve::ServeArgs),
-    /// Display and tail log files
     Logs(logs::LogsArgs),
-    /// Interactive or flag-driven configuration wizard
     Setup(setup::SetupArgs),
-    /// Manage keys and tokens the agent can use in commands
     AgentKeys {
         #[command(subcommand)]
         command: agent_keys::AgentKeysCommand,
     },
-    /// List, create, delete and control the hub's agents
     Agent {
         #[command(subcommand)]
         command: agent::AgentCommand,
     },
-    /// Manage the A2A protocol listener
     A2a {
         #[command(subcommand)]
         command: a2a::A2aCommand,
     },
-    /// Pair browsers for remote access through Residuum Cloud
     Remote {
         #[command(subcommand)]
         command: remote::RemoteCommand,
     },
-    /// Manage encrypted secret storage
     Secret {
         #[command(subcommand)]
         command: secret::SecretCommand,
     },
-    /// Manage Microsoft Teams bot integration and ATK setup
     Teams {
         #[command(subcommand)]
         command: teams::TeamsCommand,
     },
-    /// Stop the running hub and all its agents
     Stop(stop::StopArgs),
-    /// Manage tracing and observability
     Tracing {
         #[command(subcommand)]
         command: tracing_cmd::TracingCommand,
     },
-    /// Send a bug report with trace dump to the developer
     BugReport(bug_report::BugReportArgs),
-    /// Send a short feedback message to the developer (no trace dump)
     Feedback(feedback::FeedbackArgs),
-    /// Check for and install updates
     Update(update::UpdateArgs),
-    /// Internal: supervise a self-update restart and roll back on failure.
-    /// `serve::foreground::relaunch` spawns this itself; not meant to be
-    /// run directly.
     #[command(hide = true)]
     UpdateWatchdog(update_watchdog::UpdateWatchdogArgs),
 }
 
 pub async fn run() -> Result<(), FatalError> {
-    // Install ring as the rustls process-default CryptoProvider before the first
-    // HTTP client is built. reqwest 0.13 is compiled with `rustls-no-provider` and
-    // panics in `Client::new()` when no default is installed. Err means a provider
-    // was already installed, which leaves ring in place: it is the only one
-    // compiled in.
     drop(rustls::crypto::ring::default_provider().install_default());
 
-    // Install a panic hook that logs to tracing and stderr.
-    // tracing::error! is a no-op until a subscriber is initialized; write_crash_note is the real fallback.
     std::panic::set_hook(Box::new(|info| {
         tracing::error!(%info, "panic in spawned task");
         residuum::daemon::write_crash_note(&format!("PANIC: {info}"));
     }));
 
-    // Load .env early (ignore if missing, warn on parse errors)
     if let Err(e) = dotenvy::dotenv()
         && !e.not_found()
     {
@@ -188,8 +155,6 @@ pub async fn run() -> Result<(), FatalError> {
         }
         Command::Serve(ref args) => {
             if args.foreground {
-                // Load the hub config to get the configured log level
-                // ([tracing] is hub-owned).
                 let log_level = {
                     residuum::config::default_hub_dir()
                         .and_then(|hub_dir| residuum::config::HubConfig::load_at(&hub_dir))

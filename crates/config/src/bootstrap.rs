@@ -1,27 +1,17 @@
-//! Bootstrap logic for the hub directory and an agent's config directory on
-//! first run.
-
 use std::path::Path;
 
 use residuum_core::util::FatalError;
 
-/// Minimal hub `config.toml` written on first run — user edits this.
 const MINIMAL_HUB_CONFIG: &str = "# Hub configuration. See hub-config.example.toml for all options.\n\
     \n\
     # timezone = \"America/New_York\"  # IANA timezone name. The setup wizard writes this.\n";
 
-/// Full reference hub config always regenerated on startup.
 const EXAMPLE_HUB_CONFIG: &str = include_str!("../../../assets/hub-config.example.toml");
 
-/// Full reference agent config always regenerated on startup.
 const EXAMPLE_CONFIG: &str = include_str!("../../../assets/config.example.toml");
 
-/// Full reference providers config always regenerated on startup.
 const EXAMPLE_PROVIDERS: &str = include_str!("../../../assets/providers.example.toml");
 
-/// Write a file only if it doesn't already exist.
-///
-/// Returns `true` if the file was written, `false` if it already existed.
 fn write_if_absent(path: &Path, content: &str) -> Result<bool, FatalError> {
     if path.exists() {
         return Ok(false);
@@ -48,14 +38,6 @@ fn ensure_dir(dir: &Path, label: &str) -> Result<(), FatalError> {
     })
 }
 
-/// Write bootstrap files to `hub_dir` (`~/.residuum/hub`).
-///
-/// Creates the directory if absent, writes `config.toml` only if absent,
-/// and always regenerates `config.example.toml`. Also ensures `bin/` and
-/// `logs/` exist; `checkpoints/` is created lazily by `CheckpointEngine::new`.
-///
-/// # Errors
-/// Returns `FatalError::Config` if the directory or files cannot be written.
 pub(super) fn bootstrap_hub_at(hub_dir: &Path) -> Result<(), FatalError> {
     ensure_dir(hub_dir, "hub")?;
 
@@ -72,9 +54,6 @@ pub(super) fn bootstrap_hub_at(hub_dir: &Path) -> Result<(), FatalError> {
         ))
     })?;
 
-    // Default persistent tools dir (~/.residuum/hub/bin), shared by every
-    // agent the hub hosts. Drop static binaries here to make them
-    // resolvable by spawned children without rebuilding the image.
     let hub_paths = super::HubPaths::new(hub_dir);
     ensure_dir(&hub_paths.bin_dir(), "hub tools")?;
     ensure_dir(&hub_paths.logs_dir(), "hub logs")?;
@@ -83,17 +62,6 @@ pub(super) fn bootstrap_hub_at(hub_dir: &Path) -> Result<(), FatalError> {
     Ok(())
 }
 
-/// Write bootstrap files to an agent's `config/` directory
-/// (`~/.residuum/<agent-name>/config`).
-///
-/// Creates the directory if absent and always regenerates the
-/// `.example.toml` templates. It never writes the live `config.toml` or
-/// `providers.toml`: an agent is discovered by its `config/config.toml`, so
-/// that file appears only once the real configuration is complete (see
-/// `hub::web::config::api_complete_setup` and the root crate's `setup_wizard`).
-///
-/// # Errors
-/// Returns `FatalError::Config` if the directory or files cannot be written.
 pub(super) fn bootstrap_agent_at(agent_config_dir: &Path) -> Result<(), FatalError> {
     ensure_dir(agent_config_dir, "agent config")?;
 

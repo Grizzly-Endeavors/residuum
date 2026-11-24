@@ -13,7 +13,6 @@ const sections = (page: Page): Locator =>
 const saveBar = (page: Page): Locator => page.getByRole("region", { name: "Unsaved changes" });
 const timeout = (page: Page): Locator => page.getByLabel("Reply time limit");
 
-/** Pick a section from the list; on a phone that is the list's own screen. */
 async function pickSection(page: Page, name: string): Promise<void> {
   await sections(page)
     .getByRole("button", { name: new RegExp(`^${name}`) })
@@ -21,13 +20,11 @@ async function pickSection(page: Page, name: string): Promise<void> {
   await expect(page.getByRole("heading", { name, level: 2 })).toBeVisible();
 }
 
-/** Pick a scope; on a phone the picker is on the section list, so go back to it first. */
 async function pickScope(page: Page, isMobile: boolean, scope: string): Promise<void> {
   if (isMobile) await page.getByRole("button", { name: "Back to all settings" }).click();
   await sections(page).getByRole("combobox", { name: "Settings for" }).selectOption(scope);
 }
 
-/** Replace a line of atlas's config.toml on disk, the way something outside the page would. */
 async function changeOnDisk(page: Page, from: RegExp, to: string): Promise<void> {
   const url = "/api/agents/atlas/config/raw";
   const text = await (await page.request.get(url)).text();
@@ -138,7 +135,6 @@ test("on a phone the section list is its own screen, and Back returns to it", as
   await expect.poll(() => address(page)).toBe("/agent/atlas?settings=atlas");
   await expect(sections(page)).toBeVisible();
   await expect(page.getByRole("heading", { name: "Model", level: 2 })).toBeHidden();
-  // The bar stays on screen beside the modal.
   await expect(bar).toBeVisible();
   await expectNoAxeViolations(page, { within: "[data-overlay-host]" });
 
@@ -154,7 +150,6 @@ test("on a phone the section list is its own screen, and Back returns to it", as
   await expect.poll(() => address(page)).toBe("/agent/atlas?settings=atlas");
   await expect(sections(page).getByRole("button", { name: /^Runtime/ })).toBeFocused();
 
-  // Back closes the modal: the section's entry was popped, not pushed over.
   await page.goBack();
   await expect.poll(() => address(page)).toBe("/agent/atlas");
   await expect(modal(page)).toBeHidden();

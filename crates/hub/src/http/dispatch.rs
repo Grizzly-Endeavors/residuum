@@ -1,12 +1,3 @@
-//! Per-request routing into a hosted agent's own routers.
-//!
-//! Agents are created, stopped, and deleted while the hub runs, so
-//! `/api/agents/{name}/...` and `/webhook/{agent}/{name}` are resolved
-//! against the [`AgentDirectory`] on every request. The agent's router sees
-//! the request with the hub's prefix removed, exactly as it has always seen
-//! it, and is called with `oneshot` so the request (and with it a WebSocket
-//! upgrade) passes through whole.
-
 use std::convert::Infallible;
 use std::sync::Arc;
 
@@ -23,13 +14,6 @@ use residuum_background::team::LifecycleError;
 use residuum_config::paths::validate_agent_name;
 use residuum_net::browser_landing::{self, AppNotice, Fallback, Landing};
 
-/// The routes that hand requests to an agent: everything under
-/// `/api/agents/` and `/webhook/`.
-///
-/// They are mounted as services under fixed prefixes rather than as routes
-/// with `{name}` captures. A capture would leave path parameters on the
-/// request, and the agent's own router would then see them beside its own
-/// and fail every `Path` extractor.
 pub(super) fn routes(directory: Arc<dyn AgentDirectory>) -> Router {
     let agents = {
         let directory = Arc::clone(&directory);
@@ -47,37 +31,15 @@ pub(super) fn routes(directory: Arc<dyn AgentDirectory>) -> Router {
         .nest_service("/webhook", webhooks)
 }
 
-/// Which of an agent's routers serves an inner path.
 #[derive(Debug, PartialEq, Eq)]
 enum AgentRouterKind {
-    /// Config, providers, MCP, workspace file API (`/api/workspace/...`),
-    /// checkpoint, and teams-setup routes, which work on a stopped or failed
-    /// agent so the user can repair it.
     Repair,
-    /// Routes that only read and write the agent's files: chat history,
-    /// usage, the context breakdown, the inbox attachments, the raw A2A client settings, and the file links
-    /// (workspace and token). A running agent serves them from its own router, at the
-    /// cost it always had. Any other agent gets them from a router that opens
-    /// no checkpoint repository, so they answer even when the repositories
-    /// can't be opened.
     Files,
-    /// The usage record routes. They price the agent's records at the hub
-    /// config's prices as it is now, which a running agent's router was not
-    /// built with, so the hub serves them from the file router whatever the
-    /// agent's state.
     UsageRecords,
-    /// Everything else, which needs a running agent.
     Running,
 }
 
 impl AgentRouterKind {
-    /// The router for a path in the agent's own route table (`/ws`, or
-    /// `/api/...`).
-    ///
-    /// The file routes are matched whole, not by their first segment,
-    /// because most routes under the same first segment need the agent: of
-    /// `a2a/...` only `a2a/agents/raw` is a file route, while `a2a/agents`,
-    /// `a2a/status`, `a2a/card` and `a2a/outbound...` are live.
     fn for_inner_path(inner: &str) -> Self {
         let segments: Vec<&str> = inner.trim_start_matches('/').split('/').collect();
         match segments.as_slice() {
@@ -93,8 +55,6 @@ impl AgentRouterKind {
     }
 }
 
-/// Whether the route below `/api`, split into its segments, is one of the
-/// file-only data routes.
 fn is_file_data_route(route: &[&str]) -> bool {
     match route {
         ["chat", "history"] | ["usage" | "context"] | ["a2a", "agents", "raw"] | ["files", _] => {
@@ -107,9 +67,6 @@ fn is_file_data_route(route: &[&str]) -> bool {
     }
 }
 
-/// The path in the agent's own route table for the part of the hub URL after
-/// `/api/agents/{name}`. `/ws` stays `/ws`; every other route lives under
-/// `/api` in the agent's table.
 fn agent_inner_path(after_name: &str) -> String {
     if after_name == "/ws" {
         "/ws".to_string()
@@ -118,8 +75,6 @@ fn agent_inner_path(after_name: &str) -> String {
     }
 }
 
-/// `/api/agents/{name}` and everything below it. The request's path has
-/// already lost its `/api/agents` prefix: it is `/{name}{rest}`.
 async fn agent_request(directory: &dyn AgentDirectory, req: Request) -> Response {
     let path = req.uri().path().to_string();
     let Some((name, after_name)) = split_agent_path(&path) else {
@@ -138,12 +93,6 @@ async fn agent_request(directory: &dyn AgentDirectory, req: Request) -> Response
     forward(name, router, req, &inner).await
 }
 
-/// `/webhook/{agent}/{name}`: the agent's own `/webhook/{name}` route. The
-/// request's path has already lost its `/webhook` prefix: it is
-/// `/{agent}/{name}`.
-///
-/// A webhook address is for other services to post to. A browser that opens
-/// one goes to the agent's webhook settings in the app, which say so.
 async fn webhook_request(directory: &dyn AgentDirectory, req: Request) -> Response {
     let path = req.uri().path().to_string();
     if browser_landing::is_top_level_navigation(req.method(), req.headers()) {
@@ -174,8 +123,6 @@ async fn webhook_request(directory: &dyn AgentDirectory, req: Request) -> Respon
     forward(agent, directory.agent_router(agent), req, &inner).await
 }
 
-/// Send a browser that opened a webhook address to that agent's webhooks in
-/// Settings (Connections), or Home when the address names no agent.
 fn webhook_address_opened(agent: Option<&str>) -> Response {
     let notice = ("notice", AppNotice::WebhookAddress.code());
     let target = match agent.filter(|name| validate_agent_name(name).is_ok()) {
@@ -197,8 +144,6 @@ fn webhook_address_opened(agent: Option<&str>) -> Response {
     )
 }
 
-/// Split `/{name}{rest}` into the raw name and `rest` (empty, or starting
-/// with `/`).
 fn split_agent_path(path: &str) -> Option<(&str, &str)> {
     let after = path.strip_prefix('/')?;
     if after.is_empty() {
@@ -207,12 +152,6 @@ fn split_agent_path(path: &str) -> Option<(&str, &str)> {
     Some(after.find('/').map_or((after, ""), |i| after.split_at(i)))
 }
 
-/// Hand `req` to the agent's router with its path replaced by `inner_path`,
-/// or answer with the reason the agent can't take it.
-///
-/// The request runs inside `agent`'s span whichever of its routers serves it,
-/// so handler logs and the tasks handlers spawn with `spawn_in_span` carry the
-/// `agent` field even for the repair and webhook routes.
 async fn forward(
     agent: &str,
     router: Result<Router, LifecycleError>,
@@ -248,10 +187,6 @@ async fn forward(
     }
 }
 
-/// A link opened in a browser (a file, an attachment) that the agent can't
-/// answer: a stopped agent's page shows its state and how to start it, a
-/// missing agent's address lets the app say there's no such agent, and
-/// anything else gets the fallback page.
 fn agent_unavailable_to_browser(agent: &str, error: &LifecycleError) -> Response {
     let agent_page = validate_agent_name(agent)
         .is_ok()

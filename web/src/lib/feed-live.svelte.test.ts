@@ -4,11 +4,6 @@ import { FeedStore } from "./feed.svelte";
 import { localTimestamp } from "./time";
 import type { AgentSender, FeedItem, MessageSender, RecentMessage, ServerMessage } from "./types";
 
-// What the main chat's feed shows of turns as the agent's socket carries them:
-// the people behind messages from any channel, text and reasoning streaming
-// in, and where replies were delivered.
-
-/** A store whose streamed pieces are added when the test says a frame has passed. */
 function setup(): { store: FeedStore; frame: () => void } {
   const queued: Array<() => void> = [];
   const store = new FeedStore(
@@ -141,7 +136,6 @@ describe("people's messages from any channel", () => {
       next_cursor: null,
     });
 
-    // The rest of the turn's frames are history's now.
     store.handleMessage({ type: "text_delta", reply_to: "tg-1", call: 0, text: "ing" });
     store.handleMessage({
       type: "response",
@@ -210,8 +204,6 @@ describe("where a reply was delivered", () => {
 });
 
 describe("when live messages were sent", () => {
-  // Frames carry no time, so a message shows the moment its frame reached the page, on the
-  // reader's clock in the shape history uses.
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(2026, 9, 9, 10, 5, 30));
@@ -289,7 +281,6 @@ describe("when live messages were sent", () => {
 
 const SCOUT = { address: "agent:scout", category: "teammate" };
 
-/** A teammate's message as the agent reads it, header first. */
 function teammateText(body: string): string {
   return (
     "[Message from teammate agent:scout, not the user. Your response in this turn is not " +
@@ -297,7 +288,6 @@ function teammateText(body: string): string {
   );
 }
 
-/** A teammate's message as the backend announces it: the text the agent reads, and its sender. */
 function fromTeammate(id: string, body: string, turnId = id): ServerMessage {
   return {
     type: "user_message",
@@ -311,11 +301,6 @@ function fromTeammate(id: string, body: string, turnId = id): ServerMessage {
 
 const RESEARCH = { address: "spawned-research", category: "spawned", run_id: "run-7" };
 
-/**
- * A message one of the agent's own sessions sent main, as the backend
- * announces it when main reads it: header first, with the session and the run
- * that sent it.
- */
 function fromSession(
   id: string,
   body: string,
@@ -424,8 +409,6 @@ describe("a teammate's message", () => {
 
 describe("a turn no person started", () => {
   it("shows the reply of a teammate's message once, whole, and ends the turn", () => {
-    // What the backend sends: the message, then the reply in pieces and then whole, to nowhere
-    // (an empty endpoint).
     const { store, frame } = setup();
     store.handleMessage(fromTeammate("bg-1", "Have a look?"));
     store.handleMessage({
@@ -879,8 +862,6 @@ describe("catching up on history after a turn with reasoning", () => {
 });
 
 describe("a snapshot of the turn in flight", () => {
-  // What a page shows once it asks for the turn so far: on opening partway
-  // through a turn, and on reconnecting after missing some of it.
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-10-09T08:00:30Z"));
@@ -897,10 +878,6 @@ describe("a snapshot of the turn in flight", () => {
     text,
   });
 
-  /**
-   * A snapshot of turn `t1` started at 08:00, each frame a second after the
-   * one before it, from a server whose clock is `ahead` milliseconds ahead of the page's.
-   */
   function snapshot(frames: ServerMessage[], ahead = 0): ServerMessage {
     const start = Date.parse("2026-10-09T08:00:00Z") + ahead;
     return {
@@ -950,7 +927,6 @@ describe("a snapshot of the turn in flight", () => {
       fromSession("bg-1", "Found it", "t1"),
     ];
     store.handleMessage(snapshot(frames));
-    // Reconnecting partway through the same turn draws it again rather than adding it twice.
     store.handleMessage(snapshot(frames));
 
     const cards = store.feed.filter((item) => item.kind === "agent-message");
@@ -1037,7 +1013,6 @@ describe("a snapshot of the turn in flight", () => {
   it("shows the teammate's message that opened the turn, once", () => {
     const { store } = setup();
     const turn = [fromTeammate("t1", "Look at the wiki index"), started("t1"), delta("On it")];
-    // A page opened partway through the turn.
     store.handleMessage(snapshot(turn));
     expect(kinds(store.feed)).toEqual(["agent-message", "assistant"]);
     expect(store.feed[0]).toMatchObject({
@@ -1046,7 +1021,6 @@ describe("a snapshot of the turn in flight", () => {
       turnId: "t1",
     });
 
-    // A page that saw it live and then reconnected.
     store.markReconnectGap();
     store.handleMessage(snapshot(turn));
     expect(kinds(store.feed)).toEqual(["agent-message", "assistant"]);
@@ -1067,7 +1041,6 @@ describe("a snapshot of the turn in flight", () => {
     ]);
     expect(store.waiting.map((message) => message.content)).toEqual(["And the slides"]);
 
-    // The agent takes it in later: shown once, where it was taken in.
     store.handleMessage(echo("web-2", "And the slides", { turn_id: "t1" }));
     expect(store.feed.filter((item) => item.kind === "user")).toHaveLength(2);
     expect(store.waiting).toEqual([]);
@@ -1140,7 +1113,6 @@ describe("a snapshot of the turn in flight", () => {
       attachmentFrame,
     ] satisfies ServerMessage[];
 
-    // Saw it live, then reconnected mid-turn.
     for (const frame of turnFrames) store.handleMessage(frame);
     expect(store.isProcessing).toBe(true);
     store.handleMessage(snapshot(turnFrames));

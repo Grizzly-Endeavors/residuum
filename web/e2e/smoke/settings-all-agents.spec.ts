@@ -3,8 +3,6 @@ import { expectNoAxeViolations } from "../support/axe";
 import { expect, test } from "../support/fixtures";
 import { expectSettingsOpen } from "../support/lazy";
 
-/** The All agents scope's General, Residuum Cloud, Updates, Session limits and Diagnostics sections. */
-
 const HUB_CONFIG = "/api/hub/config/raw";
 const OVERLAY = "[data-overlay-host]";
 
@@ -21,11 +19,6 @@ async function openSection(page: Page, section: string): Promise<void> {
   await expectSettingsOpen(page);
 }
 
-/**
- * Record where the page sends the tabs it opens, since the relay's sign-in
- * page can't load here. Each `window.open` gets a stand-in tab, and the
- * address the page sends it to (`location.replace`) is what is recorded.
- */
 async function recordOpenedTabs(page: Page): Promise<() => Promise<string[]>> {
   await page.evaluate(() => {
     const opened: string[] = [];
@@ -42,7 +35,6 @@ async function recordOpenedTabs(page: Page): Promise<() => Promise<string[]>> {
   return () => page.evaluate(() => (window as unknown as { openedTabs: string[] }).openedTabs);
 }
 
-/** The relay's sign-in page at `origin` for the default gateway port, with the `state` the hub handed out. */
 const SIGN_IN_PAGE = (origin: string): RegExp =>
   new RegExp(`^${origin.replaceAll(".", "\\.")}/connect\\?port=7700&state=[A-Za-z0-9_-]{16,128}$`);
 
@@ -173,7 +165,6 @@ test.describe("Residuum Cloud", () => {
     await expect(page.getByRole("region", { name: "Connection" }).getByRole("alert")).toBeHidden();
     expect(await hubConfig(page)).toContain('token = "secret:cloud_token"');
 
-    // The tunnel comes up; the section, still looking while it connects, shows it.
     await mock.post("/api/mock/cloud", { data: { tunnel: null } });
     await expect(page.getByText("Connected", { exact: true })).toBeVisible();
     await expectNoAxeViolations(page, { within: OVERLAY });

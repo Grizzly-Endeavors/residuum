@@ -1,13 +1,6 @@
-//! QR codes for pairing links.
-
 use qrcode::QrCode;
 use qrcode::render::{svg, unicode};
 
-/// `text` as an SVG QR code, dark modules on a light background with a quiet
-/// zone so it scans from a screen in either theme.
-///
-/// # Errors
-/// Returns a plain-language reason if `text` doesn't fit in a QR code.
 pub fn svg(text: &str) -> Result<String, String> {
     let code = encode(text)?;
     Ok(code
@@ -19,13 +12,6 @@ pub fn svg(text: &str) -> Result<String, String> {
         .build())
 }
 
-/// `text` as a QR code drawn with Unicode block characters, for a terminal.
-///
-/// Light modules are drawn as filled blocks so it scans on a dark terminal;
-/// the quiet zone is included.
-///
-/// # Errors
-/// Returns a plain-language reason if `text` doesn't fit in a QR code.
 pub fn terminal(text: &str) -> Result<String, String> {
     let code = encode(text)?;
     Ok(code

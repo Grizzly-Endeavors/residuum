@@ -2,16 +2,10 @@
   import type { Snippet } from "svelte";
   import { Icon, type IconName } from "../icons";
 
-  // What a place or list shows when it has nothing yet, and what to do about
-  // it. `line` is one quiet sentence inside a list; `block` stands in for a
-  // whole place. A list that failed to load shows a Banner instead.
   interface Props {
     variant?: "line" | "block";
-    /** Block only. */
     icon?: IconName;
-    /** Block only. */
     title?: string;
-    /** The title's heading level, to fit the outline it sits in. */
     headingLevel?: 2 | 3 | 4;
     actions?: Snippet;
     children: Snippet;

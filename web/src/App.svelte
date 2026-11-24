@@ -20,10 +20,6 @@
   } from "./lib/ui";
   import Shell from "./shell/Shell.svelte";
 
-  // The app's root: first-run setup when the hub has no agents, else the
-  // shell. Toasts and tooltips are drawn here in every mode. The setup wizard
-  // is built apart from the shell and loads only when it is needed.
-
   const setupWizard = new LazyComponent<{ onComplete: () => void }>(
     () => import("./Setup.svelte"),
     "the setup wizard",
@@ -35,7 +31,6 @@
 
   router.start();
 
-  /** Toasts clear the composer on a place or panel that has one (wherever it measures), and on phones the bottom bar. */
   const toastClearance = $derived.by(() => {
     if (mode !== "running") return "edge";
     const { place, panel } = router;
@@ -43,11 +38,7 @@
     return composer ? "composer" : "bar";
   });
 
-  // No agents yet means first-run setup. The hub socket stays up for the life
-  // of the page and feeds the rail; the agent connection follows the router's
-  // bound agent (see `ws.svelte.ts`).
   onMount(() => {
-    // The overview follows the hub socket from its first frame, which says what to fetch.
     const stopOverview = overview.start();
     hub.connect();
     void (async () => {
@@ -73,8 +64,6 @@
     if (mode === "setup") setupWizard.ensure();
   });
 
-  // Settle on agents that exist: a URL on an agent that doesn't goes to Home,
-  // and one that resolves under the last-used agent finds it.
   $effect(() => {
     if (mode !== "running" || !hub.loaded) return;
     const names = hub.agents.map((agent) => agent.name);
@@ -84,9 +73,7 @@
   async function finishSetup(): Promise<void> {
     try {
       await hub.refresh(true);
-    } catch {
-      // the hub socket delivers the list once it connects
-    }
+    } catch {}
     mode = "running";
   }
 </script>

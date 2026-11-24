@@ -23,7 +23,6 @@ describe("an agent's reply", () => {
     });
     expect(container.querySelector(".reply")).toHaveAttribute("data-streaming");
     expect(container.querySelector(".prose")).toHaveAttribute("data-caret");
-    // The text itself is the same message, in its Markdown.
     expect(screen.getByText("The port is set twice.")).toBeVisible();
   });
 

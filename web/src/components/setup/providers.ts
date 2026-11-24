@@ -1,6 +1,5 @@
 import type { ProviderKey, SetupWizardState } from "../../lib/types";
 
-/** The providers the wizard offers, in the order it lists them. */
 export const PROVIDER_KEYS: readonly ProviderKey[] = [
   "anthropic",
   "openai",
@@ -17,19 +16,10 @@ export const PROVIDER_NAMES: Readonly<Record<ProviderKey, string>> = {
   ollama: "Ollama",
 };
 
-/** A provider's display name, or the key itself for one the wizard doesn't list. */
 export function providerName(key: string): string {
   return key in PROVIDER_NAMES ? PROVIDER_NAMES[key as ProviderKey] : key;
 }
 
-/**
- * Turns a provider on or off. The last selected provider stays on. Turning one
- * off moves the main role to the first provider left, and clears every other
- * role, background tier and the embedding model that used it (a role with no
- * provider of its own uses the main one), so the Assign models step picks
- * them again from the providers still selected instead of writing a model for
- * a provider with no `providers.toml` section.
- */
 export function setProviderSelected(
   state: SetupWizardState,
   key: ProviderKey,

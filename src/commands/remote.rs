@@ -1,10 +1,3 @@
-//! `remote` subcommand: pair browsers for remote access through Residuum Cloud,
-//! and join this instance to the user's other instances.
-//!
-//! Every subcommand is a client of the running hub's pairing and remote access routes. The first
-//! device is paired from the machine Residuum runs on, never over the relay,
-//! so a server used only remotely is paired over SSH with `residuum remote pair`.
-
 use std::fmt::Write as _;
 
 use reqwest::Method;
@@ -18,52 +11,34 @@ use residuum::util::FatalError;
 
 use super::hub_client::HubClient;
 
-/// Remote-access subcommands.
 #[derive(clap::Subcommand)]
 pub(super) enum RemoteCommand {
-    /// Print a link and QR code that pairs a browser for remote access
     Pair,
-    /// List the paired browsers and any waiting to be paired
     Devices,
-    /// Stop trusting a paired browser
     Revoke {
-        /// The device's id, from `residuum remote devices`
         id: String,
     },
-    /// Show whether remote access is ready, its addresses, and the recovery code waiting to be saved
     Status,
-    /// Tell Residuum the recovery code is saved, so it forgets it
     Saved,
-    /// Ask another of your instances to approve this one, so it can get a certificate and call it
     Join {
         /// The other instance's name, as shown in Residuum Cloud (for example `laptop`)
         instance: String,
     },
-    /// List the instances asking this one to approve them, with the codes to compare
     Joins,
-    /// Approve an instance asking to join, after checking its code matches
     Approve {
-        /// The request's id, from `residuum remote joins`
         id: String,
     },
-    /// Refuse an instance asking to join
     Deny {
-        /// The request's id, from `residuum remote joins`
         id: String,
     },
-    /// Take your address back after losing every instance's certificate account
     ResetPins {
-        /// The recovery code from when remote access was first set up. Asked for when left out.
         #[arg(long)]
         recovery_code: Option<String>,
     },
-    /// Email yourself a link that takes your address back, when the recovery code is lost
     EmailReset,
-    /// Cancel a reset by email that is waiting to take effect
     CancelReset,
 }
 
-/// Run the `remote` subcommand against the hub at `gateway_addr`.
 pub(super) async fn run_remote_command(
     command: &RemoteCommand,
     gateway_addr: &str,
@@ -91,13 +66,11 @@ async fn pair(client: &HubClient) -> Result<(), FatalError> {
     let minted: PairLinkResponse = client
         .send(Method::POST, "/api/hub/remote-access/pair-link", None)
         .await?;
-    // A terminal that can't draw the QR code still gets the link.
     let art = qr::terminal(&minted.link).ok();
     println!("{}", pairing_instructions(&minted, art.as_deref()));
     Ok(())
 }
 
-/// What `residuum remote pair` prints.
 fn pairing_instructions(minted: &PairLinkResponse, qr_art: Option<&str>) -> String {
     let minutes = minted.expires_in_secs / 60;
     let mut out = String::new();
@@ -176,7 +149,6 @@ async fn status(client: &HubClient) -> Result<(), FatalError> {
     Ok(())
 }
 
-/// What `residuum remote status` prints.
 fn status_report(status: &RemoteAccessStatus) -> String {
     let mut out = String::new();
     _ = writeln!(out, "Remote access: {}", state_summary(status.state));
@@ -240,7 +212,6 @@ fn status_report(status: &RemoteAccessStatus) -> String {
     out
 }
 
-/// What `residuum remote status` says about a reset by email waiting to take effect.
 fn pending_reset_report(reset: &PendingResetInfo) -> String {
     let timing = match (&reset.effective_at, reset.confirmed) {
         (Some(at), true) => format!("It was confirmed and takes effect at {at}."),
@@ -277,7 +248,6 @@ fn state_summary(state: RemoteAccessState) -> &'static str {
     }
 }
 
-/// How often `residuum remote join` looks at the join's progress.
 const JOIN_POLL: std::time::Duration = std::time::Duration::from_secs(2);
 
 async fn join(client: &HubClient, instance: &str) -> Result<(), FatalError> {
@@ -333,7 +303,6 @@ async fn joins(client: &HubClient) -> Result<(), FatalError> {
     Ok(())
 }
 
-/// What `residuum remote joins` prints.
 fn join_requests(status: &RemoteAccessStatus) -> String {
     if status.pending_joins.is_empty() {
         return "No instance is asking to join.".to_string();
@@ -362,7 +331,6 @@ fn join_requests(status: &RemoteAccessStatus) -> String {
     out
 }
 
-/// Text from another instance with anything that could rewrite a terminal line removed.
 fn printable(text: &str) -> String {
     text.chars().filter(|c| !c.is_control()).collect()
 }
@@ -405,7 +373,6 @@ async fn reset_pins(client: &HubClient, recovery_code: Option<&str>) -> Result<(
     Ok(())
 }
 
-/// The reply to `POST /api/hub/remote-access/email-reset`.
 #[derive(serde::Deserialize)]
 struct EmailResetReply {
     email: String,

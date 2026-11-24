@@ -3,16 +3,12 @@ import { agentInboxItemId } from "./agent-inbox";
 import { attachmentPath, mimeTypeOf, storeAttachment } from "./inbox";
 import type { MockAgent, MockHub } from "./state";
 
-/** What a chat message's attached files became: each saved file, and the text that names them. */
 export interface SavedChatAttachments {
   attachments: MessageAttachment[];
-  /** The pictures among them, which the model is shown inline and the history keeps. */
   images: ImageAttachment[];
-  /** The message text with a line naming each saved file, as the agent reads it. */
   content: string;
 }
 
-/** The picture types the backend inlines to the model, and the largest picture it inlines. */
 const INLINE_IMAGE_TYPES: ReadonlySet<string> = new Set([
   "image/jpeg",
   "image/png",
@@ -25,15 +21,6 @@ const MAX_INLINE_IMAGE_BYTES = 20 * 1024 * 1024;
 export const UPLOAD_GONE =
   "An attached file wasn't available anymore, so it's uploading again. Send once it's ready.";
 
-/**
- * Save the uploads a chat message names (`send_message`'s `attachments`) as
- * the backend does: each becomes an item of its own in the agent's inbox
- * (source `chat`, titled `Chat attachment: <name>`, its body naming the sender
- * `Web chat`, the size and the type) holding the file, and the
- * message text gains a line naming it. Every id is resolved before anything is
- * saved, so one that isn't staged saves nothing and returns `null`. The used
- * uploads are taken off the hub.
- */
 export function saveChatAttachments(
   hub: MockHub,
   agent: MockAgent,

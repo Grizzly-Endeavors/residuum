@@ -18,8 +18,6 @@ import {
 } from "./settings-model.svelte";
 import type { Diagnostic, RepoKind, ValidateResponse } from "./types";
 
-// ── A fake server ─────────────────────────────────────────────────────
-
 const AGENT_CONFIG = `timeout_secs = 120
 
 [discord]
@@ -65,14 +63,10 @@ interface Fake {
   coordinator: ConfigCoordinator;
   model: SettingsModel;
   disk: Map<string, string>;
-  /** Writes and restores, in order: `patch scout/providers`, `restore agent_config cp-1 providers.toml`. */
   log: string[];
-  /** Refuse the next patch to a file with this verdict. */
   refuse: (file: ConfigFile, verdict: ValidateResponse) => void;
-  /** Restores of these checkpoints fail. */
   failedRestores: Map<string, Error>;
   storeSecret: ReturnType<typeof vi.fn<SettingsDeps["storeSecret"]>>;
-  /** Change a file the way something outside the page would, and tell the coordinator. */
   outside: (file: ConfigFile, text: string) => Promise<void>;
 }
 
@@ -89,7 +83,6 @@ function fake(extra: [ConfigFile, string][] = []): Fake {
   const log: string[] = [];
   const refusals = new Map<string, ValidateResponse>();
   const failedRestores = new Map<string, Error>();
-  /** Each checkpoint's file and its text before the write. */
   const before = new Map<string, { key: string; text: string }>();
   let checkpoints = 0;
   const io: ConfigIo = {
@@ -157,7 +150,6 @@ function first<T>(list: T[]): T {
   return item;
 }
 
-/** Let every queued promise callback run. */
 async function flush(): Promise<void> {
   for (let i = 0; i < 30; i++) await Promise.resolve();
 }
@@ -172,15 +164,12 @@ async function loadedScout(f: Fake): Promise<ReturnType<SettingsModel["agent"]>>
 }
 
 beforeEach(() => {
-  // An error that reaches the user is also logged; keep the test output clean.
   vi.spyOn(console, "error").mockImplementation(() => {});
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
 });
-
-// ── Loading and the forms ─────────────────────────────────────────────
 
 describe("loading a scope", () => {
   it("parses each file into a form and keeps its text as the baseline", async () => {
@@ -235,8 +224,6 @@ describe("loading a scope", () => {
     expect(scope.providersFile.unreadable).toBe(false);
   });
 });
-
-// ── Staging ───────────────────────────────────────────────────────────
 
 describe("a diff per file", () => {
   it("gives each file its own patch and leaves the others empty", async () => {
@@ -378,8 +365,6 @@ describe("Discard", () => {
   });
 });
 
-// ── Saving ────────────────────────────────────────────────────────────
-
 describe("Save", () => {
   it("writes providers, then config, then MCP servers, and reads each back as the baseline", async () => {
     const f = fake();
@@ -466,7 +451,6 @@ describe("Save", () => {
     scope.config.timeout_secs = "90";
     const saving = scope.save(keepMine);
     await flush();
-    // The page's inputs stay live during a save.
     scope.config.max_tokens = "4000";
     await saving;
 
@@ -541,7 +525,6 @@ describe("a partial failure", () => {
     expect(scope.providersFile.dirty).toBe(false);
     expect(scope.mcpFile.dirty).toBe(false);
     expect(scope.configFile.dirty).toBe(true);
-    // Only the files that wrote took checkpoints.
     expect(result.checkpoints.map((c) => c.file)).toEqual(["providers", "mcp"]);
     expect(scope.lastResult).toBe(result);
   });
@@ -576,8 +559,6 @@ describe("a partial failure", () => {
     expect(scope.saving).toBe(false);
   });
 });
-
-// ── Diagnostics ───────────────────────────────────────────────────────
 
 function error(message: string, path?: string): Diagnostic {
   return path === undefined
@@ -642,7 +623,6 @@ describe("diagnostics from a save", () => {
       "unknown key",
       "the model is missing",
     ]);
-    // The key belongs to Runtime; the rest are shown wherever the user is.
     expect(scope.sectionDiagnostics("memory").map((d) => d.message)).toEqual([
       "expected a value",
       "the model is missing",
@@ -737,13 +717,10 @@ describe("problems found outside a save, and the field to focus", () => {
   });
 });
 
-// ── Scope isolation ───────────────────────────────────────────────────
-
 describe("scope isolation", () => {
   it("never writes the install's file from an agent, whatever the agent's form holds", async () => {
     const f = fake();
     const scope = await loadedScout(f);
-    // Install-wide keys, put into the agent's form.
     scope.config.timezone = "America/Chicago";
     scope.config.cloud_relay_url = "wss://elsewhere";
     scope.config.tracing_log_level = "trace";
@@ -787,8 +764,6 @@ describe("scope isolation", () => {
     expect(brittle.dirty).toBe(true);
   });
 });
-
-// ── Undo ──────────────────────────────────────────────────────────────
 
 describe("Undo", () => {
   async function savedThreeFiles(f: Fake): Promise<ReturnType<SettingsModel["agent"]>> {
@@ -881,8 +856,6 @@ describe("Undo", () => {
   });
 });
 
-// ── Failover lists ────────────────────────────────────────────────────
-
 describe("what the form doesn't show", () => {
   it("leaves failover lists and models.default alone when other fields are saved", async () => {
     const f = fake();
@@ -939,8 +912,6 @@ describe("what the form doesn't show", () => {
     expect(scope.models.overrides).toMatchObject({ main: { temperature: "0.5" } });
   });
 });
-
-// ── Typed secrets ─────────────────────────────────────────────────────
 
 describe("typed secrets", () => {
   it("stores a typed token and writes its reference instead", async () => {
@@ -1054,8 +1025,6 @@ describe("typed secrets", () => {
   });
 });
 
-// ── Raw versus form ───────────────────────────────────────────────────
-
 describe("raw and form locking", () => {
   it("makes a file's raw editor read-only while the form has changes to it", async () => {
     const f = fake();
@@ -1065,7 +1034,6 @@ describe("raw and form locking", () => {
     scope.config.timeout_secs = "90";
 
     expect(scope.configFile.lockedBy).toBe("form");
-    // Other files of the scope stay open.
     expect(scope.providersFile.lockedBy).toBeNull();
     scope.discard();
     expect(scope.configFile.lockedBy).toBeNull();
@@ -1126,8 +1094,6 @@ describe("raw and form locking", () => {
   });
 });
 
-// ── Changes made elsewhere ────────────────────────────────────────────
-
 describe("external changes", () => {
   it("refreshes the baseline and form of a file with nothing staged", async () => {
     const f = fake();
@@ -1186,8 +1152,6 @@ describe("external changes", () => {
     await scope.save(keepMine);
     await flush();
 
-    // The coordinator reads before the write, and again after it. Nothing
-    // else does: the model took the text from the save.
     expect(read.mock.calls.map(([file]) => label(file))).toEqual(["scout/config", "scout/config"]);
   });
 
@@ -1196,7 +1160,6 @@ describe("external changes", () => {
     const scope = await loadedScout(f);
     scope.config.max_tokens = "4000";
 
-    // Something else, such as the composer, writes the file.
     await f.coordinator.edit(scoutConfig, () => ({ timeout_secs: 200 }));
     await flush();
 

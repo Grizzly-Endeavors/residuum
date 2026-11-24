@@ -2,21 +2,13 @@
   import { Icon, type IconName } from "../icons";
   import { menuContext } from "./Menu.svelte";
 
-  // One choice in a Menu. A disabled item can still be reached with the
-  // arrow keys, so its label is heard, but choosing it does nothing. An item
-  // with an `href` is a link that opens in a new tab and takes no `onselect`.
-
   interface Props {
     label: string;
     icon?: IconName;
-    /** Quiet text at the end of the row, such as a shortcut or a state. */
     hint?: string;
     disabled?: boolean;
-    /** `danger` for an item that removes or loses something. */
     tone?: "default" | "danger";
-    /** Makes it a checkbox item, checked or not. Choosing one leaves the menu open. */
     checked?: boolean;
-    /** Makes it a link to this address, opened in a new tab. */
     href?: string;
     onselect?: () => void;
   }
@@ -147,7 +139,6 @@
     }
   }
 
-  /* The content dims, not the highlight, so focus on a disabled item still shows. */
   .ui-menu-item[aria-disabled="true"] {
     cursor: default;
 
@@ -169,7 +160,6 @@
     text-overflow: ellipsis;
   }
 
-  /* text-3 doesn't sit on the stone-4 highlight; the hint brightens with it. */
   .ui-menu-item-hint {
     font-size: var(--font-size-xs);
     color: var(--color-text-3);

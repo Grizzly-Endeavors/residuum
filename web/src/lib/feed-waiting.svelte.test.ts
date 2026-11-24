@@ -3,9 +3,6 @@ import { groupTurns } from "../feed/turns";
 import { FeedStore } from "./feed.svelte";
 import type { FeedItem, ServerMessage } from "./types";
 
-// The messages the agent hasn't read yet: one sent while a turn runs waits
-// apart from the conversation, and joins it where the agent reads it.
-
 function setup(): FeedStore {
   const store = new FeedStore(
     () => null,
@@ -54,7 +51,6 @@ function kinds(items: readonly FeedItem[]): string[] {
   return items.map((item) => item.kind);
 }
 
-/** A turn `t1` this page started, running. */
 function running(): FeedStore {
   const store = setup();
   store.pushUserMessage("look into the outage", undefined, "t1");

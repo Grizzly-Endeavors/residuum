@@ -24,18 +24,13 @@ use residuum::hub::testing::{mount_reply, write_agent};
 use residuum::hub::types::{HubEvent, NoticeLevel};
 use residuum_core::testing::ports::reserve_port;
 
-/// What the hub said about one config reload.
 struct Reload {
     ok: bool,
     changed: bool,
     message: Option<String>,
-    /// The notices sent before the `hub_config_reloaded` frame. The frame
-    /// is the reload's report, so a notice here came from something else.
     notices: Vec<String>,
 }
 
-/// A hub started on temp directories with two agents, running on free
-/// ports, with the model server all its agents talk to.
 struct RunningHub {
     root: tempfile::TempDir,
     gateway_port: u16,
@@ -48,12 +43,10 @@ struct RunningHub {
     model: MockServer,
 }
 
-/// The value at the JSON pointer `path` of `value`, `null` when there is none.
 fn at<'a>(value: &'a serde_json::Value, path: &str) -> &'a serde_json::Value {
     value.pointer(path).unwrap_or(&serde_json::Value::Null)
 }
 
-/// The next frame of a hub socket, parsed.
 async fn next_json(
     socket: &mut tokio_tungstenite::WebSocketStream<
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
@@ -73,13 +66,10 @@ impl RunningHub {
         Self::start_with(&["atlas", "scout"]).await
     }
 
-    /// A hub over the agents `names`, which may be none.
     async fn start_with(names: &[&str]) -> Self {
         Self::start_after(names, None).await
     }
 
-    /// A hub over the agents `names` that starts as if its live config
-    /// had failed to load for `fallback_problem`.
     async fn start_after(names: &[&str], fallback_problem: Option<&str>) -> Self {
         let root = tempfile::tempdir().unwrap();
         let (gateway_reservation, a2a_reservation) = (reserve_port(), reserve_port());
@@ -99,8 +89,6 @@ impl RunningHub {
             write_agent(root.path(), name, &model.uri());
         }
         let hub_config = HubConfig::load_at(&hub_dir).unwrap();
-        // The hub serves on the sockets the reservations hold, so no other
-        // process can take either port before the hub starts.
         let gateway = gateway_reservation.into_tokio_listener();
         let a2a = a2a_reservation.into_tokio_listener();
         let inputs = HubInputs {
@@ -155,7 +143,6 @@ impl RunningHub {
         .await;
     }
 
-    /// The boot id of whatever hub answers on `port`, if one does.
     async fn boot_id_on(&self, port: u16) -> Option<String> {
         let page: serde_json::Value = self
             .http
@@ -169,8 +156,6 @@ impl RunningHub {
         page.pointer("/boot_id")?.as_str().map(str::to_string)
     }
 
-    /// The hub's team event log over HTTP: its boot id and every entry,
-    /// oldest first.
     async fn team_events(&self) -> (String, Vec<serde_json::Value>) {
         let page: serde_json::Value = self
             .http
@@ -189,8 +174,6 @@ impl RunningHub {
         (at(&page, "/boot_id").as_str().unwrap().to_string(), events)
     }
 
-    /// Wait until the team event log holds an entry of `kind` about
-    /// `agent`, and return it.
     async fn team_event(&self, kind: &str, agent: &str) -> serde_json::Value {
         residuum_core::testing::wait::until(format!("a {kind} entry about {agent}"), || async {
             let (_boot, events) = self.team_events().await;
@@ -205,8 +188,6 @@ impl RunningHub {
         self.root.path().join("hub").join("config.toml")
     }
 
-    /// Wait for the hub to announce a finished config reload, and return
-    /// its frame with the notices that came before it.
     async fn next_reload(&mut self) -> Reload {
         residuum_core::testing::wait::guarded("the hub to announce the reload", async {
             let mut notices = Vec::new();
@@ -398,9 +379,6 @@ async fn changing_the_gateway_port_rebinds_the_server_and_keeps_the_agents_runni
         .await;
     hub.eventually_status(new_port, "/api/agents/atlas/status", Some(200))
         .await;
-    // Another test process may bind the old port once this hub lets go of
-    // it, so the check is that this hub no longer answers there, not that
-    // nothing does.
     residuum_core::testing::wait::until(
         format!("this hub to stop answering on port {}", hub.gateway_port),
         || async {
@@ -418,7 +396,6 @@ async fn moving_the_a2a_listener_onto_a_taken_port_warns_the_user() {
     let mut hub = RunningHub::start().await;
     hub.eventually_status(hub.gateway_port, "/api/agents/scout/status", Some(200))
         .await;
-    // The reservation holds the port, so the listener's bind fails.
     let taken = reserve_port();
     let taken_port = taken.port();
     std::fs::write(
@@ -545,7 +522,6 @@ async fn a_hub_config_reload_that_finds_nothing_new_says_so_in_its_frame() {
     hub.eventually_status(hub.gateway_port, "/api/agents/scout/status", Some(200))
         .await;
 
-    // A comment changes the file and not the settings in it.
     let config = std::fs::read_to_string(hub.hub_config_path()).unwrap();
     std::fs::write(hub.hub_config_path(), format!("# a note to self\n{config}")).unwrap();
 
@@ -557,8 +533,6 @@ async fn a_hub_config_reload_that_finds_nothing_new_says_so_in_its_frame() {
     hub.shut_down().await;
 }
 
-/// The body onboarding posts to create the first agent `name`, talking to
-/// the hub's mock model.
 fn setup_body(hub: &RunningHub, name: &str) -> serde_json::Value {
     serde_json::json!({
         "hub_config": format!(

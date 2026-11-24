@@ -1,11 +1,3 @@
-// ── Hub types ────────────────────────────────────────────────────────
-//
-// Shapes for the hub API and `/api/hub/ws`. The backend exports the agent
-// shapes, the list envelopes and every hub WebSocket frame through ts-rs
-// (`crates/hub/src/types.rs`); they are re-exported from `generated/`. Only the
-// status and stop-all bodies, which the backend builds inline, are
-// hand-written here, and `HubServerMessage` joins the generated frame types.
-
 import type { ServerMessage } from "./generated/ServerMessage";
 import type { AgentSummary } from "./generated/AgentSummary";
 import type { HubEvent } from "./generated/HubEvent";
@@ -64,17 +56,13 @@ export type { TimePrecision } from "./generated/TimePrecision";
 export type { UpcomingKind } from "./generated/UpcomingKind";
 export type { UpcomingRun } from "./generated/UpcomingRun";
 
-/** `GET /api/hub/status`. */
 export interface HubStatusResponse {
   version: string;
   uptime_secs: number;
-  /** Same shape as the cloud status response. */
   tunnel: unknown;
-  /** How many agents are in each state. */
   agents: { starting: number; running: number; stopped: number; failed: number };
 }
 
-/** One agent `POST /api/hub/stop-all` could not stop. */
 export interface StopAllFailure {
   name: string;
   error: string;
@@ -86,17 +74,13 @@ export interface StopAllResponse {
   failed: StopAllFailure[];
 }
 
-/** The team change frames, which the hub sends with the agent protocol's shapes. */
 export type HubWorkspaceFrame = Extract<
   ServerMessage,
   { type: "workspace_changed" | "workspace_resync" | "workspace_watch_unavailable" }
 >;
 
-/** Server-to-client frames on `/api/hub/ws`. */
 export type HubServerMessage = HubSocketFrame | HubEvent | HubWorkspaceFrame;
 
-/** The Inbox's folders (`GET /api/hub/mail/threads?folder=`): what arrived, what the user sent, and what was set aside. */
 export type MailFolder = "inbox" | "sent" | "archived";
 
-/** Which file tree a workspace call addresses: an agent's, or the shared team's. */
 export type WorkspaceScope = "agent" | "team";

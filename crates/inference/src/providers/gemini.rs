@@ -53,7 +53,6 @@ fn requires_call_signatures(model: &str) -> bool {
     model.starts_with("gemini-3")
 }
 
-/// Client for the Google Gemini `generateContent` API.
 pub(crate) struct GeminiClient {
     http: SharedHttpClient,
     base_url: String,
@@ -64,14 +63,6 @@ pub(crate) struct GeminiClient {
 }
 
 impl GeminiClient {
-    /// Create a new Gemini client with a shared HTTP client.
-    ///
-    /// # Arguments
-    /// * `http` - Shared HTTP client for connection pooling
-    /// * `base_url` - API base URL (e.g. `https://generativelanguage.googleapis.com/v1beta`)
-    /// * `api_key` - Google AI API key
-    /// * `model` - Model identifier (e.g. `gemini-2.0-flash`)
-    /// * `max_tokens` - Maximum output tokens for completions
     #[must_use]
     pub fn new(
         http: SharedHttpClient,
@@ -93,13 +84,6 @@ impl GeminiClient {
         }
     }
 
-    /// Parse a successful Gemini response into our generic `InferenceResponse`.
-    ///
-    /// Reasoning summaries (parts marked `thought`) are kept apart from the
-    /// answer, and each thought signature is recorded with the part it came
-    /// on so it can be sent back there.
-    ///
-    /// A response with no candidate keeps the usage it reported on its error.
     fn parse_response(gemini_response: GeminiResponse) -> Result<InferenceResponse, FailedRequest> {
         let usage = gemini_response
             .usage_metadata
@@ -120,8 +104,6 @@ impl GeminiClient {
 
         let mut content_text = String::new();
         let mut thinking: Vec<ThinkingBlock> = Vec::new();
-        // The summary block that further summary text can still be added to:
-        // a summary arrives in pieces, until a part that signs it.
         let mut open_summary: Option<usize> = None;
         let mut tool_calls: Vec<ToolCall> = Vec::new();
         let finish_reason = candidate.finish_reason;
@@ -190,12 +172,10 @@ impl GeminiClient {
         Ok(model_response)
     }
 
-    /// Build the full endpoint URL. The API key is sent as a header, not here.
     fn endpoint(&self) -> String {
         format!("{}/models/{}:generateContent", self.base_url, self.model)
     }
 
-    /// Build the streaming endpoint URL, which answers with server-sent events.
     fn stream_endpoint(&self) -> String {
         format!(
             "{}/models/{}:streamGenerateContent?alt=sse",
@@ -203,18 +183,6 @@ impl GeminiClient {
         )
     }
 
-    /// Convert generic messages into Gemini API format.
-    ///
-    /// System messages are extracted and returned separately; Gemini uses a
-    /// top-level `systemInstruction` field rather than including system content
-    /// in the `contents` array. Multiple system messages are concatenated.
-    ///
-    /// Tool result messages (`Role::Tool`) become `functionResponse` parts of a
-    /// user-role message, one message for a run of results, named for the
-    /// function whose call they answer. An assistant message goes back as the
-    /// model sent it: its thought signatures on the parts they came with
-    /// (only those `reader`'s own model produced; see [`model_parts`]), and
-    /// its function calls in their original order.
     fn convert_messages(
         messages: &[Message],
         reader: &ThinkingOrigin,
@@ -222,9 +190,6 @@ impl GeminiClient {
         let mut system_parts: Vec<&str> = Vec::new();
         let mut contents: Vec<GeminiContent> = Vec::new();
         let exchange_start = current_exchange_start(messages);
-        // The function names of the latest assistant message's tool calls, by
-        // id. Ids are synthesized per response, so a result is only matched
-        // against the calls just before it.
         let mut call_names: BTreeMap<&str, &str> = BTreeMap::new();
 
         for (index, msg) in messages.iter().enumerate() {
@@ -325,7 +290,6 @@ impl GeminiClient {
         (system_instruction, contents)
     }
 
-    /// Build the request body, which stays the same across retries.
     fn prepare(
         &self,
         messages: &[Message],
@@ -360,7 +324,6 @@ impl GeminiClient {
             ),
         };
 
-        // Thinking summaries are only returned when asked for.
         let thinking_config = options.thinking.as_ref().and_then(|tc| {
             let thinking_budget = match tc {
                 ThinkingConfig::Level(ThinkingLevel::Low) => 1024,
@@ -389,8 +352,6 @@ impl GeminiClient {
         }
     }
 
-    /// Run a prepared request to completion: retrying transient failures,
-    /// and streaming the response into `sink` when there is one.
     async fn run(
         &self,
         messages: &[Message],
@@ -414,8 +375,6 @@ impl GeminiClient {
         Ok(response.produced_at(&self.origin()))
     }
 
-    /// Who the reasoning this client returns is recorded as coming from, and
-    /// the only origin whose signatures it sends back.
     fn origin(&self) -> ThinkingOrigin {
         ThinkingOrigin::new(ProviderApi::Gemini, &self.model)
     }
@@ -443,7 +402,6 @@ impl GeminiClient {
         record_attempt(ProviderKind::Gemini, &self.model, result)
     }
 
-    /// Send one request and parse its response.
     async fn send_request(
         &self,
         request: &GeminiRequest,
@@ -511,7 +469,6 @@ impl GeminiClient {
     }
 }
 
-/// A block recording a signature that belongs to the response's text.
 fn text_signature(signature: String) -> ThinkingBlock {
     ThinkingBlock {
         signature: Some(signature),
@@ -546,7 +503,6 @@ fn model_parts(
     let mut parts: Vec<GeminiPart> = Vec::new();
     let text_signature = signature_for(TEXT_PART);
     if !msg.content.is_empty() || text_signature.is_some() {
-        // A signature can arrive on a part with no text of its own.
         parts.push(GeminiPart {
             text: Some(msg.content.clone()),
             thought_signature: text_signature,
@@ -581,13 +537,6 @@ impl InferenceProvider for GeminiClient {
         self.run(messages, tools, options, None).await
     }
 
-    /// Like `complete`, streaming the response's text and reasoning summary
-    /// into `sink` as they arrive.
-    ///
-    /// # Errors
-    /// Returns the errors `complete` does, plus `InferenceError::Stalled`
-    /// when the stream goes quiet for the configured timeout and
-    /// `InferenceError::StreamInterrupted` when it breaks or ends early.
     #[tracing::instrument(skip_all, fields(model = %self.model, message_count = messages.len(), tool_count = tools.len()))]
     async fn complete_streaming(
         &self,
@@ -604,14 +553,6 @@ impl InferenceProvider for GeminiClient {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Streaming
-// ---------------------------------------------------------------------------
-
-/// Read a streamed response to its end, pushing text and reasoning summary to
-/// `sink` as they arrive, and return it as the response `generateContent`
-/// would have returned. A stream that fails after reporting usage (every
-/// event may carry it) keeps that usage on its error.
 async fn read_stream(
     response: reqwest::Response,
     idle_secs: u64,
@@ -634,14 +575,12 @@ async fn read_stream(
     }
 }
 
-/// One streamed event: the next piece of the response.
 #[derive(Deserialize)]
 struct GeminiStreamEvent {
     #[serde(default)]
     candidates: Vec<GeminiCandidate>,
     #[serde(default, rename = "usageMetadata")]
     usage_metadata: Option<GeminiUsageMetadata>,
-    /// A failure reported in the stream after the response began.
     #[serde(default)]
     error: Option<GeminiStreamError>,
 }
@@ -680,7 +619,6 @@ impl StreamAssembler<'_> {
         if parsed.usage_metadata.is_some() {
             self.usage = parsed.usage_metadata;
         }
-        // Only the first candidate is used: a request never asks for more.
         if let Some(candidate) = parsed.candidates.into_iter().next() {
             self.saw_candidate = true;
             for part in candidate.content.parts {
@@ -700,16 +638,12 @@ impl StreamAssembler<'_> {
         Ok(Flow::Continue)
     }
 
-    /// Assemble the response `generateContent` would have returned. Fails
-    /// when the stream stopped short of a `finishReason`.
     fn finish(self) -> Result<GeminiResponse, InferenceError> {
         if self.saw_candidate && self.finish_reason.is_none() {
             return Err(InferenceError::StreamInterrupted(
                 "the stream ended before the response was complete".to_string(),
             ));
         }
-        // With no candidate at all (a blocked prompt, say) the parse step
-        // reports it, as it does for a response that arrives whole.
         let candidates = if self.saw_candidate {
             vec![GeminiCandidate {
                 content: GeminiResponseContent { parts: self.parts },
@@ -725,10 +659,6 @@ impl StreamAssembler<'_> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Gemini API request types
-// ---------------------------------------------------------------------------
-
 /// Gemini's sentinel value for "dynamic" thinking budget (let the model decide).
 const GEMINI_THINKING_BUDGET_DYNAMIC: i32 = -1;
 
@@ -736,7 +666,6 @@ const GEMINI_THINKING_BUDGET_DYNAMIC: i32 = -1;
 struct GeminiThinkingConfig {
     #[serde(rename = "thinkingBudget")]
     thinking_budget: i32,
-    /// Ask for a summary of the reasoning to come back with the answer.
     #[serde(rename = "includeThoughts")]
     include_thoughts: bool,
 }
@@ -763,17 +692,12 @@ struct GeminiContent {
     parts: Vec<GeminiPart>,
 }
 
-/// One part of a message. A part carries one kind of content, so every
-/// field is optional; a response part that is a reasoning summary is told
-/// apart from the answer by `thought`.
 #[derive(Serialize, Deserialize, Clone, Default)]
 struct GeminiPart {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     text: Option<String>,
-    /// The text is a summary of the model's reasoning, not part of its answer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     thought: Option<bool>,
-    /// Proof of the reasoning behind this part, to be sent back with it.
     #[serde(
         default,
         rename = "thoughtSignature",
@@ -845,8 +769,6 @@ struct GeminiFunctionDeclaration {
     parameters: serde_json::Value,
 }
 
-/// Recursively remove fields that Gemini's `responseSchema` doesn't support
-/// (e.g. `additionalProperties`).
 fn strip_unsupported_schema_fields(mut value: serde_json::Value) -> serde_json::Value {
     if let Some(obj) = value.as_object_mut() {
         obj.remove("additionalProperties");
@@ -875,10 +797,6 @@ struct GeminiGenerationConfig {
     thinking_config: Option<GeminiThinkingConfig>,
 }
 
-// ---------------------------------------------------------------------------
-// Gemini API response types
-// ---------------------------------------------------------------------------
-
 #[derive(Deserialize)]
 struct GeminiResponse {
     #[serde(default)]
@@ -889,14 +807,12 @@ struct GeminiResponse {
 
 #[derive(Deserialize)]
 struct GeminiCandidate {
-    /// Absent when the candidate was stopped before producing anything.
     #[serde(default)]
     content: GeminiResponseContent,
     #[serde(default, rename = "finishReason")]
     finish_reason: Option<String>,
 }
 
-/// Map Gemini's `finishReason` to the provider-agnostic [`StopReason`].
 fn map_stop_reason(raw: &str) -> StopReason {
     match raw {
         "STOP" => StopReason::EndTurn,
@@ -928,16 +844,6 @@ struct GeminiUsageMetadata {
 }
 
 impl GeminiUsageMetadata {
-    /// Normalize Gemini's counts.
-    ///
-    /// `promptTokenCount` is the whole prompt with the cached part included,
-    /// so the uncached part is what remains after subtracting it. Thought
-    /// tokens are billed as output but reported apart from the candidates'
-    /// own, so they are added into output, as `Anthropic`'s and `OpenAI`'s
-    /// output counts already include theirs. `toolUsePromptTokenCount` is
-    /// left out of input: it counts context a hosted tool fetched, and the
-    /// only hosted tool sent here is Google Search, whose retrieved context
-    /// Google does not bill as input.
     fn usage(&self) -> Usage {
         let output_tokens = [self.candidates_token_count, self.thoughts_token_count]
             .into_iter()
@@ -968,10 +874,6 @@ struct GeminiError {
     message: String,
 }
 
-// ---------------------------------------------------------------------------
-// Gemini embedding request types
-// ---------------------------------------------------------------------------
-
 #[derive(Serialize, Clone)]
 struct GeminiEmbedContentRequest {
     model: String,
@@ -993,10 +895,6 @@ struct GeminiBatchEmbedRequest {
     requests: Vec<GeminiEmbedContentRequest>,
 }
 
-// ---------------------------------------------------------------------------
-// Gemini embedding response types
-// ---------------------------------------------------------------------------
-
 #[derive(Deserialize)]
 struct GeminiEmbedContentResponse {
     embedding: GeminiEmbeddingValues,
@@ -1012,11 +910,6 @@ struct GeminiBatchEmbedResponse {
     embeddings: Vec<GeminiEmbeddingValues>,
 }
 
-// ---------------------------------------------------------------------------
-// Gemini embedding client
-// ---------------------------------------------------------------------------
-
-/// Google Gemini embeddings API client.
 pub(crate) struct GeminiEmbeddingClient {
     http: SharedHttpClient,
     base_url: String,
@@ -1188,7 +1081,6 @@ impl EmbeddingProvider for GeminiEmbeddingClient {
     }
 }
 
-/// Parse a Gemini error response into a `InferenceError::Api`.
 async fn parse_gemini_embed_error(response: reqwest::Response) -> InferenceError {
     let status = response.status();
     let raw_body = read_error_body(response).await;
@@ -1196,10 +1088,6 @@ async fn parse_gemini_embed_error(response: reqwest::Response) -> InferenceError
         .map_or_else(|_| raw_body, |e| e.error.message);
     InferenceError::Api(format!("{status}: {error_body}"))
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -1219,7 +1107,6 @@ mod tests {
 
     const TEST_MODEL: &str = "gemini-2.0-flash";
 
-    /// Where the test client's own reasoning comes from.
     fn test_origin() -> ThinkingOrigin {
         ThinkingOrigin::new(ProviderApi::Gemini, TEST_MODEL)
     }
@@ -1638,8 +1525,6 @@ mod tests {
 
     #[tokio::test]
     async fn complete_timeout() {
-        // The reply waits at a gate that never opens, so only the client's own
-        // 1 second timeout can end the call.
         let model = GatedModel::replying("unused").await;
 
         let http = SharedHttpClient::new(&crate::http::HttpClientConfig::with_timeout(1)).unwrap();
@@ -1850,8 +1735,6 @@ mod tests {
         );
     }
 
-    // --- Thinking, signatures and replay ---
-
     fn call(id: &str, name: &str) -> ToolCall {
         ToolCall {
             id: id.to_string(),
@@ -1869,7 +1752,6 @@ mod tests {
         }
     }
 
-    /// A signature the test client itself received.
     fn own_signature_block(signature: &str, part: &str) -> ThinkingBlock {
         signature_block(signature, part).with_origin(&test_origin())
     }
@@ -2330,8 +2212,6 @@ mod tests {
         );
     }
 
-    // --- Streaming ---
-
     fn event(candidate: impl Into<Value>) -> String {
         let candidate: Value = candidate.into();
         format!("data: {}\n\n", json!({"candidates": [candidate]}))
@@ -2356,8 +2236,6 @@ mod tests {
         )
     }
 
-    /// A reply with a reasoning summary, text and two function calls, the
-    /// first of which is signed, as Gemini streams it.
     fn full_stream() -> String {
         [
             parts_event(json!([{"text": "Weighing ", "thought": true}])),
@@ -2568,7 +2446,6 @@ mod tests {
     #[tokio::test]
     async fn stalled_stream_fails_after_the_idle_timeout() {
         let mut script = sse_chunks(&[parts_event(json!([{"text": "partial"}]))]);
-        // Held rather than paused: nothing more arrives, so only the idle timeout ends the stream.
         let stall = Gate::closed("stalled stream");
         script.push(Step::Hold(stall.entry()));
         let (result, _, _) = stream_from(script, |url| {
@@ -2790,8 +2667,6 @@ mod tests {
             "the reason it stopped is reported"
         );
     }
-
-    // --- Embedding tests ---
 
     use crate::embedding::EmbeddingProvider;
 

@@ -1,5 +1,3 @@
-//! Terminal setup wizard for first-time configuration.
-
 use std::io::Write;
 use std::path::Path;
 use std::str::FromStr;
@@ -10,47 +8,26 @@ use crate::config::{
 };
 use crate::util::FatalError;
 
-/// Default name for the first agent when the user accepts the default.
 const DEFAULT_AGENT_NAME: &str = "assistant";
 
-/// Answers collected from the setup wizard (interactive or flags).
 #[derive(Debug)]
 pub struct WizardAnswers {
-    /// The user's name, written to `USER.md`. `None` if skipped.
     pub user_name: Option<String>,
-    /// The first agent's name, as the person typed it.
     pub agent_name: String,
-    /// IANA timezone (e.g. `"America/New_York"`).
     pub timezone: String,
-    /// Selected provider kind.
     pub provider: ProviderKind,
-    /// API key (None for Ollama or if user prefers env vars).
     pub api_key: Option<String>,
-    /// Model name (e.g. `"claude-sonnet-4-6"`).
     pub model: String,
-    /// Standalone web search backend name ("brave", "tavily", or "ollama").
     pub web_search_backend: Option<String>,
-    /// API key for the standalone web search backend.
     pub web_search_api_key: Option<String>,
-    /// Base URL for Ollama Cloud web search backend.
     pub web_search_base_url: Option<String>,
 }
 
-/// Run the interactive terminal wizard.
-///
-/// Prompts the user for their name, the first agent's name, timezone,
-/// provider, API key, and model. Returns the collected answers for config
-/// generation.
-///
-/// # Errors
-/// Returns `FatalError::Config` if stdin/stdout interaction fails or
-/// input validation fails.
 pub fn run_interactive() -> Result<WizardAnswers, FatalError> {
     println!("residuum setup");
     println!("==============");
     println!();
 
-    // 0. User's name (optional)
     print!("  what should residuum call you? (optional, press enter to skip): ");
     std::io::stdout().flush().ok();
     let mut name_input = String::new();
@@ -66,7 +43,6 @@ pub fn run_interactive() -> Result<WizardAnswers, FatalError> {
         }
     };
 
-    // 0b. First agent's name
     println!();
     let agent_name = loop {
         let input = prompt_with_default(
@@ -79,7 +55,6 @@ pub fn run_interactive() -> Result<WizardAnswers, FatalError> {
         }
     };
 
-    // 1. Timezone
     let system_tz = iana_time_zone::get_timezone().unwrap_or_default();
     let default_tz = if chrono_tz::Tz::from_str(&system_tz).is_ok() {
         system_tz
@@ -94,7 +69,6 @@ pub fn run_interactive() -> Result<WizardAnswers, FatalError> {
         println!("  invalid timezone, please enter an IANA timezone (e.g. America/New_York)");
     };
 
-    // 2. Provider
     println!();
     println!("  providers:");
     println!("    1. anthropic");
@@ -119,7 +93,6 @@ pub fn run_interactive() -> Result<WizardAnswers, FatalError> {
         }
     };
 
-    // 3. API key (skip for Ollama)
     let api_key = if provider == ProviderKind::Ollama {
         println!();
         println!("  ollama runs locally, no API key needed");
@@ -137,12 +110,10 @@ pub fn run_interactive() -> Result<WizardAnswers, FatalError> {
         }
     };
 
-    // 4. Model
     let default_model = default_model_for_provider(provider);
     println!();
     let model = prompt_with_default(&format!("model [{default_model}]"), default_model)?;
 
-    // 5. Web search (optional)
     let ws = prompt_web_search(provider)?;
 
     println!();
@@ -159,15 +130,9 @@ pub fn run_interactive() -> Result<WizardAnswers, FatalError> {
     })
 }
 
-/// CLI flags accepted by the non-interactive setup path. Bundled into one
-/// struct (rather than passed as separate parameters) purely to stay under
-/// the function-argument-count lint — `commands::setup::SetupArgs` mirrors
-/// this shape one-for-one and its fields are passed straight through.
 #[derive(Debug, Default)]
 pub struct WizardFlags<'a> {
-    /// See [`WizardAnswers::user_name`].
     pub user_name: Option<&'a str>,
-    /// See [`WizardAnswers::agent_name`]. Defaults to `"assistant"` when unset.
     pub agent_name: Option<&'a str>,
     pub timezone: Option<&'a str>,
     pub provider: Option<&'a str>,
@@ -178,18 +143,11 @@ pub struct WizardFlags<'a> {
     pub web_search_base_url: Option<&'a str>,
 }
 
-/// Build answers from CLI flags (non-interactive mode).
-///
-/// # Errors
-/// Returns `FatalError::Config` if required fields are missing, the
-/// timezone or agent name fails validation, or the web search backend is
-/// unrecognized.
 pub fn from_flags(flags: &WizardFlags<'_>) -> Result<WizardAnswers, FatalError> {
     let timezone = flags.timezone.ok_or_else(|| {
         FatalError::Config("--timezone is required in non-interactive mode".to_string())
     })?;
 
-    // Validate timezone
     chrono_tz::Tz::from_str(timezone)
         .map_err(|err| FatalError::Config(format!("invalid timezone '{timezone}': {err}")))?;
 
@@ -204,7 +162,6 @@ pub fn from_flags(flags: &WizardFlags<'_>) -> Result<WizardAnswers, FatalError> 
     let default_model = default_model_for_provider(provider_kind);
     let model = flags.model.unwrap_or(default_model).to_string();
 
-    // Validate web search backend if provided
     let web_search_backend = if let Some(backend) = flags.web_search_backend {
         if !matches!(backend, "brave" | "tavily" | "ollama") {
             return Err(FatalError::Config(format!(
@@ -235,24 +192,10 @@ pub fn from_flags(flags: &WizardFlags<'_>) -> Result<WizardAnswers, FatalError> 
     })
 }
 
-/// Write `hub/config.toml`, bootstrap and write the first agent's full
-/// workspace (`SOUL.md`, bundled skills), the shared team directory
-/// (`AGENTS.md`, wiki, `USER.md` personalized with
-/// [`WizardAnswers::user_name`]) with its role page, and write its `config.toml`/
-/// `providers.toml` from the wizard answers.
-///
-/// `residuum_root` is `~/.residuum` (or an override, e.g. for tests/the
-/// isolated `--setup` temp-directory flow); the hub lives at
-/// `residuum_root/hub` and the agent in a folder derived from its name.
-///
-/// # Errors
-/// Returns `FatalError::Config`/`FatalError::Workspace` if bootstrapping the
-/// hub or agent directories, or writing any file, fails.
 pub async fn write_config(residuum_root: &Path, answers: &WizardAnswers) -> Result<(), FatalError> {
     let hub_dir = crate::config::paths::hub_dir(residuum_root);
     HubConfig::bootstrap_at(&hub_dir)?;
 
-    // hub/config.toml — timezone only
     let hub_config_path = hub_dir.join("config.toml");
     let hub_content = format!(
         "# Hub configuration — generated by setup wizard\n\ntimezone = \"{}\"\n",
@@ -267,9 +210,6 @@ pub async fn write_config(residuum_root: &Path, answers: &WizardAnswers) -> Resu
             ))
         })?;
 
-    // The agent's full workspace and the shared team directory: identity
-    // files, bundled skills, the wiki, and the team's USER.md personalized
-    // with the user's name.
     let slug = allocate_slug(&slug_base(&answers.agent_name), |candidate| {
         residuum_root
             .join(candidate)
@@ -293,8 +233,6 @@ pub async fn write_config(residuum_root: &Path, answers: &WizardAnswers) -> Resu
     let agent_config_dir = layout.config_dir();
     crate::config::Config::bootstrap_agent_config_dir(&agent_config_dir)?;
 
-    // The wizard sets only web search in the agent's config.toml; every other
-    // section takes its default.
     let config_path = agent_config_dir.join("config.toml");
     let mut config_lines = Vec::new();
     config_lines.push("# Agent configuration — generated by setup wizard".to_string());
@@ -318,7 +256,6 @@ pub async fn write_config(residuum_root: &Path, answers: &WizardAnswers) -> Resu
     let config_content = set_display_name_toml(&config_lines.join("\n"), &answers.agent_name)
         .map_err(FatalError::Config)?;
 
-    // providers.toml — models + optional provider
     let providers_path = agent_config_dir.join("providers.toml");
     let mut prov_lines = Vec::new();
     prov_lines.push("# Provider configuration — generated by setup wizard".to_string());
@@ -345,9 +282,6 @@ pub async fn write_config(residuum_root: &Path, answers: &WizardAnswers) -> Resu
             ))
         })?;
 
-    // config.toml goes last: it is the file that makes the directory
-    // discoverable as an agent, so a failure above never leaves a
-    // half-configured agent behind.
     crate::util::fs::atomic_write(&config_path, &config_content)
         .await
         .map_err(|e| {
@@ -360,14 +294,12 @@ pub async fn write_config(residuum_root: &Path, answers: &WizardAnswers) -> Resu
     Ok(())
 }
 
-/// Web search wizard answers (backend, api key, base url).
 struct WebSearchWizardAnswers {
     backend: Option<String>,
     api_key: Option<String>,
     base_url: Option<String>,
 }
 
-/// Prompt the user for optional web search backend configuration.
 fn prompt_web_search(provider: ProviderKind) -> Result<WebSearchWizardAnswers, FatalError> {
     println!();
     println!("  step 5: web search (optional)");
@@ -444,7 +376,6 @@ fn prompt_web_search(provider: ProviderKind) -> Result<WebSearchWizardAnswers, F
     })
 }
 
-/// Default model name for a given provider.
 #[must_use]
 fn default_model_for_provider(provider: ProviderKind) -> &'static str {
     match provider {
@@ -452,12 +383,10 @@ fn default_model_for_provider(provider: ProviderKind) -> &'static str {
         ProviderKind::OpenAi => "gpt-4o",
         ProviderKind::Ollama => "llama3",
         ProviderKind::Gemini => "gemini-2.0-flash",
-        // A router tracks Fireworks' current model; fixed model ids get retired.
         ProviderKind::Fireworks => "accounts/fireworks/routers/glm-flash-latest",
     }
 }
 
-/// Prompt the user with a default value, returning the default on empty input.
 fn prompt_with_default(prompt: &str, default: &str) -> Result<String, FatalError> {
     print!("  {prompt}: ");
     std::io::stdout().flush().ok();
@@ -635,7 +564,6 @@ mod tests {
 
         write_config(dir.path(), &answers).await.unwrap();
 
-        // hub/config.toml — timezone only
         let hub_config =
             std::fs::read_to_string(dir.path().join("hub").join("config.toml")).unwrap();
         assert!(
@@ -654,7 +582,6 @@ mod tests {
             "agent config.toml should not contain [models]: {config}"
         );
 
-        // providers.toml — models + provider
         let providers = std::fs::read_to_string(agent_config_dir.join("providers.toml")).unwrap();
         assert!(
             providers.contains("main = \"anthropic/claude-sonnet-4-6\""),
@@ -669,7 +596,6 @@ mod tests {
             "providers.toml should contain api key: {providers}"
         );
 
-        // The agent's workspace was bootstrapped too.
         let soul = std::fs::read_to_string(dir.path().join("assistant").join("SOUL.md")).unwrap();
         assert!(
             soul.contains("**Name**: assistant"),
@@ -693,7 +619,6 @@ mod tests {
             "hub config.toml should contain timezone: {hub_config}"
         );
 
-        // providers.toml — models, no provider section
         let providers = std::fs::read_to_string(
             dir.path()
                 .join("assistant")
@@ -912,8 +837,6 @@ mod tests {
     #[tokio::test]
     async fn interrupted_write_config_leaves_no_discoverable_agent() {
         let root = tempfile::tempdir().unwrap();
-        // A directory where providers.toml must go makes that write fail
-        // before config.toml, the discovery marker, is written.
         std::fs::create_dir_all(root.path().join("scout/config/providers.toml")).unwrap();
 
         assert!(write_config(root.path(), &answers("scout")).await.is_err());

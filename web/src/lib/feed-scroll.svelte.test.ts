@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FeedScroller, type FeedScrollerOptions } from "./feed-scroll.svelte";
 
-/** A ResizeObserver whose notifications the test sends. */
 class ManualObserver {
   static instances: ManualObserver[] = [];
   readonly observed: unknown[] = [];
@@ -25,7 +24,6 @@ interface Geometry {
   scrollHeight: number;
   clientHeight: number;
   scrollTop: number;
-  /** The content's bottom padding: room reserved under its last line. */
   padding: number;
 }
 
@@ -33,20 +31,11 @@ interface FakeScroller {
   el: HTMLElement;
   content: HTMLElement;
   scrollTo: ReturnType<typeof vi.fn>;
-  /** Move the scroll position the way the reader does, and tell the scroller. */
   scrollBy: (top: number) => void;
-  /** Press a key in the feed, which has focus; returns the event's `preventDefault`. */
   press: (init: KeyboardEventInit & { defaultPrevented?: boolean }) => ReturnType<typeof vi.fn>;
-  /** Send the feed an event, as the browser does for the reader's input. */
   fire: (type: string, init?: Record<string, unknown>) => void;
-  /**
-   * Run `count` animation frames, 16ms apart; after each, a position that
-   * moved sends its scroll event, as the browser does.
-   */
   frames: (count: number) => void;
-  /** Run frames until nothing waits for one: a glide under way finishes. */
   finishGlide: () => void;
-  /** Positions the feed's scroll events found, in order. */
   seen: number[];
   geometry: Geometry;
 }
@@ -160,7 +149,6 @@ describe("FeedScroller", () => {
     expect(preventDefault).toHaveBeenCalled();
     expect(scroller.isFollowing).toBe(true);
     expect(scroller.scrolledUp).toBe(false);
-    // A glide, frame by frame, not a jump.
     feed.frames(4);
     expect(feed.geometry.scrollTop).toBeGreaterThan(100);
     expect(feed.geometry.scrollTop).toBeLessThan(1500);
@@ -172,17 +160,14 @@ describe("FeedScroller", () => {
 
   it("follows the newest content from End, though content lands at the top on the way", () => {
     const { feed, observer } = attached();
-    // The reader went to the top, so the feed no longer follows.
     feed.scrollBy(0);
 
     feed.press({ key: "End" });
-    // The glide is partway down when an older episode is prepended.
     feed.frames(4);
     feed.geometry.scrollHeight = 3000;
     observer.notify();
     expect(feed.geometry.scrollTop).toBe(3000);
 
-    // The pin ended the glide, which doesn't carry on from where it was.
     feed.finishGlide();
     expect(feed.geometry.scrollTop).toBe(3000);
   });
@@ -192,7 +177,6 @@ describe("FeedScroller", () => {
     feed.scrollBy(0);
     feed.press({ key: "End" });
     feed.frames(4);
-    // The content grows before the scroller hears of it.
     feed.geometry.scrollHeight = 3000;
     feed.finishGlide();
     expect(feed.geometry.scrollTop).toBe(2500);
@@ -212,7 +196,6 @@ describe("FeedScroller", () => {
 
     feed.press({ key: "End" });
     feed.frames(3);
-    // The older episode lands above, as `Feed` hands it to the scroller.
     scroller.takeInPendingScroll();
     feed.geometry.scrollHeight = 2322;
     expect(scroller.isFollowing).toBe(true);
@@ -237,9 +220,7 @@ describe("FeedScroller", () => {
     expect(scroller.isFollowing).toBe(false);
     feed.finishGlide();
     expect(feed.geometry.scrollTop).toBe(0);
-    // The glide's own moves bring the pill up.
     expect(scroller.scrolledUp).toBe(true);
-    // A reply landing as the reader reads from the top leaves them there.
     feed.geometry.scrollHeight = 2100;
     observer.notify();
     expect(feed.geometry.scrollTop).toBe(0);
@@ -285,7 +266,6 @@ describe("FeedScroller", () => {
     feed.press({ key: "End" });
     feed.scrollBy(1300);
     expect(scroller.isFollowing).toBe(false);
-    // The glide doesn't take the position back from them.
     feed.finishGlide();
     expect(feed.geometry.scrollTop).toBe(1300);
   });
@@ -303,7 +283,6 @@ describe("FeedScroller", () => {
       expect(feed.geometry.scrollTop).toBe(reached);
       expect(scroller.isFollowing).toBe(false);
       expect(scroller.scrolledUp).toBe(true);
-      // A reply landing now leaves them where they stopped.
       feed.geometry.scrollHeight = 2100;
       observer.notify();
       expect(feed.geometry.scrollTop).toBe(reached);
@@ -315,7 +294,6 @@ describe("FeedScroller", () => {
     feed.scrollBy(0);
     feed.press({ key: "End" });
     feed.frames(3);
-    // A scrollbar drag or find in page moves them on down, still well short of the end.
     const moved = feed.geometry.scrollTop + 100;
     expect(moved).toBeLessThan(1500 - 120);
     feed.scrollBy(moved);
@@ -395,7 +373,6 @@ describe("FeedScroller", () => {
   it("keeps a following reader at the bottom when the viewport shrinks under them", () => {
     const { feed, observer } = attached();
     feed.scrollTo.mockClear();
-    // The window narrowed, so the same content has less room.
     feed.geometry.clientHeight = 470;
     observer.notify();
     expect(feed.scrollTo).toHaveBeenCalledWith({ top: 2000, behavior: "instant" });
@@ -424,17 +401,14 @@ describe("FeedScroller", () => {
   describe("how near the end counts as back at the end", () => {
     it("measures from the end of the content, not from the end of the room reserved below it", () => {
       const { feed, scroller } = attached();
-      // 300px of room under the last line: the content ends at 1700.
       feed.geometry.padding = 300;
       feed.scrollBy(0);
       expect(scroller.isFollowing).toBe(false);
 
-      // Coming back down to 121px short of the last line is not yet the end.
       feed.scrollBy(1079);
       expect(scroller.scrolledUp).toBe(true);
       expect(scroller.isFollowing).toBe(false);
 
-      // 400px from the true bottom, but the last line is 100px under the view's foot.
       feed.scrollBy(1100);
       expect(scroller.scrolledUp).toBe(false);
       expect(scroller.isFollowing).toBe(true);
@@ -444,19 +418,15 @@ describe("FeedScroller", () => {
       let covered = 150;
       const { feed, scroller } = attached({ covered: () => covered });
       feed.geometry.padding = 150;
-      // 50px short of the bottom, with the last line in view.
       feed.scrollBy(1450);
       expect(scroller.scrolledUp).toBe(false);
 
-      // About the same position is worse with a taller composer: its 400px hide the last 300px of text.
       covered = 400;
       feed.scrollBy(1451);
       expect(scroller.scrolledUp).toBe(true);
     });
 
     it("keeps a reader at the very bottom following while the room for the composer catches up", () => {
-      // The composer just grew to 137px; the room under the last line, set
-      // from its height a frame later, is still the 48px buffer.
       const { feed, scroller } = attached({ covered: () => 137 });
       feed.geometry.padding = 48;
       feed.scrollBy(1400);
@@ -470,8 +440,6 @@ describe("FeedScroller", () => {
       feed.scrollBy(1500);
       expect(scroller.isFollowing).toBe(true);
 
-      // The reader scrolls up; before the scroll event arrives, a streamed
-      // reply adds content and the page tells the scroller.
       feed.scrollTo.mockClear();
       feed.geometry.scrollTop = 600;
       feed.geometry.scrollHeight = 2100;
@@ -485,8 +453,6 @@ describe("FeedScroller", () => {
     });
 
     it("keeps a pinned reader at the bottom when the room for an unchanged composer lands late", () => {
-      // The feed pinned the reader with the composer's 109px already measured,
-      // but the browser restyled the column with its room a frame later.
       const { feed, observer, scroller } = attached({ covered: () => 109 });
       feed.geometry.padding = 212;
       observer.notify();
@@ -501,21 +467,15 @@ describe("FeedScroller", () => {
     });
 
     it("doesn't take the late event of its own scroll for the reader leaving the end", () => {
-      // Seen on a phone while reconnecting: the composer covers 137px and the
-      // room under the last line is still 48px.
       const { feed, observer, scroller } = attached({ covered: () => 137 });
       feed.geometry.padding = 48;
       feed.scrollTo.mockClear();
-      // The feed pins the reader to the bottom.
       scroller.contentChanged(true);
       expect(feed.geometry.scrollTop).toBe(2000);
-      // 46px more content lands, then the pin's own scroll event arrives,
-      // with the position where the pin left it.
       feed.geometry.scrollHeight = 2546;
       feed.scrollBy(feed.geometry.scrollTop);
       expect(scroller.isFollowing).toBe(true);
 
-      // Older history is prepended: the reader is kept at the newest.
       feed.geometry.scrollHeight = 3500;
       observer.notify();
       expect(feed.scrollTo).toHaveBeenLastCalledWith({ top: 3500, behavior: "instant" });
@@ -527,7 +487,6 @@ describe("FeedScroller", () => {
     function composerFeed(): ReturnType<typeof attached> & { grow: (by: number) => void } {
       let covered = 100;
       const result = attached({ covered: () => covered });
-      // The reserved room is the composer plus a 200px buffer, and the reader sits at the true bottom.
       result.feed.geometry.padding = 300;
       result.observer.notify();
       result.feed.scrollBy(1500);
@@ -550,14 +509,12 @@ describe("FeedScroller", () => {
 
       expect(feed.scrollTo).not.toHaveBeenCalled();
       expect(feed.geometry.scrollTop).toBe(1500);
-      // Nor does it flip the feed out of following, whatever the composer grew by.
       expect(scroller.scrolledUp).toBe(false);
       expect(scroller.isFollowing).toBe(true);
     });
 
     it("moves the thread only as far as keeps the last line out from under it", () => {
       const { feed, observer, grow } = composerFeed();
-      // 200px of buffer is gone after 200px of growth, which leaves 200px of text covered.
       grow(400);
       observer.notify();
 
@@ -654,8 +611,6 @@ describe("FeedScroller", () => {
   describe("leaving the end", () => {
     it("leaves a reader who has started scrolling up where they are as a streamed reply lands", () => {
       const { feed, observer, scroller } = attached();
-      // The reader, following at the bottom, drags 40px up, and the next piece of
-      // the reply (25px) lands in the same frame.
       feed.scrollBy(1460);
       feed.geometry.scrollHeight = 2025;
       observer.notify();
@@ -667,10 +622,8 @@ describe("FeedScroller", () => {
       const { feed, observer, scroller } = attached();
       feed.fire("wheel", { deltaY: -100 });
       expect(scroller.isFollowing).toBe(false);
-      // Still near the end, so no pill yet.
       expect(scroller.scrolledUp).toBe(false);
 
-      // A piece of the reply lands before the wheel's scroll does.
       feed.geometry.scrollHeight = 2025;
       observer.notify();
       expect(feed.scrollTo).not.toHaveBeenCalled();
@@ -697,7 +650,6 @@ describe("FeedScroller", () => {
 
     it("keeps a reader at the bottom following when the content shrinks 1px under them", () => {
       const { feed, observer, scroller } = attached();
-      // The browser keeps the position in range.
       feed.geometry.scrollHeight = 1999;
       feed.scrollBy(1499);
       expect(scroller.isFollowing).toBe(true);
@@ -709,7 +661,6 @@ describe("FeedScroller", () => {
     it("keeps following through a wheel turned down, sideways or to zoom", () => {
       const { feed, scroller } = attached();
       feed.fire("wheel", { deltaY: 100 });
-      // A swipe over a code block that is mostly sideways.
       feed.fire("wheel", { deltaY: -2, deltaX: 40 });
       feed.fire("wheel", { deltaY: -100, shiftKey: true });
       feed.fire("wheel", { deltaY: -100, ctrlKey: true });
@@ -728,13 +679,10 @@ describe("FeedScroller", () => {
 
     it("respects a move up with no input in the feed, as find in page or a screen reader makes", () => {
       const { feed, observer, scroller } = attached();
-      // Find in page brings a match 60px up into view: no wheel, touch, key or pointer.
       feed.scrollBy(1440);
       expect(scroller.isFollowing).toBe(false);
-      // Near enough the end that the pill would only be in the way.
       expect(scroller.scrolledUp).toBe(false);
 
-      // A reply lands below them: they stay at the match, and the pill says so.
       feed.geometry.scrollHeight = 2100;
       observer.notify();
       scroller.contentChanged(false, true);
@@ -760,7 +708,6 @@ describe("FeedScroller", () => {
     it("takes a move found after a frame has passed for the reader's again", () => {
       const { feed, observer, scroller } = attached();
       scroller.takeInPendingScroll();
-      // The items didn't change in a way the page reports; a frame goes by.
       observer.notify();
       feed.geometry.scrollTop = 1300;
       scroller.contentChanged();
@@ -770,7 +717,6 @@ describe("FeedScroller", () => {
 
     it("doesn't take the browser keeping a reader at the bottom in range for them leaving", () => {
       const { feed, observer, scroller } = attached();
-      // The view grows by 30px: the browser moves the position up to keep it in range.
       feed.geometry.clientHeight = 530;
       feed.scrollBy(1470);
       expect(scroller.isFollowing).toBe(true);
@@ -781,9 +727,6 @@ describe("FeedScroller", () => {
 
     it("doesn't take it for them leaving when content grows in place before the move's event", () => {
       const { feed, observer, scroller } = attached();
-      // The view grows by 30px and the browser moves the position up to keep
-      // it in range; then an image in the last message loads, 240px below the
-      // reader, before the move's scroll event.
       feed.geometry.clientHeight = 530;
       feed.geometry.scrollHeight = 2240;
       feed.scrollBy(1470);
@@ -795,8 +738,6 @@ describe("FeedScroller", () => {
 
     it("still takes a move up for the reader's when content grew in place before its event", () => {
       const { feed, scroller } = attached();
-      // An image loads below the reader, and they scroll up 10px before the
-      // scroller has seen the content grow.
       feed.geometry.scrollHeight = 2240;
       feed.scrollBy(1490);
       expect(scroller.isFollowing).toBe(false);
@@ -811,7 +752,6 @@ describe("FeedScroller", () => {
       feed.fire("touchend", { touches: [] });
       expect(scroller.isFollowing).toBe(false);
 
-      // The flick carries on with no finger on the feed, while the reply streams in.
       feed.scrollBy(1380);
       feed.geometry.scrollHeight = 2025;
       observer.notify();
@@ -843,7 +783,6 @@ describe("FeedScroller", () => {
       const { feed, observer, scroller } = attached();
       feed.scrollBy(100);
       scroller.jumpToLatest();
-      // The glide passes through on its way down, each frame's move sending its event.
       feed.frames(6);
       expect(feed.seen.length).toBeGreaterThan(2);
       expect(scroller.isFollowing).toBe(true);
@@ -855,27 +794,19 @@ describe("FeedScroller", () => {
 
     it("counts a reader who scrolls away after Jump to latest was cut short by new content", () => {
       const { feed, observer, scroller } = attached();
-      // The reader is reading further up.
       feed.scrollBy(100);
       expect(scroller.scrolledUp).toBe(true);
 
-      // They press Jump to latest; the glide hasn't had a frame yet.
       scroller.jumpToLatest();
-      // A streamed reply grows the feed before the glide's first frame: the feed pins
-      // the reader to the bottom at once, which ends the glide, and the pin's own
-      // scroll event finds the position where the pin left it.
       feed.geometry.scrollHeight = 2100;
       observer.notify();
       expect(feed.geometry.scrollTop).toBe(2100);
       feed.scrollBy(feed.geometry.scrollTop);
 
-      // The reader moves back up without a wheel, touch, key or pointer event
-      // reaching the feed (a scrollbar drag, a screen reader, find in page).
       feed.scrollBy(0);
       expect(scroller.scrolledUp).toBe(true);
       expect(scroller.isFollowing).toBe(false);
 
-      // More of the reply lands: the reader stays where they went.
       feed.geometry.scrollHeight = 2200;
       observer.notify();
       expect(feed.geometry.scrollTop).toBe(0);
@@ -888,7 +819,6 @@ describe("FeedScroller", () => {
       feed.scrollBy(100);
       scroller.jumpToLatest();
       feed.frames(4);
-      // The page scrolls back to the top mid-glide, with no input in the feed.
       feed.scrollBy(0);
       expect(scroller.isFollowing).toBe(false);
       expect(scroller.scrolledUp).toBe(true);
@@ -904,7 +834,6 @@ describe("FeedScroller", () => {
       feed.scrollBy(100);
       scroller.jumpToLatest();
       feed.frames(4);
-      // A script in the glide's own scroll event moves the reader back to the top.
       feed.geometry.scrollTop = 0;
       feed.frames(1);
       expect(feed.geometry.scrollTop).toBe(0);
@@ -923,12 +852,10 @@ describe("FeedScroller", () => {
       feed.frames(3);
       feed.geometry.clientHeight = 0;
       observer.notify();
-      // Shown again with the position where the browser has it, before any event says so.
       feed.geometry.clientHeight = 500;
       feed.geometry.scrollTop = 700;
       feed.frames(1);
       expect(feed.geometry.scrollTop).toBe(700);
-      // No glide is under way, so a touch now doesn't judge the reader as having cut one short.
       feed.fire("touchstart");
       expect(scroller.isFollowing).toBe(true);
     });
@@ -940,7 +867,6 @@ describe("FeedScroller", () => {
       feed.frames(3);
       scroller.hold();
       expect(scroller.scrolledUp).toBe(true);
-      // The rebuild moves the position near the end before the glide's next frame.
       feed.geometry.scrollTop = 1450;
       feed.frames(1);
       expect(feed.geometry.scrollTop).toBe(1450);

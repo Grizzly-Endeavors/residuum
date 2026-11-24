@@ -1,5 +1,3 @@
-//! Memory get tool for retrieving episode or session-run transcripts by ID.
-
 use std::path::PathBuf;
 
 use async_trait::async_trait;
@@ -13,25 +11,15 @@ use residuum_memory::episode_store::{
     DEFAULT_LINES, MAX_LINES, find_episode_path, format_message_line, read_episode_lines,
 };
 
-/// Tool that retrieves a raw transcript by episode ID or session run ID, with
-/// an optional line offset.
 pub struct MemoryGetTool {
     episodes_dir: PathBuf,
     session_store: SessionStore,
 }
 
-/// Reject a path-traversal-shaped identifier before it reaches the filesystem.
 fn rejects_path_traversal(id: &str) -> bool {
     id.contains('/') || id.contains('\\') || id.contains("..")
 }
 
-/// Format a run's transcript for LLM consumption, in the same bounded,
-/// line-numbered style as [`read_episode_lines`].
-///
-/// `expand_line`, when given, overrides `from_line`/`request_limit`: it
-/// returns just that one line's message in full, uncut by
-/// `MAX_TOOL_RESULT_CHARS` — the way to retrieve a tool result a windowed
-/// read reported as truncated.
 fn format_run_transcript(
     record: &RunRecord,
     messages: &[Message],
@@ -65,7 +53,6 @@ fn format_run_transcript(
     }
 
     let limit = request_limit.map_or(DEFAULT_LINES, |l| l.clamp(1, MAX_LINES));
-    // from_line is 1-indexed; message lines start at index 0.
     let start_idx = from_line.map_or(0, |f| f.saturating_sub(1));
     let end_idx = total.min(start_idx + limit);
 
@@ -171,8 +158,6 @@ impl Tool for MemoryGetTool {
 }
 
 impl MemoryGetTool {
-    /// Create a new memory get tool with the given episodes and sessions
-    /// directories.
     #[must_use]
     pub fn new(episodes_dir: PathBuf, sessions_dir: PathBuf) -> Self {
         Self {
@@ -496,7 +481,6 @@ mod tests {
 
         let tool = MemoryGetTool::new(dir.path().join("episodes"), sessions_dir);
 
-        // The windowed read shows the tool result truncated with its true length.
         let windowed = tool
             .execute(serde_json::json!({"run_id": "run-test-expand"}))
             .await
@@ -506,7 +490,6 @@ mod tests {
         assert!(windowed.output.contains("showing 500 of 900 chars"));
         assert!(windowed.output.contains("expand_line=2"));
 
-        // expand_line=2 retrieves that line's full content.
         let expanded = tool
             .execute(serde_json::json!({"run_id": "run-test-expand", "expand_line": 2}))
             .await
@@ -603,7 +586,6 @@ mod tests {
             result.output.contains("showing lines"),
             "should have footer"
         );
-        // from_line=2 skips line 2 (user "hello") and shows line 3 (assistant "world")
         assert!(
             result.output.contains("[line 3] Assistant: world"),
             "should contain line 3 content: {}",

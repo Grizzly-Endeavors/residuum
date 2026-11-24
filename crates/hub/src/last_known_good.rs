@@ -1,31 +1,8 @@
-//! Last-known-good config: after startup or a reload succeeds, `config.toml`
-//! and `providers.toml` are copied here. If a later startup hits a fatal
-//! config problem — the live files fail to load, or load but can't produce
-//! a working gateway (no usable main provider, etc.) — the gateway falls
-//! back to running on these copies instead of refusing to start, without
-//! touching the user's live files. A copy is only ever saved after the
-//! config has proven itself (a successful start or reload), so a bad reload
-//! can never overwrite a good copy with itself.
-//!
-//! The hub and each agent keep independent last-known-good copies, since
-//! the two configs are loaded, validated, and reloaded independently — see
-//! [`hub`] for the hub's counterpart to the agent functions below.
-//!
-//! Every copy lives in `hub/`, never in the agent's workspace: providers
-//! may hold plaintext API keys, and the agent's directory is a checkpointed,
-//! web-browsable workspace. An agent's copies are
-//! `hub/<agent>.config.last-known-good.toml` and
-//! `hub/<agent>.providers.last-known-good.toml`, next to the hub's own
-//! `hub/config.last-known-good.toml`.
-
 use std::path::{Path, PathBuf};
 
 use residuum_config::{Config, HubConfig, HubPaths, paths};
 use residuum_core::util::FatalError;
 
-/// The `hub/` directory and agent name for an agent whose own `config/`
-/// directory is `agent_config_dir`. Agent directories sit beside `hub/`
-/// under the residuum root, so the hub directory is that sibling.
 fn hub_and_agent_name(agent_config_dir: &Path) -> Option<(PathBuf, String)> {
     let agent_dir = agent_config_dir.parent()?;
     let name = agent_dir.file_name()?.to_str()?.to_string();
@@ -43,16 +20,6 @@ fn providers_copy_path(agent_config_dir: &Path) -> Option<PathBuf> {
     Some(HubPaths::new(hub_dir).agent_providers_last_known_good_toml(&name))
 }
 
-/// Save an agent's `config.toml` and `providers.toml` as its last-known-good
-/// copies.
-///
-/// Call only once the gateway has actually started successfully on them,
-/// or a reload has applied them successfully — that's what "known good"
-/// means here. Each copy is written atomically (write to a temp file, then
-/// rename over the old copy) so a crash mid-write can never leave a
-/// half-written copy for a later fallback to load. Best-effort: a copy
-/// failure is logged, not fatal, and leaves the previous last-known-good
-/// copy (if any) in place.
 pub fn save(agent_config_dir: &Path) {
     for (src_name, dst_path) in [
         ("config.toml", config_copy_path(agent_config_dir)),
@@ -79,8 +46,6 @@ pub fn save(agent_config_dir: &Path) {
     }
 }
 
-/// Copy `src` to `dst` via a temp file in the same directory plus a rename,
-/// so the copy is atomic from any other reader's point of view.
 fn atomic_copy(src: &Path, dst: &Path) -> std::io::Result<()> {
     if let Some(parent) = dst.parent() {
         std::fs::create_dir_all(parent)?;
@@ -90,21 +55,12 @@ fn atomic_copy(src: &Path, dst: &Path) -> std::io::Result<()> {
     std::fs::rename(&tmp, dst)
 }
 
-/// Whether a last-known-good pair is saved for the agent whose own
-/// `config/` directory is `agent_config_dir`.
 #[must_use]
 pub fn exists(agent_config_dir: &Path) -> bool {
     config_copy_path(agent_config_dir).is_some_and(|p| p.exists())
         && providers_copy_path(agent_config_dir).is_some_and(|p| p.exists())
 }
 
-/// Load an agent's `Config` from its last-known-good copies, without
-/// touching its live `config.toml`/`providers.toml`.
-///
-/// # Errors
-/// Returns `FatalError::Config` if no last-known-good pair is saved, or the
-/// saved copies themselves fail to load — the latter shouldn't happen,
-/// since they were only ever saved right after a successful start.
 pub fn load(agent_dir: &Path, hub: &HubConfig) -> Result<Config, FatalError> {
     let agent_config_dir = agent_dir.join("config");
     if !exists(&agent_config_dir) {
@@ -133,7 +89,6 @@ pub fn load(agent_dir: &Path, hub: &HubConfig) -> Result<Config, FatalError> {
     Config::load_agent_from_paths(agent_dir, &config_copy, &providers_copy, agent_name, hub)
 }
 
-/// The hub's own last-known-good config, independent of any agent's.
 pub mod hub {
     use std::path::Path;
 
@@ -146,8 +101,6 @@ pub mod hub {
         HubPaths::new(hub_dir).config_last_known_good_toml()
     }
 
-    /// Save `hub/config.toml` as its last-known-good copy. See
-    /// [`super::save`] for the semantics.
     pub(crate) fn save(hub_dir: &Path) {
         let src = hub_dir.join("config.toml");
         if !src.exists() {
@@ -162,18 +115,11 @@ pub mod hub {
         }
     }
 
-    /// Whether a last-known-good copy is saved for `hub_dir`.
     #[must_use]
     pub fn exists(hub_dir: &Path) -> bool {
         config_copy_path(hub_dir).exists()
     }
 
-    /// Load `HubConfig` from the last-known-good copy, without touching the
-    /// live `hub/config.toml`.
-    ///
-    /// # Errors
-    /// Returns `FatalError::Config` if no last-known-good copy is saved, or
-    /// the saved copy itself fails to load.
     pub fn load(hub_dir: &Path) -> Result<HubConfig, FatalError> {
         if !exists(hub_dir) {
             return Err(FatalError::Config(
@@ -206,8 +152,6 @@ mod tests {
         }
     }
 
-    /// Set up `base/myagent/config/` for tests below, returning `(agent_dir,
-    /// agent_config_dir)`.
     fn agent_dirs(base: &Path) -> (PathBuf, PathBuf) {
         let agent_dir = base.join("myagent");
         let agent_config_dir = agent_dir.join("config");
@@ -283,7 +227,6 @@ mod tests {
         std::fs::write(agent_config_dir.join("providers.toml"), VALID_PROVIDERS).unwrap();
         save(&agent_config_dir);
 
-        // Now break the live config; the saved copy must stay untouched.
         std::fs::write(agent_config_dir.join("config.toml"), "not valid toml [[[").unwrap();
         assert_eq!(
             std::fs::read_to_string(agent_config_dir.join("config.toml")).unwrap(),

@@ -1,7 +1,3 @@
-//! Agent sessions: the session registry, runtime, and store that run temporary
-//! forks of the main agent. See `docs/systems-usage/background-tasks.md` for the
-//! behavior and `README.md` for how the pieces fit together.
-
 // The tokio async block in `runtime.rs` that runs a session exceeds the default query depth.
 #![recursion_limit = "256"]
 

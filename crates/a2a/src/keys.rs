@@ -1,13 +1,3 @@
-//! Caller keys: bearer tokens minted so other agents (or this user's other
-//! instances, before a relay-brokered sibling exists) can reach this
-//! instance's A2A listener. See `docs/systems-usage/a2a.md`.
-//!
-//! Stored in plain (unencrypted) TOML at `a2a-keys.toml` in the config
-//! directory, mode 0600 on Unix: only a SHA-256 hash of each token is kept,
-//! never the token itself, so there is nothing here worth encrypting at
-//! rest — the file's only job is to reject a stolen credential's replay,
-//! which the hash already does.
-
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -17,35 +7,24 @@ use rand::distributions::Alphanumeric;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// Caller keys store file name within the config directory.
 pub(crate) const KEYS_FILE: &str = "a2a-keys.toml";
 
-/// Lock file serializing writes across processes.
 pub(crate) const LOCK_FILE: &str = "a2a-keys.lock";
 
-/// Prefix every minted token carries, so a leaked token is recognizable at a glance.
 const TOKEN_PREFIX: &str = "rsdm_a2a_";
 
-/// Length of the random portion of a minted token, in base62 characters.
 const TOKEN_RANDOM_LEN: usize = 32;
 
-/// Longest accepted caller key name.
 const MAX_NAME_LEN: usize = 64;
 
-/// Errors from A2A caller-key operations. Messages are written to be shown
-/// to the user (CLI or web UI) as-is.
 #[derive(Error, Debug, Clone, PartialEq, Eq)]
 pub enum A2aKeyError {
-    /// A name broke the storage rules.
     #[error("{0}")]
     Invalid(String),
-    /// No caller key by that name.
     #[error("no A2A caller key named '{0}'")]
     NotFound(String),
-    /// A caller key by that name already exists.
     #[error("an A2A caller key named '{0}' already exists")]
     AlreadyExists(String),
-    /// Reading or writing the store failed.
     #[error("A2A caller key store unavailable: {0}")]
     Storage(String),
 }
@@ -54,7 +33,6 @@ pub enum A2aKeyError {
 struct KeyEntry {
     #[serde(default)]
     description: String,
-    /// `sha256:<hex>` — never the token itself.
     hash: String,
     created_at: DateTime<Utc>,
 }
@@ -65,8 +43,6 @@ struct KeysFile {
     keys: BTreeMap<String, KeyEntry>,
 }
 
-/// Everything about a caller key except the token, which is shown only once
-/// at creation and never stored.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct A2aKeyInfo {
     pub name: String,
@@ -74,7 +50,6 @@ pub struct A2aKeyInfo {
     pub created_at: DateTime<Utc>,
 }
 
-/// On-disk caller-key store, keyed by name.
 #[derive(Default, Clone)]
 pub struct A2aKeyStore {
     keys: BTreeMap<String, KeyEntry>,
@@ -89,11 +64,6 @@ impl std::fmt::Debug for A2aKeyStore {
 }
 
 impl A2aKeyStore {
-    /// Load from `a2a-keys.toml` in `config_dir`. A missing file is an empty store.
-    ///
-    /// # Errors
-    /// Returns `A2aKeyError::Storage` if the file exists but cannot be read
-    /// or parsed.
     pub fn load(config_dir: &Path) -> Result<Self, A2aKeyError> {
         let path = config_dir.join(KEYS_FILE);
         if !path.exists() {
@@ -114,12 +84,6 @@ impl A2aKeyStore {
         Ok(Self { keys: file.keys })
     }
 
-    /// Write the store to `config_dir`, creating it with mode 0600 (Unix) or
-    /// an owner-only ACL (Windows). Writes to a temporary file and renames
-    /// it into place so a crash mid-write can't corrupt the store.
-    ///
-    /// # Errors
-    /// Returns `A2aKeyError::Storage` if any file operation fails.
     pub fn save(&self, config_dir: &Path) -> Result<(), A2aKeyError> {
         std::fs::create_dir_all(config_dir).map_err(|e| {
             A2aKeyError::Storage(format!(
@@ -154,7 +118,6 @@ impl A2aKeyStore {
         })
     }
 
-    /// Every key's metadata, sorted by name. Never carries a token.
     #[must_use]
     pub fn list(&self) -> Vec<A2aKeyInfo> {
         self.keys
@@ -167,12 +130,6 @@ impl A2aKeyStore {
             .collect()
     }
 
-    /// Mint a new key named `name`, returning the token. The token is never
-    /// stored or logged; only its hash is kept.
-    ///
-    /// # Errors
-    /// Returns `A2aKeyError::Invalid` for a bad name and
-    /// `A2aKeyError::AlreadyExists` if `name` is already in use.
     pub fn create(&mut self, name: &str, description: Option<&str>) -> Result<String, A2aKeyError> {
         validate_name(name)?;
         if self.keys.contains_key(name) {
@@ -190,10 +147,6 @@ impl A2aKeyStore {
         Ok(token)
     }
 
-    /// Remove a key.
-    ///
-    /// # Errors
-    /// Returns `A2aKeyError::NotFound` if `name` is not in the store.
     pub fn revoke(&mut self, name: &str) -> Result<(), A2aKeyError> {
         if self.keys.remove(name).is_none() {
             return Err(A2aKeyError::NotFound(name.to_string()));
@@ -201,12 +154,6 @@ impl A2aKeyStore {
         Ok(())
     }
 
-    /// The caller name for `token`, if it matches a stored key's hash.
-    ///
-    /// Compares the presented token's digest against every stored digest
-    /// with a timing-safe comparison ([`residuum_core::util::secrets_match`]) rather
-    /// than short-circuiting on the first byte mismatch — the digests are
-    /// fixed-length, so this leaks nothing about the token's content.
     #[must_use]
     pub fn verify(&self, token: &str) -> Option<String> {
         let candidate = hash_token(token);
@@ -217,7 +164,6 @@ impl A2aKeyStore {
     }
 }
 
-/// `sha256:<hex>` digest of `token`.
 fn hash_token(token: &str) -> String {
     use std::fmt::Write as _;
 
@@ -231,7 +177,6 @@ fn hash_token(token: &str) -> String {
     hex
 }
 
-/// A fresh `rsdm_a2a_` + 32 base62 character token from a CSPRNG.
 fn generate_token() -> String {
     let random: String = rand::thread_rng()
         .sample_iter(&Alphanumeric)
@@ -241,12 +186,6 @@ fn generate_token() -> String {
     format!("{TOKEN_PREFIX}{random}")
 }
 
-/// Check a caller key name: `[a-z][a-z0-9_]*`, at most 64 characters — the
-/// same shape as an agent key name (`residuum_config::agent_keys::validate_name`),
-/// though nothing here maps onto an environment variable.
-///
-/// # Errors
-/// Returns `A2aKeyError::Invalid` describing what is wrong.
 fn validate_name(name: &str) -> Result<(), A2aKeyError> {
     let well_formed = name.len() <= MAX_NAME_LEN
         && name.chars().next().is_some_and(|c| c.is_ascii_lowercase())
@@ -263,8 +202,6 @@ fn validate_name(name: &str) -> Result<(), A2aKeyError> {
     }
 }
 
-/// Restrict a file to the current user: mode 0600 on Unix, an owner-only ACL
-/// on Windows via `icacls`, a no-op elsewhere.
 #[cfg(unix)]
 fn set_owner_only(path: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;

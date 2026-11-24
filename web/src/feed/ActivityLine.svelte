@@ -5,23 +5,10 @@
   import ActivityStep from "./ActivityStep.svelte";
   import ThoughtStep from "./ThoughtStep.svelte";
 
-  // One run of a turn's tool calls and reasoning, at its place among what the agent said.
-  // While it is the newest thing in a running turn its steps show as they
-  // arrive. Once the agent has said something after it, or the turn ends, it
-  // collapses to one summary, which opens to the steps, and a step opens to
-  // its details.
-
   interface Props {
-    /** The agent the conversation belongs to: its paths and sessions are what targets open. */
     agent: string;
-    /** What the segment holds, in the order it happened. */
     steps: readonly SegmentStep[];
-    /** The segment is the newest thing in a running turn. */
     live: boolean;
-    /**
-     * Where the page may have missed steps, as the number of this segment's
-     * steps before each: 0 is before the first, `calls.length` after the last.
-     */
     gaps?: readonly number[];
   }
 
@@ -30,7 +17,6 @@
   const uid = $props.id();
   const calls = $derived(callsOf(steps));
   const callRows = $derived(activitySteps(calls));
-  /** Each step as a row: a call's number among the calls is where a gap note before it goes. */
   const rows = $derived.by(() => {
     let ordinal = 0;
     return steps.map((step) =>
@@ -40,7 +26,6 @@
     );
   });
   const summary = $derived(live ? null : summarizeSegment(steps, gaps.length > 0));
-  /** What follows the summary: how long it took, what failed. */
   const meta = $derived(
     summary === null
       ? []
@@ -51,8 +36,6 @@
   );
   let open = $state(false);
 
-  // Giving way to a summary takes the live steps away: focus that was on one
-  // of them moves to the summary that replaces them, not to the page.
   let liveEl = $state<HTMLDivElement>();
   let summaryEl = $state<HTMLButtonElement>();
   let refocus = false;
@@ -70,7 +53,6 @@
     });
   });
 
-  /** The gap notes that go before the call numbered `index`. */
   function gapsAt(index: number): number[] {
     return gaps.filter((at) => at === index);
   }
@@ -181,7 +163,6 @@
     }
   }
 
-  /* The steps hang off a hairline under the line's mark. */
   .activity-steps {
     display: flex;
     flex-direction: column;

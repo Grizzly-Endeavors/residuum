@@ -8,8 +8,6 @@
   import TooltipHost, { tooltip } from "../../lib/ui/TooltipHost.svelte";
   import { provideTooltips } from "../../lib/ui/tooltip";
 
-  // A menu, a popover and tooltipped icon buttons under the tooltip provider,
-  // with a dialog that holds one more, as a page would hold them.
   let { onselect = () => {} }: { onselect?: (label: string) => void } = $props();
 
   let autostart = $state(false);

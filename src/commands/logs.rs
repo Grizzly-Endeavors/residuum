@@ -1,8 +1,3 @@
-//! Logs subcommand: display and tail structured log files.
-//!
-//! Reads NDJSON log files produced by `tracing-subscriber`'s JSON formatter,
-//! applies optional module/level filters, and renders human-readable output.
-
 use residuum::logging::format::{
     LogEntry, LogLevel, format_entry, format_entry_colored, meets_level, module_matches, parse_line,
 };
@@ -11,24 +6,18 @@ use std::io::Write;
 
 #[derive(clap::Args)]
 pub(super) struct LogsArgs {
-    /// Tail the log file, polling for new lines
     #[arg(long, short)]
     pub watch: bool,
-    /// Filter by module (e.g., `agent`, `mcp`, `gateway`, `residuum::mcp::client`)
     #[arg(long, short)]
     pub module: Option<String>,
-    /// Filter by minimum log level (trace, debug, info, warn, error)
     #[arg(long, short)]
     pub level: Option<String>,
-    /// Show only lines from one agent (matches the `agent` field on the line or its spans)
     #[arg(long, short)]
     pub agent: Option<String>,
-    /// Output raw JSON instead of formatted text
     #[arg(long)]
     pub json: bool,
 }
 
-/// Resolved filter criteria, computed once from CLI args.
 struct LogFilter {
     module: Option<String>,
     min_level: Option<LogLevel>,
@@ -37,7 +26,6 @@ struct LogFilter {
     color: bool,
 }
 
-/// The line printed when a non-watch run shows no entries, naming only the filters given.
 fn no_match_notice(args: &LogsArgs) -> Option<String> {
     let mut given = Vec::new();
     if let Some(module) = &args.module {
@@ -77,7 +65,6 @@ impl LogFilter {
         })
     }
 
-    /// Format and print a log line, applying filters. Returns true if the line was printed.
     fn process_line(&self, line: &str) -> bool {
         match self.render_line(line) {
             Some(text) => {
@@ -88,7 +75,6 @@ impl LogFilter {
         }
     }
 
-    /// Apply the filters to one log line and return the text to print, if any.
     fn render_line(&self, line: &str) -> Option<String> {
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -96,8 +82,6 @@ impl LogFilter {
         }
 
         let Some(entry) = parse_line(trimmed) else {
-            // A line that isn't a JSON log entry (a partial write, or text from another source) is printed raw,
-            // unless filtering by agent: an unparsed line can't be attributed.
             return self.agent.is_none().then(|| trimmed.to_string());
         };
 
@@ -129,8 +113,6 @@ impl LogFilter {
     }
 }
 
-/// Whether a log entry carries `agent = <name>` on the event or on any
-/// enclosing span.
 fn entry_belongs_to_agent(entry: &LogEntry, agent: &str) -> bool {
     let matches =
         |v: Option<&serde_json::Value>| v.and_then(serde_json::Value::as_str) == Some(agent);
@@ -141,10 +123,6 @@ fn entry_belongs_to_agent(entry: &LogEntry, agent: &str) -> bool {
             .any(|span| matches(span.fields.get("agent")))
 }
 
-/// Writes the entries of one log file that pass the filter to `out`. A non-watch
-/// run that prints no entries writes the no-match notice to `err` instead: it is
-/// command output for the person running the command, not a diagnostic, so it
-/// is not routed through tracing.
 fn print_entries(
     filter: &LogFilter,
     args: &LogsArgs,
@@ -168,11 +146,6 @@ fn print_entries(
     Ok(())
 }
 
-/// Display and optionally tail structured log files.
-///
-/// Finds the most recent log file in the log directory, parses JSON lines,
-/// applies filters, and renders human-readable output. With `--watch`, polls
-/// for new lines every 500ms.
 #[tracing::instrument(skip_all)]
 pub(super) async fn run_logs_command(args: &LogsArgs) -> Result<(), FatalError> {
     let filter = LogFilter::from_args(args)?;
@@ -186,7 +159,6 @@ pub(super) async fn run_logs_command(args: &LogsArgs) -> Result<(), FatalError> 
         return Ok(());
     }
 
-    // Find the most recent log file
     let mut entries: Vec<_> = std::fs::read_dir(&log_dir)
         .map_err(|e| FatalError::Config(format!("failed to read log directory: {e}")))?
         .filter_map(std::result::Result::ok)
@@ -198,7 +170,6 @@ pub(super) async fn run_logs_command(args: &LogsArgs) -> Result<(), FatalError> 
         return Ok(());
     }
 
-    // Sort by modification time, most recent last
     entries.sort_by_key(|e| match e.metadata().and_then(|m| m.modified()) {
         Ok(t) => t,
         Err(err) => {
@@ -232,7 +203,6 @@ pub(super) async fn run_logs_command(args: &LogsArgs) -> Result<(), FatalError> 
             .map_err(|e| FatalError::Config(format!("failed to open log file for watch: {e}")))?;
         let mut reader = tokio::io::BufReader::new(file);
 
-        // Seek to current end
         reader
             .seek(std::io::SeekFrom::End(0))
             .await

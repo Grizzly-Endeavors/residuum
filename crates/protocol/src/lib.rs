@@ -1,5 +1,3 @@
-//! WebSocket protocol types: client and server message frames.
-
 pub mod frames;
 
 use chrono::{DateTime, Utc};
@@ -15,205 +13,100 @@ use residuum_bus::{
 };
 use residuum_inference::{AgentSender, ImageData, MessageAttachment, MessageSender};
 
-/// Messages sent from a WebSocket client to the server.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[ts(export)]
 pub enum ClientMessage {
-    /// Send a user message to the agent.
     SendMessage {
-        /// Client-generated correlation ID.
         id: String,
-        /// The user message content.
         content: String,
-        /// Upload ids of the files attached to the message, from `POST /api/hub/uploads`.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         attachments: Vec<String>,
     },
-    /// Turn tool call/result events on or off for this connection (verbose mode). The web UI
-    /// turns them on at every connect, since its activity line is built from them.
     SetVerbose {
-        /// Whether to receive tool events.
         enabled: bool,
     },
-    /// Keepalive ping.
     Ping,
-    /// Ask for everything the main agent's turn in flight has done so far,
-    /// answered with a `turn_snapshot` frame. Frames already received for
-    /// that turn are covered by the snapshot; the ones after it continue it.
     ResyncTurn,
-    /// Request the gateway to reload its configuration.
     Reload,
-    /// A named server command (observe, reflect, context, etc.).
     ServerCommand {
-        /// Command name.
         name: String,
-        /// Optional argument text.
         args: Option<String>,
     },
-    /// Add a message to the inbox without triggering an agent turn.
     InboxAdd {
-        /// The message body to add.
         body: String,
     },
-    /// Stop the currently running agent turn.
     Cancel {
-        /// Correlation ID of the turn to stop (matches the `id` sent with
-        /// the original `SendMessage`, and the `reply_to` on its
-        /// `TurnStarted`/`TurnEnded`). A stop for a turn that has already
-        /// ended is silently ignored.
         reply_to: String,
     },
-    /// Send the owner's message to an agent session from its session
-    /// panel. Delivered like any agent message (hop count 0): an interrupt
-    /// if the session's turn is running, a new turn if it is idle, or a new
-    /// run if it has completed. Answered with `SessionMessageDelivered` or
-    /// `SessionCommandFailed`, both carrying `id`.
     SessionSendMessage {
-        /// Client-generated correlation ID for the reply.
         id: String,
-        /// Address of the target session (not `main`).
         address: String,
-        /// The message content.
         content: String,
-        /// The message's id, which the session's `SessionUserMessage`
-        /// carries when it reads the message. Without one the message is
-        /// given one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         message_id: Option<String>,
     },
-    /// Stop a live agent session: cancels any in-flight turn and moves it
-    /// straight to `completing`. Answered with `SessionStopRequested` or
-    /// `SessionCommandFailed`, both carrying `id`.
     SessionStop {
-        /// Client-generated correlation ID for the reply.
         id: String,
-        /// Address of the session to stop.
         address: String,
     },
-    /// Have a message still waiting for the main agent sent now: the running
-    /// turn stops, and the message starts the next one instead of being folded
-    /// into it. Answered with `QueuedMessageUnavailable` when the message is
-    /// no longer waiting.
     SendQueuedNow {
-        /// The waiting message's id.
         id: String,
     },
-    /// Take back a message still waiting for the main agent, so it is never
-    /// read. Answered with `MessageWithdrawn` (to every connection) or, when
-    /// the message is no longer waiting, `QueuedMessageUnavailable`.
     WithdrawQueued {
-        /// The waiting message's id.
         id: String,
     },
-    /// Rerun the main agent's failed latest turn on the user message the
-    /// server already recorded. No new user message is published and nothing
-    /// is uploaded again. Answered by the rerun's `turn_started`, which
-    /// carries the same correlation id as the failed turn, or by
-    /// `retry_refused` when the turn can't be rerun.
     RetryTurn {
-        /// Correlation ID of the failed turn: the `id` its `SendMessage` was
-        /// sent with, and the `reply_to` of its `error` frame.
         id: String,
     },
-    /// Replace this connection's watched workspace prefixes. `[]` stops
-    /// watching; `""` watches the whole workspace. An invalid prefix is
-    /// answered with an `Error` frame and leaves the set unchanged.
     WatchWorkspace {
-        /// Workspace-relative paths, matched by whole segments.
         prefixes: Vec<String>,
     },
 }
 
-/// A person's message waiting for the main agent to read it, carried by
-/// `MessageQueued` and a `TurnSnapshot`'s `queued`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct QueuedMessage {
-    /// The message's id: the id its sender gave it.
     pub id: String,
-    /// The message text.
     pub content: String,
-    /// Images attached to the message.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<ImageData>,
-    /// Files attached to the message, each saved as a companion agent-inbox item.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<MessageAttachment>,
-    /// The person who sent it, for interfaces that identify one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub sender: Option<MessageSender>,
-    /// Endpoint the message arrived on.
     pub endpoint: String,
 }
 
-/// One run of an agent session, as listed in the web UI's Activity place
-/// and carried by `SessionStarted`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct SessionSummary {
-    /// The session's stable address.
     pub address: String,
-    /// This run's id (unique across all runs).
     pub run_id: String,
-    /// How the session was started.
     pub category: SessionCategory,
-    /// Precise source (e.g. `"pulse:email_check"`, `"agent:researcher"`).
     pub source_label: String,
-    /// Current lifecycle state (`completed` for a finished run).
     pub state: SessionState,
-    /// The agent that spawned this session, if any.
     pub spawner: Option<String>,
-    /// Depth from the main agent (main = 0).
     pub depth: u32,
-    /// One-line description of what the run is doing.
     pub purpose: String,
-    /// When the run started (RFC 3339, UTC).
     #[ts(type = "string")]
     pub started_at: DateTime<Utc>,
-    /// When the run completed (RFC 3339, UTC), once it has.
     #[ts(type = "string | null")]
     pub completed_at: Option<DateTime<Utc>>,
-    /// Episode the run was merged into, if it produced one.
     pub episode_id: Option<String>,
-    /// `true` while a completed run's memory merge is still running, so
-    /// `episode_id` may still arrive (see `SessionMemoryMerged`). `false`
-    /// for a live run.
     #[serde(default)]
     pub memory_pending: bool,
-    /// `true` when the run was completed at startup because the process
-    /// exited before it finished on its own.
     pub interrupted: bool,
-    /// This run's cumulative token usage, for the session panel's spent
-    /// tokens — live for a run still going, final for a completed one. See
-    /// `docs/systems-usage/turn-control.md`.
     pub usage: SessionUsageTotals,
-    /// How the run ended — completed, cancelled, or failed. `None` while the
-    /// run is still live, and `None` for a completed run recorded before
-    /// this field existed (it shows as plain "finished" rather than a
-    /// guessed outcome).
     pub outcome: Option<SessionRunStatus>,
-    /// The failure reason, when `outcome` is `Failed`. `None` otherwise.
     pub error: Option<String>,
-    /// Full technical cause chain behind `error`, shown behind the same
-    /// expandable "details" toggle the web UI uses for a live `SessionError`.
-    /// `None` for a failure with nothing richer to show, and `None` for a
-    /// record written before this field existed.
     #[serde(default)]
     pub error_details: Option<String>,
-    /// Set when this run is a pulse fire that started while its previous run
-    /// was still live. `None` for every other trigger.
     pub overlap: Option<residuum_bus::PulseOverlap>,
-    /// The model the run was asked to use: a tier (`small`, `medium`,
-    /// `large`) or an explicit `provider/model` id. `None` for a record
-    /// written before this field existed.
     #[serde(default)]
     pub model: Option<String>,
-    /// The `provider/model` id the run started on: the first model of the
-    /// tier's failover chain, or the explicit model. `None` for a record
-    /// written before this field existed.
     #[serde(default)]
     pub resolved_model: Option<String>,
 }
@@ -223,41 +116,22 @@ pub struct SessionSummary {
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct SessionListResponse {
-    /// Every live session (forking, running, idle, or completing) matching
-    /// the filter, newest first. Not paginated.
     pub live: Vec<SessionSummary>,
-    /// One page of completed runs from the session store, newest first.
     pub completed: Vec<SessionSummary>,
-    /// Opaque cursor for the next page of completed runs (pass back as
-    /// `?before=`), or `null` when there are no more.
     pub next_cursor: Option<String>,
 }
 
-/// A task this instance sent to a remote agent (`message_agent a2a:<name>`),
-/// as listed in the web UI's Activity place by `GET /api/agents/{name}/a2a/outbound` and
-/// carried by `SessionOutboundA2aTask`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct OutboundA2aTaskSummary {
-    /// The remote agent's task id.
     pub task_id: String,
-    /// The remote agent's name, as registered in `config/a2a.json`.
     pub agent: String,
-    /// The session (or `main`) that sent the task.
     pub sender_address: String,
-    /// The task's A2A state as a plain word: `submitted`, `working`,
-    /// `input_required`, `auth_required`, `completed`, `failed`, `canceled`,
-    /// `rejected`.
     pub state: String,
-    /// The remote agent's latest status message, if it sent one.
     pub status_text: Option<String>,
-    /// Still being watched: not in a terminal state.
     pub open: bool,
-    /// When the task was sent (RFC 3339, UTC).
     #[ts(type = "string")]
     pub started_at: DateTime<Utc>,
-    /// When the remote agent was first found unreachable in the current
-    /// run of failed checks, or `null` while it answers.
     #[ts(type = "string | null")]
     pub unreachable_since: Option<DateTime<Utc>>,
 }
@@ -301,21 +175,16 @@ impl From<&residuum_bus::remote_task::TrackedTask> for OutboundA2aTaskSummary {
     }
 }
 
-/// How a session's run ended, as reported by `SessionCompleted`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export)]
 pub enum SessionRunStatus {
-    /// The last turn finished normally.
     Completed,
-    /// The session was stopped.
     Cancelled,
-    /// The last turn failed.
     Failed,
 }
 
 impl SessionRunStatus {
-    /// Lowercase label used in the session store (see `RunRecord::outcome`).
     #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -325,8 +194,6 @@ impl SessionRunStatus {
         }
     }
 
-    /// Parse the label [`Self::as_str`] produces, as recorded in the session
-    /// store. `None` for anything else.
     #[must_use]
     pub fn from_label(label: &str) -> Option<Self> {
         match label {
@@ -339,8 +206,6 @@ impl SessionRunStatus {
 }
 
 impl From<PulseFireStatus> for SessionRunStatus {
-    /// A pulse fire's status in a session run's terms: a stopped fire reads
-    /// as `cancelled`, like a stopped session.
     fn from(status: PulseFireStatus) -> Self {
         match status {
             PulseFireStatus::Ok => Self::Completed,
@@ -350,27 +215,18 @@ impl From<PulseFireStatus> for SessionRunStatus {
     }
 }
 
-/// One run's outcome, for a pulse's or action's "last outcome" in the
-/// Schedule place: the session store's last completed run, or, for a pulse,
-/// a newer fire that ended without a session run (a `script_only` fire, one
-/// stopped during its scripts, or one whose session couldn't start).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct ScheduledRunOutcome {
     pub status: SessionRunStatus,
-    /// When the run finished.
     #[ts(type = "string")]
     pub at: DateTime<Utc>,
     pub error: Option<String>,
-    /// The session run this was, which the session panel opens. Absent for
-    /// a pulse fire that ran no session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub run_id: Option<String>,
 }
 
-/// A pulse fire's outcome, with no session run: the fire's session run id,
-/// when it had one, is the event's to add.
 impl From<&PulseFireOutcome> for ScheduledRunOutcome {
     fn from(outcome: &PulseFireOutcome) -> Self {
         Self {
@@ -382,28 +238,15 @@ impl From<&PulseFireOutcome> for ScheduledRunOutcome {
     }
 }
 
-/// A pulse's or action's run in flight, if it has one, in the Schedule
-/// place: a pulse fire running its task scripts or its session, or a live
-/// scheduled session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct ScheduledCurrentRun {
-    /// The pulse fire's id, which `POST
-    /// /api/agents/{name}/scheduled/pulses/{pulse}/fires/{fire_id}/stop`
-    /// takes. `None` for a scheduled action's run and for a pulse session no
-    /// fire tracks (one resumed by a message to its address): stop those
-    /// through their session.
     pub fire_id: Option<String>,
     pub phase: PulseFirePhase,
-    /// When the fire (or the session) started.
     #[ts(type = "string")]
     pub started_at: DateTime<Utc>,
-    /// The session's address, once the fire has asked for its session.
     pub address: Option<String>,
-    /// The session's run id, once the session has registered.
     pub run_id: Option<String>,
-    /// Set when this run started while an earlier run of the same pulse was
-    /// still going.
     pub overlap: Option<PulseOverlap>,
 }
 
@@ -421,8 +264,6 @@ impl From<PulseFireRun> for ScheduledCurrentRun {
 }
 
 impl From<&SessionInfo> for ScheduledCurrentRun {
-    /// A live scheduled session no pulse fire tracks: a scheduled action's
-    /// run, or a resumed pulse session.
     fn from(info: &SessionInfo) -> Self {
         Self {
             fire_id: None,
@@ -435,42 +276,23 @@ impl From<&SessionInfo> for ScheduledCurrentRun {
     }
 }
 
-/// One pulse, as listed by `GET /api/agents/{name}/scheduled/pulses`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct PulseInfo {
     pub name: String,
-    /// `false` for a pulse that failed to load at all (see `problems`) —
-    /// there is no real `enabled` value to report for it.
     pub enabled: bool,
-    /// How often the pulse runs, as written. `None` for a pulse that runs
-    /// only on `days`, and for one that failed to load.
     pub schedule: Option<String>,
-    /// The weekdays the pulse runs on, as written (`sun`, `Monday`, ...). `None`
-    /// for a pulse that doesn't pin a day.
     pub days: Option<Vec<String>>,
     pub active_hours: Option<String>,
     pub agent: Option<String>,
-    /// The pulse's `model_tier` as written: a tier or an explicit
-    /// `provider/model` id. `None` runs the `small` tier.
     pub model_tier: Option<String>,
-    /// When the pulse next fires, from `pulse::next_run`: its anchor in
-    /// `pulse_state.json` spaced by its schedule or days, moved into
-    /// `active_hours`. `None` for a
-    /// disabled pulse, one whose schedule or active hours can't be read or
-    /// never open, and every pulse when the agent's `[pulse]` is off or its
-    /// `config.toml` can't be read.
     #[ts(type = "string | null")]
     pub next_fire_at: Option<DateTime<Utc>>,
     pub last_outcome: Option<ScheduledRunOutcome>,
     pub current_run: Option<ScheduledCurrentRun>,
-    /// Loading problems naming this pulse (a removed option, a duplicate
-    /// name, a bad `schedule`/`active_hours` string, or a per-entry
-    /// deserialize failure). Plain-language messages, ready to show as-is.
     pub problems: Vec<String>,
 }
 
-/// One pending scheduled action, as listed by `GET /api/agents/{name}/scheduled/actions`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct ActionInfo {
@@ -479,224 +301,125 @@ pub struct ActionInfo {
     #[ts(type = "string")]
     pub run_at: DateTime<Utc>,
     pub agent: Option<String>,
-    /// The action's `model_tier` as stored: a tier or an explicit
-    /// `provider/model` id. `None` runs the `medium` tier.
     pub model_tier: Option<String>,
-    /// Why the action is held instead of running, when its model can't run
-    /// (an unreadable value, or a provider `providers.toml` doesn't have).
-    /// Plain language, ready to show as-is.
     pub problem: Option<String>,
     pub current_run: Option<ScheduledCurrentRun>,
 }
 
-/// Where a `SessionSendMessage` landed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export)]
 pub enum SessionDeliveryOutcome {
-    /// Delivered to the live session: mid-turn if it was running, as a new
-    /// turn if it was idle.
     Live,
-    /// The session had completed; a new run was started at the same
-    /// address with the message as its input.
     Resumed,
-    /// The session's run was finishing up; the message will start a new run
-    /// once it has.
     Queued,
 }
 
-/// Why a session command (`SessionSendMessage`, `SessionStop`) failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export)]
 pub enum SessionCommandErrorCode {
-    /// The request itself is unusable (empty message, `main` as target).
     InvalidRequest,
-    /// No session has ever run at this address.
     UnknownAddress,
-    /// The session is live but can't take another message right now.
     Busy,
-    /// The session is not live (already completing or completed), so there
-    /// is nothing to stop.
     NotLive,
-    /// The message could not be handed to the session.
     DeliveryFailed,
 }
 
-/// `GET /api/team/workbench/info`: where workbench artifacts are served.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct WorkbenchInfo {
-    /// Port of the local artifacts listener, or `null` when it isn't running.
     pub port: Option<u16>,
-    /// Plain-language reason the artifacts listener isn't running, when it
-    /// isn't.
     pub unavailable_reason: Option<String>,
-    /// Public origins through the cloud relay, when connected to a relay that
-    /// announces them.
     pub relay: Option<WorkbenchRelayOrigins>,
 }
 
-/// The web UI's and the artifacts' public origins through the cloud relay.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct WorkbenchRelayOrigins {
-    /// Origin the web UI is served from through the relay.
     pub ui_origin: String,
-    /// Origin the artifacts are served from through the relay.
     pub artifacts_origin: String,
 }
 
-/// Which background post-turn cycle a [`ServerMessage::PostTurnActivity`]
-/// is about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export)]
 pub enum PostTurnActivityKind {
-    /// The automatic observer/reflector cycle.
     Memory,
-    /// The end-of-turn subconscious evaluation.
     Subconscious,
 }
 
-/// The main agent's turn in flight, as a `turn_snapshot` frame carries it.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct TurnInProgress {
-    /// Correlation ID of the turn.
     pub reply_to: String,
-    /// When the turn began (RFC 3339, UTC).
     pub started_at: String,
-    /// The server's clock when the snapshot was taken (RFC 3339, UTC), so a
-    /// client whose clock differs can place the other times on its own.
     pub now: String,
-    /// The frames the turn has sent so far, in order, with each model call's
-    /// streamed pieces joined into one `text_delta` or `thinking_delta`.
     pub frames: Vec<SnapshotFrame>,
 }
 
-/// One frame of a turn in flight and when it was sent.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct SnapshotFrame {
-    /// When the frame was sent (RFC 3339, UTC); for joined stream pieces,
-    /// when the first was.
     pub at: String,
-    /// The frame, as it went out live.
     pub frame: ServerMessage,
 }
 
-/// Messages sent from the server to WebSocket clients.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[ts(export)]
 pub enum ServerMessage {
-    /// A turn of the main agent began, whatever started it: a message from
-    /// the web, a chat interface, or no person at all (a background turn).
     TurnStarted {
-        /// Correlation ID of the message being processed.
         reply_to: String,
-        /// Where the turn came from.
         origin: TurnOrigin,
     },
-    /// The agent turn has finished (success or error), whether or not any
-    /// response text was produced. Marks the end of a turn that a
-    /// `TurnStarted` opened, so clients can stop waiting even when the turn
-    /// yielded zero `Response` frames (e.g. an interrupted or tool-only turn).
     TurnEnded {
-        /// Correlation ID of the message whose turn just completed.
         reply_to: String,
     },
-    /// Token usage and tool-call progress for the main agent's turn still
-    /// running: this turn's own output tokens and executed tool calls so
-    /// far (for the activity line) and, once at least one call
-    /// has reported usage, the updated cumulative session totals (for the
-    /// conversation size). Never delivered to the agent itself. See
-    /// `docs/systems-usage/turn-control.md`.
     TurnUsage {
-        /// Correlation ID of the message being processed.
         reply_to: String,
-        /// Output tokens generated by every model call so far this turn.
         output_tokens: u32,
-        /// Whether any model call so far this turn reported usage.
         has_usage: bool,
-        /// Tool calls executed so far this turn.
         #[serde(default)]
         tool_calls: u32,
-        /// Updated cumulative session totals, once known.
         #[serde(skip_serializing_if = "Option::is_none")]
         session_totals: Option<SessionUsageTotals>,
     },
-    /// A background post-turn cycle (the automatic observer/reflector, or
-    /// the end-of-turn subconscious evaluation — see
-    /// the gateway's post-turn module) started or finished running. Drives a
-    /// quiet "updating memory…" / "reviewing turn…" indicator; never blocks
-    /// anything, since this work no longer runs on the event loop.
     PostTurnActivity {
         kind: PostTurnActivityKind,
         active: bool,
     },
-    /// A tool was invoked during the agent turn (verbose only).
     ToolCall {
-        /// Correlation ID of the turn.
         reply_to: String,
-        /// Index of the model call that requested it, counting from zero
-        /// within the turn.
         call: u32,
-        /// Unique tool call ID for correlating with results.
         id: String,
-        /// Name of the tool.
         name: String,
-        /// Tool arguments as JSON.
         arguments: serde_json::Value,
-        /// The MCP server (its name in `mcp.json`) that owns this tool, or
-        /// `None` for a built-in.
         #[serde(skip_serializing_if = "Option::is_none")]
         server: Option<String>,
     },
-    /// A tool completed execution (verbose only).
     ToolResult {
-        /// Correlation ID of the turn.
         reply_to: String,
-        /// Correlation ID matching the original tool call.
         tool_call_id: String,
-        /// Name of the tool.
         name: String,
-        /// Tool output text.
         output: String,
-        /// Whether the tool returned an error.
         is_error: bool,
-        /// Auto Mode's verdict on the call, when Auto Mode checked it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         auto_mode: Option<residuum_bus::auto_mode::AutoModeVerdict>,
     },
-    /// The agent's text response: the reply that ends a turn, or a message
-    /// the agent posted to this endpoint with `send_message` (an empty
-    /// `reply_to`).
     Response {
-        /// Correlation ID of the original message.
         reply_to: String,
-        /// Index of the model call that produced the text, counting from
-        /// zero within the turn. Absent for text no model call wrote: the
-        /// notice that a limit ended the turn, or a `send_message` post.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         call: Option<u32>,
-        /// Endpoint the reply was delivered to; empty when it went nowhere.
         endpoint: String,
-        /// The response content.
         content: String,
     },
-    /// A file attachment from the agent.
     FileAttachment {
-        /// Correlation ID of the original message.
         reply_to: String,
-        /// Original filename.
         filename: String,
-        /// MIME type of the file.
         mime_type: String,
-        /// File size in bytes.
         #[ts(type = "number")]
         size: u64,
         /// URL to fetch the file, under the agent's own routes: a durable
@@ -705,453 +428,227 @@ pub enum ServerMessage {
         /// the workspace, else an expiring token link (e.g.
         /// "/api/agents/scout/files/{id}"). Use it as given.
         url: String,
-        /// Optional caption text.
         #[serde(skip_serializing_if = "Option::is_none")]
         caption: Option<String>,
     },
-    /// Intermediate text the agent emitted alongside tool calls.
     BroadcastResponse {
-        /// Correlation ID of the turn.
         reply_to: String,
-        /// Index of the model call that wrote the text, counting from zero
-        /// within the turn.
         call: u32,
-        /// The intermediate content.
         content: String,
     },
-    /// A person's message entered the main conversation, from any channel
-    /// including the web, or an agent's (a teammate on the hub or one of this
-    /// agent's own sessions, named by `agent_sender`): the message that
-    /// started a turn, or one injected into a turn already running. Not sent
-    /// for other background input. A client that sent the message recognizes
-    /// the echo by `id`.
     UserMessage {
-        /// The message's id: the id its sender gave it.
         id: String,
-        /// Correlation ID of the turn the message started or joined.
         turn_id: String,
-        /// The message text.
         content: String,
-        /// Images attached to the message.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         images: Vec<ImageData>,
-        /// Files attached to the message, each saved as a companion agent-inbox item.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         attachments: Vec<MessageAttachment>,
-        /// The person who sent it, for interfaces that identify one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         sender: Option<MessageSender>,
-        /// The agent that sent it, for a teammate's or a session's message,
-        /// with the session's run id for a session. Its `content` then starts
-        /// with the header that tells the agent who wrote it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         agent_sender: Option<AgentSender>,
-        /// Endpoint the message arrived on.
         endpoint: String,
     },
-    /// More of a model call's text, as the provider produces it. The call's
-    /// `broadcast_response` or `response` frame carries the authoritative
-    /// text.
     TextDelta {
-        /// Correlation ID of the turn.
         reply_to: String,
-        /// Index of the model call, counting from zero within the turn.
         call: u32,
-        /// The new text.
         text: String,
     },
-    /// More of a model call's readable reasoning, as the provider produces
-    /// it. The call's `thinking` frame carries the complete reasoning.
     ThinkingDelta {
-        /// Correlation ID of the turn.
         reply_to: String,
-        /// Index of the model call, counting from zero within the turn.
         call: u32,
-        /// The new reasoning text.
         text: String,
     },
-    /// A model call's complete readable reasoning, sent once the call has
-    /// returned and before that call's `broadcast_response`, `response` and
-    /// `tool_call` frames. Only sent when the model produced some.
     Thinking {
-        /// Correlation ID of the turn.
         reply_to: String,
-        /// Index of the model call, counting from zero within the turn.
         call: u32,
-        /// The reasoning text.
         content: String,
     },
-    /// Everything streamed so far for a model call is void: the call is
-    /// being sent again, and what follows starts over from the beginning.
     StreamRestart {
-        /// Correlation ID of the turn.
         reply_to: String,
-        /// Index of the model call, counting from zero within the turn.
         call: u32,
     },
-    /// An error related to a specific request.
     Error {
-        /// Correlation ID of the original message, if applicable.
         reply_to: Option<String>,
-        /// Plain-language error description.
         message: String,
-        /// Full technical cause chain, shown behind a details toggle.
         #[serde(skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         details: Option<String>,
     },
-    /// A `send_message` was refused before it reached the agent: an attached
-    /// upload is gone or couldn't be saved, or the message couldn't be handed
-    /// to the agent. Nothing of it was delivered, so the client takes its copy
-    /// of the message back for the person to send again. Sent to the sending
-    /// connection only; a failure after delivery is an `error` instead.
     MessageRefused {
-        /// The refused message's id.
         id: String,
-        /// Plain-language reason, with what to do next.
         message: String,
     },
-    /// A `retry_turn` was refused: the turn it named is not the main
-    /// conversation's latest failed turn (unknown, already retried, or the
-    /// conversation moved on), or a turn is running. The recorded message
-    /// stays where it is. Sent to the asking connection only.
     RetryRefused {
-        /// The id the `retry_turn` named.
         id: String,
-        /// Plain-language reason, with what to do next.
         message: String,
     },
-    /// Keepalive pong.
     Pong,
-    /// The main agent's turn in flight as it has run so far, answering
-    /// `resync_turn`. It replaces whatever the client showed of that turn:
-    /// the frames that follow it on this connection continue from where it
-    /// ends.
     TurnSnapshot {
-        /// The turn, or `null` when none is running.
         turn: Option<TurnInProgress>,
-        /// People's messages waiting for the agent to read them, oldest first.
         queued: Vec<QueuedMessage>,
     },
-    /// A person's message reached the main agent while a turn ran, and waits
-    /// for it: until the turn's next checkpoint, or to start the turn after
-    /// it. Its `user_message` frame says when the agent read it;
-    /// `message_withdrawn` that it was taken back first.
     MessageQueued {
-        /// The waiting message.
         message: QueuedMessage,
     },
-    /// A waiting message was taken back before the agent read it.
     MessageWithdrawn {
-        /// The message's id.
         id: String,
     },
-    /// A `send_queued_now` or `withdraw_queued` named a message that is no
-    /// longer waiting: the agent already read it, or it was taken back.
-    /// Sent to the asking connection only.
     QueuedMessageUnavailable {
-        /// The message's id.
         id: String,
     },
-    /// The gateway is reloading its configuration.
     Reloading,
-    /// A notice for the user: the result of a manual memory operation, a
-    /// settings reload's outcome, or any other operational report.
     Notice {
-        /// Human-readable message, as the agent wrote it.
         message: String,
-        /// What a settings reload came to, when this notice reports one. The
-        /// web words the toast from it and keeps `message` as the detail.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         reload: Option<ReloadOutcome>,
-        /// Which files the reload read, beside `reload`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         reload_of: Option<ReloadedFiles>,
     },
-    /// Multi-line command output that should render inline in the chat
-    /// stream rather than as a transient toast.
     InlineOutput {
-        /// Body to render inline.
         message: String,
     },
-    /// A new agent session run was registered (state `forking`).
     SessionStarted {
-        /// The new run.
         session: SessionSummary,
     },
-    /// A live session run moved to a new lifecycle state (`running`,
-    /// `idle`, or `completing`). Reaching `completed` is reported by
-    /// `SessionCompleted` instead.
     SessionStateChanged {
-        /// Session address.
         address: String,
-        /// Run id.
         run_id: String,
-        /// The new state.
         state: SessionState,
     },
-    /// A session run finished, was recorded in the session store, and is
-    /// no longer live. Its transcript is available from the transcript
-    /// endpoint.
     SessionCompleted {
-        /// Session address.
         address: String,
-        /// Run id.
         run_id: String,
-        /// How the run's last turn ended.
         status: SessionRunStatus,
-        /// The failure, when `status` is `failed`.
         error: Option<String>,
-        /// Full technical cause chain behind `error`, shown behind the same
-        /// expandable "details" toggle as a live `SessionError`. `None` when
-        /// there's nothing richer to show.
         #[serde(skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         error_details: Option<String>,
-        /// Whether the run's memory merge is still running. A
-        /// `SessionMemoryMerged` for the run follows exactly when this is
-        /// `true`.
         memory_pending: bool,
     },
-    /// A finished run's memory merge finished. Sent after
-    /// `SessionCompleted` for every run whose merge was pending.
     SessionMemoryMerged {
-        /// Session address.
         address: String,
-        /// Run id.
         run_id: String,
-        /// Episode the run was merged into; `None` when the merge produced
-        /// no episode (a quiet or short run) or failed.
         episode_id: Option<String>,
     },
-    /// A start or a resume of a session the owner started was accepted but
-    /// couldn't be forked, so no run was registered for it: no
-    /// `SessionStarted` or `SessionCompleted` follows for it. For a first
-    /// start no run exists at the address; a failed resume leaves the
-    /// address's earlier runs. Matched to the start by `address`, which the
-    /// start's reply named.
     SessionStartFailed {
-        /// Address the start was given.
         address: String,
-        /// Plain-language explanation for the owner, with what to do next.
         error: String,
-        /// Full technical cause chain, shown behind a details toggle.
         #[serde(skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         error_details: Option<String>,
     },
-    /// A session turn began.
     SessionTurnStarted {
-        /// Session address.
         address: String,
-        /// Run id.
         run_id: String,
-        /// Identifies the turn within the run.
         turn_id: String,
     },
-    /// A session turn finished, whatever its outcome.
     SessionTurnEnded {
-        /// Session address.
         address: String,
-        /// Run id.
         run_id: String,
-        /// Identifies the turn within the run.
         turn_id: String,
     },
-    /// A session read a message sent to it (the owner's, an artifact's, a
-    /// teammate's or another agent's): mid-turn, at a tool-call checkpoint of
-    /// the turn `turn_id`, or as the input that started the turn `turn_id`,
-    /// in which case it follows that turn's `SessionTurnStarted`.
     SessionUserMessage {
-        /// Session address.
         address: String,
-        /// Run id.
         run_id: String,
-        /// The message's id: the one its sender chose, or the one it was
-        /// given when it sent none.
         id: String,
-        /// The turn that read it.
         turn_id: String,
-        /// The message as sent, without the sender header the session sees.
         content: String,
-        /// The sender's address (`owner` for the owner).
         from: String,
-        /// The sender's category label (`owner`, `artifact`, `teammate`,
-        /// `main`, `spawned`, ...).
         from_category: String,
     },
-    /// A session invoked a tool (verbose only).
     SessionToolCall {
-        /// Session address.
         address: String,
-        /// Run id.
         run_id: String,
-        /// Unique tool call ID for correlating with results.
         id: String,
-        /// Name of the tool.
         name: String,
-        /// Tool arguments as JSON.
         arguments: serde_json::Value,
-        /// The MCP server (its name in `mcp.json`) that owns this tool, or
-        /// `None` for a built-in.
         #[serde(skip_serializing_if = "Option::is_none")]
         server: Option<String>,
     },
-    /// A tool a session invoked returned (verbose only).
     SessionToolResult {
-        /// Session address.
         address: String,
-        /// Run id.
         run_id: String,
-        /// Correlation ID matching the original tool call.
         tool_call_id: String,
-        /// Name of the tool.
         name: String,
-        /// Tool output text.
         output: String,
-        /// Whether the tool returned an error.
         is_error: bool,
-        /// Auto Mode's verdict on the call, when Auto Mode checked it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         auto_mode: Option<residuum_bus::auto_mode::AutoModeVerdict>,
     },
-    /// Token usage and tool-call progress for a session's turn still
-    /// running — the session counterpart of `TurnUsage`.
     SessionTurnUsage {
-        /// Session address.
         address: String,
-        /// Run id.
         run_id: String,
-        /// Output tokens generated by every model call so far this turn.
         output_tokens: u32,
-        /// Whether any model call so far this turn reported usage.
         has_usage: bool,
-        /// Tool calls executed so far this turn.
         #[serde(default)]
         tool_calls: u32,
-        /// Updated cumulative session totals, once known.
         #[serde(skip_serializing_if = "Option::is_none")]
         session_totals: Option<SessionUsageTotals>,
     },
-    /// Intermediate text a session emitted alongside tool calls.
     SessionBroadcastResponse {
-        /// Session address.
         address: String,
-        /// Run id.
         run_id: String,
-        /// The intermediate content.
         content: String,
     },
-    /// A session turn's final text response.
     SessionResponse {
-        /// Session address.
         address: String,
-        /// Run id.
         run_id: String,
-        /// The turn that produced it.
         turn_id: String,
-        /// The response content.
         content: String,
     },
-    /// Something went wrong that affects a session: a failed turn, a
-    /// message refused at the hop limit, or a result relay that could not
-    /// be delivered.
     SessionError {
-        /// Session address.
         address: String,
-        /// Run id.
         run_id: String,
-        /// Plain-language error description.
         message: String,
-        /// Full technical cause chain, shown behind a details toggle.
         #[serde(skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         details: Option<String>,
     },
-    /// Reply to `SessionSendMessage`: the message was handed to the session.
     SessionMessageDelivered {
-        /// The `id` from the `SessionSendMessage`.
         id: String,
-        /// The target session's address.
         address: String,
-        /// The message's id: the `message_id` the command chose, or the one
-        /// it was given. The session's `SessionUserMessage` carries it.
         message_id: String,
-        /// Where the message landed.
         outcome: SessionDeliveryOutcome,
     },
-    /// Reply to `SessionStop`: the session was signalled to stop. Its
-    /// `SessionStateChanged` (`completing`) and `SessionCompleted` follow.
     SessionStopRequested {
-        /// The `id` from the `SessionStop`.
         id: String,
-        /// The stopped session's address.
         address: String,
     },
-    /// Reply to `SessionSendMessage` or `SessionStop`: the command failed.
     SessionCommandFailed {
-        /// The `id` from the failed command.
         id: String,
-        /// The session address the command named.
         address: String,
-        /// Machine-readable reason.
         code: SessionCommandErrorCode,
-        /// Human-readable explanation, suitable to show the user.
         message: String,
     },
-    /// A task sent to a remote agent was recorded, changed state, or was
-    /// stopped. A task no longer `open` leaves Activity's list.
-    SessionOutboundA2aTask { task: OutboundA2aTaskSummary },
-    /// A pulse fire started, moved from its scripts to its session, or
-    /// finished. Carries the pulse's run state as `GET
-    /// /api/agents/{name}/scheduled/pulses` would now report it, for the
-    /// Schedule place to merge into its row for `pulse`.
+    SessionOutboundA2aTask {
+        task: OutboundA2aTaskSummary,
+    },
     PulseFireChanged {
-        /// The pulse's name (`PulseInfo.name`).
         pulse: String,
-        /// The fire that changed.
         fire_id: String,
-        /// The pulse's run in flight after the change, as
-        /// `PulseInfo.current_run`: the newest fire of the pulse still in
-        /// flight, which can be another fire than `fire_id`. `null` when
-        /// nothing of the pulse is running.
         current_run: Option<ScheduledCurrentRun>,
-        /// The pulse's new `PulseInfo.last_outcome`, when the fire finished
-        /// with one. `null` leaves the last outcome as it was: the fire
-        /// started or moved on, or ended without an outcome to show (the
-        /// agent is stopping).
         last_outcome: Option<ScheduledRunOutcome>,
     },
-    /// A workbench artifact's page was created or modified.
     ArtifactUpdated {
-        /// Artifact name, as used in `/workbench/{name}`.
         name: String,
     },
-    /// A workbench artifact's page was deleted.
     ArtifactRemoved {
-        /// Artifact name, as used in `/workbench/{name}`.
         name: String,
     },
-    /// Workspace files under this connection's watched prefixes changed.
     WorkspaceChanged {
-        /// The matching changes of one debounced batch, sorted by path.
         changes: Vec<WorkspaceChange>,
     },
-    /// This connection's view of its watched prefixes may be stale; reload
-    /// what they show. Sent instead of `WorkspaceChanged`.
     WorkspaceResync {
-        /// Why changes may have been missed.
         reason: WorkspaceResyncReason,
     },
-    /// The workspace watcher isn't running, so no workspace frames will
-    /// arrive. Sent to watching connections.
     WorkspaceWatchUnavailable {
-        /// Plain-language explanation for the user.
         message: String,
     },
 }
@@ -2123,9 +1620,6 @@ mod tests {
         );
     }
 
-    /// A `turn_usage` frame received without a `tool_calls` field (e.g.
-    /// from a client built against an older protocol version) still
-    /// deserializes, defaulting the count to zero rather than failing.
     #[test]
     fn server_message_deserialize_turn_usage_without_tool_calls_field() {
         let old_payload = serde_json::json!({

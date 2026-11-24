@@ -1,5 +1,3 @@
-//! Sending the user's mail: one message, one copy per recipient.
-
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
@@ -9,18 +7,13 @@ use residuum_config::WorkspaceLayout;
 use super::{MailThread, Mailbox, MailboxDirectory};
 use crate::inbox::{ClaimedItem, InboxItem, InboxKind, InboxRef, copy_attachments, derive_title};
 
-/// Where a user-authored agent-inbox item was written from. Only items with
-/// one of these sources are mail; every other agent-inbox item is not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UserMailSource {
-    /// The web app.
     Web,
-    /// The terminal (`residuum` CLI or the `/inbox` chat command).
     Cli,
 }
 
 impl UserMailSource {
-    /// The `source` stored on the item.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -30,7 +23,6 @@ impl UserMailSource {
     }
 }
 
-/// Whether an agent-inbox item with this `source` is a message the user wrote.
 #[must_use]
 pub fn is_user_mail_source(source: &str) -> bool {
     [UserMailSource::Web, UserMailSource::Cli]
@@ -38,8 +30,6 @@ pub fn is_user_mail_source(source: &str) -> bool {
         .any(|s| s.as_str() == source)
 }
 
-/// The title of a reply to a thread with this subject: `Re: <subject>`, with
-/// any `Re:` the subject already starts with dropped so they don't stack.
 #[must_use]
 pub fn reply_subject(subject: &str) -> String {
     let mut rest = subject.trim();
@@ -57,27 +47,17 @@ pub fn reply_subject(subject: &str) -> String {
     }
 }
 
-/// A message the user is sending.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutgoingMail {
-    /// The recipients' folder names; duplicates count once.
     pub to: Vec<String>,
-    /// The title; a blank one becomes the body's first line.
     pub title: String,
-    /// The body, as markdown.
     pub body: String,
-    /// Where it was written.
     pub source: UserMailSource,
-    /// The message it answers. Not checked: a ref that resolves to nothing
-    /// makes the message its own thread.
     pub in_reply_to: Option<InboxRef>,
-    /// Local files, copied into each recipient's copy.
     pub attachments: Vec<PathBuf>,
 }
 
 impl OutgoingMail {
-    /// The reply-all to `thread`: to its [`MailThread::recipients_for_reply`],
-    /// titled [`reply_subject`] of its subject, answering its latest message.
     #[must_use]
     pub fn reply(
         thread: &MailThread,
@@ -96,47 +76,26 @@ impl OutgoingMail {
     }
 }
 
-/// A sent message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SentMail {
-    /// The message's ref (its first recipient's copy), which
-    /// [`super::MailIndex`] gives it too.
     pub message: InboxRef,
-    /// Every copy's ref, sorted by agent name.
     pub copies: Vec<InboxRef>,
 }
 
-/// Why a message wasn't sent. Nothing was written when it is returned.
 #[derive(Debug, thiserror::Error)]
 pub enum SendMailError {
-    /// The message has no recipient.
     #[error("a message needs at least one recipient")]
     NoRecipients,
-    /// A recipient isn't a known agent.
     #[error("there is no agent named '{0}'")]
     UnknownRecipient(String),
-    /// The body is empty or only whitespace.
     #[error("a message needs a body")]
     BlankBody,
-    /// An attachment couldn't be copied.
     #[error("couldn't attach the files: {0}")]
     Attachment(String),
-    /// Writing a copy failed.
     #[error("couldn't save the message: {0:#}")]
     Write(anyhow::Error),
 }
 
-/// Send `mail`: write one copy to each recipient's `inbox/agent/`, all with
-/// one id claimed in every recipient's inbox at once (see
-/// [`ClaimedItem::claim_in_all`]), each with its own copy of the attachments.
-///
-/// Every copy is written or none is: on a failure partway, the claims not yet
-/// saved are released and the copies already saved are removed.
-///
-/// # Errors
-/// [`SendMailError::NoRecipients`], [`SendMailError::BlankBody`] and
-/// [`SendMailError::UnknownRecipient`] before anything is written;
-/// [`SendMailError::Attachment`] or [`SendMailError::Write`] when writing fails.
 #[tracing::instrument(skip_all, fields(recipients = mail.to.len(), source = mail.source.as_str()))]
 pub async fn send_mail(
     directory: &dyn MailboxDirectory,
@@ -150,8 +109,6 @@ pub async fn send_mail(
     .await
 }
 
-/// [`send_mail`] with the step that saves one recipient's copy supplied, so a
-/// test can fail a later copy's save without filesystem permissions.
 async fn send_mail_with<F>(
     directory: &dyn MailboxDirectory,
     mail: OutgoingMail,
@@ -182,7 +139,6 @@ where
         mail.title.clone()
     };
     let now = Utc::now();
-    // The id's date comes from the first recipient's clock; every copy shares it.
     let id_time = mailboxes.first().map_or_else(
         || now.naive_utc(),
         |m| now.with_timezone(&m.timezone).naive_local(),
@@ -198,8 +154,6 @@ where
         SendMailError::Write(anyhow::anyhow!("claiming a mail id returned no claim"))
     })?;
 
-    // A ref that can't be built fails here, while every claim is still
-    // unsaved and dropping them leaves nothing behind.
     let mut copies = mailboxes
         .iter()
         .map(|m| InboxRef::new(&m.agent, InboxKind::Agent, &id))
@@ -216,10 +170,6 @@ where
     Ok(SentMail { message, copies })
 }
 
-/// Fill each recipient's claim with its attachments, then save every copy.
-/// Attachments are copied for every claim before any copy is saved, so an
-/// attachment failure leaves only unsaved claims, which dropping removes. A
-/// save that fails after earlier copies were saved removes those copies.
 async fn write_copies<F>(
     mailboxes: &[Mailbox],
     claims: Vec<ClaimedItem>,
@@ -268,8 +218,6 @@ where
     Ok(())
 }
 
-/// Remove saved copies (each item file and its attachment directory) of a
-/// mail whose later copy failed to save.
 async fn remove_saved(saved: &[(PathBuf, PathBuf)]) {
     for (item, attachments) in saved {
         for (path, result) in [
@@ -430,7 +378,6 @@ mod tests {
         assert_nothing_left(&fx, "atlas");
     }
 
-    /// `agent`'s agent inbox holds no item and no claimed attachment dir.
     fn assert_nothing_left(fx: &Fixture, agent: &str) {
         let layout = WorkspaceLayout::new(fx.dir(agent));
         let items = std::fs::read_dir(layout.agent_inbox_dir()).map_or(0, |entries| {
@@ -487,7 +434,6 @@ mod tests {
         tokio::fs::write(&source, b"hello").await.unwrap();
         outgoing.attachments = vec![source];
 
-        // atlas's copy is saved first, then scout's save fails.
         let err = send_mail_with(
             &fx.directory,
             outgoing,

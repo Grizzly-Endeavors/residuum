@@ -1,56 +1,14 @@
-//! `pub` items of member crates that nothing in the workspace uses outside
-//! their own crate's tests. rustc's `dead_code` lint never fires on a `pub`
-//! item of a library, since some other crate might use it, so a member's item
-//! whose last caller went away gets no warning.
-//!
-//! The candidates are the items declared exactly `pub` (not `pub(crate)`,
-//! `pub(super)` or `pub(in …)`) in a member's `src/`, in production code or in
-//! test-support code (`#[cfg(any(test, feature = "test-support"))]`, which
-//! exists for other crates' tests): `fn`, `struct`, `enum`, `trait`, `type`,
-//! `union`, `const` and `static` items, and the `pub fn` and `pub const` items
-//! of inherent `impl` blocks. Trait impl items, fields, enum variants,
-//! `pub mod`, `pub use`, `macro_rules!` bodies and lines inside string
-//! literals are not candidates.
-//!
-//! An item counts as used when its name appears as a whole identifier in the
-//! code of any scanned file (the root's `src/` and `tests/`, `build.rs`, every
-//! member's sources), with `//` comments removed and string literals kept,
-//! since serde attributes name functions in strings. Three kinds of line do
-//! not count: the item's own declaration line, its own crate's `#[cfg(test)]`
-//! code, and `use` and `pub use` statements in its own crate, since an import
-//! or a re-export inside the crate calls nothing. An import in another crate
-//! counts. The source scans' own files are not read for uses, since their
-//! sample lines and anchors name items in strings.
-//!
-//! The match goes by name alone, so it errs toward "used":
-//! - A name some other item or binding shares (`new`, `load`, `name`) counts as
-//!   used wherever it appears, so an unused item with a common name is not
-//!   reported.
-//! - A mention in the crate's own production code counts, including the
-//!   item's own body and its `impl` blocks, so a type that only its own
-//!   `impl` names is not reported.
-//! - `/* */` comments count as code.
-//!
-//! Two cases are reported although the item is used: an item other crates
-//! reach only under a re-export's new name (`pub use inner::Item as Other;`),
-//! and one named only by an identifier a macro builds from pieces. For the
-//! first, re-export or import the item under its own name, or rename the item
-//! to the name its users call.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use regex::Regex;
 
 use super::{SourceFile, item_end, starts_inside_literal, without_comment};
 
-/// A member crate's `pub` item that nothing outside its crate's tests uses.
 #[derive(Debug)]
 struct UnusedPub {
     path: String,
-    /// 1-based.
     line: usize,
     name: String,
-    /// Whether its own crate's tests use it, rather than nothing at all.
     own_tests_use_it: bool,
 }
 
@@ -65,34 +23,25 @@ impl UnusedPub {
     }
 }
 
-/// A `pub` item declared in a member crate.
 struct Declared<'a> {
     crate_dir: &'a str,
     path: &'a str,
-    /// 1-based.
     line: usize,
     name: &'a str,
 }
 
-/// A line that names a candidate.
 struct Mention<'a> {
     crate_dir: Option<&'a str>,
     path: &'a str,
-    /// 1-based.
     line: usize,
-    /// The line is own-test code of its crate.
     own_test: bool,
-    /// The line is part of a `use` statement.
     import: bool,
 }
 
-/// The directory under `crates/` of the member crate `path` belongs to; `None`
-/// for the root package.
 fn member_crate(path: &str) -> Option<&str> {
     path.strip_prefix("crates/")?.split('/').next()
 }
 
-/// A `pub` item declaration; the name is in group 1 or group 2.
 fn pub_item() -> Regex {
     Regex::new(concat!(
         r#"^\s*pub\s+(?:(?:const|async|unsafe)\s+)*(?:extern\s+"[^"]*"\s+)?(?:fn|struct|enum|trait|type|union)\s+([A-Za-z_][A-Za-z0-9_]*)"#,
@@ -101,8 +50,6 @@ fn pub_item() -> Regex {
     .unwrap()
 }
 
-/// The `pub` items `sources` declares in member crates' `src/`, outside their
-/// own-test code.
 fn declared_pub_items(sources: &[SourceFile]) -> Vec<Declared<'_>> {
     let declaration = pub_item();
     let mut items = Vec::new();
@@ -147,14 +94,10 @@ fn declared_pub_items(sources: &[SourceFile]) -> Vec<Declared<'_>> {
     items
 }
 
-/// Whether `path` is one of the source scans' own files, whose string
-/// literals are sample lines and anchors that name items without using them.
 fn is_scan_sample(path: &str) -> bool {
     path == "src/testing/source_scan.rs" || path.starts_with("src/testing/source_scan/")
 }
 
-/// Every line of `sources` that names one of `names`, by name, outside the
-/// source scans' own files.
 fn mentions<'a>(
     sources: &'a [SourceFile],
     names: &BTreeSet<&'a str>,
@@ -173,7 +116,6 @@ fn mentions<'a>(
             let Some(code) = without_comment(line) else {
                 continue;
             };
-            // A string literal's continuation line can start with `use `.
             let starts_in_literal = in_literal.get(idx).copied().unwrap_or(false);
             in_use = in_use || (!starts_in_literal && use_start.is_match(code));
             let import = in_use;
@@ -196,8 +138,6 @@ fn mentions<'a>(
     found
 }
 
-/// The `pub` items of member crates in `sources` that nothing outside their
-/// own crate's tests uses, in file and line order.
 fn unused_pub_items(sources: &[SourceFile]) -> Vec<UnusedPub> {
     let items = declared_pub_items(sources);
     let names: BTreeSet<&str> = items.iter().map(|item| item.name).collect();
@@ -230,7 +170,6 @@ mod tests {
     use super::super::crate_root;
     use super::*;
 
-    /// `build.rs`, which no scanned root holds: production code throughout.
     fn build_script() -> SourceFile {
         let text = std::fs::read_to_string(crate_root().join("build.rs")).unwrap();
         let lines = text.lines().map(str::to_string).collect();
@@ -242,8 +181,6 @@ mod tests {
         SourceFile::new(path.to_string(), lines, false, false)
     }
 
-    /// A member crate's `pub` item that nothing outside its own tests uses
-    /// is dead, and rustc does not say so.
     #[test]
     fn every_pub_item_of_a_member_crate_has_a_user() {
         let mut sources = super::super::crate_sources();
@@ -259,7 +196,6 @@ mod tests {
         );
     }
 
-    /// The first crate of the counting fixture: one `pub` item for each way a mention does or does not count.
     const ALPHA_LIB_ZQ: &str = r#"
 pub use inner::{
     reexported_only_zq,

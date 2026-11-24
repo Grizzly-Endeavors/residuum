@@ -1,9 +1,3 @@
-//! The instance being joined: nonces it has handed out, the join requests
-//! waiting for a person's decision, and the answers waiting to be fetched.
-//!
-//! Everything is in memory. A restart forgets pending requests, and the
-//! person who started the join simply starts it again.
-
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use chrono::{DateTime, Duration, Utc};
@@ -16,12 +10,9 @@ use super::protocol::{
 };
 use crate::remote_access::jws::{AccountSigner, JwsError, VerifiedJws, verify_jws};
 
-/// Join requests that may wait for a decision at once.
 pub(crate) const MAX_PENDING: usize = 5;
-/// Nonces that may be outstanding at once; the oldest is dropped past this.
 const MAX_NONCES: usize = 64;
 
-/// What the host needs to know about itself to take part in a join.
 pub(crate) struct HostContext {
     pub(crate) user: String,
     pub(crate) slug: String,
@@ -30,7 +21,6 @@ pub(crate) struct HostContext {
 }
 
 impl HostContext {
-    /// The URL a join request must be signed for.
     fn request_url(&self) -> String {
         format!(
             "https://{}.{}.{}{REQUEST_PATH}",
@@ -39,28 +29,22 @@ impl HostContext {
     }
 }
 
-/// Why the host refused a join step, in words for the requester.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum HostError {
-    /// This instance isn't set up for remote access, so it can't take joins.
     #[error(
         "this instance isn't set up for remote access yet, so it can't approve other instances"
     )]
     NotReady,
-    /// The pending list is full.
     #[error(
         "this instance already has {MAX_PENDING} join requests waiting; approve or deny one first"
     )]
     TooManyPending,
-    /// The request's signature or structure is wrong.
     #[error("the join request isn't valid: {0}")]
     Invalid(String),
-    /// The nonce was never issued, was used, or expired.
     #[error("the join code has expired or was already used; start the join again")]
     UnknownNonce,
 }
 
-/// A join request waiting for a decision, as the person sees it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PendingView {
     pub(crate) approval_id: String,
@@ -68,12 +52,9 @@ pub(crate) struct PendingView {
     pub(crate) slug: String,
     pub(crate) display_name: String,
     pub(crate) expires_at: DateTime<Utc>,
-    /// How often the requester has asked where its request stands: a
-    /// request still being polled has a requester still waiting on it.
     pub(crate) polls: u32,
 }
 
-/// A request that can be approved: everything the approval records.
 #[derive(Debug, Clone)]
 pub(crate) struct PendingRequest {
     pub(crate) join_id: String,
@@ -81,7 +62,6 @@ pub(crate) struct PendingRequest {
     pub(crate) display_name: String,
     pub(crate) account_uri: String,
     pub(crate) account_jwk: Value,
-    /// The key the requester issued for this instance to present.
     pub(crate) key: String,
 }
 
@@ -126,7 +106,6 @@ impl State {
     }
 }
 
-/// The join endpoints' state.
 #[derive(Default)]
 pub(crate) struct JoinHost {
     state: Mutex<State>,
@@ -144,8 +123,6 @@ impl JoinHost {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Start (or stop, with `None`) taking joins. Set once this instance is
-    /// pinned and knows who it is; cleared when the tunnel goes away.
     pub(crate) fn set_context(&self, context: Option<Arc<HostContext>>) {
         *self.context.lock().unwrap_or_else(PoisonError::into_inner) = context;
     }
@@ -157,7 +134,6 @@ impl JoinHost {
             .clone()
     }
 
-    /// `GET /_sibling/join/nonce`: a fresh single-use nonce.
     pub(crate) fn issue_nonce(&self, now: DateTime<Utc>) -> Result<NonceReply, HostError> {
         let context = self.context().ok_or(HostError::NotReady)?;
         let nonce = random_hex(16);
@@ -178,7 +154,6 @@ impl JoinHost {
         })
     }
 
-    /// `POST /_sibling/join`: take a signed request and queue it for a decision.
     pub(crate) fn submit(&self, jws: &Value, now: DateTime<Utc>) -> Result<SubmitReply, HostError> {
         let context = self.context().ok_or(HostError::NotReady)?;
         let verified = verify_jws(jws).map_err(|e| HostError::Invalid(e.to_string()))?;
@@ -232,7 +207,6 @@ impl JoinHost {
         })
     }
 
-    /// The requests waiting for a decision, oldest first.
     pub(crate) fn pending(&self, now: DateTime<Utc>) -> Vec<PendingView> {
         let mut state = self.state();
         state.prune(now);
@@ -251,7 +225,6 @@ impl JoinHost {
             .collect()
     }
 
-    /// The pending request with this approval id, for the person's approval to act on.
     pub(crate) fn find_pending(
         &self,
         approval_id: &str,
@@ -266,12 +239,10 @@ impl JoinHost {
             .map(|e| e.request.clone())
     }
 
-    /// Record the approval: the requester's next poll receives `reply`.
     pub(crate) fn approve(&self, join_id: &str, reply: PollReply, now: DateTime<Utc>) {
         self.decide(join_id, Decision::Approved(reply), now);
     }
 
-    /// Record a refusal. Returns whether a pending request had this approval id.
     pub(crate) fn deny(&self, approval_id: &str, now: DateTime<Utc>) -> bool {
         let Some(request) = self.find_pending(approval_id, now) else {
             return false;
@@ -284,13 +255,11 @@ impl JoinHost {
         let mut state = self.state();
         if let Some(entry) = state.entries.iter_mut().find(|e| e.join_id == join_id) {
             entry.decision = decision;
-            // The answer stays fetchable for the full lifetime from the decision.
             entry.expires_at = now + Duration::seconds(LIFETIME_SECS);
         }
     }
 }
 
-/// Parse and validate the signed request's payload against the host.
 fn checked_payload(
     verified: &VerifiedJws,
     context: &HostContext,
@@ -381,7 +350,6 @@ mod tests {
             TestAccount::new("https://acme.test/acct/r1"),
             TestAccount::new("https://acme.test/acct/r2"),
         );
-        // Both requests reuse one nonce value, as a man in the middle would have to.
         let first = host.issue_nonce(now).unwrap().nonce;
         host.submit(&request(&honest, &first, "desktop"), now)
             .unwrap();
@@ -454,7 +422,6 @@ mod tests {
             host.submit(&request(&extra, &nonce, "one-too-many"), now),
             Err(HostError::TooManyPending)
         );
-        // A refused request doesn't spend its nonce, and a decision frees a place.
         let first = host.pending(now).remove(0);
         assert!(host.deny(&first.approval_id, now));
         host.submit(&request(&extra, &nonce, "one-too-many"), now)

@@ -7,7 +7,6 @@ import {
   type PresenceSocket,
 } from "./push-presence";
 
-/** A hub socket that keeps what was sent, and can drop and come back. */
 function fakeSocket(): PresenceSocket & {
   sent: PresenceMessage[];
   open: boolean;
@@ -31,7 +30,6 @@ function fakeSocket(): PresenceSocket & {
   return socket;
 }
 
-/** A window that is visible and focused until a test says otherwise. */
 function fakePage(): PresencePage & {
   set: (state: { visible?: boolean; focused?: boolean }) => void;
 } {

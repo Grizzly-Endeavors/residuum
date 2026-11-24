@@ -1,5 +1,3 @@
-//! Communication interfaces between the user and the agent.
-
 #[cfg(test)]
 #[path = "../../core/src/testing/crypto.rs"]
 mod crypto;
@@ -25,22 +23,12 @@ use residuum_bus::{
     ResponseEvent, SessionResponseEvent, Subscriber, TurnLifecycleEvent, topics,
 };
 
-/// Common subscriber fields shared by Discord, Telegram, and similar interfaces.
 pub(crate) struct BaseSubscribers {
     pub(crate) response: Subscriber<ResponseEvent>,
-    /// Conversation sessions' turn output for this endpoint (distinct from
-    /// `response`, which carries the main agent's replies and `send_message`
-    /// posts — see [`residuum_bus::SessionResponseEvent`]).
     pub(crate) session_response: Subscriber<SessionResponseEvent>,
     pub(crate) turn_lifecycle: Subscriber<TurnLifecycleEvent>,
-    /// A conversation session's own turn start/end, for a typing indicator
-    /// on its conversation — the session equivalent of `turn_lifecycle`,
-    /// keyed by conversation id instead of correlation id.
     pub(crate) conversation_typing: Subscriber<ConversationTypingEvent>,
     pub(crate) intermediate: Subscriber<IntermediateEvent>,
-    /// Failures of main-agent turns this endpoint started. System notices
-    /// and other errors are not subscribed: an external chat carries only
-    /// conversation, and the web UI shows the rest.
     pub(crate) turn_error: Subscriber<ErrorEvent>,
 }
 
@@ -57,7 +45,6 @@ impl BaseSubscribers {
     }
 }
 
-/// Bundled senders for spawning a chat adapter (Discord or Telegram).
 #[derive(Clone)]
 pub struct AdapterSenders {
     pub publisher: residuum_bus::Publisher,
@@ -65,22 +52,10 @@ pub struct AdapterSenders {
     pub reload: residuum_bus::control::ReloadSender,
     pub command: tokio::sync::mpsc::Sender<residuum_bus::control::ServerCommand>,
     pub stop: tokio::sync::mpsc::Sender<residuum_bus::control::StopRequest>,
-    /// Looked up when a `/stop` command targets a conversation session
-    /// rather than main — see `dispatch_stop_request`.
     pub session_registry: std::sync::Arc<SessionRegistry>,
-    /// Where the adapter registers the conversations it can reach.
     pub conversations: residuum_bus::conversations::ConversationDirectory,
 }
 
-/// Tell `main` that a conversation session's turn output could not be
-/// delivered to its own conversation.
-///
-/// A session never talks to the owner directly and its own conversation
-/// can't show a delivery failure either (the failure is precisely that the
-/// interface couldn't reach it), so this is the only way the failure becomes
-/// visible to the agent system at all — `main` decides whether the owner
-/// needs to hear about it. Logged at `error` regardless of whether the
-/// notice itself reaches main.
 pub(crate) async fn notify_main_of_undeliverable_session_output(
     publisher: &residuum_bus::Publisher,
     session_address: &residuum_bus::SessionAddress,
@@ -102,30 +77,17 @@ pub(crate) async fn notify_main_of_undeliverable_session_output(
     }
 }
 
-/// Channels a chat adapter needs to carry out slash-command side effects.
 pub(crate) struct CommandDispatch<'a> {
     pub(crate) reload_tx: &'a residuum_bus::control::ReloadSender,
     pub(crate) command_tx: &'a tokio::sync::mpsc::Sender<residuum_bus::control::ServerCommand>,
     pub(crate) stop_tx: &'a tokio::sync::mpsc::Sender<residuum_bus::control::StopRequest>,
-    /// Looked up to stop a conversation session's turn — see
-    /// `dispatch_stop_request` — never touched by any other command.
     pub(crate) session_registry: &'a SessionRegistry,
     pub(crate) inbox_dir: &'a Path,
     pub(crate) tz: chrono_tz::Tz,
-    /// Publishes the spawn request `/multitask` starts its fork with.
     pub(crate) publisher: &'a residuum_bus::Publisher,
-    /// Main's saved conversation (`recent_messages.json`), which `/multitask`
-    /// forks.
     pub(crate) main_conversation: &'a Path,
 }
 
-/// Run a slash command typed into a chat interface and return the reply text.
-///
-/// `interface` (e.g. `"telegram"`) labels logs and the inbox source;
-/// `sender_name` is who typed it. `conversation` is the conversation the
-/// command was typed in, exactly as it would appear on an ordinary message
-/// from the same sender — `None` only for an interface with no conversation
-/// concept. It decides `/stop`'s target; every other command ignores it.
 pub(crate) async fn run_chat_command(
     name: &str,
     args: Option<&str>,
@@ -195,10 +157,6 @@ pub(crate) async fn run_chat_command(
     }
 }
 
-/// Fork the main conversation into a session that works on `task` —
-/// `/multitask <task>` — and reply with where it is. Only main's own
-/// conversation (the owner's DM, per [`resolve_stop_target`]) can be forked;
-/// the fork posts its replies back into that DM.
 async fn start_multitask(
     dispatch: &CommandDispatch<'_>,
     interface: &str,
@@ -252,11 +210,6 @@ async fn start_multitask(
     )
 }
 
-/// Stop a named session — `/stop <name>` — through the same registry stop
-/// path as the web UI's per-session stop button
-/// ([`residuum_background::registry::stop_named_session`]): a running turn is
-/// interrupted and an idle session is ended, so a session listed by
-/// `/sessions` can always be stopped by name.
 fn dispatch_stop_named_session(session_registry: &SessionRegistry, name: &str) -> String {
     match residuum_background::registry::stop_named_session(session_registry, name) {
         Ok(()) => format!("stopping session '{name}'."),
@@ -264,8 +217,6 @@ fn dispatch_stop_named_session(session_registry: &SessionRegistry, name: &str) -
     }
 }
 
-/// Build the `/sessions` response: every live session's address, purpose,
-/// state, and elapsed time since it started.
 fn format_session_list(session_registry: &SessionRegistry) -> String {
     let mut sessions = session_registry.list_live();
     if sessions.is_empty() {
@@ -288,9 +239,6 @@ fn format_session_list(session_registry: &SessionRegistry) -> String {
     lines.join("\n")
 }
 
-/// Format a duration as a short, human "Xm" / "Xh Ym" label for the
-/// `/sessions` list. Negative or zero durations (clock skew, or a session
-/// that just started) render as `"0m"` rather than something confusing.
 fn format_elapsed(elapsed: chrono::Duration) -> String {
     let total_mins = elapsed.num_minutes().max(0);
     let hours = total_mins / 60;
@@ -302,21 +250,8 @@ fn format_elapsed(elapsed: chrono::Duration) -> String {
     }
 }
 
-/// Where a `/stop` command should be aimed, resolved from the conversation
-/// it was typed in — the same routing rule as an ordinary message (see
-/// [`residuum_bus::origin::MessageOrigin::belongs_to_main`]): the
-/// owner's own DM (or an interface with no conversation concept, i.e. the
-/// web UI) targets main, every other admitted conversation — a group chat,
-/// a channel, or a non-owner DM — targets that conversation's own session
-/// instead. Every chat interface already restricts commands to the owner,
-/// so `conversation.is_owner` is always true by the time a command reaches
-/// this; it's still checked so the rule reads the same as the one for
-/// ordinary messages rather than silently relying on that.
 enum StopTarget {
-    /// Stop the main agent's current turn.
     Main,
-    /// Stop this conversation's own session, addressed the same way
-    /// [`residuum_background::ConversationRouter`] addresses it.
     Conversation(residuum_bus::SessionAddress),
 }
 
@@ -344,10 +279,6 @@ pub(crate) async fn inbox_add_from_command(
     }
 }
 
-/// Dispatch a named server command and wait for its reply.
-///
-/// Creates a oneshot channel, sends the command, and waits up to 10 seconds
-/// for a response. Falls back to `fallback` on timeout or channel close.
 #[tracing::instrument(skip_all, fields(command = %name, source = %source))]
 pub(crate) async fn dispatch_server_command(
     command_tx: &tokio::sync::mpsc::Sender<residuum_bus::control::ServerCommand>,
@@ -380,26 +311,6 @@ pub(crate) async fn dispatch_server_command(
     }
 }
 
-/// Dispatch a `/stop` command to whichever turn it targets and wait for the
-/// outcome: the main agent's, or the session behind the conversation it was
-/// typed in — see [`resolve_stop_target`] and [`StopTarget`].
-///
-/// A conversation session is stopped through the session registry
-/// directly (the same synchronous, atomic check-and-cancel the web UI's
-/// per-session stop uses via
-/// [`residuum_background::registry::SessionRegistry::stop_if_running`]), so
-/// there is no channel for a stale request to sit in — the reply always
-/// reflects the session's actual state at the moment this call happens.
-///
-/// Main is stopped through `stop_tx` instead: unlike `dispatch_server_command`,
-/// this doesn't go through `command_tx` — that pipeline only drains between
-/// turns, too late to stop one in progress. `stop_tx` reaches the active
-/// turn's own select loop directly, which answers every request it reads
-/// (including one that arrives with nothing running); a request that
-/// arrives in the window between two turns is drained and answered by
-/// `handle_idle_stop_request` or `drain_stale_stop_requests`, so it can
-/// never be held and applied to a turn other than the one running when it
-/// was handled.
 #[tracing::instrument(skip_all, fields(source = %source))]
 pub(crate) async fn dispatch_stop_request(
     stop_tx: &tokio::sync::mpsc::Sender<residuum_bus::control::StopRequest>,
@@ -422,7 +333,6 @@ pub(crate) async fn dispatch_stop_request(
     }
 }
 
-/// Stop the main agent's currently running turn and wait for the outcome.
 async fn dispatch_main_stop_request(
     stop_tx: &tokio::sync::mpsc::Sender<residuum_bus::control::StopRequest>,
     source: &str,
@@ -534,8 +444,6 @@ mod tests {
     #[tokio::test]
     async fn owner_dm_stop_reaches_main_and_never_touches_a_session() {
         let registry = SessionRegistry::new();
-        // Registered at the address a (wrongly) session-targeted stop would
-        // hit, so a regression that ignores `belongs_to_main` shows up here.
         let address = conversation_session_address("discord", "dm-1");
         let token = CancellationToken::new();
         let _rx = registry
@@ -640,9 +548,6 @@ mod tests {
         );
     }
 
-    /// What a `/multitask` test needs to run `start_multitask`: the channels a
-    /// dispatch borrows, a saved main conversation, and the bus its fork's
-    /// spawn request is published on.
     struct MultitaskFixture {
         bus: residuum_bus::BusHandle,
         reload_tx: residuum_bus::control::ReloadSender,

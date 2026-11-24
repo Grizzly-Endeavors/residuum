@@ -1,9 +1,3 @@
-//! Web-facing view of agent sessions: summarizing store records as protocol
-//! types, and carrying out the send-message and stop commands the session
-//! panel (over the WebSocket) and workbench artifacts (over HTTP) share.
-//! Live registry entries and bus events become frames in
-//! `residuum_protocol::frames`.
-
 use residuum_background::messaging::{AgentMessenger, DeliveryOutcome, SendError};
 use residuum_background::registry::{SessionRegistry, StopSessionError, stop_named_session};
 use residuum_background::store::RunRecord;
@@ -16,16 +10,8 @@ use residuum_protocol::{
     SessionCommandErrorCode, SessionDeliveryOutcome, SessionRunStatus, SessionSummary,
 };
 
-/// Category label a message from the owner carries as its sender's category.
 const OWNER_CATEGORY: &str = "owner";
 
-/// Summarize a run from its store record. `None` (logged) when the record
-/// names a category or state this build doesn't know, which would mean a
-/// corrupted or hand-edited record.
-///
-/// A record's state is only as fresh as its last write: a live run's record
-/// says `running` whatever its current state, so callers prefer
-/// [`residuum_protocol::frames::summary_from_live`] for a run that is still in the registry.
 #[must_use]
 pub(crate) fn summary_from_record(record: &RunRecord) -> Option<SessionSummary> {
     let (Some(category), Some(state)) = (
@@ -75,12 +61,9 @@ pub(crate) fn summary_from_record(record: &RunRecord) -> Option<SessionSummary> 
     })
 }
 
-/// A session command the web UI sent could not be carried out.
 #[derive(Debug, Clone)]
 pub(crate) struct SessionCommandError {
-    /// Machine-readable reason.
     pub code: SessionCommandErrorCode,
-    /// Explanation suitable to show the user.
     pub message: String,
 }
 
@@ -93,18 +76,13 @@ impl SessionCommandError {
     }
 }
 
-/// Who a message sent to a session from outside the agent system comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SessionMessageAuthor {
-    /// The owner, typing into the web UI (a session panel, or an HTTP
-    /// request without an artifact identity).
     Owner,
-    /// The workbench artifact with this name, identified by its SDK's header.
     Artifact(String),
 }
 
 impl SessionMessageAuthor {
-    /// The sender address and category label the message carries.
     fn sender(&self) -> (SessionAddress, String) {
         match self {
             Self::Owner => (
@@ -119,12 +97,8 @@ impl SessionMessageAuthor {
     }
 }
 
-/// The longest message id a sender may choose. An id is written into the
-/// session's transcript and every frame that names the message.
 const MAX_MESSAGE_ID_LEN: usize = 128;
 
-/// Whether `id` is usable as a sender-chosen message id: not empty, at most
-/// [`MAX_MESSAGE_ID_LEN`] bytes, and only ASCII letters, digits, `-` and `_`.
 fn is_valid_message_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= MAX_MESSAGE_ID_LEN
@@ -133,33 +107,12 @@ fn is_valid_message_id(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
-/// A message [`send_session_message`] handed to a session.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SessionMessageSent {
-    /// The message's id: the one the sender chose, or a fresh one.
     pub(crate) id: String,
-    /// Where the message landed.
     pub(crate) outcome: SessionDeliveryOutcome,
 }
 
-/// Deliver a message from the owner or a workbench artifact to the session
-/// at `address`.
-///
-/// Goes through the same messenger every agent message does, as hop count 0
-/// (the input originates outside the agent system), so the normal delivery
-/// rules apply: an interrupt while running, a new turn while idle, a new run
-/// once completed. The session sees the message attributed to `author`. The
-/// message carries `id` when the sender chose one, otherwise a fresh id; the
-/// session's `session_user_message` frame carries the same id when it reads
-/// the message.
-///
-/// # Errors
-/// Returns a [`SessionCommandError`] when the request is unusable (empty
-/// content, a chosen id that is empty, longer than 128 bytes or holds
-/// anything but letters, digits, `-` and `_`, or `main`, which is messaged
-/// through the normal chat), when no
-/// session has ever run at `address`, when the session is too busy to take
-/// another message, or when delivery fails.
 pub(crate) async fn send_session_message(
     messenger: &AgentMessenger,
     address: &str,
@@ -214,8 +167,6 @@ pub(crate) async fn send_session_message(
             format!("There's no session called {address}. It may have been from before a restart."),
         )),
         Ok(DeliveryOutcome::Main) => {
-            // Unreachable: `main` is rejected above. Reported rather than
-            // assumed, so a routing change can't silently misdeliver.
             tracing::error!(address, "message to a session was routed to main");
             Err(SessionCommandError::new(
                 SessionCommandErrorCode::DeliveryFailed,
@@ -236,12 +187,6 @@ pub(crate) async fn send_session_message(
     }
 }
 
-/// Stop the live session at `address`, as the Stop button in Activity and the
-/// `POST /api/agents/{name}/sessions/{address}/stop` endpoint do.
-///
-/// # Errors
-/// Returns a [`SessionCommandError`] when `address` is `main` or doesn't name
-/// a live session that can still be stopped (it may already be finishing).
 pub(crate) fn stop_session(
     registry: &SessionRegistry,
     address: &str,
@@ -606,9 +551,6 @@ mod tests {
 
     #[test]
     fn a_record_without_error_details_still_summarizes_with_none() {
-        // Mirrors a record written before `outcome_error_details` existed —
-        // `RunRecord::starting` already defaults it to `None`, so this just
-        // pins that `summary_from_record` doesn't fabricate a value.
         let info = live_info("spawned-h-0006", SessionState::Running);
         let mut record = RunRecord::starting(&info);
         record.outcome = Some("failed".to_string());
@@ -633,8 +575,6 @@ mod tests {
 
     #[test]
     fn record_with_no_recorded_outcome_summarizes_with_none() {
-        // A record written before this field existed: must not fail to
-        // summarize, and must not fabricate an outcome it never recorded.
         let info = live_info("spawned-h-0003", SessionState::Running);
         let record = RunRecord::starting(&info);
         let summary = summary_from_record(&record).expect("record should summarize");

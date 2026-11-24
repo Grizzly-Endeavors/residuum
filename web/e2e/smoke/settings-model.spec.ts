@@ -3,13 +3,6 @@ import { parse as parseToml } from "smol-toml";
 import { expectNoAxeViolations } from "../support/axe";
 import { expect, test } from "../support/fixtures";
 
-/**
- * The agent's Model section: Fix settings for brittle's model that its
- * provider doesn't offer, through Save and a restart from its state card;
- * adding and removing a provider; a job's own model; and thinking for every
- * model. Each is read back from the file on disk.
- */
-
 const overlay = { within: "[data-overlay-host]" } as const;
 const saveBar = (page: Page): Locator => page.getByRole("region", { name: "Unsaved changes" });
 const mainModel = (page: Page): Locator => page.getByRole("region", { name: "Main model" });

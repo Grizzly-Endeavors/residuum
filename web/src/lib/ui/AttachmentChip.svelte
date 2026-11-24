@@ -8,38 +8,18 @@
   import VisuallyHidden from "./VisuallyHidden.svelte";
   import type { AttachmentState } from "./types";
 
-  // A file as a chip: its icon, name and size, in an open message, a list row,
-  // or the composer's staged files. A ready chip is a download link (`href`),
-  // an Open button (`onopen`), or plain text, and may carry Remove. While the
-  // file is pending or failed it can't be opened or downloaded; a failed chip
-  // says so and offers Try again.
-  //
-  // The chip has a `control-border` outline over a stone fill, so it stays
-  // visible on any container stone (stone-0 to stone-3) and its boundary meets
-  // the 3:1 a control needs. A failed chip swaps the outline for `err` and the
-  // fill for `err-tint`.
   interface Props {
     filename: string;
-    /** Bytes. Shown beside the name when given. */
     size?: number;
-    /** The file's MIME type. With the filename's extension it picks the icon. */
     contentType?: string;
     state?: AttachmentState;
-    /** How far a pending file has got, 0 to 1. Without it a pending chip shows a spinner. */
     progress?: number;
-    /** What a pending file is doing, as a verb that reads before the filename ("Uploading"). */
     pendingLabel?: string;
-    /** What went wrong, in plain words, for a failed chip ("Couldn't upload"). */
     failure?: string;
-    /** Makes a ready chip a download link to this address. */
     href?: string;
-    /** The name the browser saves the download under. Defaults to the filename. */
     download?: string;
-    /** Makes a ready chip an Open button. With `href` too, the download becomes a second control. */
     onopen?: () => void;
-    /** Adds a Remove button. */
     onremove?: () => void;
-    /** Adds a Try again button to a failed chip. */
     onretry?: () => void;
     class?: string;
   }
@@ -71,7 +51,6 @@
 
   const ready = $derived(state === "ready");
   const opens = $derived(ready && onopen !== undefined);
-  // With both, Open is the chip and the download is a trailing control.
   const downloads = $derived(ready && href !== undefined);
   const main = $derived.by<"open" | "download" | "text">(() => {
     if (opens) return "open";
@@ -206,7 +185,6 @@
     background: var(--color-stone-3);
     color: var(--color-text);
     font-size: var(--font-size-sm);
-    /* A quiet button on the chip lifts to stone-4; stone-3 is the chip's own fill. */
     --ui-quiet-hover: var(--color-stone-4);
   }
 
@@ -241,7 +219,6 @@
     }
   }
 
-  /* The chip's own edge is the ring; an outset ring would poke out of it. */
   :is(a, button).ui-attachment-main:focus-visible,
   .ui-attachment-download:focus-visible,
   .ui-attachment :global(.ui-attachment-action:focus-visible) {
@@ -265,7 +242,6 @@
     }
   }
 
-  /* The stem gives way first, so the extension stays readable. */
   .ui-attachment-name,
   .ui-attachment-pieces {
     display: flex;
@@ -344,7 +320,6 @@
   }
 
   @media (max-width: 760px) {
-    /* The border takes 2px of the touch target's height. */
     .ui-attachment {
       min-height: calc(var(--layout-touch-target) + 2px);
     }

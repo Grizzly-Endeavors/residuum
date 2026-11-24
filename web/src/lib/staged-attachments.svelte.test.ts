@@ -8,7 +8,6 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
-/** Each upload waits until the test answers it, in the order they were asked. */
 function heldUploads(): {
   answer: (index: number, response: Response) => void;
   count: () => number;

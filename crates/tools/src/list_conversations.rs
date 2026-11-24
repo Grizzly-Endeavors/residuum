@@ -1,5 +1,3 @@
-//! List the conversations the agent can post into on each chat interface.
-
 use async_trait::async_trait;
 use serde_json::Value;
 
@@ -10,13 +8,11 @@ use residuum_inference::ToolDefinition;
 use residuum_agent::Tool;
 use residuum_inference::{ToolError, ToolResult};
 
-/// Tool for listing reachable DMs, group chats, and channels per chat interface.
 pub struct ListConversationsTool {
     registry: EndpointRegistry,
 }
 
 impl ListConversationsTool {
-    /// Create a new `ListConversationsTool`.
     #[must_use]
     pub fn new(registry: EndpointRegistry) -> Self {
         Self { registry }

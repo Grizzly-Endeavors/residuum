@@ -3,21 +3,13 @@
   import { Icon } from "../../lib/icons";
   import type { Diagnostic } from "../../lib/types";
 
-  // A file as text with its problems listed under it; a problem with a
-  // position moves the cursor there. The file panel fills itself with one,
-  // its lines wrapping like prose. Raw config shows one as a field, its lines
-  // unwrapped and numbered, with the lines that have a problem marked.
-
   interface Props {
-    /** The file's name, for the text box's label and the problem list. */
     name: string;
     value: string;
     problems: readonly Diagnostic[];
     oninput: (text: string) => void;
-    /** `panel` fills its container edge to edge; `field` is a bordered box with numbered lines. */
     layout: "panel" | "field";
     readonly?: boolean;
-    /** One quiet line about the problems: being checked, none found, or why they couldn't be. */
     status?: string;
     onkeydown?: (event: KeyboardEvent) => void;
   }
@@ -38,7 +30,6 @@
 
   const numbered = $derived(layout === "field");
   const lineCount = $derived(value.split("\n").length);
-  /** Each line with a problem, and its worst severity. */
   const marked = $derived.by(() => {
     const lines: Partial<Record<number, Diagnostic["severity"]>> = {};
     for (const { location, severity } of problems) {
@@ -140,7 +131,6 @@
     --leading: var(--line-height-message);
   }
 
-  /* The page of the document: the panel's deepest surface, edge to edge under its header. */
   [data-layout="panel"] .text-editor-box {
     background: var(--color-stone-0);
 
@@ -160,7 +150,6 @@
     }
   }
 
-  /* Every line number is drawn, so the gutter takes no height of its own: the text box sets the row's. */
   .gutter {
     height: 0;
     min-height: 100%;

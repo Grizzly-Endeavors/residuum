@@ -1,6 +1,3 @@
-//! Workspace management: identity files, bootstrapping, the change feed, and
-//! the inbox.
-
 #[cfg(test)]
 #[path = "../../core/src/testing/crypto.rs"]
 mod crypto;

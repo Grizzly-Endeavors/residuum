@@ -1,21 +1,3 @@
-//! Pulse fires in flight: every firing of a pulse, from the moment the
-//! scheduler finds it due until its scripts and its session (if it has one)
-//! have finished.
-//!
-//! The event loop registers a fire with `PulseFires::begin` and runs it on
-//! its own task, holding the returned `PulseFire`. That handle moves the
-//! fire from its script phase to its session phase, finishes it with an
-//! outcome, and on drop (a panic, an early return) takes it out of the
-//! tracker, so no stale entry outlives its task. Every change is published
-//! as a `PulseFireEvent` on the system channel, carrying the pulse's run
-//! in flight as the Schedule place shows it.
-//!
-//! Each fire has a stop token, a child of the agent's own, which kills its
-//! running script, keeps it from starting its session, or stops that
-//! session: the Schedule place's per-fire Stop cancels it through
-//! `PulseFires::stop`, and stopping the agent cancels them all. Nothing
-//! here is persisted: after a restart no fire is in flight.
-
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -29,24 +11,14 @@ use residuum_bus::{
     PulseFireRun, PulseOverlap, SYSTEM_CHANNEL, SessionAddress, topics,
 };
 
-/// Every pulse fire in flight, shared by the agent's event loop (which
-/// starts them), each fire's own task, and the Schedule place's HTTP routes.
 #[derive(Default)]
 pub struct PulseFires {
     fires: Mutex<HashMap<String, FireEntry>>,
-    /// Counts fires as they begin, so the newest of two fires that began in
-    /// the same instant is still well defined.
     next_seq: Mutex<u64>,
-    /// Held while a change's event is built and published, so the pulse's
-    /// run in flight it carries is read and sent in the order the changes
-    /// happened: the last event a pulse's fires publish always carries its
-    /// current state.
     announce: tokio::sync::Mutex<()>,
-    /// The parent of every fire's stop token, cancelled when the agent stops.
     agent_stop: CancellationToken,
 }
 
-/// One fire in flight.
 struct FireEntry {
     pulse: String,
     seq: u64,
@@ -60,8 +32,6 @@ struct FireEntry {
 
 impl FireEntry {
     fn run(&self, fire_id: &str, registry: &SessionRegistry) -> PulseFireRun {
-        // The registry knows the run id as soon as the session registers,
-        // a moment before the fire's own task hears of it.
         let run_id = self.run_id.clone().or_else(|| {
             self.address
                 .as_ref()
@@ -79,8 +49,6 @@ impl FireEntry {
     }
 }
 
-/// The live scheduled sessions of `pulse` that no tracked fire owns, oldest
-/// first: sessions resumed by a message to a pulse session's address.
 fn untracked_sessions(
     fires: &HashMap<String, FireEntry>,
     registry: &SessionRegistry,
@@ -116,17 +84,10 @@ impl PulseFires {
         self.fires.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Stop every fire in flight, because the agent is stopping: each
-    /// running script is killed, and no fire delivers anything more.
     pub(crate) fn stop_all(&self) {
         self.agent_stop.cancel();
     }
 
-    /// Register a new fire of `pulse`, which starts in `phase` (`script` for
-    /// a pulse with task scripts, `session` otherwise) with the `overlap` the
-    /// caller found (see [`Self::overlap`]). The returned handle publishes
-    /// the fire's changes through `publisher`, reading the registry for the
-    /// pulse's sessions no fire tracks.
     pub(crate) fn begin(
         self: &Arc<Self>,
         pulse: &str,
@@ -166,8 +127,6 @@ impl PulseFires {
         }
     }
 
-    /// Ask the fire `fire_id` of `pulse` to stop. Returns `false` when no
-    /// such fire is in flight: it already finished, or never existed.
     pub(crate) fn stop(&self, pulse: &str, fire_id: &str) -> bool {
         let fires = self.lock();
         let Some(fire) = fires.get(fire_id).filter(|fire| fire.pulse == pulse) else {
@@ -177,9 +136,6 @@ impl PulseFires {
         true
     }
 
-    /// The run of `pulse` in flight, as the Schedule place shows it: its
-    /// newest fire still in flight, or, when no fire is, its newest live
-    /// scheduled session no fire tracks.
     pub(crate) fn current_run(
         &self,
         pulse: &str,
@@ -198,10 +154,6 @@ impl PulseFires {
             .map(session_run)
     }
 
-    /// The overlap a new fire of `pulse` starts with: its oldest earlier
-    /// fire still in flight (in its scripts, waiting for its session, or with
-    /// its session live), or the oldest live session of the pulse no fire
-    /// tracks. `None` when nothing of the pulse is running.
     pub(crate) fn overlap(&self, pulse: &str, registry: &SessionRegistry) -> Option<PulseOverlap> {
         let fires = self.lock();
         let oldest_fire = fires
@@ -236,8 +188,6 @@ impl PulseFires {
     }
 }
 
-/// Publish `change` to `fire_id` of `pulse`, with the pulse's run in flight
-/// as of now.
 async fn announce(
     fires: &PulseFires,
     publisher: &Publisher,
@@ -264,10 +214,6 @@ async fn announce(
     }
 }
 
-/// One fire in flight, held by the task running it. Dropping it without
-/// [`finish`](Self::finish)ing or [`end`](Self::end)ing it (a panic, an
-/// early return) still takes it out of the tracker and tells the Schedule
-/// place it ended.
 pub(crate) struct PulseFire {
     fires: Arc<PulseFires>,
     id: String,
@@ -279,28 +225,22 @@ pub(crate) struct PulseFire {
 }
 
 impl PulseFire {
-    /// The fire's id, which its Stop endpoint takes.
     pub(crate) fn id(&self) -> &str {
         &self.id
     }
 
-    /// The pulse this is a fire of.
     pub(crate) fn pulse(&self) -> &str {
         &self.pulse
     }
 
-    /// Cancelled when the owner stops this fire or the agent stops.
     pub(crate) fn stop_token(&self) -> &CancellationToken {
         &self.stop
     }
 
-    /// Whether the agent is stopping, as opposed to the owner stopping this
-    /// one fire.
     pub(crate) fn agent_stopping(&self) -> bool {
         self.fires.agent_stop.is_cancelled()
     }
 
-    /// The fire has asked for its session at `address`.
     pub(crate) fn request_session(&self, address: SessionAddress) {
         self.fires.update(&self.id, |fire| {
             fire.phase = PulseFirePhase::Session;
@@ -308,21 +248,16 @@ impl PulseFire {
         });
     }
 
-    /// The fire's session registered as `run_id`.
     pub(crate) fn session_registered(&self, run_id: String) {
         self.fires
             .update(&self.id, |fire| fire.run_id = Some(run_id));
     }
 
-    /// Take the fire out of the tracker, and withdraw the stop token it
-    /// offered its session, so a request it published but no listener has
-    /// forked yet forks nothing.
     fn leave_tracker(&self) {
         self.fires.remove(&self.id);
         self.registry.fire_stops().withdraw(&self.id);
     }
 
-    /// Publish `change`, with the pulse's run in flight as of now.
     pub(crate) async fn announce(&self, change: PulseFireChange) {
         announce(
             &self.fires,
@@ -335,8 +270,6 @@ impl PulseFire {
         .await;
     }
 
-    /// Finish the fire with `outcome`; `session_run_id` is the session run
-    /// that ended it, if one did (see [`PulseFireChange::Finished`]).
     pub(crate) async fn finish(
         mut self,
         outcome: PulseFireOutcome,
@@ -351,8 +284,6 @@ impl PulseFire {
         .await;
     }
 
-    /// End the fire with no outcome to show: the agent is stopping, or the
-    /// bus closed under it.
     pub(crate) async fn end(mut self) {
         self.leave_tracker();
         self.ended = true;

@@ -14,16 +14,6 @@
   import { viewImageLabel, type ViewerImage } from "./image-viewer";
   import Timestamp from "./Timestamp.svelte";
 
-  // The user's message: a moss bubble on the right, with a sender line when
-  // it came from another interface or a workbench artifact. Its time sits left
-  // of the bubble, taking no room below it; where the conversation is too
-  // narrow for that, it floats over the gap under the bubble. Its images open
-  // full size, and its files show as chips: a Markdown or text file opens in
-  // the context panel, any other downloads. The `[Attachment: …]` lines those
-  // chips stand for are not shown. A turn observed live that changed files
-  // offers Undo this turn, in `agent`'s workspace, always in sight beside the
-  // bubble.
-
   let { item, agent }: { item: UserFeedItem; agent: string } = $props();
 
   const senderLine = $derived(
@@ -35,7 +25,6 @@
   const attachments = $derived(item.attachments ?? []);
   const text = $derived(withoutAttachmentLines(item.content, attachments));
 
-  // The images the message carried, each opening full size in the viewer.
   const pictures = $derived<ViewerImage[]>(
     (item.images ?? []).map((image, index) => ({
       src: `data:${image.media_type};base64,${image.data}`,
@@ -46,8 +35,6 @@
 
   let undoing = $state(false);
 
-  // Whether the turn changed anything is asked once, when it ends. If that
-  // can't be told, Undo stays hidden rather than offering nothing to undo.
   $effect(() => {
     const turn = item.turn;
     if (turn?.changed !== null) return;
@@ -222,7 +209,6 @@
     }
   }
 
-  /* A picture is a button that opens it full size. */
   .user-image {
     display: block;
     padding: 0;
@@ -231,7 +217,6 @@
     --leading: 0;
   }
 
-  /* Undo and the time line up left of the bubble, on its last line. */
   .user-row {
     position: relative;
     display: flex;
@@ -241,13 +226,11 @@
     gap: var(--space-8);
   }
 
-  /* On the baseline of the bubble's last line. */
   .user-time {
     display: flex;
     align-self: last baseline;
   }
 
-  /* Too narrow to spare the room beside the bubble: the time floats over the gap under it. */
   @container feed (max-width: 639px) {
     .user-time {
       position: absolute;

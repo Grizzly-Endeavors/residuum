@@ -1,8 +1,5 @@
 import { expect, test } from "../support/fixtures";
 
-// `@preview` specs run against the production build served with the mock, the
-// place for what the dev server can't show: the service worker, installability,
-// and the bundle as it ships.
 test(
   "the production build serves the app and the mock API",
   { tag: "@preview" },

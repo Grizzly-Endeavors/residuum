@@ -1,5 +1,3 @@
-//! Shared HTTP utilities for model provider clients.
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -7,17 +5,10 @@ use reqwest::Client;
 
 use super::InferenceError;
 
-/// Configuration for HTTP client connection pooling.
 #[derive(Debug, Clone)]
 pub struct HttpClientConfig {
-    /// Request timeout in seconds. Bounds a whole request/response exchange;
-    /// for a streaming response it bounds how long the stream may go without
-    /// delivering a byte instead, so a long answer is never cut off for its
-    /// length.
     pub timeout_secs: u64,
-    /// Maximum idle connections per host (default: 10).
     pub(crate) pool_max_idle_per_host: usize,
-    /// HTTP/2 keep-alive interval in seconds (default: 30).
     pub(crate) http2_keep_alive_secs: u64,
 }
 
@@ -32,7 +23,6 @@ impl Default for HttpClientConfig {
 }
 
 impl HttpClientConfig {
-    /// Create a config with the specified timeout and default pool settings.
     #[must_use]
     pub fn with_timeout(timeout_secs: u64) -> Self {
         Self {
@@ -42,10 +32,6 @@ impl HttpClientConfig {
     }
 }
 
-/// Shared HTTP client wrapper for connection reuse across model providers.
-///
-/// Uses `Arc` internally, making `Clone` cheap and allowing multiple
-/// providers to share the same underlying connection pool.
 #[derive(Clone)]
 pub struct SharedHttpClient {
     client: Arc<Client>,
@@ -54,10 +40,6 @@ pub struct SharedHttpClient {
 }
 
 impl SharedHttpClient {
-    /// Create a new shared HTTP client with the specified configuration.
-    ///
-    /// # Errors
-    /// Returns `InferenceError::Request` if the HTTP client cannot be built.
     pub fn new(config: &HttpClientConfig) -> Result<Self, InferenceError> {
         let pooled = || {
             Client::builder()
@@ -65,9 +47,6 @@ impl SharedHttpClient {
                 .http2_keep_alive_interval(Duration::from_secs(config.http2_keep_alive_secs))
         };
         let timeout = Duration::from_secs(config.timeout_secs);
-        // A streaming answer can legitimately run for minutes, so it gets a
-        // read timeout (reset by every byte, and covering the wait for the
-        // response to begin) where a whole-request answer gets a total one.
         let client = pooled().timeout(timeout).build()?;
         let stream_client = pooled().read_timeout(timeout).build()?;
 
@@ -78,28 +57,22 @@ impl SharedHttpClient {
         })
     }
 
-    /// Get a reference to the underlying HTTP client, whose requests time
-    /// out as a whole after the configured timeout.
     #[must_use]
     pub fn client(&self) -> &Client {
         &self.client
     }
 
-    /// Get the HTTP client for streaming requests. It has no total timeout:
-    /// a request fails only when no bytes arrive for the configured timeout.
     #[must_use]
     pub(crate) fn streaming_client(&self) -> &Client {
         &self.stream_client
     }
 
-    /// Get the configured timeout in seconds.
     #[must_use]
     pub fn timeout_secs(&self) -> u64 {
         self.timeout_secs
     }
 }
 
-/// Check if a URL is using insecure HTTP for a remote (non-localhost) server.
 fn is_insecure_remote_url(url: &str) -> bool {
     let url_lower = url.to_lowercase();
     url_lower.starts_with("http://")
@@ -108,7 +81,6 @@ fn is_insecure_remote_url(url: &str) -> bool {
         && !url_lower.contains("[::1]")
 }
 
-/// Warn if a URL uses insecure HTTP for a remote server.
 pub fn warn_if_insecure_remote(url: &str) {
     if is_insecure_remote_url(url) {
         tracing::warn!(
@@ -118,10 +90,6 @@ pub fn warn_if_insecure_remote(url: &str) {
     }
 }
 
-/// Map a reqwest error to a [`InferenceError`], detecting timeouts.
-///
-/// The URL is dropped from the error before it is wrapped: reqwest's text
-/// includes the URL, and a provider may carry a credential in one.
 pub fn map_request_error(e: reqwest::Error, timeout_secs: u64) -> InferenceError {
     if e.is_timeout() {
         InferenceError::Timeout(timeout_secs)
@@ -130,8 +98,6 @@ pub fn map_request_error(e: reqwest::Error, timeout_secs: u64) -> InferenceError
     }
 }
 
-/// Map an error from sending a streaming request to a [`InferenceError`].
-/// Drops the URL as [`map_request_error`] does.
 pub fn map_stream_request_error(e: reqwest::Error, idle_secs: u64) -> InferenceError {
     if e.is_timeout() {
         InferenceError::Stalled(idle_secs)
@@ -140,9 +106,6 @@ pub fn map_stream_request_error(e: reqwest::Error, idle_secs: u64) -> InferenceE
     }
 }
 
-/// Map an error from reading a streaming response body: the model going
-/// quiet is a stall, anything else (a dropped connection, a body that ends
-/// mid-chunk) an interrupted stream. Drops the URL as [`map_request_error`] does.
 pub fn map_stream_read_error(e: reqwest::Error, idle_secs: u64) -> InferenceError {
     if e.is_timeout() {
         InferenceError::Stalled(idle_secs)
@@ -151,7 +114,6 @@ pub fn map_stream_read_error(e: reqwest::Error, idle_secs: u64) -> InferenceErro
     }
 }
 
-/// An error and its sources on one line, outermost first.
 fn error_chain(e: &dyn std::error::Error) -> String {
     let mut text = e.to_string();
     let mut source = e.source();
@@ -163,7 +125,6 @@ fn error_chain(e: &dyn std::error::Error) -> String {
     text
 }
 
-/// Read the body of an error response, falling back to a placeholder if reading fails.
 pub async fn read_error_body(response: reqwest::Response) -> String {
     match response.text().await {
         Ok(b) => b,
@@ -174,23 +135,11 @@ pub async fn read_error_body(response: reqwest::Response) -> String {
     }
 }
 
-/// Whether an HTTP status code represents a transient failure (timeout, rate
-/// limit, Groq capacity refusal, or 5xx server error) that will be retried.
 #[must_use]
 pub(crate) const fn is_retryable_status(status: u16) -> bool {
     matches!(status, 408 | 429 | 498) || status >= 500
 }
 
-/// Log a non-2xx provider HTTP response without dumping full request prompts
-/// and observation history at `WARN`.
-///
-/// - `WARN` always records `provider`, `status`, `request_bytes`, and
-///   `response_body`.
-/// - For retryable transient statuses (`408`, `429`, `498`, `5xx`), the
-///   media-redacted `request_body` is logged at `TRACE`.
-/// - For non-retryable client errors (`400`, `404`, `422`, etc., where the
-///   request payload itself was rejected), the media-redacted `request_body`
-///   is logged at `DEBUG`.
 pub(crate) fn log_api_error(
     provider: &str,
     status: reqwest::StatusCode,
@@ -223,15 +172,8 @@ pub(crate) fn log_api_error(
     }
 }
 
-/// Shortest inline media payload [`without_inline_media`] replaces. Shorter
-/// strings are left alone: a base64-looking word in a message is kept.
 const INLINE_MEDIA_MIN_LEN: usize = 256;
 
-/// A request body as JSON text for a diagnostic log, with every inline media
-/// payload (a base64 image, or a `data:` URL holding one) replaced by its
-/// size: a failed request with images would otherwise write megabytes of
-/// base64 into the log each time it is refused. Text that isn't JSON comes
-/// back unchanged.
 pub(crate) fn without_inline_media(request_json: &str) -> String {
     let Ok(mut value) = serde_json::from_str::<serde_json::Value>(request_json) else {
         return request_json.to_string();
@@ -386,8 +328,6 @@ mod tests {
         );
     }
 
-    /// A response that sends a chunk every 100ms for two seconds, twice the
-    /// one-second timeout it streams under.
     fn slow_steady_response() -> Vec<Step> {
         let mut script = vec![Step::head(200, "text/event-stream")];
         for _ in 0..20 {
@@ -448,8 +388,6 @@ mod tests {
         );
     }
 
-    /// A send that fails at the transport, carrying a credential in its
-    /// query. Binds a port and frees it, so the connection is refused at once.
     async fn refused_send(query: &str) -> reqwest::Error {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -557,8 +495,6 @@ mod tests {
         });
 
         let events = collector.events.lock().unwrap().clone();
-        // At DEBUG max level, 429 produces only the WARN event (without request_body),
-        // while 400 produces WARN (without request_body) + DEBUG (with request_body).
         let warn_events: Vec<&String> = events
             .iter()
             .filter(|(lvl, _)| *lvl == tracing::Level::WARN)

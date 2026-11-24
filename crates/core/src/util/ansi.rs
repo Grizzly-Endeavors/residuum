@@ -1,15 +1,7 @@
-//! Removal of ANSI terminal escape sequences from a byte stream read in pieces.
-
 const ESC: u8 = 0x1b;
 const BEL: u8 = 0x07;
 const NEWLINE: u8 = b'\n';
 
-/// Strips escape sequences (CSI, OSC and the two-byte and charset forms) from
-/// output read in chunks.
-///
-/// The state carries across [`AnsiStripper::strip_into`] calls, so a sequence
-/// split between two reads is removed whole. An OSC string that never ends is
-/// closed by the next newline rather than swallowing the rest of the output.
 #[derive(Debug, Default)]
 pub(crate) struct AnsiStripper {
     state: State,
@@ -19,21 +11,14 @@ pub(crate) struct AnsiStripper {
 enum State {
     #[default]
     Text,
-    /// After `ESC`, before the byte that says what kind of sequence it opens.
     Escape,
-    /// Intermediate bytes of a sequence without a `[` or `]` introducer, such as
-    /// the charset designation `ESC ( B`.
     EscapeIntermediate,
-    /// Inside a CSI sequence (`ESC [`), before its final byte.
     Csi,
-    /// Inside an OSC string (`ESC ]`), before its terminator.
     Osc,
-    /// Inside an OSC string, after an `ESC` that may start the `ESC \` terminator.
     OscEscape,
 }
 
 impl AnsiStripper {
-    /// Append `input` to `out` with any escape sequence removed.
     pub(crate) fn strip_into(&mut self, input: &[u8], out: &mut Vec<u8>) {
         for &byte in input {
             let (next, emit) = match self.state {
@@ -43,7 +28,6 @@ impl AnsiStripper {
                     b'[' => (State::Csi, false),
                     b']' => (State::Osc, false),
                     0x20..=0x2F => (State::EscapeIntermediate, false),
-                    // A two-byte sequence such as `ESC 7` or `ESC M`.
                     0x30..=0x7E => (State::Text, false),
                     ESC => (State::Escape, false),
                     _ => (State::Text, true),

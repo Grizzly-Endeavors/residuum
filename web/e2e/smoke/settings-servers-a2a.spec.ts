@@ -6,7 +6,6 @@ const saveBar = (page: Page): Locator => page.getByRole("region", { name: "Unsav
 const servers = (page: Page): Locator => page.getByRole("list", { name: "Servers" });
 const catalog = (page: Page): Locator => page.getByRole("list", { name: "Catalog" });
 
-/** The servers in atlas's mcp.json on disk. */
 async function serversOnDisk(page: Page): Promise<Record<string, { env?: object }>> {
   const raw = await (await page.request.get("/api/agents/atlas/mcp/raw")).text();
   return (JSON.parse(raw) as { mcpServers: Record<string, { env?: object }> }).mcpServers;
@@ -54,7 +53,6 @@ test("Undo after saving a removal puts the server back on disk", async ({ page }
   await page.goto("/agent/atlas?settings=atlas/servers");
   await servers(page).getByRole("button", { name: "Remove filesystem" }).click();
   await saveBar(page).getByRole("button", { name: "Save changes" }).click();
-  // Toasts share one status region, and the removal's own toast has an Undo too.
   const saved = page.getByText("Saved mcp.json.", { exact: true }).locator("..");
   await expect(saved).toBeVisible();
   expect(Object.keys(await serversOnDisk(page))).not.toContain("filesystem");

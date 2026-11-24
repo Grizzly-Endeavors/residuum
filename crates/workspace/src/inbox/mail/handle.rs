@@ -1,14 +1,7 @@
-//! A late-bound, weak [`MailboxDirectory`], for the agents' tools.
-
 use residuum_core::util::LateBound;
 
 use super::{Mailbox, MailboxDirectory};
 
-/// A late-bound, weak reference to the hub's [`MailboxDirectory`], which the
-/// agent host binds itself into on construction.
-///
-/// The handle is itself a [`MailboxDirectory`]: before it is bound, or once
-/// the host is gone, it knows no mailboxes.
 pub type MailboxDirectoryHandle = LateBound<dyn MailboxDirectory>;
 
 impl MailboxDirectory for MailboxDirectoryHandle {

@@ -1,84 +1,42 @@
-//! Workspace bootstrapping: creates required directories and default identity files.
-
 use residuum_core::util::FatalError;
 
 use super::team_files::TeamWriteCoordinator;
 use residuum_config::WorkspaceLayout;
 
-// ── Workspace bootstrap content (embedded at compile time from assets/) ──────
-
 const DEFAULT_SOUL: &str = include_str!("../../../assets/workspace-bootstrap/SOUL.md");
 
-/// Default content for BOOTSTRAP.md -- first-run guidance.
-///
-/// This file is written once during workspace creation and should be deleted
-/// by the agent after the first conversation. A `.bootstrapped` sentinel file
-/// prevents it from being recreated on subsequent startups.
 const DEFAULT_BOOTSTRAP: &str = include_str!("../../../assets/workspace-bootstrap/BOOTSTRAP.md");
 
-/// Default observer content guidance written to memory/OBSERVER.md.
-///
-/// Contains only the customizable content portion — the output format spec is
-/// always injected by the Rust code and cannot be lost by editing this file.
 const DEFAULT_OBSERVER_PROMPT: &str =
     include_str!("../../../assets/workspace-bootstrap/memory/OBSERVER.md");
 
-/// Default reflector content guidance written to memory/REFLECTOR.md.
-///
-/// Contains only the customizable content portion — the output format spec is
-/// always injected by the Rust code and cannot be lost by editing this file.
 const DEFAULT_REFLECTOR_PROMPT: &str =
     include_str!("../../../assets/workspace-bootstrap/memory/REFLECTOR.md");
 
-/// Default `config/agent-card.json` -- what this agent advertises to other
-/// agents reaching it over A2A. See `docs/systems-usage/a2a.md`.
 const DEFAULT_AGENT_CARD: &str =
     include_str!("../../../assets/workspace-bootstrap/config/agent-card.json");
 
-/// Built-in `introspection` skill, used by the reflection pulse to review
-/// episode memory and deliver suggestions.
 const INTROSPECTION_SKILL_MD: &str =
     include_str!("../../../assets/bundled-skills/introspection/SKILL.md");
 
-/// Built-in `learner` skill, spawned by the subconscious when a single learnable
-/// signal is detected in the live conversation. Corroborates the signal and makes
-/// it durable (preference promotion or a queued recovery fix).
 const LEARNER_SKILL_MD: &str = include_str!("../../../assets/bundled-skills/learner/SKILL.md");
 
-/// Built-in `memory-analyst` skill, used to answer synthesized questions about the
-/// user or past history so the main agent gets grounded conclusions instead of raw
-/// search excerpts.
 const MEMORY_ANALYST_SKILL_MD: &str =
     include_str!("../../../assets/bundled-skills/memory-analyst/SKILL.md");
 
-/// Built-in `wiki` skill: the knowledge wiki's page format, index rules, and
-/// ingest/lint procedures. Activated before writing to the wiki, and the role
-/// of the `memory_tending` and `wiki_lint` pulses.
 const WIKI_SKILL_MD: &str = include_str!("../../../assets/bundled-skills/wiki/SKILL.md");
 
-/// Built-in `workbench` skill: building interactive HTML artifacts in `workbench/`
-/// that open in a tab of their own, with the injected `residuum` SDK.
 const WORKBENCH_SKILL_MD: &str = include_str!("../../../assets/bundled-skills/workbench/SKILL.md");
 
-/// Endpoint, event, and blocked-route reference for the `workbench` skill.
 const WORKBENCH_REF_API: &str =
     include_str!("../../../assets/bundled-skills/workbench/references/api.md");
 
-/// Default subconscious check policy written to SUBCONSCIOUS.md.
-///
-/// Contains only the customizable check guidance — the output format spec is
-/// always injected by the Rust code and cannot be lost by editing this file.
 const DEFAULT_SUBCONSCIOUS: &str =
     include_str!("../../../assets/workspace-bootstrap/SUBCONSCIOUS.md");
 
-// ── Bundled skill content (embedded at compile time from assets/) ────────────
-
-// residuum-system skill
 const SYSTEM_SKILL_MD: &str =
     include_str!("../../../assets/bundled-skills/residuum-system/SKILL.md");
 
-/// Every reference file of the residuum-system skill, as `(file name, content)`.
-/// SKILL.md links to each by name; the bootstrap writes all of them.
 const SYSTEM_REFS: &[(&str, &str)] = &[
     (
         "config.md",
@@ -146,7 +104,6 @@ const SYSTEM_REFS: &[(&str, &str)] = &[
     ),
 ];
 
-// residuum-getting-started skill
 const GETTING_STARTED_SKILL_MD: &str =
     include_str!("../../../assets/bundled-skills/residuum-getting-started/SKILL.md");
 const GETTING_STARTED_ORGANIZED: &str = include_str!(
@@ -165,14 +122,12 @@ const GETTING_STARTED_ALWAYS_ON: &str = include_str!(
     "../../../assets/bundled-skills/residuum-getting-started/workflows/always-on-assistant.md"
 );
 
-// skill-authoring skill
 const SKILL_AUTHORING_SKILL_MD: &str =
     include_str!("../../../assets/bundled-skills/skill-authoring/SKILL.md");
 const SKILL_AUTHORING_REF_STANDARDS: &str = include_str!(
     "../../../assets/bundled-skills/skill-authoring/references/authoring-standards.md"
 );
 
-// teams-setup skill
 const TEAMS_SETUP_SKILL_MD: &str =
     include_str!("../../../assets/bundled-skills/teams-setup/SKILL.md");
 const TEAMS_SETUP_M365AGENTS_YML: &str =
@@ -186,28 +141,6 @@ const TEAMS_SETUP_COLOR_PNG: &[u8] =
 const TEAMS_SETUP_OUTLINE_PNG: &[u8] =
     include_bytes!("../../../assets/bundled-skills/teams-setup/templates/appPackage/outline.png");
 
-/// Ensure the agent's workspace directory structure exists with default
-/// identity files, and that the shared team layer it belongs to exists.
-///
-/// The agent directory gets `SOUL.md`, `HEARTBEAT.yml`, `SUBCONSCIOUS.md`,
-/// the memory prompts, its A2A card, and (once) `BOOTSTRAP.md`. `SOUL.md`
-/// is named with the directory name. The team directory (see
-/// [`super::team::ensure_team`]) gets the shared `AGENTS.md`, `USER.md` and
-/// wiki skeleton, and the agent gets a role page in the team wiki. When
-/// `user_name` is provided and the team's `USER.md` does not yet exist, the
-/// default content is personalised with the user's name; when `timezone` is
-/// provided, it is included as well.
-///
-/// This is idempotent: existing files and directories are not modified,
-/// except a `SOUL.md` that is still the bundled template. That file gets the
-/// agent's name, and its identity section under the name is left empty.
-///
-/// `coordinator` is the team write coordinator for `layout.team()`; the role
-/// page and the roster files are written under its locks.
-///
-/// # Errors
-/// Returns `FatalError::Workspace` if directories cannot be created or
-/// default files cannot be written.
 #[tracing::instrument(skip_all, fields(workspace = %layout.root().display()))]
 pub async fn ensure_workspace(
     layout: &WorkspaceLayout,
@@ -218,12 +151,6 @@ pub async fn ensure_workspace(
     ensure_workspace_labeled(layout, coordinator, user_name, timezone, None).await
 }
 
-/// [`ensure_workspace`], with `label` as the name in `SOUL.md` and on the
-/// role page when it differs from the directory name. `None` uses the
-/// directory name. An empty `label` is treated as `None`.
-///
-/// # Errors
-/// Returns `FatalError::Workspace` if a directory or file cannot be created.
 pub async fn ensure_workspace_labeled(
     layout: &WorkspaceLayout,
     coordinator: &TeamWriteCoordinator,
@@ -231,15 +158,12 @@ pub async fn ensure_workspace_labeled(
     timezone: Option<&str>,
     label: Option<&str>,
 ) -> Result<(), FatalError> {
-    // Create all required directories
     for dir in layout.required_dirs() {
         tokio::fs::create_dir_all(&dir).await.map_err(|e| {
             FatalError::Workspace(format!("failed to create directory {}: {e}", dir.display()))
         })?;
     }
 
-    // Migration: Dual Inbox
-    // Move any old flat `inbox/*.json` files to `inbox/agent/`
     let old_inbox = layout.root().join("inbox");
     if let Ok(mut entries) = tokio::fs::read_dir(&old_inbox).await {
         let agent_inbox = layout.agent_inbox_dir();
@@ -280,8 +204,6 @@ pub async fn ensure_workspace_labeled(
     )
     .await?;
 
-    // BOOTSTRAP.md is first-run only: write it once, then drop a sentinel so it
-    // is never recreated after the agent deletes it.
     let sentinel = layout.root().join(".bootstrapped");
     let fresh_bootstrap = !tokio::fs::try_exists(&sentinel).await.map_err(|e| {
         FatalError::Workspace(format!(
@@ -291,8 +213,6 @@ pub async fn ensure_workspace_labeled(
     })?;
     if fresh_bootstrap {
         write_if_missing(&layout.bootstrap_md(), DEFAULT_BOOTSTRAP).await?;
-        // Create the sentinel after writing BOOTSTRAP.md so that if we crash
-        // between writing and sentinel creation, the next startup will retry.
         tokio::fs::write(&sentinel, "").await.map_err(|e| {
             FatalError::Workspace(format!(
                 "failed to write bootstrap sentinel {}: {e}",
@@ -312,7 +232,6 @@ pub async fn ensure_workspace_labeled(
     write_if_missing(&layout.subconscious_md(), DEFAULT_SUBCONSCIOUS).await?;
     write_if_missing(&layout.agent_card_json(), DEFAULT_AGENT_CARD).await?;
 
-    // Write bundled skills
     write_bundled_skills(layout).await?;
 
     tracing::info!(
@@ -324,14 +243,10 @@ pub async fn ensure_workspace_labeled(
     Ok(())
 }
 
-/// Identity lines removed from a soul that is otherwise the bundled template,
-/// so the section under the name stays empty.
 const STOCK_ARCHETYPE_LINE: &str =
     "- **Archetype**: Personal agent — part assistant, part collaborator, part automation layer\n";
 const STOCK_TONE_LINE: &str = "- **Tone**: Calm, confident, and wise. Ready to get shit done. Skip the bullet points, just talk.";
 
-/// The default `SOUL.md` with `name` as the agent's name. The identity
-/// section under the name is empty.
 fn soul_named(name: &str) -> String {
     DEFAULT_SOUL.replace("**Name**: Ralph", &format!("**Name**: {name}"))
 }
@@ -348,11 +263,6 @@ fn strip_stock_identity(content: &str) -> String {
         .replace(STOCK_TONE_LINE, "")
 }
 
-/// The bundled soul named `name`, when `existing` is still that template.
-///
-/// The template name is replaced with `name`. Stock archetype and tone lines
-/// are dropped. A name the file already carries, other than the template
-/// name, is kept. An edited file is left alone (`None`).
 fn settled_soul(existing: &str, name: &str) -> Option<String> {
     let stripped = strip_stock_identity(existing);
     let name_line = stripped
@@ -377,7 +287,6 @@ fn settled_soul(existing: &str, name: &str) -> Option<String> {
     (rewritten != existing).then_some(rewritten)
 }
 
-/// Write `SOUL.md` named `name`, or bring an unedited template up to date.
 async fn write_soul(path: &std::path::Path, name: &str) -> Result<(), FatalError> {
     match tokio::fs::read_to_string(path).await {
         Ok(existing) => {
@@ -417,12 +326,6 @@ async fn write_soul(path: &std::path::Path, name: &str) -> Result<(), FatalError
     }
 }
 
-/// The identity and prompt files of the blank agent template, as
-/// `(path under layout, content)`: a `SOUL.md` naming the agent, the
-/// created-agent `HEARTBEAT.yml`, `SUBCONSCIOUS.md`, the memory prompts, and
-/// the A2A card. `BOOTSTRAP.md` is not part of it, since created agents never
-/// run the first-run interview. `config/config.toml` and
-/// `config/providers.toml` are not part of it either; the caller writes them.
 #[must_use]
 pub fn blank_agent_template(
     layout: &WorkspaceLayout,
@@ -441,16 +344,8 @@ pub fn blank_agent_template(
     ]
 }
 
-/// Write bundled skill trees to the team skills directory.
-///
-/// Bundled skills are team skills: every agent finds them through the team
-/// layer, and the agent's own `skills/` starts empty.
-///
-/// Each file is written with `write_if_missing`, so user edits are preserved
-/// and files are only recreated if deleted.
 async fn write_bundled_skills(layout: &WorkspaceLayout) -> Result<(), FatalError> {
     let skills_root = layout.team().skills_dir();
-    // residuum-system skill
     let system_dir = skills_root.join("residuum-system");
     let system_refs = system_dir.join("references");
     tokio::fs::create_dir_all(&system_refs).await.map_err(|e| {
@@ -465,9 +360,6 @@ async fn write_bundled_skills(layout: &WorkspaceLayout) -> Result<(), FatalError
         write_if_missing(&system_refs.join(file_name), content).await?;
     }
 
-    // Single-file skills: role skills spawned as sub-agents by pulses, the
-    // subconscious, and the main agent, plus the wiki conventions skill (also a
-    // pulse role). None carries references, so each is a lone SKILL.md.
     for (name, body) in [
         ("introspection", INTROSPECTION_SKILL_MD),
         ("learner", LEARNER_SKILL_MD),
@@ -484,7 +376,6 @@ async fn write_bundled_skills(layout: &WorkspaceLayout) -> Result<(), FatalError
         write_if_missing(&dir.join("SKILL.md"), body).await?;
     }
 
-    // residuum-getting-started skill
     let started_dir = skills_root.join("residuum-getting-started");
     let started_workflows = started_dir.join("workflows");
     tokio::fs::create_dir_all(&started_workflows)
@@ -525,7 +416,6 @@ async fn write_bundled_skills(layout: &WorkspaceLayout) -> Result<(), FatalError
     )
     .await?;
 
-    // skill-authoring skill
     let authoring_dir = skills_root.join("skill-authoring");
     let authoring_refs = authoring_dir.join("references");
     tokio::fs::create_dir_all(&authoring_refs)
@@ -544,7 +434,6 @@ async fn write_bundled_skills(layout: &WorkspaceLayout) -> Result<(), FatalError
     )
     .await?;
 
-    // workbench skill
     let workbench_dir = skills_root.join("workbench");
     let workbench_refs = workbench_dir.join("references");
     tokio::fs::create_dir_all(&workbench_refs)
@@ -558,7 +447,6 @@ async fn write_bundled_skills(layout: &WorkspaceLayout) -> Result<(), FatalError
     write_if_missing(&workbench_dir.join("SKILL.md"), WORKBENCH_SKILL_MD).await?;
     write_if_missing(&workbench_refs.join("api.md"), WORKBENCH_REF_API).await?;
 
-    // teams-setup skill
     write_teams_setup_skill(&skills_root).await?;
 
     tracing::debug!(workspace = %layout.root().display(), "wrote bundled skills");
@@ -566,7 +454,6 @@ async fn write_bundled_skills(layout: &WorkspaceLayout) -> Result<(), FatalError
     Ok(())
 }
 
-/// Write the bundled `teams-setup` skill and its scaffolding templates.
 async fn write_teams_setup_skill(skills_root: &std::path::Path) -> Result<(), FatalError> {
     let teams_dir = skills_root.join("teams-setup");
     let teams_templates = teams_dir.join("templates");
@@ -601,9 +488,6 @@ const TONE_LINE_ACTION: &str =
     "- Update the **Tone** line in `SOUL.md` to reflect their preference\n";
 const NAME_LINE_ACTION: &str = "- If they gave you a name or asked you to change something about your personality, update `SOUL.md` accordingly\n";
 
-/// Point a getting-started skill that still names a Tone line at the empty
-/// identity section. An edited skill that no longer has those lines is left
-/// as it is.
 fn refreshed_getting_started(content: &str) -> Option<String> {
     let tone_crlf = TONE_LINE_ACTION.replace('\n', "\r\n");
     let name_crlf = NAME_LINE_ACTION.replace('\n', "\r\n");
@@ -661,7 +545,6 @@ async fn refresh_getting_started_actions(path: &std::path::Path) -> Result<(), F
     Ok(())
 }
 
-/// Write content to a file only if it does not already exist.
 async fn write_if_missing(
     path: &std::path::Path,
     content: impl AsRef<[u8]>,
@@ -991,7 +874,6 @@ mod tests {
         .await
         .unwrap();
 
-        // residuum-system skill tree
         let system_dir = layout.team().skills_dir().join("residuum-system");
         assert!(system_dir.join("SKILL.md").exists(), "system SKILL.md");
         for (file_name, _) in SYSTEM_REFS {
@@ -1001,7 +883,6 @@ mod tests {
             );
         }
 
-        // residuum-getting-started skill tree
         let started_dir = layout.team().skills_dir().join("residuum-getting-started");
         assert!(
             started_dir.join("SKILL.md").exists(),
@@ -1034,7 +915,6 @@ mod tests {
             "always-on-assistant.md"
         );
 
-        // skill-authoring skill tree
         let authoring_dir = layout.team().skills_dir().join("skill-authoring");
         assert!(
             authoring_dir.join("SKILL.md").exists(),
@@ -1047,7 +927,6 @@ mod tests {
             "authoring-standards.md"
         );
 
-        // workbench skill tree
         let workbench_dir = layout.team().skills_dir().join("workbench");
         let workbench_skill = tokio::fs::read_to_string(workbench_dir.join("SKILL.md"))
             .await
@@ -1197,7 +1076,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
 
-        // First run: BOOTSTRAP.md and sentinel are created
         ensure_workspace(
             &layout,
             &crate::team_files::TeamWriteCoordinator::new(layout.team()),
@@ -1215,14 +1093,12 @@ mod tests {
             "sentinel should exist after first run"
         );
 
-        // Simulate agent deleting BOOTSTRAP.md after first conversation
         tokio::fs::remove_file(layout.bootstrap_md()).await.unwrap();
         assert!(
             !layout.bootstrap_md().exists(),
             "BOOTSTRAP.md should be deleted"
         );
 
-        // Second run: BOOTSTRAP.md should NOT be recreated
         ensure_workspace(
             &layout,
             &crate::team_files::TeamWriteCoordinator::new(layout.team()),
@@ -1251,12 +1127,10 @@ mod tests {
         .await
         .unwrap();
 
-        // Modify SOUL.md
         tokio::fs::write(layout.soul_md(), "custom soul content")
             .await
             .unwrap();
 
-        // Modify a skill file
         let system_skill = layout
             .team()
             .skills_dir()
@@ -1266,7 +1140,6 @@ mod tests {
             .await
             .unwrap();
 
-        // Run again
         ensure_workspace(
             &layout,
             &crate::team_files::TeamWriteCoordinator::new(layout.team()),
@@ -1276,7 +1149,6 @@ mod tests {
         .await
         .unwrap();
 
-        // Custom content should be preserved
         let content = tokio::fs::read_to_string(layout.soul_md()).await.unwrap();
         assert_eq!(
             content, "custom soul content",
@@ -1428,7 +1300,6 @@ mod tests {
         assert!(skill_md.contains("name: teams-setup"));
         assert!(skill_md.contains("Microsoft Teams"));
 
-        // Verify m365agents.yml exists and parses as valid YAML
         let yml_str = tokio::fs::read_to_string(teams_dir.join("templates/m365agents.yml"))
             .await
             .unwrap();
@@ -1443,7 +1314,6 @@ mod tests {
                 .is_some_and(serde_json::Value::is_array)
         );
 
-        // Verify manifest.json exists and parses as valid JSON
         let manifest_str =
             tokio::fs::read_to_string(teams_dir.join("templates/appPackage/manifest.json"))
                 .await
@@ -1468,7 +1338,6 @@ mod tests {
             Some("outline.png")
         );
 
-        // Verify binary icons are valid PNGs matching embedded byte slices
         let color_png = tokio::fs::read(teams_dir.join("templates/appPackage/color.png"))
             .await
             .unwrap();
@@ -1481,7 +1350,6 @@ mod tests {
         assert_eq!(outline_png, TEAMS_SETUP_OUTLINE_PNG);
         assert!(outline_png.starts_with(b"\x89PNG\r\n\x1a\n"));
 
-        // Verify .env.residuum
         let env_str = tokio::fs::read_to_string(teams_dir.join("templates/env/.env.residuum"))
             .await
             .unwrap();

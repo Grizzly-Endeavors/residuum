@@ -1,5 +1,3 @@
-//! The running agent's status route (`GET /api/agents/{name}/status`).
-
 use axum::extract::State;
 use axum::response::Json;
 use serde::Serialize;
@@ -8,26 +6,15 @@ use residuum_hub::features;
 
 use residuum_hub::web::ConfigApiState;
 
-/// Status response: which mode the server is running in, its version, and the
-/// feature ids it supports. Workbench artifacts read the same information
-/// from the injected SDK's `residuum.version` and `residuum.features`.
 #[derive(Serialize)]
 pub(super) struct StatusResponse {
     mode: &'static str,
     version: &'static str,
     features: &'static [&'static str],
-    /// On-disk size and checkpoint count for each checkpoint repository, so
-    /// growth is visible.
-    /// `null` for a repo whose stats couldn't be read just now.
     checkpoints: CheckpointsStatus,
-    /// Whether file changes in the agent's directory reach open pages and
-    /// the agent's watchers: `starting`, `native` (OS notifications),
-    /// `polling` (the fallback, up to two seconds late) or `off`.
     live_updates: residuum_workspace::watch::WatchHealth,
 }
 
-/// What the running agent's status route reads: its config state and the
-/// health of the change feed over its directory.
 #[derive(Clone)]
 pub(crate) struct AgentStatusState {
     pub(crate) build: residuum_core::build_info::BuildInfo,
@@ -35,11 +22,8 @@ pub(crate) struct AgentStatusState {
     pub(crate) live_updates: tokio::sync::watch::Receiver<residuum_workspace::watch::WatchHealth>,
 }
 
-/// Per-repository checkpoint stats shown in `/api/agents/{name}/status`.
 #[derive(Serialize)]
 pub(super) struct CheckpointsStatus {
-    /// How many of the agent's automatic checkpoints are still being
-    /// written; they run off the turn's path.
     pending: usize,
     workspace: Option<residuum_checkpoints::RepoStats>,
     team: Option<residuum_checkpoints::RepoStats>,
@@ -76,8 +60,6 @@ pub(super) async fn api_status(
     })
 }
 
-/// A repo's checkpoint stats, or `None` (logged) if they couldn't be read —
-/// `/api/agents/{name}/status` degrades rather than failing over a checkpoint read.
 async fn checkpoint_stats_or_log(
     state: &ConfigApiState,
     kind: residuum_checkpoints::RepoKind,

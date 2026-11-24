@@ -1,9 +1,3 @@
-//! Interaction-pair chunk extraction from episode transcripts.
-//!
-//! Extracts user-question + assistant-text-response pairs from messages,
-//! producing `IndexChunk` values for granular BM25 indexing. Tool-call-only
-//! assistant messages and tool/system messages are skipped.
-
 use std::path::Path;
 
 use anyhow::Context;
@@ -12,15 +6,6 @@ use crate::recent_messages::RecentMessage;
 use crate::types::IndexChunk;
 use residuum_inference::Role;
 
-/// Extract interaction-pair chunks from a sequence of recent messages.
-///
-/// Walks messages in order. A chunk is closed when an assistant message with
-/// non-empty text content follows a pending user message. Tool-only assistant
-/// messages (empty/whitespace text content) are skipped. System and tool
-/// messages are also skipped.
-///
-/// `line_offset` is the transcript line number of the first message (typically 2,
-/// since line 1 is the meta object in JSONL transcripts).
 #[must_use]
 pub(crate) fn extract_chunks(
     recent_messages: &[RecentMessage],
@@ -29,7 +14,6 @@ pub(crate) fn extract_chunks(
     line_offset: usize,
 ) -> Vec<IndexChunk> {
     let mut chunks = Vec::new();
-    // (line_number, content)
     let mut pending_user: Option<(usize, std::borrow::Cow<'_, str>)> = None;
 
     for (i, rm) in recent_messages.iter().enumerate() {
@@ -37,13 +21,11 @@ pub(crate) fn extract_chunks(
         let line_num = line_offset + i;
         match msg.role {
             Role::User => {
-                // New user message — set (or replace) pending
                 pending_user = Some((line_num, msg.attributed_content()));
             }
             Role::Assistant => {
                 let text = msg.content.trim();
                 if text.is_empty() {
-                    // Tool-call-only assistant message — skip, keep pending user
                     continue;
                 }
                 if let Some((user_line, user_content)) = pending_user.take() {
@@ -63,23 +45,14 @@ pub(crate) fn extract_chunks(
                         "orphaned assistant message with no pending user"
                     );
                 }
-                // If no pending user, this assistant message is orphaned — skip
             }
-            Role::Tool | Role::System => {
-                // Skip tool results and system messages entirely
-            }
+            Role::Tool | Role::System => {}
         }
     }
 
     chunks
 }
 
-/// Write chunks to an idx.jsonl file atomically (temp file + rename).
-///
-/// Each line is a JSON-serialized `IndexChunk`.
-///
-/// # Errors
-/// Returns an error if the file cannot be written.
 pub(crate) async fn write_idx_jsonl(path: &Path, chunks: &[IndexChunk]) -> anyhow::Result<()> {
     let mut lines = Vec::with_capacity(chunks.len());
     for chunk in chunks {
@@ -94,9 +67,6 @@ pub(crate) async fn write_idx_jsonl(path: &Path, chunks: &[IndexChunk]) -> anyho
     residuum_core::util::fs::atomic_write(path, &content).await
 }
 
-/// Read and parse an idx.jsonl file, returning chunks.
-///
-/// Returns an empty Vec for missing or empty files. Skips unparseable lines with a warning.
 #[must_use]
 pub fn read_idx_jsonl(path: &Path) -> Vec<IndexChunk> {
     let content = match std::fs::read_to_string(path) {

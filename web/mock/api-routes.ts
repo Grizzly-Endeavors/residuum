@@ -21,7 +21,6 @@ import { updateRoutes } from "./update";
 import { workbenchRoutes } from "./workbench";
 import { workspaceRoutes } from "./workspace";
 
-/** Every route table the mock serves. Their patterns don't overlap, so the order of the tables doesn't matter; within one, the first match wins. */
 export const apiRoutes: readonly Route[] = [
   ...lifecycleRoutes,
   ...sessionRoutes,

@@ -1,9 +1,3 @@
-//! Strip provider-emitted reasoning blocks from assistant output.
-
-/// Strip `<think>...</think>` blocks from model output.
-///
-/// Handles multiple blocks, nested content, and unclosed tags (strips to end).
-/// Trims leading whitespace left behind after stripping.
 pub(crate) fn strip_think_tags(content: &str) -> String {
     let mut result = String::with_capacity(content.len());
     let mut remaining = content;
@@ -13,7 +7,6 @@ pub(crate) fn strip_think_tags(content: &str) -> String {
         if let Some((_, rest)) = after.split_once("</think>") {
             remaining = rest;
         } else {
-            // Unclosed tag: strip everything from <think> to end
             remaining = "";
             break;
         }
@@ -21,7 +14,6 @@ pub(crate) fn strip_think_tags(content: &str) -> String {
 
     result.push_str(remaining);
 
-    // Trim leading whitespace left behind when a think block was at the start
     let trimmed = result.trim_start();
     if trimmed.len() == result.len() {
         result

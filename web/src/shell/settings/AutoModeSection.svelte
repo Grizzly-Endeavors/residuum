@@ -10,10 +10,6 @@
   import SettingsGroup from "./SettingsGroup.svelte";
   import SettingsSection from "./SettingsSection.svelte";
 
-  // The agent's Auto Mode: plain-language rules the decision model checks
-  // each tool call against before it runs. A call matching a "not allowed"
-  // rule, and no exception, is skipped, and the agent is told which rule.
-
   let { scope, section }: AgentSectionProps = $props();
 
   const agent = $derived(scope.agent);

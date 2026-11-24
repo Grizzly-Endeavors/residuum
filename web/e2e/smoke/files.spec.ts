@@ -3,24 +3,15 @@ import { expectNoAxeViolations } from "../support/axe";
 import { expect, test } from "../support/fixtures";
 import { expectFileOpen } from "../support/lazy";
 
-/**
- * Files and Shared files: the tree, the editor in the context panel, rename,
- * delete with Undo, history with restore, the save conflict, and the guard
- * that asks before unsaved edits are lost.
- */
-
-/** Path and query of the page's URL, decoded, so a test can compare them exactly. */
 function address(page: Page): string {
   const url = new URL(page.url());
   return decodeURIComponent(`${url.pathname}${url.search}`);
 }
 
-/** The tree's row for a file or folder. */
 function row(page: Page, name: string): Locator {
   return page.getByRole("list", { name: "Files" }).locator(`[data-path$="${name}"]`);
 }
 
-/** The context panel showing `name`: a column, or on a phone a full-screen sheet. */
 function filePanel(page: Page, isMobile: boolean, name: string): Locator {
   return page.getByRole(isMobile ? "dialog" : "complementary", { name });
 }
@@ -29,7 +20,6 @@ function editor(panel: Locator, name: string): Locator {
   return panel.getByRole("textbox", { name: `Contents of ${name}` });
 }
 
-/** What the mock has on disk for one of atlas's files. */
 async function onDisk(page: Page, path: string): Promise<string> {
   const response = await page.request.get(
     `/api/agents/atlas/workspace/file?path=${encodeURIComponent(path)}`,
@@ -37,7 +27,6 @@ async function onDisk(page: Page, path: string): Promise<string> {
   return response.text();
 }
 
-/** A Markdown file opens rendered; Edit opens its editor. Other files open in the editor already. */
 async function showEditor(panel: Locator, name: string): Promise<void> {
   if (name.endsWith(".md")) await panel.getByRole("button", { name: "Edit" }).click();
 }
@@ -63,7 +52,6 @@ test("a file opens in the panel, and Save writes the edits", async ({ page, isMo
   await expect.poll(() => address(page)).toBe("/agent/atlas/files?panel=file:SOUL.md");
   await expect(row(page, "SOUL.md")).toHaveAttribute("aria-current", "true");
   if (isMobile) {
-    // On a phone the editor is the whole screen, with Close panel.
     await expect(panel.getByRole("button", { name: "Close panel", exact: true })).toBeVisible();
     const box = await panel.boundingBox();
     expect(box?.width).toBeCloseTo(390, 0);
@@ -123,7 +111,6 @@ test("delete is immediate, and Undo brings the file back", async ({ page, isMobi
   const toast = page.getByRole("status").filter({ hasText: "Deleted PRESENCE.toml." });
   await expect(toast).toBeVisible();
   await expect(row(page, "PRESENCE.toml")).toHaveCount(0);
-  // Beside the tree, the panel that showed it says it is gone.
   if (!isMobile) await expect(panel.getByText("This file doesn't exist")).toBeVisible();
 
   await toast.getByRole("button", { name: "Undo" }).click();
@@ -242,7 +229,6 @@ test.describe("unsaved edits", () => {
     await leaveDialog(page).getByRole("button", { name: "Keep editing" }).click();
     await expect.poll(() => address(page)).toBe("/agent/atlas/files?panel=file:SOUL.md");
 
-    // Another file is another place for the edits too.
     await row(page, "HEARTBEAT.yml").click();
     await leaveDialog(page).getByRole("button", { name: "Keep editing" }).click();
     await expect.poll(() => address(page)).toBe("/agent/atlas/files?panel=file:SOUL.md");
@@ -290,7 +276,6 @@ test("Shared files follows the team's folder live", async ({ page, isMobile, moc
   });
   await expect(row(page, "wiki/routing.md")).toBeVisible();
 
-  // An identity file is tinted here too.
   await expect(page.locator('[data-identity] [data-path="AGENTS.md"]')).toBeVisible();
   const panel = await openFile(page, isMobile, "routing.md");
   await expect(editor(panel, "routing.md")).toHaveValue("# Routing\n");

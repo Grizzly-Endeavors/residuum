@@ -162,7 +162,6 @@ describe("manual time", () => {
     env.after(300, () => ran.push(`b at ${String(env.clock.elapsedMs())}`));
     env.after(100, () => ran.push(`a at ${String(env.clock.elapsedMs())}`));
     env.after(900, () => ran.push("c"));
-    // Turns of the event loop pass; simulated time doesn't.
     await new Promise((resolve) => setImmediate(resolve));
     expect(ran).toEqual([]);
 
@@ -246,7 +245,6 @@ describe("manual time", () => {
     env.after(400, () => ran.push("set in manual"));
     await env.advance(100);
     env.setTimeMode("scaled");
-    // At scale 0 the remaining 300ms is no wait at all.
     await env.sleep(0);
     await new Promise((resolve) => setImmediate(resolve));
     expect(ran).toEqual(["set in manual"]);

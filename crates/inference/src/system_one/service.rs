@@ -1,6 +1,3 @@
-//! The hub's one System 1 service: the configured client, its health, and
-//! the check that clears an outage once the service answers again.
-
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError, RwLock, Weak};
 use std::time::Duration;
@@ -17,15 +14,12 @@ use crate::{HttpClientConfig, SharedHttpClient};
 use residuum_config::RetryConfig;
 use residuum_config::SystemOneConfig;
 
-/// How often a down service is checked while an outage lasts, so the outage
-/// clears even when nothing else is asking for decisions.
 const RECOVERY_CHECK_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Request timeout. A local Ollama loading a model for the first request can
 /// take well over the inference default.
 const REQUEST_TIMEOUT_SECS: u64 = 120;
 
-/// The endpoint a [`SystemOneConfig`] describes.
 #[must_use]
 pub(crate) fn endpoint_from_config(cfg: &SystemOneConfig) -> SystemOneEndpoint {
     SystemOneEndpoint {
@@ -38,18 +32,12 @@ pub(crate) fn endpoint_from_config(cfg: &SystemOneConfig) -> SystemOneEndpoint {
     }
 }
 
-/// Build a client for `cfg` with its own connection pool, for one-off calls
-/// such as testing a configuration that hasn't been saved.
-///
-/// # Errors
-/// Returns a message when the HTTP client can't be built.
 pub fn client_for_config(cfg: &SystemOneConfig) -> Result<SystemOneClient, String> {
     let http = SharedHttpClient::new(&HttpClientConfig::with_timeout(REQUEST_TIMEOUT_SECS))
         .map_err(|e| format!("failed to build the HTTP client: {e}"))?;
     Ok(SystemOneClient::new(http, endpoint_from_config(cfg)))
 }
 
-/// The configured System 1 client shared by every agent, with its health.
 pub struct SystemOneService {
     client: RwLock<Option<SystemOneClient>>,
     status: watch::Sender<SystemOneStatus>,
@@ -58,7 +46,6 @@ pub struct SystemOneService {
 }
 
 impl SystemOneService {
-    /// A service for `cfg`; `None` leaves it unconfigured.
     #[must_use]
     pub fn new(cfg: Option<&SystemOneConfig>) -> Arc<Self> {
         Self::with_recovery_interval(cfg, RECOVERY_CHECK_INTERVAL)
@@ -91,8 +78,6 @@ impl SystemOneService {
         }
     }
 
-    /// Replace the configuration. Any outage clears: the next call says
-    /// whether the new one works.
     pub fn reconfigure(&self, cfg: Option<&SystemOneConfig>) {
         let (client, status) = Self::build(cfg);
         *self.client.write().unwrap_or_else(PoisonError::into_inner) = client;
@@ -104,20 +89,16 @@ impl SystemOneService {
         );
     }
 
-    /// Watch the status; the receiver sees the current value first.
     #[must_use]
     pub fn subscribe(&self) -> watch::Receiver<SystemOneStatus> {
         self.status.subscribe()
     }
 
-    /// The current status.
     #[must_use]
     pub fn status(&self) -> SystemOneStatus {
         self.status.borrow().clone()
     }
 
-    /// The id of the configured provider, as usage records carry it; `None`
-    /// when no client is configured.
     #[must_use]
     pub fn provider_id(&self) -> Option<&'static str> {
         self.client
@@ -127,11 +108,6 @@ impl SystemOneService {
             .map(|client| client.endpoint().kind.as_str())
     }
 
-    /// Ask `questions` about `state`, recording the outcome in the status.
-    ///
-    /// # Errors
-    /// [`SystemOneError::NotConfigured`] when no provider is set, otherwise
-    /// whatever the call failed with.
     pub async fn evaluate(
         self: &Arc<Self>,
         state: &Value,
@@ -190,8 +166,6 @@ impl SystemOneService {
         }
         let weak = Arc::downgrade(self);
         let interval = self.recovery_interval;
-        // The check serves the whole hub, so it logs under its own span
-        // rather than that of whichever agent's call noticed the outage.
         let task = tracing::Instrument::instrument(
             recovery_check(weak, interval),
             tracing::info_span!("system_one_recovery"),
@@ -217,8 +191,6 @@ impl Drop for SystemOneService {
     }
 }
 
-/// Every `interval` while an outage lasts, send the smallest possible
-/// request; the first success clears the outage through the normal path.
 async fn recovery_check(service: Weak<SystemOneService>, interval: Duration) {
     let state = Value::String("Hello".to_string());
     let questions = BTreeMap::from([(

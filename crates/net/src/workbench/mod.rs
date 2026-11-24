@@ -1,14 +1,3 @@
-//! Workbench: interactive artifacts the agent builds for the user.
-//!
-//! An artifact is either a single page, `team/workbench/<name>.html`, or a
-//! folder, `team/workbench/<name>/` with an `index.html` and any other
-//! files it loads. `<name>` is kebab-case. The artifacts listener
-//! (`server`) serves them on their own origin at `/<name>/`; the web UI
-//! lists them at `/team/workbench` and opens each in a tab of its own on
-//! that origin. Files beside an artifact that share its `<name>.` prefix
-//! (for example `<name>.state.json`) are that artifact's saved data: not part
-//! of the artifact, not watched for reloads, and deleted with it.
-
 pub(crate) mod forward;
 pub(crate) mod server;
 
@@ -23,46 +12,31 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-/// Only the start of a page is scanned for its `<title>` when listing.
 const TITLE_SCAN_BYTES: usize = 64 * 1024;
 
 const MAX_ARTIFACT_NAME_LEN: usize = 64;
 
-/// The artifacts listener serves the API at `/api`, so no artifact can have
-/// that name.
 const RESERVED_ARTIFACT_NAME: &str = "api";
 
-/// The SDK injected into every served HTML file.
 const SDK_JS: &str = include_str!("../../../../assets/workbench/sdk.js");
 
-/// One artifact in `GET /api/team/workbench/artifacts`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct ArtifactSummary {
-    /// Artifact name, as used in `/workbench/{name}`.
     pub name: String,
-    /// The page's `<title>`, or the name when it has none.
     pub title: String,
-    /// When the page was last modified (RFC 3339, UTC).
     #[ts(type = "string")]
     pub(crate) modified_at: DateTime<Utc>,
-    /// Page size in bytes.
     #[ts(type = "number")]
     pub size: u64,
 }
 
-/// What the SDK reports about the build serving it: its version and the
-/// features it supports. The hub builds it from the binary's own constants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SdkContext {
     pub version: &'static str,
     pub features: &'static [&'static str],
 }
 
-/// Whether `name` is a valid artifact name: lowercase ASCII letters and digits in
-/// hyphen-separated words, at most 64 characters, and not `api`, which the
-/// artifacts listener reserves for the API. Names carry no path separators or
-/// dots, so a valid name always resolves inside the workbench.
 #[must_use]
 pub fn is_valid_artifact_name(name: &str) -> bool {
     !name.is_empty()
@@ -76,30 +50,22 @@ pub fn is_valid_artifact_name(name: &str) -> bool {
         })
 }
 
-/// Where an artifact lives.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ArtifactKind {
-    /// `<name>.html`.
     Page(PathBuf),
-    /// `<name>/`, entered through `<name>/index.html`.
     Folder(PathBuf),
 }
 
-/// An artifact found in the workbench directory.
 #[derive(Debug, Clone)]
 pub struct DiscoveredArtifact {
     pub name: String,
     pub(crate) kind: ArtifactKind,
-    /// Newest modification time among the artifact's files.
     pub modified: Option<SystemTime>,
-    /// Total size of the artifact's files.
     pub size: u64,
-    /// Number of files in the artifact.
     pub files: usize,
 }
 
 impl DiscoveredArtifact {
-    /// The HTML page the artifact opens with.
     fn entry_page(&self) -> PathBuf {
         match &self.kind {
             ArtifactKind::Page(path) => path.clone(),
@@ -108,12 +74,6 @@ impl DiscoveredArtifact {
     }
 }
 
-/// Find every artifact in `dir`. A missing directory is an empty workbench.
-/// Symlinks are skipped, so an artifact can never expose files from outside the
-/// workbench. When both `<name>.html` and `<name>/` exist, the folder wins.
-///
-/// # Errors
-/// Returns an error if the directory exists but cannot be read.
 pub async fn discover_artifacts(dir: &Path) -> std::io::Result<Vec<DiscoveredArtifact>> {
     let mut read_dir = match tokio::fs::read_dir(dir).await {
         Ok(rd) => rd,
@@ -168,11 +128,6 @@ pub async fn discover_artifacts(dir: &Path) -> std::io::Result<Vec<DiscoveredArt
     Ok(artifacts)
 }
 
-/// Newest modification time, total size, and file count of a folder artifact,
-/// skipping symlinks. Unbounded: a workbench folder is a hand-built tool, not
-/// user-uploaded content, so there is no realistic file count that needs
-/// capping, and the watcher's change detection depends on an honest count and
-/// size to notice edits past whatever a cap would have cut off at.
 async fn folder_stats(root: PathBuf) -> std::io::Result<(Option<SystemTime>, u64, usize)> {
     let mut newest: Option<SystemTime> = None;
     let mut size = 0_u64;
@@ -197,10 +152,6 @@ async fn folder_stats(root: PathBuf) -> std::io::Result<(Option<SystemTime>, u64
     Ok((newest, size, files))
 }
 
-/// List the artifacts in `dir` for the web UI, most recently modified first.
-///
-/// # Errors
-/// Returns an error if the directory exists but cannot be read.
 pub async fn list_artifacts(dir: &Path) -> std::io::Result<Vec<ArtifactSummary>> {
     let mut artifacts = Vec::new();
     for artifact in discover_artifacts(dir).await? {
@@ -239,11 +190,8 @@ async fn read_title(path: &Path) -> std::io::Result<Option<String>> {
     Ok(extract_title(&String::from_utf8_lossy(&head)))
 }
 
-/// The trimmed text of the page's first `<title>` element, with the common
-/// character references decoded. `None` when there is no non-empty title.
 #[must_use]
 pub(crate) fn extract_title(html: &str) -> Option<String> {
-    // ASCII lowercasing keeps byte offsets identical to the original.
     let lower = html.to_ascii_lowercase();
     let open = find_tag(&lower, "title", 0)?;
     let content_start = open + lower.get(open..)?.find('>')? + 1;
@@ -258,9 +206,6 @@ pub(crate) fn extract_title(html: &str) -> Option<String> {
     (!title.is_empty()).then_some(title)
 }
 
-/// Byte offset of the first `<tag` opening in `lower` at or after `from`,
-/// where the tag name is followed by `>`, `/`, or whitespace (so `<head` does
-/// not match `<header`).
 fn find_tag(lower: &str, tag: &str, from: usize) -> Option<usize> {
     let needle = format!("<{tag}");
     let mut search_from = from;
@@ -284,18 +229,11 @@ fn decode_entities(text: &str) -> String {
         .replace("&amp;", "&")
 }
 
-/// Serializes `value` as JSON for embedding inside a `<script>` block, escaping
-/// any `</` sequence so embedded content can never close the tag early.
 fn embed_as_script_json<T: serde::Serialize + ?Sized>(value: &T) -> String {
     let json = serde_json::to_string(value).unwrap_or_else(|_| "null".to_string());
     json.replace("</", "<\\/")
 }
 
-/// Insert the SDK `<script>` so it runs before any of the page's own scripts:
-/// right after the `<head>` open tag, else after `<html>`, else after the
-/// doctype, else at the very start. The script embeds the artifact's own
-/// name, this build's version, and its feature list, which the SDK exposes as
-/// `residuum.artifact`, `residuum.version`, and `residuum.features`.
 #[must_use]
 pub(crate) fn inject_sdk(html: &str, artifact: &str, sdk: SdkContext) -> String {
     let lower = html.to_ascii_lowercase();
@@ -313,8 +251,6 @@ pub(crate) fn inject_sdk(html: &str, artifact: &str, sdk: SdkContext) -> String 
         embed_as_script_json(sdk.version),
         embed_as_script_json(sdk.features),
     );
-    // The block scopes the context constants to the SDK, keeping them out of
-    // the page's global scope where an artifact's own names could collide.
     let script = format!("<script>{{{context}{SDK_JS}}}</script>");
     let mut out = String::with_capacity(html.len() + script.len());
     out.push_str(html.get(..insert_at).unwrap_or_default());
@@ -323,7 +259,6 @@ pub(crate) fn inject_sdk(html: &str, artifact: &str, sdk: SdkContext) -> String 
     out
 }
 
-/// Why an artifact file could not be served.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ArtifactFileError {
     #[error("no workbench artifact named {0:?}")]
@@ -339,35 +274,16 @@ pub(crate) enum ArtifactFileError {
     },
 }
 
-/// An artifact file's body, ready to serve.
-///
-/// HTML needs the SDK injected, so it's read fully and rewritten in memory.
-/// Everything else is streamed straight from disk, so serving a large local
-/// artifact file (an exported dataset, a video) doesn't buffer it whole —
-/// there is no size cap on serving it.
 pub(crate) enum ArtifactBody {
     Bytes(Vec<u8>),
     File(tokio::fs::File),
 }
 
-/// An artifact file ready to serve.
 pub(crate) struct ArtifactFile {
     pub body: ArtifactBody,
     pub content_type: String,
 }
 
-/// Read file `rest` of artifact `name` (`""` for the artifact's page). HTML gets the
-/// SDK injected.
-///
-/// `rest` is a `/`-separated path relative to a folder artifact. A trailing `/`
-/// means that directory's `index.html`. Empty, `.`, and `..` segments are
-/// refused (a dot-prefixed filename like `.env.example` is not), and the
-/// resolved file must stay inside the artifact's folder after symlinks. A
-/// single-page artifact has no other files.
-///
-/// # Errors
-/// Returns [`ArtifactFileError`] when the artifact or file does not exist or
-/// cannot be read.
 pub(crate) async fn read_artifact_file(
     dir: &Path,
     name: &str,
@@ -425,17 +341,10 @@ pub(crate) async fn read_artifact_file(
     }
 }
 
-/// Resolve `rest` inside a folder artifact, or `None` if it names nothing there.
 async fn resolve_in_folder(root: &Path, rest: &str) -> Option<PathBuf> {
     let mut path = root.to_path_buf();
     let wants_index = rest.is_empty() || rest.ends_with('/');
     for segment in rest.split('/').filter(|s| !s.is_empty()) {
-        // Only `.`/`..` (traversal) and a literal backslash are refused. A
-        // dot-prefixed filename like `.well-known/` or `.env.example` is an
-        // ordinary file the artifact's author chose to include, and is
-        // otherwise served like any other; the canonicalize check below is
-        // the actual traversal guard, this just avoids hitting the
-        // filesystem for the common case.
         if segment == "." || segment == ".." || segment.contains('\\') {
             return None;
         }
@@ -450,7 +359,6 @@ async fn resolve_in_folder(root: &Path, rest: &str) -> Option<PathBuf> {
     canonical.starts_with(&canonical_root).then_some(canonical)
 }
 
-/// Why an artifact could not be deleted.
 #[derive(Debug, thiserror::Error)]
 pub enum ArtifactDeleteError {
     #[error("invalid artifact name {0:?}: use lowercase letters, digits, and single hyphens")]
@@ -465,9 +373,6 @@ pub enum ArtifactDeleteError {
     },
 }
 
-/// Every path deleting artifact `name` may remove: its page and folder
-/// (listed whether or not they exist), the files inside the folder, and the
-/// `<name>.*` data files. Used to lock them all before a delete.
 pub async fn artifact_paths(dir: &Path, name: &str) -> Vec<PathBuf> {
     let folder = dir.join(name);
     let mut paths = vec![folder.clone(), dir.join(format!("{name}.html"))];
@@ -504,13 +409,6 @@ pub async fn artifact_paths(dir: &Path, name: &str) -> Vec<PathBuf> {
     paths
 }
 
-/// Delete an artifact (its page, or its whole folder) and its data files (regular
-/// files named `<name>.*`). Returns the entries removed.
-///
-/// # Errors
-/// Returns [`ArtifactDeleteError`] if the name is invalid, the artifact does not
-/// exist, or something cannot be removed. Entries removed before a failure
-/// stay removed.
 pub async fn delete_artifact(dir: &Path, name: &str) -> Result<Vec<String>, ArtifactDeleteError> {
     if !is_valid_artifact_name(name) {
         return Err(ArtifactDeleteError::InvalidName(name.to_string()));
@@ -879,9 +777,6 @@ mod tests {
 
     #[tokio::test]
     async fn folder_paths_allow_dot_prefixed_files() {
-        // A dot-prefixed segment (e.g. a build tool's `.well-known/` or an
-        // author's `.env.example`) is an ordinary file within the artifact's
-        // own folder, not a traversal attempt — it should serve normally.
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path();
         write(&p.join("graph/index.html"), "x");

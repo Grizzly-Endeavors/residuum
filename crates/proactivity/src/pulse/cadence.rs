@@ -1,32 +1,18 @@
-//! When a pulse is due: the one rule set behind the scheduler's ticks and the
-//! next-run calculation, so the two can't disagree.
-//!
-//! A pulse's clock is an *anchor*: the scheduled time its last run answered,
-//! or the moment the scheduler first saw it. Runs are scheduled from the
-//! anchor, never from when a run actually fired, so a run delayed by a
-//! stopped gateway or by `active_hours` doesn't move the pulse's later runs.
-
 use std::str::FromStr as _;
 
 use chrono::{Datelike as _, Days, NaiveDateTime, NaiveTime, TimeDelta, Timelike as _, Weekday};
 
 use super::types::{PulseDef, is_within_active_hours, parse_active_hours, parse_schedule_duration};
 
-/// How a pulse's runs are spaced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Rule {
-    /// Every `interval` after the anchor.
     Every(TimeDelta),
-    /// On each of `days`, at the start of the active-hours window (midnight
-    /// without one). `min_gap`, from `schedule`, is the least time between two
-    /// runs.
     OnDays {
         days: Vec<Weekday>,
         min_gap: Option<TimeDelta>,
     },
 }
 
-/// A pulse's `schedule`, `days` and `active_hours`, read once.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cadence {
     rule: Rule,
@@ -34,12 +20,6 @@ pub struct Cadence {
 }
 
 impl Cadence {
-    /// Read `pulse`'s timing settings.
-    ///
-    /// # Errors
-    /// Returns a message naming the pulse and the bad value when its
-    /// `schedule`, `days` or `active_hours` can't be read, or when it sets
-    /// neither `schedule` nor `days`.
     pub fn of(pulse: &PulseDef) -> Result<Self, String> {
         let window = match pulse.active_hours.as_deref() {
             None => None,
@@ -79,28 +59,16 @@ impl Cadence {
         Ok(Self { rule, window })
     }
 
-    /// The active-hours window, if the pulse has one.
     #[must_use]
     pub fn window(&self) -> Option<(NaiveTime, NaiveTime)> {
         self.window
     }
 
-    /// Whether a pulse's clock starts only on a tick inside its window. An
-    /// interval pulse's anchor must land inside the window; a day pulse's slot
-    /// is fixed by the window's start, so its clock starts whenever it is
-    /// first seen.
     #[must_use]
     pub fn clock_waits_for_window(&self) -> bool {
         self.window.is_some() && matches!(self.rule, Rule::Every(_))
     }
 
-    /// The scheduled time a run at `now` answers, if the pulse is due at `now`
-    /// given its `anchor`. The caller fires it once and stores the returned
-    /// time as the new anchor.
-    ///
-    /// An interval pulse that missed several intervals is due once: the
-    /// returned time is the latest interval boundary at or before `now`, so
-    /// the next run is the first one after it.
     #[must_use]
     pub fn due_slot(&self, anchor: NaiveDateTime, now: NaiveDateTime) -> Option<NaiveDateTime> {
         if let Some((start, end)) = self.window
@@ -122,15 +90,11 @@ impl Cadence {
                 if slot <= anchor || min_gap.is_some_and(|gap| slot < anchor + gap) {
                     return None;
                 }
-                // A day's run can start late, but not after its window closes.
                 (now < self.day_slot_end(slot)).then_some(slot)
             }
         }
     }
 
-    /// A listed day's slot after `anchor` whose window has closed without a
-    /// run answering it. The caller moves the anchor to it and reports the
-    /// missed run once.
     #[must_use]
     pub fn missed_slot(&self, anchor: NaiveDateTime, now: NaiveDateTime) -> Option<NaiveDateTime> {
         let Rule::OnDays { days, min_gap } = &self.rule else {
@@ -141,9 +105,6 @@ impl Cadence {
         (eligible && now >= self.day_slot_end(slot)).then_some(slot)
     }
 
-    /// The first moment the pulse is scheduled to run at or after `now`,
-    /// before `active_hours` defers it. `None` only when a day pulse's
-    /// window never opens (an empty window).
     #[must_use]
     pub fn next_slot(&self, anchor: NaiveDateTime, now: NaiveDateTime) -> Option<NaiveDateTime> {
         match &self.rule {
@@ -155,13 +116,10 @@ impl Cadence {
         }
     }
 
-    /// The time a day's run starts: the window's start, or midnight.
     fn start_time(&self) -> NaiveTime {
         self.window.map_or(NaiveTime::MIN, |(start, _end)| start)
     }
 
-    /// The moment a day's run can no longer start: its window's close, or the
-    /// next midnight without a window. An empty window closes at its start.
     fn day_slot_end(&self, slot: NaiveDateTime) -> NaiveDateTime {
         match self.window {
             Some((start, end)) => {
@@ -180,10 +138,6 @@ impl Cadence {
 
 const SECONDS_PER_DAY: i64 = 86_400;
 
-/// Parse a pulse's `days`: weekday names, short or full, in any case.
-///
-/// # Errors
-/// Returns a message naming the bad value, or that the list is empty.
 pub fn parse_weekdays(days: &[String]) -> Result<Vec<Weekday>, String> {
     if days.is_empty() {
         return Err(
@@ -202,8 +156,6 @@ pub fn parse_weekdays(days: &[String]) -> Result<Vec<Weekday>, String> {
         .collect()
 }
 
-/// The latest occurrence of a listed weekday at `start` that is at or before
-/// `now`.
 fn latest_day_slot(
     days: &[Weekday],
     start: NaiveTime,
@@ -220,9 +172,6 @@ fn latest_day_slot(
     None
 }
 
-/// The first occurrence of a listed weekday at `start` that is at or after
-/// `floor` and after `anchor`. `floor`'s own day may have passed its slot, so
-/// the next listed day can be seven days after it: eight days are searched.
 fn first_day_slot_from(
     days: &[Weekday],
     start: NaiveTime,
@@ -291,7 +240,6 @@ mod tests {
             tasks: Vec::new(),
         };
         let cadence = Cadence::of(&pulse).unwrap();
-        // Sunday 2026-03-08 22:00 runs and may start until Monday 06:00.
         assert_eq!(
             cadence.due_slot(at(1, 0, 0), at(9, 5, 59)),
             Some(at(8, 22, 0)),
@@ -315,7 +263,6 @@ mod tests {
             tasks: Vec::new(),
         };
         let cadence = Cadence::of(&pulse).unwrap();
-        // 2026-03-08 is a Sunday.
         assert_eq!(cadence.missed_slot(at(7, 12, 0), at(8, 9, 30)), None);
         assert_eq!(
             cadence.missed_slot(at(7, 12, 0), at(9, 9, 30)),

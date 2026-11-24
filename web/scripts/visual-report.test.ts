@@ -1,8 +1,3 @@
-// Runs scripts/visual-report.mjs the way CI does, as a subprocess, against the
-// Playwright JSON reports in fixtures/visual-report/. Those are Playwright 1.63
-// output: fixtures/visual-report/capture/capture.mjs runs the suite in capture/ on
-// that version and writes them. A Playwright bump is checked by re-running the
-// capture and this file; a changed report shape or message then fails here.
 
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -62,7 +57,6 @@ interface Classified {
   githubOutput: string;
 }
 
-/** `classify` on a fixture, with $GITHUB_OUTPUT pointed at a file in the temp directory. */
 function classify(input: string): Classified {
   const output = join(dir, "classification.json");
   const githubOutput = join(dir, "github-output");
@@ -75,7 +69,6 @@ function classify(input: string): Classified {
   };
 }
 
-/** A report written to the temp directory, for a case that no fixture needs to carry. */
 function writeReport(name: string, report: unknown): string {
   const path = join(dir, `${name}.json`);
   writeFileSync(path, JSON.stringify(report));
@@ -88,7 +81,6 @@ interface Rendered {
   stepSummary: string;
 }
 
-/** `render` of the classification of a fixture. */
 function renderFixture(name: string, env: Record<string, string> = {}): Rendered {
   const { classification } = classify(fixture(name));
   return render(classification, env);

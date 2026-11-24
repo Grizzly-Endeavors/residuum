@@ -1,54 +1,14 @@
-//! Diagnostics for strictly-parsed workspace/config files.
-//!
-//! One validator per file type — `config.toml`, `providers.toml`,
-//! `config/channels.toml`, `config/mcp.json`, `config/a2a.json`,
-//! `HEARTBEAT.yml`, and a skill's `SKILL.md` frontmatter — each built
-//! directly on the loader or validation function that file's real load path
-//! already uses, so a diagnostic can never disagree with what loading
-//! actually rejects or skips. [`diagnose`] is the single entry point: it
-//! picks the validator by the file's path and returns diagnostics for
-//! `content`, or `None` if the path isn't one of the files this module
-//! understands.
-//!
-//! Reused in three places: after an agent `write_file`/`edit_file` call
-//! (`crates/tools/src/write.rs`, `crates/tools/src/edit.rs`), the `POST
-//! /api/agents/{name}/workspace/validate` endpoint and the raw config save handlers
-//! (`crates/hub/src/web/workspace.rs`, `config.rs`, `providers.rs`), and the
-//! load/reload notices for these files.
-
 use std::path::{Path, PathBuf};
 
 use residuum_core::diagnostics::Diagnostic;
 
-/// The directories `diagnose` needs to resolve which file a path refers to
-/// and, for `config.toml`/`providers.toml`, to validate against the sibling
-/// file on disk.
 #[derive(Debug, Clone)]
 pub struct DiagnosticsPaths {
-    /// The agent's own config directory (`<agent>/config`), holding
-    /// `config.toml` and `providers.toml`.
     pub config_dir: PathBuf,
-    /// The workspace root, holding `config/channels.toml`, `config/mcp.json`,
-    /// `config/a2a.json`, `HEARTBEAT.yml`, and skill `SKILL.md` files.
     pub workspace_dir: PathBuf,
-    /// The hub directory (`~/.residuum/hub`), needed to resolve the hub
-    /// config that `config.toml`/`providers.toml` diagnostics run against.
     pub hub_dir: PathBuf,
 }
 
-/// Which strictly-parsed file `path` refers to, independent of content —
-/// used both to dispatch [`diagnose`] and to let a caller with raw bytes
-/// (not yet known to be valid UTF-8) tell whether it's looking at one of
-/// these files before it has decoded text to hand to a validator.
-///
-/// The hub's `config.toml` is matched by its canonical location under
-/// `paths.hub_dir`, and the agent's `config.toml`/`providers.toml` by theirs
-/// under `paths.config_dir`; `config/channels.toml`, `config/mcp.json`, and
-/// `config/a2a.json` by their canonical location under `paths.workspace_dir`.
-/// `HEARTBEAT.yml` and `SKILL.md` are matched by filename alone, regardless
-/// of directory, matching how the rest of the codebase already recognizes
-/// them (see `is_heartbeat_file` in `crates/hub/src/web/workspace.rs` and the
-/// skill scanner, which accepts a `SKILL.md` anywhere under the skills root).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FileKind {
     HubConfigToml,
@@ -61,8 +21,6 @@ enum FileKind {
     SkillMd,
 }
 
-/// Recognize `path` as one of the strictly-parsed files this module
-/// understands, or `None` if it's neither — see [`FileKind`].
 fn recognize(path: &Path, paths: &DiagnosticsPaths) -> Option<FileKind> {
     let file_name = path.file_name().and_then(|n| n.to_str())?;
 
@@ -97,21 +55,11 @@ fn recognize(path: &Path, paths: &DiagnosticsPaths) -> Option<FileKind> {
     None
 }
 
-/// Whether `path` is one of the strictly-parsed files this module
-/// understands, without parsing anything. Lets a caller holding raw bytes
-/// that might not be valid UTF-8 (a workspace write, say) decide whether a
-/// decode failure is itself worth a diagnostic before it has text to hand to
-/// [`diagnose`].
 #[must_use]
 pub fn is_recognized(path: &Path, paths: &DiagnosticsPaths) -> bool {
     recognize(path, paths).is_some()
 }
 
-/// Pick the validator for `path` and return diagnostics for `content`.
-///
-/// Returns `None` if `path` isn't one of the strictly-parsed files this
-/// module understands — callers treat that as "nothing to check", not as a
-/// problem.
 #[must_use]
 pub fn diagnose(path: &Path, content: &str, paths: &DiagnosticsPaths) -> Option<Vec<Diagnostic>> {
     let kind = recognize(path, paths)?;
@@ -157,12 +105,6 @@ pub fn diagnose(path: &Path, content: &str, paths: &DiagnosticsPaths) -> Option<
     })
 }
 
-/// Compare `path` against `target` (an absolute path this module builds from
-/// a known directory), tolerating `path` being relative to the process's
-/// working directory or given in a different but equivalent form. Falls back
-/// to a plain equality check if either side can't be canonicalized (e.g. the
-/// file doesn't exist yet), which is the common case for a brand-new file
-/// being validated before its first write.
 fn paths_match(path: &Path, target: &Path) -> bool {
     if path == target {
         return true;

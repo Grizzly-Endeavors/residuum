@@ -214,7 +214,6 @@ async function waitForModalReady(): Promise<void> {
 }
 
 describe("TeamsSetupModal", () => {
-  // Scenario 1: manual-path link present
   it("presents manual setup guide link on step 1", async () => {
     currentPrereqs = fakePrereqs({
       manual_guide_url: "https://dev.teams.microsoft.com/bots/custom-guide",
@@ -228,7 +227,6 @@ describe("TeamsSetupModal", () => {
     expect(guideLink).toHaveAttribute("target", "_blank");
   });
 
-  // Scenario 2: missing-node blocks continue
   it("blocks continuing when Node.js is missing and shows error banner", async () => {
     currentPrereqs = fakePrereqs({ node: { found: false, version: null, path: null } });
     render(TeamsSetupModal, { agent, open: true });
@@ -239,7 +237,6 @@ describe("TeamsSetupModal", () => {
     expect(nextBtn).toBeDisabled();
   });
 
-  // Scenario 3: replace-existing checkbox required when Teams configured
   it("requires checking replace-existing when Teams is already configured", async () => {
     currentPrereqs = fakePrereqs({ teams_already_configured: true });
     render(TeamsSetupModal, { agent, open: true });
@@ -275,7 +272,6 @@ describe("TeamsSetupModal", () => {
     expect(doneBtn).toBeDisabled();
   });
 
-  // Scenario 4: consent required when CLI missing
   it("requires consent checkbox when Agents Toolkit CLI is not installed", async () => {
     currentPrereqs = fakePrereqs({
       atk: {
@@ -301,7 +297,6 @@ describe("TeamsSetupModal", () => {
     expect(nextBtn).toBeEnabled();
   });
 
-  // Scenario 5: field validation/counters
   it("validates fields, displays character counters, and warns if messaging endpoint is not HTTPS", async () => {
     currentPrereqs = fakePrereqs({
       suggested_endpoint: "https://relay.example.com/messages",
@@ -309,29 +304,23 @@ describe("TeamsSetupModal", () => {
     render(TeamsSetupModal, { agent, open: true });
     await waitForModalReady();
 
-    // Advance to step 2 (form)
     await fireEvent.click(screen.getByRole("button", { name: "Next" }));
     await settle();
 
-    // Bot name defaults to agent
     const botNameInput = screen.getByRole("textbox", { name: "Bot name" });
     expect(botNameInput).toHaveValue("atlas");
 
-    // Messaging endpoint prefilled with suggested endpoint
     const endpointInput = screen.getByRole("textbox", {
       name: "Messaging endpoint",
     });
     expect(endpointInput).toHaveValue("https://relay.example.com/messages");
 
-    // Counters exist
     expect(screen.getByText("0/80")).toBeTruthy();
     expect(screen.getByText("0/4000")).toBeTruthy();
 
-    // "Start setup" disabled before required fields filled
     const submitBtn = screen.getByRole("button", { name: "Start setup" });
     expect(submitBtn).toBeDisabled();
 
-    // Fill short and long descriptions
     await fireEvent.input(screen.getByRole("textbox", { name: "Short description" }), {
       target: { value: "A helpful assistant bot" },
     });
@@ -349,25 +338,21 @@ describe("TeamsSetupModal", () => {
     expect(screen.getByText("72/4000")).toBeTruthy();
     expect(submitBtn).toBeEnabled();
 
-    // Test non-HTTPS warning
     await fireEvent.input(endpointInput, {
       target: { value: "http://insecure.example.com/messages" },
     });
     expect(screen.getByText(/Microsoft Teams requires an HTTPS messaging endpoint/i)).toBeTruthy();
 
-    // Restore HTTPS
     await fireEvent.input(endpointInput, {
       target: { value: "https://secure.example.com/messages" },
     });
     expect(screen.queryByText(/Microsoft Teams requires an HTTPS messaging endpoint/i)).toBeNull();
 
-    // Start setup
     await fireEvent.click(submitBtn);
     await settle();
     expect(startJobCalledWith).toBeTruthy();
   });
 
-  // Scenario 6: icon size rejection
   it("rejects icons with invalid dimensions or non-PNG format", async () => {
     currentPrereqs = fakePrereqs();
     render(TeamsSetupModal, { agent, open: true });
@@ -384,7 +369,6 @@ describe("TeamsSetupModal", () => {
     expect(screen.getByText("Icon must be a PNG image file.")).toBeTruthy();
   });
 
-  // Scenario 7: sign-in prompt + redirect paste incl. inline 400 error
   it("displays sign-in prompt, handles redirect paste, and shows inline 400 error on invalid redirect", async () => {
     currentJob = fakeJob({
       state: "waiting_for_user",
@@ -407,7 +391,6 @@ describe("TeamsSetupModal", () => {
     const redirectField = screen.getByRole("textbox", { name: "Redirect URL" });
     expect(redirectField).toBeTruthy();
 
-    // Mock 400 response from submit
     redirectErrorResponse = {
       status: 400,
       message: "Invalid authorization code or state token expired",
@@ -423,7 +406,6 @@ describe("TeamsSetupModal", () => {
     expect(redirectSubmittedWith).toBe("http://localhost:53000/?code=bad-code&state=mismatch");
     expect(screen.getByText("Invalid authorization code or state token expired")).toBeTruthy();
 
-    // Successful submit
     redirectErrorResponse = null;
     await fireEvent.input(redirectField, {
       target: { value: "http://localhost:53000/?code=valid-code&state=valid-state" },
@@ -434,7 +416,6 @@ describe("TeamsSetupModal", () => {
     expect(redirectSubmittedWith).toBe("http://localhost:53000/?code=valid-code&state=valid-state");
   });
 
-  // Scenario 8: progress checklist + log
   it("displays progress checklist for all 6 phases, elapsed time, collapsible logs, and polls during progress", async () => {
     currentJob = fakeJob({
       state: "running",
@@ -458,7 +439,6 @@ describe("TeamsSetupModal", () => {
     render(TeamsSetupModal, { agent, open: true });
     await waitForModalReady();
 
-    // All 7 phases rendered
     expect(screen.getByText("Check prerequisites")).toBeTruthy();
     expect(screen.getByText("Install Agents Toolkit CLI")).toBeTruthy();
     expect(screen.getByText("Sign in to Microsoft 365")).toBeTruthy();
@@ -467,10 +447,8 @@ describe("TeamsSetupModal", () => {
     expect(screen.getByText("Import bot registration")).toBeTruthy();
     expect(screen.getByText("Install in Teams")).toBeTruthy();
 
-    // Elapsed time
     expect(screen.getByText(/Elapsed:/i)).toBeTruthy();
 
-    // Collapsible logs
     const logDisclosure = screen.getByRole("button", { name: /Show logs \(2 lines\)/i });
     expect(logDisclosure).toBeTruthy();
     await fireEvent.click(logDisclosure);
@@ -479,7 +457,6 @@ describe("TeamsSetupModal", () => {
     expect(screen.getByText("Checking prerequisites...")).toBeTruthy();
     expect(screen.getByText("Warning: non-critical notice")).toBeTruthy();
 
-    // Polling: advancing timer triggers another fetch
     vi.useFakeTimers();
     try {
       currentJob = fakeJob({
@@ -496,7 +473,6 @@ describe("TeamsSetupModal", () => {
     }
   });
 
-  // Scenario 9: cancel
   it("cancels setup job when cancel button is clicked", async () => {
     currentJob = fakeJob({ state: "running", phase: "provision" });
     render(TeamsSetupModal, { agent, open: true });
@@ -510,7 +486,6 @@ describe("TeamsSetupModal", () => {
     expect(screen.getByText(/The Teams setup operation was cancelled/i)).toBeTruthy();
   });
 
-  // Scenario 10: failure view shows only existing created ids with links + retry
   it("shows failure view with only existing created IDs and links, and allows retry", async () => {
     currentJob = fakeJob({
       state: "failed",
@@ -531,29 +506,23 @@ describe("TeamsSetupModal", () => {
     render(TeamsSetupModal, { agent, open: true });
     await waitForModalReady();
 
-    // Error banner & phase
     expect(screen.getByText("Resource group deployment failed")).toBeTruthy();
     expect(screen.getByText("provision")).toBeTruthy();
 
-    // Technical details
     const detailsDisclosure = screen.getByRole("button", { name: "Technical error details" });
     await fireEvent.click(detailsDisclosure);
     await settle();
     expect(screen.getByText(/Azure quota limit exceeded/i)).toBeTruthy();
 
-    // Created resources: ONLY bot_id and tenant_id exist
     expect(screen.getByText("bot-existing-123")).toBeTruthy();
     expect(screen.getByText("tenant-existing-456")).toBeTruthy();
     const entraLink = screen.getByRole("link", { name: /Entra Admin Center/i });
     expect(entraLink).toHaveAttribute("href", "https://entra.microsoft.com/#view/bot-existing-123");
 
-    // Teams App ID was null, so it must NOT be displayed
     expect(screen.queryByText("Teams App ID:")).toBeNull();
 
-    // Manual setup guide link present
     expect(screen.getByRole("link", { name: /Manual setup guide/i })).toBeTruthy();
 
-    // Retry button calls retry API
     const retryBtn = screen.getByRole("button", { name: "Retry" });
     await fireEvent.click(retryBtn);
     await settle();
@@ -646,7 +615,6 @@ describe("TeamsSetupModal", () => {
     expect(screen.queryByText(/Choose Start over to set up a new bot/i)).toBeNull();
   });
 
-  // Scenario 11: done view install/download
   it("shows complete view with bot details, install in Teams button, package download, DM owner reminder, and cleanup", async () => {
     currentJob = fakeJob({
       state: "succeeded",
@@ -663,14 +631,11 @@ describe("TeamsSetupModal", () => {
     render(TeamsSetupModal, { agent, open: true });
     await waitForModalReady();
 
-    // Bot ID & Tenant ID
     expect(screen.getByText("final-bot-123")).toBeTruthy();
     expect(screen.getByText("final-tenant-456")).toBeTruthy();
 
-    // Direct message owner reminder
     expect(screen.getByText(/Direct message reminder:/i)).toBeTruthy();
 
-    // Install in Teams with error handling
     installAppErrorResponse = {
       status: 403,
       message: "Custom app uploads are blocked by IT admin policy.",
@@ -682,11 +647,9 @@ describe("TeamsSetupModal", () => {
     expect(installAppCalled).toBe(true);
     expect(screen.getByText("Custom app uploads are blocked by IT admin policy.")).toBeTruthy();
 
-    // Download package button
     const downloadBtn = screen.getByRole("button", { name: "Download app package" });
     expect(downloadBtn).toBeTruthy();
 
-    // Cleanup button
     const cleanupBtn = screen.getByRole("button", { name: "Clean up temporary files" });
     await fireEvent.click(cleanupBtn);
     await settle();
@@ -702,14 +665,12 @@ describe("TeamsSetupModal", () => {
 
       expect(screen.queryByText(/Lost contact with Residuum, retrying…/i)).toBeNull();
 
-      // Trigger poll failure
       getJobError = new TypeError("Network error");
       await advance(1100);
 
       expect(screen.getByText(/Lost contact with Residuum, retrying…/i)).toBeTruthy();
       expect(screen.getByText(/Setup is continuing on the server/i)).toBeTruthy();
 
-      // Clear error and advance timer -> recovers
       getJobError = null;
       await advance(1100);
 
@@ -734,10 +695,8 @@ describe("TeamsSetupModal", () => {
       render(TeamsSetupModal, { agent, open: true });
       await settle();
 
-      // Initial load passes log_since=0
       expect(lastLogSinceRequested).toBe(0);
 
-      // Expand logs
       const logDisclosure = screen.getByRole("button", { name: /Show logs/i });
       await fireEvent.click(logDisclosure);
       await settle();
@@ -745,7 +704,6 @@ describe("TeamsSetupModal", () => {
       expect(screen.getByText("Line 1")).toBeTruthy();
       expect(screen.getByText("Line 2")).toBeTruthy();
 
-      // Advance timer: poll passes log_since=2
       const manyLines = [];
       for (let i = 3; i <= 1005; i++) {
         manyLines.push({
@@ -767,10 +725,8 @@ describe("TeamsSetupModal", () => {
 
       await advance(1100);
 
-      // Poll should have requested log_since=2
       expect(lastLogSinceRequested).toBe(2);
 
-      // 1005 total unique lines minus 1000 max = 5 trimmed lines
       expect(screen.getByText(/5 older log lines were trimmed/i)).toBeTruthy();
       expect(screen.getByText("Generated log line 1005")).toBeTruthy();
     } finally {
@@ -780,9 +736,7 @@ describe("TeamsSetupModal", () => {
 });
 
 describe("ConnectionsSection Teams integration", () => {
-  // Scenario 12: ConnectionsSection button and 'View setup' state
   it("renders setup button in ConnectionsSection with 'View setup' state and status badge when job exists", async () => {
-    // 12a: When no job exists
     currentJob = null;
     const scope = settingsModel.agent(agent);
     await scope.load();
@@ -791,7 +745,6 @@ describe("ConnectionsSection Teams integration", () => {
     const setupBtn = await screen.findByRole("button", { name: "Set up with Agents Toolkit" });
     expect(setupBtn).toBeTruthy();
 
-    // Click opens modal
     await fireEvent.click(setupBtn);
     await waitFor(() => {
       expect(screen.getByRole("dialog", { name: /Set up Microsoft Teams/i })).toBeTruthy();
@@ -799,7 +752,6 @@ describe("ConnectionsSection Teams integration", () => {
   });
 
   it("shows 'View setup' button and status badge when a job exists", async () => {
-    // 12b: When job is running
     currentJob = fakeJob({ state: "running" });
     const scope = settingsModel.agent(agent);
     await scope.load();
@@ -809,7 +761,6 @@ describe("ConnectionsSection Teams integration", () => {
     expect(viewSetupBtn).toBeTruthy();
     expect(screen.getByText("Setup running")).toBeTruthy();
 
-    // Click opens modal directly to progress
     await fireEvent.click(viewSetupBtn);
     await waitFor(() => {
       expect(screen.getByRole("dialog", { name: /Setting up Microsoft Teams/i })).toBeTruthy();
@@ -822,14 +773,12 @@ describe("ConnectionsSection Teams integration", () => {
     await scope.load();
     render(ConnectionsSection, { scope, section: "connections" });
 
-    // Warning banner should be rendered
     const banner = await screen.findByText(/Couldn't check Teams setup status/i);
     expect(banner).toBeTruthy();
 
     const retryBtn = screen.getByRole("button", { name: "Retry" });
     expect(retryBtn).toBeTruthy();
 
-    // Clear error and click Retry -> banner disappears
     getJobError = null;
     currentJob = fakeJob({ state: "running" });
     await fireEvent.click(retryBtn);

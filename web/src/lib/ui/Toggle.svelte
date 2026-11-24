@@ -8,17 +8,11 @@
     "children" | "id" | "role" | "onchange" | "aria-checked"
   > {
     label: string;
-    /** Keep the label for assistive technology only. */
     labelHidden?: boolean;
     checked?: boolean;
     hint?: string;
     error?: string;
-    /**
-     * `row` puts the label and hint on the left and the switch at the end, as
-     * in a settings group; `inline` sets a compact label just before it.
-     */
     layout?: "row" | "inline";
-    /** The change is being applied: a spinner shows and presses are ignored. */
     loading?: boolean;
     onchange?: (checked: boolean) => void;
     element?: HTMLButtonElement;
@@ -140,7 +134,6 @@
   }
 
   @media (max-width: 760px) {
-    /* The track stays small; its hit area grows to the touch target. */
     .ui-switch::before {
       content: "";
       position: absolute;

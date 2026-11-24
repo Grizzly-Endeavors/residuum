@@ -1,18 +1,10 @@
-//! Types shared by the remote-access pieces.
-
-/// Which of an instance's three names a host is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HostKind {
-    /// `{user}.{base}`: the web UI.
     Ui,
-    /// `{user}.workbench.{base}`: workbench artifacts.
     Workbench,
-    /// `{instance}.{user}.{base}`: public A2A and Teams for this instance.
     Instance,
 }
 
-/// The three host names an instance answers for, always derived locally from
-/// the stored user and slug and the configured base domain.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Hostnames {
     pub(crate) ui: String,
@@ -21,7 +13,6 @@ pub(crate) struct Hostnames {
 }
 
 impl Hostnames {
-    /// Derive the names for `user`'s instance `slug` under `base`.
     pub(crate) fn derive(user: &str, slug: &str, base: &str) -> Self {
         Self {
             ui: format!("{user}.{base}"),
@@ -30,13 +21,10 @@ impl Hostnames {
         }
     }
 
-    /// All three names, UI first.
     pub(crate) fn all(&self) -> [&str; 3] {
         [&self.ui, &self.workbench, &self.instance]
     }
 
-    /// Which name `host` is, comparing case-insensitively and ignoring a
-    /// trailing dot and any port.
     pub(crate) fn kind_of(&self, host: &str) -> Option<HostKind> {
         let host = normalize_host(host);
         if host == self.ui {
@@ -51,7 +39,6 @@ impl Hostnames {
     }
 }
 
-/// Lowercase `host`, drop a port and one trailing dot.
 pub(crate) fn normalize_host(host: &str) -> String {
     let without_port = match host.rsplit_once(':') {
         Some((name, port)) if port.chars().all(|c| c.is_ascii_digit()) && !name.contains(':') => {

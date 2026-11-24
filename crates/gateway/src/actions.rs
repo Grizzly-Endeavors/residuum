@@ -1,5 +1,3 @@
-//! Scheduled action execution helper for the gateway.
-
 use std::sync::Arc;
 
 use residuum_bus::notice::publish_notice;
@@ -8,25 +6,6 @@ use residuum_bus::{EventTrigger, Publisher, SkillName, SpawnRequestEvent, topics
 use residuum_config::{ModelCatalog, ModelSelector};
 use residuum_proactivity::actions::store::ActionStore;
 
-/// Fork due scheduled actions as `scheduled` sessions.
-///
-/// Every pending action's model is checked first (see [`action_model`]). An
-/// action whose model can't run is held in the store and never started,
-/// whether or not it's due yet, and the owner gets one notice naming it and
-/// the bad value; it starts on the first tick after its model resolves (a
-/// fixed `providers.toml`), or the owner cancels it.
-///
-/// An action whose spawn request is published is marked in flight — not due,
-/// not listed, held out of the persisted file — and the fork's outcome comes
-/// back through `SpawnContext::action_outcome`: a fork that started drops the
-/// action for good; a fork that failed restores it verbatim, so it's retried
-/// on the next tick rather than lost. The fork's own failure notice is
-/// published by the listener, deduplicated. A crash between publish and
-/// report can still drop an in-flight action; that window is the fork
-/// itself, seconds, where before this the loss was certain on every fork
-/// failure. A publish that fails leaves the action in the pending set
-/// exactly as it was (also retried next tick); the failure itself is
-/// already logged in [`publish_action_spawn`].
 pub(super) async fn spawn_due_actions(
     action_store: &Arc<tokio::sync::Mutex<ActionStore>>,
     publisher: &Publisher,
@@ -89,12 +68,6 @@ pub(super) async fn spawn_due_actions(
     }
 }
 
-/// The fork-outcome sink wired into the gateway's `SpawnContext`: keeps a
-/// scheduled action alive across its fork — restored verbatim to retry when
-/// the fork fails, dropped once it starts — and persists the store either
-/// way. `source_label` is the spawn request's `action:<name>#<id>` label;
-/// the id suffix resolves one exact action, so same-named actions can't
-/// clobber each other's outcomes.
 pub(super) fn action_outcome_sink(
     action_store: &Arc<tokio::sync::Mutex<ActionStore>>,
 ) -> residuum_background::ActionOutcomeSink {
@@ -145,19 +118,12 @@ pub(super) fn action_outcome_sink(
     })
 }
 
-/// Why a scheduled action's model can't run, which decides what the owner
-/// is told to do about it.
 struct HeldModel {
-    /// Plain-language reason naming the value.
     reason: String,
-    /// `true` when the value is a `provider/model` id whose provider isn't
-    /// configured, which adding the provider fixes; `false` when the value
-    /// isn't a tier or a model id at all, which only rescheduling fixes.
     fixable_by_provider: bool,
 }
 
 impl HeldModel {
-    /// What the owner can do about it.
     fn remedy(&self) -> &'static str {
         if self.fixable_by_provider {
             "It stays scheduled and starts as soon as its model works — add the provider to \
@@ -169,11 +135,6 @@ impl HeldModel {
     }
 }
 
-/// An action's model, checked against `models`.
-///
-/// # Errors
-/// Returns a [`HeldModel`] naming the value when `model_tier` is neither a
-/// tier nor a `provider/model` id, or names a model that doesn't resolve.
 fn action_model(
     action: &residuum_proactivity::actions::types::ScheduledAction,
     models: &ModelCatalog,
@@ -189,9 +150,6 @@ fn action_model(
     Ok(model)
 }
 
-/// Publish a `SpawnRequest` for a scheduled action. Returns whether the
-/// publish succeeded, so the caller knows whether the action's run actually
-/// started and can be removed from the store.
 async fn publish_action_spawn(
     action: &residuum_proactivity::actions::types::ScheduledAction,
     model: ModelSelector,
@@ -306,9 +264,6 @@ mod tests {
         .await;
         let _ = next_event("a spawn request", &mut sub).await;
 
-        // The fork failed: the listener reports back by the spawn's
-        // `action:<name>#<id>` label, and the action returns verbatim to the
-        // pending set — the next tick retries it instead of losing it.
         {
             let mut locked = action_store.lock().await;
             assert!(
@@ -383,8 +338,6 @@ mod tests {
             "the id suffix must disambiguate same-named actions"
         );
 
-        // One fork started, one failed: each outcome must touch exactly its
-        // own action, never its same-named sibling.
         (sink)(
             first.source_label.as_str(),
             residuum_background::ActionSpawnOutcome::Started,
@@ -413,9 +366,6 @@ mod tests {
     #[tokio::test]
     async fn due_action_stays_in_the_store_when_publish_fails() {
         let dir = tempfile::tempdir().unwrap();
-        // A publisher with no broker behind it: every publish fails with
-        // `BusError::BrokerShutdown`, simulating the gateway shutting down
-        // mid-tick.
         let publisher = Publisher::noop();
 
         let mut store = ActionStore::new_empty(dir.path().join("scheduled_actions.json"));
@@ -511,10 +461,6 @@ mod tests {
             "an action whose model can't run stays scheduled"
         );
 
-        // A second tick with nothing changed starts nothing and says nothing
-        // new. The valid action added before it does start: the broker
-        // forwards in publish order, so once its spawn arrives any notice
-        // this tick published would already be queued.
         let mut good = due_action("action-ffffffff", "explicit model");
         good.model_tier = Some("openai/gpt-4o".to_string());
         action_store.lock().await.add(good);

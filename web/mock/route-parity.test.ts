@@ -11,23 +11,12 @@ import { isRefusal, scopeRequest } from "./scope";
 import { HUB_SOCKET_PATH, agentSocketPath } from "./sockets";
 import { createStubHub } from "./test-support";
 
-/**
- * Every request the API client can make has to land on a route the mock
- * serves. The test calls each exported client function with sample arguments
- * against a `fetch` that records what it is asked for, and looks up each
- * recorded method and path the way the mock's own handler would: scoped to an
- * agent, the hub or the team, then matched against `apiRoutes`.
- */
-
 type Api = typeof ApiModule;
 
-/** The agent every agent-scoped sample addresses, and the one the stub hub runs. */
 const AGENT = "atlas";
 
-/** A sample call: calls one client function with arguments it could really receive. */
 type Sample = (client: Api) => Promise<unknown>;
 
-/** The client's exports that only work on values the caller has, and make no requests. */
 const MAKES_NO_REQUESTS = [
   "validationFromApiError",
   "workspaceConflictFromApiError",
@@ -49,12 +38,10 @@ type RequestFunction = Exclude<
 const SCOPES: readonly WorkspaceScope[] = ["agent", "team"];
 const REPOS: readonly RepoKind[] = ["workspace", "agent_config", "team", "hub"];
 
-/** The team scope is addressed without an agent; the agent scope needs one. */
 function agentForScope(scope: WorkspaceScope): string | null {
   return scope === "team" ? null : AGENT;
 }
 
-/** The hub-level repositories are addressed without an agent; the agent-level ones need one. */
 function agentForRepo(repo: RepoKind): string | null {
   return repo === "hub" || repo === "team" ? null : AGENT;
 }
@@ -77,7 +64,6 @@ const SAMPLES: Record<RequestFunction, Sample[]> = {
   fetchTimezone: [(a) => a.fetchTimezone()],
   fetchProviderModels: [
     (a) => a.fetchProviderModels(AGENT, "openai", "key", "http://localhost"),
-    // Onboarding lists models before any agent exists.
     (a) => a.fetchProviderModels(null, "openai"),
   ],
   fetchSystemOneModels: [(a) => a.fetchSystemOneModels({ provider: "ollama" })],
@@ -320,11 +306,6 @@ const SAMPLES: Record<RequestFunction, Sample[]> = {
   ],
 };
 
-/**
- * What the workbench SDK (`assets/workbench/sdk.js`) calls on an artifact
- * page's own origin, which forwards `/api` to the same routes. The client
- * doesn't call these, so they are listed here.
- */
 const ARTIFACT_CALLS: ReadonlyArray<readonly [string, string]> = [
   ["POST", `/api/agents/${AGENT}/agent-inbox`],
   ["POST", `/api/agents/${AGENT}/model/complete`],
@@ -352,7 +333,6 @@ interface Request {
   url: string;
 }
 
-/** The problem with a request the mock would not serve, or `null` when it would. */
 function problemWith(routes: readonly Route[], { method, url }: Request): string | null {
   const hub = createStubHub();
   hub.createAgent(AGENT);
@@ -364,7 +344,6 @@ function problemWith(routes: readonly Route[], { method, url }: Request): string
     : null;
 }
 
-/** Call a sample against a fetch that records its requests, with a fresh client so nothing is cached. */
 async function requestsOf(sample: Sample): Promise<Request[]> {
   const recorded: Request[] = [];
   vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
@@ -376,13 +355,10 @@ async function requestsOf(sample: Sample): Promise<Request[]> {
   const client = await import("../src/lib/api");
   try {
     await sample(client);
-  } catch {
-    // The empty answers the stub gives may not be what the client does next, but the request it made is already recorded.
-  }
+  } catch {}
   return recorded;
 }
 
-/** Every request the client can make that `routes` would not serve, with the function that makes it. */
 async function unservedBy(routes: readonly Route[]): Promise<string[]> {
   const unserved: string[] = [];
   for (const [name, samples] of Object.entries(SAMPLES)) {

@@ -11,27 +11,11 @@
   import { IconButton, overlayOpen } from "../../lib/ui";
   import ModelControl from "./ModelControl.svelte";
 
-  // The chat's composer, on the frame it shares with a session's message box
-  // (`ComposerFrame`): files attached by button, paste or drop, each
-  // uploading at once, the chat actions under `/`, the model and thinking
-  // control, and Send, which becomes Stop while a reply runs and nothing is
-  // typed. Send waits while a file is uploading or one failed, and says so.
-  // What is typed and attached is kept per agent until it is sent. While the
-  // connection is down, what is sent waits for it.
-
   interface Props {
     agent: string;
-    /** A reply is under way. */
     replying: boolean;
-    /** The agent's connection is down and coming back. */
     reconnecting: boolean;
-    /** Messages waiting for the connection. */
     queued: number;
-    /**
-     * A message, or a `/name text` line, to send, with the files attached to
-     * it, every one uploaded. False when it couldn't go (a command that can't
-     * run now): the box keeps what was typed and attached.
-     */
     onsend: (text: string, attachments: StagedAttachment[]) => boolean;
     onstop: () => void;
   }
@@ -40,7 +24,6 @@
 
   let text = $state(untrack(() => readDraft(agent)));
   const files = untrack(() => draftAttachments(agent));
-  /** Send was pressed while a file was uploading or had failed, so the composer says why it waits. */
   let sendHeld = $state(false);
   let frame = $state<ReturnType<typeof ComposerFrame>>();
   let filePicker = $state<HTMLInputElement>();
@@ -49,7 +32,6 @@
     saveDraft(agent, text);
   });
 
-  // The reason goes once there is nothing left to wait for.
   const heldReason = $derived(sendHeld ? files.problem : null);
   $effect(() => {
     if (files.problem === null) sendHeld = false;
@@ -60,10 +42,6 @@
     actions: commandActions(actionRegistry.all),
   });
 
-  // ── Stopping with Esc ──────────────────────────────────────────────
-
-  // Esc is also how a dialog or menu closes, so it takes two presses to stop
-  // a reply: the first says so and waits for the second.
   const stopKey = new PressAgain();
 
   $effect(() => {
@@ -73,9 +51,6 @@
     stopKey.disarm();
   });
 
-  // Keys from anywhere in the composer, heard before the message box's own
-  // handler: the open `/` menu is checked here rather than by that handler
-  // claiming the key. An open overlay keeps the press for closing itself.
   function onkeys(event: KeyboardEvent, menuShown: boolean): void {
     if (event.isComposing) return;
     if (event.key !== "Escape") {
@@ -84,24 +59,16 @@
     }
     if (event.defaultPrevented || menuShown || !replying || overlayOpen()) return;
     event.preventDefault();
-    // A held key repeats; it is one press.
     if (event.repeat) return;
     if (stopKey.press()) onstop();
   }
 
-  /**
-   * Put a message that couldn't go back in the box, ahead of anything typed
-   * since, with the files it carried ahead of any attached since.
-   */
   export function restore(message: string, attachments: readonly StagedAttachment[] = []): void {
     if (message !== "") text = text.trim() === "" ? message : `${message}\n\n${text}`;
     files.restore(attachments);
     frame?.focus();
   }
 
-  // ── Files ──────────────────────────────────────────────────────────
-
-  /** Attach `dropped`, such as files dropped on the chat: each starts uploading at once. */
   export function attach(dropped: Iterable<File>): void {
     files.attach(dropped);
   }
@@ -113,11 +80,7 @@
     attach(pasted);
   }
 
-  // ── Sending ────────────────────────────────────────────────────────
-
   const empty = $derived(text.trim() === "" && files.attachments.length === 0);
-  // With nothing typed while a reply runs, Send is Stop; typing brings Send
-  // back, for a message that steers the reply.
   const showStop = $derived(replying && empty);
 
   function send(): boolean {
@@ -198,7 +161,6 @@
     onchange={(event) => {
       const input = event.currentTarget;
       attach([...(input.files ?? [])]);
-      // The same file can be picked again.
       input.value = "";
     }}
   />

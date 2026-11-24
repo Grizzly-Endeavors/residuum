@@ -1,9 +1,6 @@
-//! Memory thresholds and search weights.
-
 use super::super::deserialize::{MemoryConfigFile, SearchConfigFile};
 use super::super::types::{MemoryConfig, SearchConfig};
 
-/// Resolve memory subsystem configuration from TOML section with defaults.
 pub(super) fn resolve_memory_config(section: Option<&MemoryConfigFile>) -> MemoryConfig {
     let mut mem = MemoryConfig::default();
     if let Some(s) = section {
@@ -24,7 +21,6 @@ pub(super) fn resolve_memory_config(section: Option<&MemoryConfigFile>) -> Memor
     mem
 }
 
-/// Resolve hybrid search configuration from TOML section with defaults.
 pub(super) fn resolve_search_config(section: Option<&SearchConfigFile>) -> SearchConfig {
     let mut cfg = SearchConfig::default();
 
@@ -67,8 +63,6 @@ pub(super) fn resolve_search_config(section: Option<&SearchConfigFile>) -> Searc
         }
     }
 
-    // Normalized so the merged score stays in [0, 1], the range `min_score`
-    // is expressed in. Only the ratio between the two weights is meaningful.
     let sum = cfg.vector_weight + cfg.text_weight;
     if sum > 0.0 {
         cfg.vector_weight /= sum;
@@ -88,8 +82,6 @@ pub(super) fn resolve_search_config(section: Option<&SearchConfigFile>) -> Searc
     cfg
 }
 
-/// A hybrid search weight from config, or `fallback` when it is negative or
-/// not a finite number.
 fn valid_search_weight(key: &str, value: f64, fallback: f64) -> f64 {
     if value.is_finite() && value >= 0.0 {
         value

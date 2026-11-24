@@ -1,5 +1,3 @@
-//! Agent key discovery and cleanup tools: `agent_keys_list`, `agent_key_delete`.
-
 use std::fmt::Write as _;
 use std::sync::Arc;
 
@@ -14,7 +12,6 @@ use residuum_config::agent_keys::{AgentKeyError, KeyCreator, SharedAgentKeys};
 use residuum_inference::ToolDefinition;
 use residuum_inference::{ToolError, ToolResult};
 
-/// Lists agent keys: names, environment variables, creators, descriptions.
 pub struct AgentKeysListTool {
     keys: SharedAgentKeys,
 }
@@ -89,13 +86,9 @@ impl Tool for AgentKeysListTool {
     }
 }
 
-/// Deletes an agent key, whoever created it — including one the user
-/// created; see `docs/systems-usage/agent-keys.md`.
 pub struct AgentKeyDeleteTool {
     keys: SharedAgentKeys,
     checkpoints: Arc<CheckpointEngine>,
-    /// Publishes a notice when a key the user created is deleted. `None`
-    /// (e.g. in tests) means the deletion still happens but goes unannounced.
     publisher: Option<Publisher>,
 }
 
@@ -109,9 +102,6 @@ impl AgentKeyDeleteTool {
         }
     }
 
-    /// Publish a notice naming the key and that it can be restored from
-    /// checkpoint history whenever this tool deletes a key the user
-    /// created.
     #[must_use]
     pub fn with_publisher(mut self, publisher: Publisher) -> Self {
         self.publisher = Some(publisher);

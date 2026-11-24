@@ -1,5 +1,3 @@
-//! Switch the active interactive endpoint for agent responses.
-
 use async_trait::async_trait;
 use serde_json::Value;
 use tokio::sync::watch;
@@ -13,7 +11,6 @@ use residuum_inference::ToolDefinition;
 use residuum_agent::Tool;
 use residuum_inference::{ToolError, ToolResult};
 
-/// Tool for switching the agent's output endpoint.
 pub struct SwitchEndpointTool {
     registry: EndpointRegistry,
     override_tx: watch::Sender<Option<EndpointName>>,
@@ -21,7 +18,6 @@ pub struct SwitchEndpointTool {
 }
 
 impl SwitchEndpointTool {
-    /// Create a new `SwitchEndpointTool`.
     #[must_use]
     pub fn new(
         registry: EndpointRegistry,
@@ -103,7 +99,6 @@ impl Tool for SwitchEndpointTool {
         let ep = EndpointName::from(endpoint_name);
         self.override_tx.send_replace(Some(ep.clone()));
 
-        // Notify via system message so the user knows the agent switched.
         if let Err(e) = self
             .publisher
             .publish(

@@ -39,7 +39,6 @@ function summary(runId: string, overrides: Partial<SessionSummary> = {}): Sessio
   };
 }
 
-/** A hub socket the test drives: what the run sent, and frames to hand it. */
 class FakeRelay implements SessionRelayLink {
   connected = true;
   sent: HubClientMessage[] = [];
@@ -59,13 +58,10 @@ class FakeRelay implements SessionRelayLink {
   }
 }
 
-/** What the agent's routes answer, and the requests they saw. */
 let transcripts: Record<string, { session: SessionSummary; messages: RecentMessage[] }>;
 let messageAnswer: () => Response;
 let requests: string[];
-/** The bodies of the messages sent to the session, in order. */
 let sentBodies: { content: string; id: string }[];
-/** While set, transcripts answer only once it resolves. */
 let holdTranscripts: Promise<void> | null;
 
 function json(body: unknown, status = 200): Response {
@@ -128,7 +124,6 @@ async function opened(
   return { run, relay, close };
 }
 
-/** The frames of a turn starting and ending. */
 function turn(
   relay: FakeRelay,
   type: "session_turn_started" | "session_turn_ended",
@@ -138,7 +133,6 @@ function turn(
   relay.relay("atlas", { type, address: ADDRESS, run_id: runId, turn_id: turnId });
 }
 
-/** The session read a message, the owner's unless `from` says otherwise. */
 function read(
   relay: FakeRelay,
   message: { id: string; content: string; turnId: string; runId?: string },
@@ -157,7 +151,6 @@ function read(
   });
 }
 
-/** Send `content` from the message box; resolves to the id it went out with. */
 async function sendMessage(run: SessionRun, content: string): Promise<string> {
   run.draft = content;
   await run.send();
@@ -166,7 +159,6 @@ async function sendMessage(run: SessionRun, content: string): Promise<string> {
   return body?.id ?? "";
 }
 
-/** The transcript's lines, by what they say. */
 function lines(run: SessionRun): string[] {
   return run.items.map((item) => ("content" in item ? item.content : item.kind));
 }
@@ -370,7 +362,6 @@ describe("following a run through the hub's session relay", () => {
     });
     expect(run.summary?.memory_pending).toBe(true);
 
-    // Another run's merge leaves this panel alone.
     relay.relay("atlas", {
       type: "session_memory_merged",
       address: ADDRESS,
@@ -510,7 +501,6 @@ describe("a message waiting for the session to read it", () => {
     expect(lines(run).slice(-3)).toEqual(["Delivered.", "Here's what I found.", "Now summarize."]);
   });
 
-  /** The run ends, cancelled: what a Stop ends with. */
   const completed = (relay: FakeRelay, runId = "run-1"): void => {
     relay.relay("atlas", {
       type: "session_completed",
@@ -529,14 +519,12 @@ describe("a message waiting for the session to read it", () => {
     completed(relay);
     expect(run.waiting.map((message) => message.id)).toEqual([id]);
 
-    // The backend resumes the unread message as a new run.
     relay.relay("atlas", { type: "session_started", session: summary("run-2") });
     turn(relay, "session_turn_started", "run-2-t1", "run-2");
     read(relay, { id, content: "Also check the logs.", turnId: "run-2-t1", runId: "run-2" });
 
     expect(run.runId).toBe("run-2");
     expect(run.waiting).toEqual([]);
-    // It opens the new run's first turn, after the divider.
     expect(run.items.slice(-2).map((item) => item.kind)).toEqual(["divider", "user"]);
     expect(run.items.at(-1)).toMatchObject({
       content: "Also check the logs.",
@@ -559,7 +547,6 @@ describe("a message waiting for the session to read it", () => {
     await waitFor(() => {
       expect(requests.filter((r) => r.endsWith("/transcript"))).toHaveLength(2);
     });
-    // Both arrive while the reload is in flight.
     completed(relay);
     relay.relay("atlas", { type: "session_started", session: summary("run-2") });
     release();
@@ -656,7 +643,6 @@ describe("a message waiting for the session to read it", () => {
       },
       { kind: "user", content: "From my phone.", turnId: "t1" },
     ]);
-    // All three were read as the turn began, before it did anything.
     expect(run.items.slice(-3).some((item) => item.midTurn === true)).toBe(false);
     expect(run.waiting).toEqual([]);
   });
@@ -679,7 +665,6 @@ describe("a message waiting for the session to read it", () => {
       "Check the logs.",
       "And the alerts.",
     ]);
-    // The session read the first while the relay lagged, so its read never came.
     transcripts["run-1"]?.messages.push({
       role: "user",
       content:
@@ -697,7 +682,6 @@ describe("a message waiting for the session to read it", () => {
     });
     expect(lines(run).filter((line) => line === "Check the logs.")).toHaveLength(1);
 
-    // Its read arriving late adds nothing.
     read(relay, { id: readId, content: "Check the logs.", turnId: "t1" });
     expect(lines(run).filter((line) => line === "Check the logs.")).toHaveLength(1);
   });
@@ -762,7 +746,6 @@ describe("the run's commands", () => {
     const { run, relay } = await opened({ address: ADDRESS });
     run.draft = "Pick this back up";
     const sending = run.send();
-    // The new run can announce itself before the message's answer.
     relay.relay("atlas", { type: "session_started", session: summary("run-2") });
     await sending;
     expect(run.runId).toBe("run-2");
@@ -770,7 +753,6 @@ describe("the run's commands", () => {
     expect(run.items.at(-1)).toMatchObject({
       content: "This session had finished, so your message started a new run.",
     });
-    // The new run reads it as its first turn begins.
     const id = sentBodies[0]?.id ?? "";
     expect(run.waiting.map((message) => message.id)).toEqual([id]);
     turn(relay, "session_turn_started", "run-2-t1", "run-2");
@@ -804,7 +786,6 @@ describe("the run's commands", () => {
     run.open();
     run.draft = "Again";
     const sending = run.send();
-    // The new run's transcript holds the message, under the id it went out with.
     const again = transcripts["run-2"].messages[0];
     if (again) again.id = run.waiting[0]?.id;
     relay.relay("atlas", { type: "session_started", session: summary("run-2") });

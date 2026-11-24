@@ -1,21 +1,12 @@
-//! `${agent-key:<name>}` references in configuration values (MCP `env` and
-//! `headers`).
-
 use super::{AgentKeyError, AgentKeyStore};
 
 const OPEN: &str = "${agent-key:";
 
-/// Whether `value` contains any `${agent-key:<name>}` reference.
 #[must_use]
 pub fn has_references(value: &str) -> bool {
     value.contains(OPEN)
 }
 
-/// `value` with every `${agent-key:<name>}` replaced by that key's value.
-///
-/// # Errors
-/// Returns `AgentKeyError::NotFound` for a reference to an unknown key, and
-/// `AgentKeyError::Invalid` for an unterminated reference.
 pub fn expand_references(value: &str, store: &AgentKeyStore) -> Result<String, AgentKeyError> {
     let mut out = String::with_capacity(value.len());
     let mut rest = value;

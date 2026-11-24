@@ -15,12 +15,6 @@ import { installHelp } from "../app-actions.svelte";
 import NotificationsSection from "./NotificationsSection.svelte";
 import { waitFor } from "../../test/wait";
 
-// Settings → Notifications: this browser's push (turning it on, its name,
-// what it's told about, a test send, how delivery is going), the other
-// devices, and the staged contact for push services. The browser and the
-// hub's push routes are stand-ins.
-
-/** The hub's VAPID key, base64url, and its bytes. */
 const KEY = "AQID";
 const ENDPOINT = "https://push.example.test/1";
 
@@ -54,7 +48,6 @@ let testAnswer: { delivered: boolean; error: string | null };
 let scope: AllScopeModel;
 let count = 0;
 
-/** The hub's push routes over a fake fetch, in front of the config routes. */
 function serve(hub = 'timezone = "UTC"\n'): void {
   const config = fakeAgentConfig(`notifications-${String(++count)}`, { hub });
   mockFetch((url, init) => {
@@ -95,7 +88,6 @@ function serve(hub = 'timezone = "UTC"\n'): void {
   });
 }
 
-/** A browser that can subscribe, with what it holds and was asked. */
 function fakeBrowser(
   fields: Partial<PushBrowser> = {},
   held: { subscribed?: boolean; stored?: StoredDevice | null } = {},
@@ -134,7 +126,6 @@ function fakeBrowser(
   });
 }
 
-/** This browser registered as "Laptop", with its subscription. */
 function registered(fields: Partial<PushBrowser> = {}): ReturnType<typeof fakeBrowser> {
   return fakeBrowser(
     { permission: () => "granted", ...fields },
@@ -247,7 +238,6 @@ describe("this device, before notifications are on", () => {
     await open(browser);
     expect(browser.stored).toBeNull();
     expect(screen.getByRole("button", { name: "Turn on notifications" })).toBeInTheDocument();
-    // The hub still lists the old registration among the other devices, to remove.
     expect(screen.getByRole("list", { name: "Other devices" })).toHaveTextContent("Laptop");
   });
 });
@@ -261,7 +251,6 @@ describe("why this device can't get notifications", () => {
     await open(fakeBrowser({ availability }));
     expect(screen.getByText(note)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Turn on notifications" })).not.toBeInTheDocument();
-    // The other devices are still listed and can be removed from here.
     expect(screen.getByRole("list", { name: "Other devices" })).toHaveTextContent("Pixel");
   });
 

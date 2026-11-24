@@ -11,12 +11,8 @@
   import { FileTree } from "./file-tree.svelte";
   import FileTreeView from "./FileTreeView.svelte";
 
-  // Files (an agent's folder) and Shared files (the team's): the tree, kept
-  // current from the disk. A file opens in the context panel's editor.
-
   let { source, inPanel = false }: { source: FileSource; inPanel?: boolean } = $props();
 
-  // The shell keys this place by its source, so the tree is made for one.
   const tree = untrack(() => new FileTree(source));
   let historyPath = $state<string | null>(null);
 
@@ -34,7 +30,6 @@
     void router.openPanel({ kind: "file", path, agent: null });
   }
 
-  /** The panel follows a file it shows to where it was renamed or moved. */
   function moved(from: string, to: string): void {
     if (shown === from) void router.replacePanel({ kind: "file", path: to, agent: null });
   }

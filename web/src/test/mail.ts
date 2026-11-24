@@ -1,12 +1,8 @@
-// Threads, messages and a fake hub for the mail view tests, and a reset for
-// the mail store singleton the views share.
-
 import { vi } from "vitest";
 import type { MailMessage, MailThread, MailThreadSummary } from "../lib/hub-types";
 import { mail } from "../lib/mail.svelte";
 import { jsonResponse, mockFetch } from "./component";
 
-/** A list row: a read one-message thread in the inbox, with the first agent of `id` in it. */
 export function mailSummary(
   id: string,
   overrides: Partial<MailThreadSummary> = {},
@@ -69,7 +65,6 @@ export function mailThread(
   };
 }
 
-/** A request the fake hub saw: its method, path (decoded) and body. */
 export interface SeenRequest {
   method: string;
   path: string;
@@ -78,11 +73,6 @@ export interface SeenRequest {
 
 export type MailRoute = (request: SeenRequest) => Response | Promise<Response> | undefined;
 
-/**
- * Answer the mail routes through `route`, and record every request. A route
- * that answers undefined falls through to a 204 for the thread actions and
- * a pending promise for the rest.
- */
 export function serveMail(route: MailRoute): SeenRequest[] {
   const seen: SeenRequest[] = [];
   mockFetch((url, init) => {
@@ -105,7 +95,6 @@ export function serveMail(route: MailRoute): SeenRequest[] {
 
 export { jsonResponse };
 
-/** Put the shared store back as a fresh page has it. */
 export function resetMail(): void {
   mail.close();
   mail.leave();

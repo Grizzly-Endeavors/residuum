@@ -1,8 +1,3 @@
-//! Agent subcommand: list, create, delete and control the hub's agents.
-//!
-//! Every subcommand is a client of the running hub's `/api/hub/agents`
-//! routes; the hub owns the lifecycle, so nothing here touches disk.
-
 use std::fmt::Write as _;
 
 use reqwest::Method;
@@ -16,42 +11,26 @@ use super::hub_client::HubClient;
 
 #[derive(clap::Subcommand)]
 pub(super) enum AgentCommand {
-    /// List agents with their state, autostart setting and role
     List,
-    /// Create an agent
     Create(CreateArgs),
-    /// Delete an agent (its files are checkpointed first)
     Delete {
-        /// Name of the agent to delete
         name: String,
     },
-    /// List deleted agents that can be restored
     Deleted,
-    /// Restore a deleted agent from its checkpoint history
     Restore(RestoreArgs),
-    /// Start a stopped or failed agent
     Start {
-        /// Name of the agent to start
         name: String,
     },
-    /// Stop a running agent
     Stop {
-        /// Name of the agent to stop
         name: String,
     },
-    /// Restart an agent (waits for an active turn to finish unless --force is set)
     Restart {
-        /// Name of the agent to restart
         name: String,
-        /// Restart immediately, interrupting any turn in progress
         #[arg(long)]
         force: bool,
     },
-    /// Turn an agent's start-with-Residuum setting on or off
     Autostart {
-        /// Name of the agent
         name: String,
-        /// Whether the agent starts when Residuum starts
         #[arg(value_enum)]
         setting: AutostartSetting,
     },
@@ -59,25 +38,18 @@ pub(super) enum AgentCommand {
 
 #[derive(clap::Args)]
 pub(super) struct CreateArgs {
-    /// Name for the new agent
     name: String,
-    /// What the agent is for; it receives this as its first message
     #[arg(long)]
     description: Option<String>,
-    /// Copy model settings from this existing agent
     #[arg(long, value_name = "AGENT")]
     models_from: Option<String>,
-    /// Let other agents and callers discover this agent over A2A
     #[arg(long)]
     public: bool,
 }
 
 #[derive(clap::Args)]
 pub(super) struct RestoreArgs {
-    /// Name of the deleted agent to restore
     name: String,
-    /// Restore the agent's files from this checkpoint instead of the last one
-    /// taken before it was deleted
     #[arg(long, value_name = "ID")]
     checkpoint: Option<String>,
 }
@@ -88,7 +60,6 @@ pub(super) enum AutostartSetting {
     Off,
 }
 
-/// Mirrors the contract's `AgentSummary`.
 #[derive(Deserialize)]
 struct AgentSummary {
     name: String,
@@ -118,7 +89,6 @@ struct AgentList {
     agents: Vec<AgentSummary>,
 }
 
-/// Mirrors one entry of `GET /api/hub/agents/deleted`.
 #[derive(Deserialize)]
 struct DeletedAgent {
     name: String,
@@ -139,12 +109,6 @@ struct DeleteResponse {
     checkpoint_id: Option<String>,
 }
 
-/// Run an `agent` subcommand against the hub and print its output.
-///
-/// # Errors
-///
-/// Returns `FatalError` with a plain-language message when the hub isn't
-/// running, rejects the request, or the arguments are invalid.
 #[tracing::instrument(skip_all)]
 pub(super) async fn run_agent_command(
     command: &AgentCommand,
@@ -223,8 +187,6 @@ async fn create(client: &HubClient, args: &CreateArgs) -> Result<String, FatalEr
     ))
 }
 
-/// The agent to copy model settings from when `--models-from` is omitted:
-/// the only running agent, if there is exactly one.
 fn default_models_source(agents: &[AgentSummary]) -> Result<String, FatalError> {
     let mut running = agents.iter().filter(|a| a.state == "running");
     match (running.next(), running.next()) {
@@ -406,7 +368,6 @@ fn shown_name(agent: &AgentSummary) -> &str {
     }
 }
 
-/// Percent-encode one URL path segment so a name with a space reaches the hub.
 fn encode_segment(name: &str) -> String {
     let mut out = String::new();
     for byte in name.bytes() {
@@ -634,7 +595,6 @@ mod tests {
         }
     }
 
-    /// Start a mock hub implementing the contract's lifecycle routes.
     async fn mock_hub(agents: Vec<Value>) -> (String, Shared) {
         let shared: Shared = Arc::new(Mutex::new(Mock {
             agents,
@@ -699,8 +659,6 @@ mod tests {
 
     #[tokio::test]
     async fn hub_not_running_gives_plain_message() {
-        // The reservation keeps the port bound but not listening, so nothing
-        // answers on it, and no other test can be handed the port meanwhile.
         let reserved = residuum_core::testing::ports::reserve_port();
         let addr = format!("127.0.0.1:{}", reserved.port());
 
@@ -749,7 +707,6 @@ mod tests {
         assert!(out.contains("public"));
 
         let requests = mock.lock().unwrap().requests.clone();
-        // An explicit source needs no lookup of the running agents.
         assert_eq!(requests.len(), 1);
         let body = &requests[0].2;
         assert_eq!(body["description"], "watches the feeds");

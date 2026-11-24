@@ -1,10 +1,3 @@
-//! The pairing state and every rule that changes it, as plain synchronous
-//! code that takes the current time as an argument.
-//!
-//! [`super::DevicePairing`] wraps this in a lock, saves the file after a
-//! change, and supplies the clock; keeping the rules here makes expiry and
-//! limits testable without waiting.
-
 use std::collections::HashMap;
 
 use chrono::{DateTime, Duration, Utc};
@@ -15,44 +8,30 @@ use super::limits::{LimitHit, PER_INSTANCE_LIMIT, PER_PEER_LIMIT, RateLimiter};
 use super::secrets;
 use super::store::{Persisted, StoredDevice};
 
-/// How long a first-device pairing token works.
 pub(super) const PAIR_TOKEN_TTL_SECS: i64 = 600;
 
-/// How long a workbench handoff token works.
 pub(super) const HANDOFF_TTL_SECS: i64 = 60;
 
-/// How long a pairing request waits for approval.
 pub(super) const REQUEST_TTL_SECS: i64 = 600;
 
-/// How many pairing requests can wait at once.
 pub(super) const MAX_PENDING_REQUESTS: usize = 10;
 
-/// A device that makes no request for this long is no longer paired. The
-/// cookie's `Max-Age` is the same length.
 pub(super) const DEVICE_LIFETIME_DAYS: i64 = 400;
 
-/// A device's cookie is issued again when it was last issued this long ago.
 const COOKIE_REFRESH_AFTER_HOURS: i64 = 24;
 
-/// A change only `last_seen` or `refreshed_at` is saved after this long.
 pub(super) const FLUSH_AFTER_MINUTES: i64 = 10;
 
-/// Workbench credentials kept per device.
 const MAX_WORKBENCH_CREDENTIALS: usize = 8;
 
-/// Outstanding tokens of each kind. Older ones are dropped past this.
 const MAX_OUTSTANDING_TOKENS: usize = 50;
 
-/// The longest device name kept, in characters.
 const MAX_DEVICE_NAME_CHARS: usize = 64;
 
-/// What an unnamed device is called.
 const DEFAULT_DEVICE_NAME: &str = "Unnamed device";
 
-/// Recovery codes generated at a time.
 pub(super) const RECOVERY_CODE_COUNT: usize = 10;
 
-/// A credential just issued. The secret exists only here and in the cookie.
 #[derive(Debug, Clone)]
 pub struct Issued {
     pub secret: String,
@@ -60,12 +39,10 @@ pub struct Issued {
     pub device_name: String,
 }
 
-/// A device that presented a valid credential.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthHit {
     pub(crate) device_id: String,
     pub(crate) device_name: String,
-    /// Whether the cookie should be issued again to extend its life.
     pub(crate) refresh: bool,
 }
 
@@ -93,7 +70,6 @@ struct PendingRequest {
     decision: Decision,
 }
 
-/// A pending request as the approving device lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct PendingView {
     pub(super) id: String,
@@ -103,7 +79,6 @@ pub(super) struct PendingView {
     pub(super) expires_at: DateTime<Utc>,
 }
 
-/// What polling a pairing request found.
 #[derive(Debug)]
 pub enum PollOutcome {
     Pending,
@@ -112,7 +87,6 @@ pub enum PollOutcome {
     Expired,
 }
 
-/// The pairing state: what is persisted, and what only lives in memory.
 #[derive(Debug, Default)]
 pub(super) struct State {
     pub(super) persisted: Persisted,
@@ -120,8 +94,6 @@ pub(super) struct State {
     handoffs: HashMap<String, Handoff>,
     requests: Vec<PendingRequest>,
     limiter: RateLimiter,
-    /// Since when a change only the clock made (`last_seen`, a cookie refresh)
-    /// has been waiting to be saved.
     dirty_since: Option<DateTime<Utc>>,
 }
 
@@ -133,7 +105,6 @@ impl State {
         }
     }
 
-    /// Count a remote attempt against the limits, or refuse it in words.
     pub(super) fn check_limit(
         &mut self,
         peer_ip: Option<&str>,
@@ -149,9 +120,6 @@ impl State {
         })
     }
 
-    // ── Tokens ───────────────────────────────────────────────────────
-
-    /// Remember a first-device token by its hash.
     pub(super) fn add_pair_token(&mut self, token_hash: String, now: DateTime<Utc>) {
         self.pair_tokens.retain(|_, expires| *expires > now);
         drop_oldest(&mut self.pair_tokens, MAX_OUTSTANDING_TOKENS, |e| *e);
@@ -159,7 +127,6 @@ impl State {
             .insert(token_hash, now + Duration::seconds(PAIR_TOKEN_TTL_SECS));
     }
 
-    /// Spend a first-device token. A token works once, and only until it expires.
     pub(super) fn take_pair_token(
         &mut self,
         token_hash: &str,
@@ -174,7 +141,6 @@ impl State {
         }
     }
 
-    /// Remember a workbench handoff token for `device_id`.
     pub(super) fn add_handoff(
         &mut self,
         token_hash: String,
@@ -192,7 +158,6 @@ impl State {
         );
     }
 
-    /// Spend a handoff token, returning the device it was minted for.
     pub(super) fn take_handoff(
         &mut self,
         token_hash: &str,
@@ -207,9 +172,6 @@ impl State {
         }
     }
 
-    // ── Pairing requests ─────────────────────────────────────────────
-
-    /// Add a request waiting for approval and return its public id and code.
     pub(super) fn add_request(
         &mut self,
         secret_hash: String,
@@ -236,7 +198,6 @@ impl State {
         Ok((public_id, code))
     }
 
-    /// The requests still waiting for a decision, oldest first.
     pub(super) fn pending(&mut self, now: DateTime<Utc>) -> Vec<PendingView> {
         self.purge_requests(now);
         self.requests
@@ -252,7 +213,6 @@ impl State {
             .collect()
     }
 
-    /// Approve or refuse the waiting request `public_id`.
     pub(super) fn decide(
         &mut self,
         public_id: &str,
@@ -278,8 +238,6 @@ impl State {
         Ok(())
     }
 
-    /// Check on a request by the hash of its secret id. An approved request
-    /// is spent here: the credential is issued once, to whoever polls.
     pub(super) fn poll(
         &mut self,
         secret_hash: &str,
@@ -313,10 +271,6 @@ impl State {
         self.requests.retain(|r| r.expires_at > now);
     }
 
-    // ── Recovery codes ───────────────────────────────────────────────
-
-    /// Replace the recovery codes with ten new ones and return them in the
-    /// form to show: grouped for reading.
     pub(super) fn replace_recovery_codes(
         &mut self,
         now: DateTime<Utc>,
@@ -333,7 +287,6 @@ impl State {
         Ok(plain)
     }
 
-    /// Spend the recovery code the person typed.
     pub(super) fn take_recovery_code(&mut self, typed: &str) -> Result<(), PairingError> {
         let normalized = secrets::normalize_recovery_code(typed);
         let rejected = || {
@@ -346,8 +299,6 @@ impl State {
             return Err(rejected());
         }
         let wanted = secrets::hash(&normalized);
-        // Every stored hash is compared, so how long this takes doesn't say
-        // which position matched.
         let mut found = None;
         for (index, stored) in self.persisted.recovery.hashes.iter().enumerate() {
             if secrets::hashes_equal(stored, &wanted) {
@@ -367,9 +318,6 @@ impl State {
         self.persisted.recovery.hashes.len()
     }
 
-    // ── Devices ──────────────────────────────────────────────────────
-
-    /// Pair a new device on the UI host and issue its credential.
     pub(super) fn add_device(
         &mut self,
         name: &str,
@@ -394,8 +342,6 @@ impl State {
         })
     }
 
-    /// Issue `device_id` a credential on the workbench host. A browser that
-    /// already holds one (`existing`) keeps it and gets no second.
     pub(super) fn add_workbench_credential(
         &mut self,
         device_id: &str,
@@ -435,8 +381,6 @@ impl State {
         })
     }
 
-    /// Whether `cookie_secret` is a valid credential for `surface`, noting the
-    /// use. `Err` is not possible; an unknown or expired credential is `None`.
     pub(super) fn authenticate(
         &mut self,
         surface: Surface,
@@ -478,30 +422,23 @@ impl State {
         Some(hit)
     }
 
-    /// Whether a change only the clock made has waited long enough to save.
     pub(super) fn flush_due(&self, now: DateTime<Utc>) -> bool {
         self.dirty_since
             .is_some_and(|since| now - since >= Duration::minutes(FLUSH_AFTER_MINUTES))
     }
 
-    /// Note that the file now holds everything.
     pub(super) fn mark_saved(&mut self) {
         self.dirty_since = None;
     }
 
-    /// Remove a device, and with it every credential it holds. Returns whether
-    /// there was one.
     pub(super) fn revoke(&mut self, device_id: &str) -> bool {
         let before = self.persisted.devices.len();
         self.persisted.devices.retain(|d| d.id != device_id);
-        // A handoff minted by the device can't outlive it.
         self.handoffs.retain(|_, h| h.device_id != device_id);
         self.persisted.devices.len() != before
     }
 }
 
-/// Keep at most `max - 1` entries, dropping the ones that expire soonest, to
-/// make room for one more.
 fn drop_oldest<V>(map: &mut HashMap<String, V>, max: usize, expiry: impl Fn(&V) -> DateTime<Utc>) {
     while map.len() >= max {
         let Some(oldest) = map
@@ -515,8 +452,6 @@ fn drop_oldest<V>(map: &mut HashMap<String, V>, max: usize, expiry: impl Fn(&V) 
     }
 }
 
-/// A device name worth listing: trimmed, without control characters, no longer
-/// than [`MAX_DEVICE_NAME_CHARS`], and never empty.
 pub(super) fn clean_device_name(raw: &str) -> String {
     let cleaned: String = raw
         .chars()

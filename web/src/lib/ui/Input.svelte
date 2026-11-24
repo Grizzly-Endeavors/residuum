@@ -1,14 +1,10 @@
 <script lang="ts">
   import type { HTMLInputAttributes, HTMLTextareaAttributes } from "svelte/elements";
 
-  // The text box every field draws: text, number and password inputs, and
-  // multi-line text. Fields wrap it with a label, hint and error.
   interface Props extends Omit<HTMLInputAttributes, "value" | "children"> {
     value?: string | number | null;
     invalid?: boolean;
-    /** Code, paths and ids: JetBrains Mono. */
     code?: boolean;
-    /** Sized for a number or another value a few characters long. */
     short?: boolean;
     multiline?: boolean;
     rows?: number;
@@ -83,7 +79,6 @@
     width: 120px;
   }
 
-  /* The focus ring is the boundary itself, doubled in weight and haloed. */
   .ui-input:focus-visible {
     outline: none;
     border-color: var(--color-vein);

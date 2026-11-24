@@ -18,10 +18,6 @@
   import TeamsSetupModal from "./teams/TeamsSetupModal.svelte";
   import WebhooksGroup from "./WebhooksGroup.svelte";
 
-  // The agent's Connections section: the chat platforms people reach it on,
-  // and the webhooks other services post to. What a channel connects with is
-  // a credential, stored as a secret when the scope saves.
-
   let { scope, section }: AgentSectionProps = $props();
 
   type Channel = "discord" | "telegram" | "teams";
@@ -30,7 +26,6 @@
   const running = $derived(hub.isRunning(agent));
   const saved = $derived(scope.configFile.baseline);
 
-  /** The channel's state as the saved settings give it, with a staged disconnect noted. Nothing is known while the agent isn't running. */
   function stateOf(onDisk: boolean, inForm: boolean): ChannelState | null {
     if (!running) return null;
     if (!onDisk) return "not-connected";
@@ -56,8 +51,6 @@
     scope.config.teams_app_password = "";
   }
 
-  // The messaging endpoint exists only while Residuum Cloud is connected and
-  // the relay has announced this hub's origin and instance.
   const cloud = new CloudConnection();
   let teamsJob = $state<TeamsSetupJob | null>(null);
   let teamsJobError = $state<string | null>(null);

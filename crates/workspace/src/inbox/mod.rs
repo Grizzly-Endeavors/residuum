@@ -1,9 +1,3 @@
-//! Inbox system: a general-purpose "deal with it later" queue.
-//!
-//! Items are stored as individual JSON files in the workspace `inbox/` directory.
-//! External systems can add items by dropping `.json` files into the directory.
-//! Every item the process creates starts as a [`ClaimedItem`], which holds its id.
-
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -23,37 +17,21 @@ mod claim;
 
 pub use claim::ClaimedItem;
 
-/// A single inbox item stored as a JSON file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InboxItem {
-    /// Short summary of the item.
     pub title: String,
-    /// Full body text.
     pub body: String,
-    /// Origin label (e.g. `"cron:backup"`, `"discord"`, `"agent"`).
     pub source: String,
-    /// When the item was created.
     #[serde(with = "residuum_core::time::minute_format")]
     pub timestamp: NaiveDateTime,
-    /// Whether the agent has read this item.
     pub read: bool,
-    /// Paths to related files, relative to the workspace root at the time they were
-    /// attached. Consumers should treat only the final path component (the filename)
-    /// as meaningful — see [`ClaimedItem::recorded_attachment_path`] for how these
-    /// are populated and `archive_item` for why the directory portion can go stale.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<PathBuf>,
-    /// The ref (see [`InboxRef`]) of the message this one answers, which
-    /// threads it under that message in the mail view. Kept as the string
-    /// that was stored; [`mail`] parses it and treats one that doesn't parse
-    /// or resolve as no parent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub in_reply_to: Option<String>,
 }
 
 impl InboxItem {
-    /// Whether the item's title, body or an attachment's filename holds
-    /// `query`, ignoring case. A blank `query` matches every item.
     #[must_use]
     pub fn matches_text(&self, query: &str) -> bool {
         let filenames = self
@@ -71,8 +49,6 @@ impl InboxItem {
     }
 }
 
-/// Whether any of `fields` holds `query`, ignoring case and the whitespace
-/// around the query. A blank `query` matches.
 fn text_matches<S: AsRef<str>>(query: &str, fields: impl IntoIterator<Item = S>) -> bool {
     let wanted = query.trim().to_lowercase();
     wanted.is_empty()
@@ -81,9 +57,6 @@ fn text_matches<S: AsRef<str>>(query: &str, fields: impl IntoIterator<Item = S>)
             .any(|field| field.as_ref().to_lowercase().contains(&wanted))
 }
 
-/// Generate a filename for an inbox item: `{YYYYMMDD}_{sanitized_title}.json`.
-///
-/// Sanitizes: lowercase, non-alphanumeric → `_`, collapse consecutive `_`, truncate to 60 chars.
 #[must_use]
 pub fn generate_filename(title: &str, now: NaiveDateTime) -> String {
     let date = now.format("%Y%m%d").to_string();
@@ -110,23 +83,11 @@ pub fn generate_filename(title: &str, now: NaiveDateTime) -> String {
     }
 }
 
-/// Default an inbox item's title from its body: the first line, in full.
-/// Shared by every caller that lets a title be omitted — the WS `/inbox`
-/// command, chat-interface inbox commands, and the `POST /api/agents/{name}/agent-inbox`
-/// endpoint — so the rule stays in one place. The generated filename bounds
-/// its own length (see [`generate_filename`]); the title itself is never
-/// truncated.
 #[must_use]
 pub fn derive_title(body: &str) -> String {
     body.lines().next().unwrap_or("Inbox message").to_string()
 }
 
-/// Add a plain inbox item in one call: claims an id, builds the item, and saves.
-///
-/// Returns the filename for confirmation messages.
-///
-/// # Errors
-/// Returns an error if an id cannot be claimed or the item cannot be saved.
 pub async fn quick_add(
     inbox_dir: &Path,
     title: &str,
@@ -145,37 +106,15 @@ pub async fn quick_add(
     Ok(filename)
 }
 
-/// What [`add_item`] writes: the item's words, where it came from, the
-/// message it answers, and the files to attach.
 #[derive(Debug, Clone, Copy)]
 pub struct NewInboxItem<'a> {
-    /// Short summary of the item.
     pub title: &'a str,
-    /// Full body text.
     pub body: &'a str,
-    /// Origin label (`"agent"` for the agent's own tool).
     pub source: &'a str,
-    /// The message this item answers, which threads it under that message.
     pub in_reply_to: Option<&'a InboxRef>,
-    /// Local files to copy into the item's own attachment directory.
     pub attachments: &'a [PathBuf],
 }
 
-/// Add an inbox item in one call: claims an id, copies the attachment files
-/// into the item's own directory, builds the item, and saves.
-///
-/// See `copy_attachments` for how the files are copied and named. The item is
-/// saved with whichever attachments succeeded even if some failed; the second
-/// return value describes each failure so the caller can tell the user about
-/// it. The files go into `attachments/<id>/` of `inbox_dir`, and the item
-/// records them relative to the workspace root.
-///
-/// Returns the filename for confirmation messages, and a description of each
-/// attachment that failed to copy (empty if all succeeded).
-///
-/// # Errors
-/// Returns an error if an id cannot be claimed or the item cannot be saved. The
-/// copies made for an item that cannot be saved are removed.
 #[tracing::instrument(skip_all, fields(source = %new.source))]
 pub async fn add_item(
     inbox_dir: &Path,
@@ -185,7 +124,6 @@ pub async fn add_item(
     add_item_at(inbox_dir, new, residuum_core::time::now_local(tz)).await
 }
 
-/// [`add_item`] for an item created at `now`.
 async fn add_item_at(
     inbox_dir: &Path,
     new: NewInboxItem<'_>,
@@ -218,23 +156,6 @@ async fn add_item_at(
     Ok((filename, failures))
 }
 
-/// Copy attachment source files into the claimed item's own attachment
-/// directory (`attachments/<id>/`), keyed by item ID so the item survives its
-/// sources being moved or deleted.
-///
-/// Each source path is validated (must exist and be readable — there is no
-/// size cap, since these are already-local files, not something arriving
-/// over a platform with its own upload limit) before being copied. Only the
-/// source path's final component is used as the destination filename, so a
-/// traversal-style source path (e.g. `../../../etc/passwd`) cannot place a copy
-/// outside the item's directory; collisions within the batch are resolved by
-/// appending a numeric suffix rather than overwriting.
-///
-/// A source that fails validation or copy is skipped, not fatal to the whole
-/// batch: the item still gets every attachment that did succeed. Returns the
-/// successfully-copied attachments, as the paths to record in the item, plus a
-/// description of each one that failed, so the caller can tell the user what
-/// happened to each file.
 #[tracing::instrument(skip_all, fields(item_id = %claim.id(), count = source_paths.len()))]
 pub(crate) async fn copy_attachments(
     claim: &ClaimedItem,
@@ -264,8 +185,6 @@ pub(crate) async fn copy_attachments(
     (recorded, failures)
 }
 
-/// Validate and copy a single attachment source into `item_dir`, returning the
-/// unique destination filename that was used.
 async fn copy_one_attachment(
     source: &Path,
     item_dir: &Path,
@@ -280,8 +199,6 @@ async fn copy_one_attachment(
     let dest = item_dir.join(&unique);
 
     if let Err(e) = tokio::fs::copy(source, &dest).await {
-        // A copy that fails partway leaves a truncated file in the item's directory;
-        // remove it so the directory holds only the files the item records.
         match tokio::fs::remove_file(&dest).await {
             Ok(()) => {}
             Err(rm) if rm.kind() == std::io::ErrorKind::NotFound => {}
@@ -300,12 +217,6 @@ async fn copy_one_attachment(
     Ok(unique)
 }
 
-/// Reduce an attachment's filename to a safe, storable name.
-///
-/// `filename` is already just a file name (callers derive it via `Path::file_name`,
-/// which strips any directory components), but it can still contain characters that
-/// don't belong in a stored filename, or collapse to nothing meaningful once those
-/// are removed.
 fn sanitize_attachment_filename(filename: &str) -> String {
     let cleaned: String = filename
         .chars()
@@ -317,8 +228,6 @@ fn sanitize_attachment_filename(filename: &str) -> String {
     }
 }
 
-/// Return a filename guaranteed not to be in `used`, appending `_2`, `_3`, etc.
-/// before the extension when `name` collides with one already used.
 fn dedupe_filename(name: &str, used: &HashSet<String>) -> String {
     if !used.contains(name) {
         return name.to_string();
@@ -347,10 +256,6 @@ fn dedupe_filename(name: &str, used: &HashSet<String>) -> String {
     }
 }
 
-/// Save an inbox item atomically (write to `.tmp`, then rename).
-///
-/// # Errors
-/// Returns an error if serialization or file operations fail.
 #[tracing::instrument(skip_all, fields(filename = %filename))]
 pub(crate) async fn save_item(
     inbox_dir: &Path,
@@ -373,10 +278,6 @@ pub(crate) async fn save_item(
     Ok(())
 }
 
-/// Load a single inbox item from a JSON file.
-///
-/// # Errors
-/// Returns an error if the file cannot be read or parsed.
 #[tracing::instrument(skip_all, fields(path = %path.display()))]
 pub async fn load_item(path: &Path) -> anyhow::Result<InboxItem> {
     use anyhow::Context as _;
@@ -389,28 +290,14 @@ pub async fn load_item(path: &Path) -> anyhow::Result<InboxItem> {
     Ok(item)
 }
 
-/// An inbox item found by its ref, active or archived.
 #[derive(Debug, Clone)]
 pub struct LocatedItem {
-    /// The item as stored.
     pub item: InboxItem,
-    /// The directory holding the item's JSON file.
     pub items_dir: PathBuf,
-    /// The directory holding the per-item attachment directories next to
-    /// `items_dir`; the item's own files are in `<attachments_root>/<id>/`.
     pub attachments_root: PathBuf,
-    /// Whether the item is in the archive.
     pub archived: bool,
 }
 
-/// Find the item `item` names in `layout`, the workspace of the item's
-/// agent: the active inbox first, then the archive, so a ref handed out
-/// before an item was archived still finds it.
-///
-/// # Errors
-/// When a directory can't be checked, or the item's file exists but can't be
-/// read or parsed. `Ok(None)` when neither the inbox nor the archive holds
-/// it.
 pub async fn locate_item(
     layout: &WorkspaceLayout,
     item: &InboxRef,
@@ -440,12 +327,6 @@ pub async fn locate_item(
     Ok(None)
 }
 
-/// List all inbox items (non-recursive, ignores subdirectories).
-///
-/// Returns `(filename_stem, item)` pairs sorted newest-first by timestamp.
-///
-/// # Errors
-/// Returns an error if the directory cannot be read.
 #[tracing::instrument(skip_all, fields(path = %inbox_dir.display()))]
 pub async fn list_items(inbox_dir: &Path) -> anyhow::Result<Vec<(String, InboxItem)>> {
     use anyhow::Context as _;
@@ -484,13 +365,6 @@ pub async fn list_items(inbox_dir: &Path) -> anyhow::Result<Vec<(String, InboxIt
     Ok(entries)
 }
 
-/// The items in `inbox_dir` like [`list_items`], or none when the directory
-/// doesn't exist. An agent that has never started (a restored one with
-/// autostart off, say) has no inbox directories yet, and reading its inbox
-/// answers with nothing rather than an error.
-///
-/// # Errors
-/// Returns an error if the directory exists but cannot be read.
 pub async fn list_items_or_empty(inbox_dir: &Path) -> anyhow::Result<Vec<(String, InboxItem)>> {
     if matches!(tokio::fs::try_exists(inbox_dir).await, Ok(false)) {
         return Ok(Vec::new());
@@ -498,10 +372,6 @@ pub async fn list_items_or_empty(inbox_dir: &Path) -> anyhow::Result<Vec<(String
     list_items(inbox_dir).await
 }
 
-/// Mark an inbox item as read and save it back atomically.
-///
-/// # Errors
-/// Returns an error if the file cannot be found, read, or written.
 #[tracing::instrument(skip_all, fields(filename = %filename))]
 pub async fn mark_read(inbox_dir: &Path, filename: &str) -> anyhow::Result<InboxItem> {
     use anyhow::Context as _;
@@ -521,18 +391,6 @@ pub async fn mark_read(inbox_dir: &Path, filename: &str) -> anyhow::Result<Inbox
     Ok(item)
 }
 
-/// Delete an inbox item outright, with its `attachments/<item_id>/` directory.
-///
-/// For an item nothing refers to yet, such as the companion item of a chat
-/// message that never reached the bus. Either part already gone is not an
-/// error. Both parts are tried even when the first fails, and the first failure
-/// is returned.
-///
-/// # Errors
-/// Returns an error if `item_id` is not one plain filename stem (an empty or
-/// `.` id names the whole `attachments/` directory, and one with a separator or
-/// `..` a path outside the item), or if the item's JSON or its attachments
-/// directory exists and cannot be removed.
 pub async fn remove_item(inbox_dir: &Path, item_id: &str) -> anyhow::Result<()> {
     use anyhow::Context as _;
 
@@ -552,7 +410,6 @@ pub async fn remove_item(inbox_dir: &Path, item_id: &str) -> anyhow::Result<()> 
     json_result.and(attachments_result)
 }
 
-/// Treat a file that is already gone as removed.
 fn ignore_missing(result: std::io::Result<()>) -> std::io::Result<()> {
     match result {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -560,20 +417,6 @@ fn ignore_missing(result: std::io::Result<()>) -> std::io::Result<()> {
     }
 }
 
-/// Move an inbox item to the inbox archive directory (`archive/inbox/`).
-///
-/// If the item has an `attachments/<item_id>/` subdirectory sitting alongside its
-/// JSON file, that directory moves into the archive alongside it, so an archived
-/// item keeps its attachments (the user inbox's keep serving). This is a no-op
-/// for an item with no such directory, such as one without attachments.
-///
-/// The attachment directory is moved before the JSON file: if the attachment move
-/// fails, the item is left untouched and archiving can be retried; if the JSON move
-/// then fails, retrying is still safe since the attachment move finds nothing left
-/// to move.
-///
-/// # Errors
-/// Returns an error if the file is not found, or if either move fails.
 #[tracing::instrument(skip_all, fields(item = %filename))]
 pub async fn archive_item(
     inbox_dir: &Path,
@@ -626,17 +469,6 @@ pub async fn archive_item(
     Ok(())
 }
 
-/// Move an archived inbox item back to the active inbox directory — the
-/// reverse of [`archive_item`]. Archiving is otherwise a one-way soft
-/// delete, so this is the only way to undo it.
-///
-/// Mirrors `archive_item`'s move order and error handling: the attachments
-/// directory (if any) moves first, then the JSON file, so a failure partway
-/// through leaves the item safely retryable either way.
-///
-/// # Errors
-/// Returns an error if the file is not found in the archive, or if either
-/// move fails.
 #[tracing::instrument(skip_all, fields(item = %filename))]
 pub async fn restore_item(
     archive_dir: &Path,
@@ -689,10 +521,6 @@ pub async fn restore_item(
     Ok(())
 }
 
-/// Fail when `target` exists, so a move never replaces a different item that
-/// has the same id. Items claimed with [`ClaimedItem`] never share an id
-/// across the inbox and its archive; this stops one that does (from before ids
-/// were unique, or placed by hand) from silently destroying the other.
 async fn ensure_absent(target: &Path, place: &str, item_id: &str) -> anyhow::Result<()> {
     use anyhow::Context as _;
 
@@ -707,7 +535,6 @@ async fn ensure_absent(target: &Path, place: &str, item_id: &str) -> anyhow::Res
     Ok(())
 }
 
-/// Ensure a filename ends with `.json`.
 fn ensure_json_ext(name: &str) -> String {
     if Path::new(name)
         .extension()
@@ -736,7 +563,6 @@ mod tests {
             .unwrap()
     }
 
-    /// An agent-written item with `attachments` and no parent.
     fn new_item<'a>(title: &'a str, body: &'a str, attachments: &'a [PathBuf]) -> NewInboxItem<'a> {
         NewInboxItem {
             title,
@@ -788,7 +614,6 @@ mod tests {
         assert!(!item.matches_text("  other "));
     }
 
-    /// Save `item` as `file_name` in `dir`, creating `dir`.
     async fn save_in(dir: &Path, file_name: &str, item: &InboxItem) {
         tokio::fs::create_dir_all(dir).await.unwrap();
         save_item(dir, file_name, item).await.unwrap();
@@ -932,7 +757,6 @@ mod tests {
         let now = test_now();
         let long_title = "a".repeat(100);
         let name = generate_filename(&long_title, now);
-        // Date prefix (8) + _ (1) + truncated (60) + .json (5) = 74
         let stem = name.trim_end_matches(".json");
         let title_part = &stem["20260225_".len()..];
         assert!(
@@ -1155,8 +979,6 @@ mod tests {
     async fn add_item_skips_an_id_another_writer_has_claimed() {
         let dir = tempfile::tempdir().unwrap();
         let inbox_dir = residuum_config::WorkspaceLayout::new(dir.path()).user_inbox_dir();
-        // Another writer with the same title is mid-way through its own add: it
-        // holds the id and has already put its file in the id's directory.
         let mut held = ClaimedItem::claim(&inbox_dir, "daily report", test_now())
             .await
             .unwrap();
@@ -1342,7 +1164,6 @@ mod tests {
         let item = make_item("valid", 12, false);
         save_item(dir.path(), "valid.json", &item).await.unwrap();
 
-        // Create non-JSON files
         tokio::fs::write(dir.path().join("photo.png"), b"fake image")
             .await
             .unwrap();
@@ -1360,7 +1181,6 @@ mod tests {
         let item = make_item("active", 12, false);
         save_item(dir.path(), "active.json", &item).await.unwrap();
 
-        // Create archive subdirectory with a json file
         let archive = dir.path().join("archive");
         tokio::fs::create_dir_all(&archive).await.unwrap();
         save_item(&archive, "archived.json", &item).await.unwrap();
@@ -1376,7 +1196,6 @@ mod tests {
         let item = make_item("active", 12, false);
         save_item(dir.path(), "active.json", &item).await.unwrap();
 
-        // Create a directory named with a .json extension
         let json_dir = dir.path().join("archive.json");
         tokio::fs::create_dir_all(&json_dir).await.unwrap();
 
@@ -1395,7 +1214,6 @@ mod tests {
         let item = mark_read(dir.path(), "item").await.unwrap();
         assert!(item.read, "returned item should be marked read");
 
-        // Verify persisted
         let reloaded = load_item(&dir.path().join("item.json")).await.unwrap();
         assert!(reloaded.read, "persisted item should be marked read");
     }
@@ -1601,7 +1419,6 @@ mod tests {
         assert_eq!(dedupe_filename("README", &used), "README_2");
     }
 
-    /// Claim an id in the user inbox of a workspace rooted at `root`.
     async fn claim_in_user_inbox(root: &Path) -> ClaimedItem {
         let inbox = residuum_config::WorkspaceLayout::new(root).user_inbox_dir();
         ClaimedItem::claim(&inbox, "item1", test_now())
@@ -1708,9 +1525,6 @@ mod tests {
 
     #[tokio::test]
     async fn copy_attachments_sanitizes_traversal_style_name() {
-        // `FileAttachment::from_path` already derives the filename via
-        // `Path::file_name`, which strips directory components — this test
-        // guards that behavior end to end through `copy_attachments`.
         let dir = tempfile::tempdir().unwrap();
         let nested = dir.path().join("a/b/c");
         tokio::fs::create_dir_all(&nested).await.unwrap();
@@ -1740,9 +1554,6 @@ mod tests {
     async fn copy_attachments_accepts_large_file() {
         let dir = tempfile::tempdir().unwrap();
         let source_file = dir.path().join("huge.bin");
-        // Sparse file: reports a large length via metadata without writing
-        // real bytes, so the test stays fast. There is no size cap on a
-        // local file being attached.
         let file = tokio::fs::File::create(&source_file).await.unwrap();
         file.set_len(30 * 1024 * 1024).await.unwrap();
         drop(file);
@@ -1972,9 +1783,6 @@ mod tests {
 
     #[tokio::test]
     async fn archive_item_without_attachments_dir_is_unaffected() {
-        // Regression guard: archiving an item with no attachments/<id>/ directory
-        // (an item with no attachments, agent or user inbox) must not error just
-        // because that directory doesn't exist.
         let dir = tempfile::tempdir().unwrap();
         let inbox = dir.path().join("inbox/agent");
         let archive = dir.path().join("archive/inbox/agent");

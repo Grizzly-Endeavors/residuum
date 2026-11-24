@@ -7,12 +7,6 @@
   import SettingsGroup from "./SettingsGroup.svelte";
   import SettingsSection from "./SettingsSection.svelte";
 
-  // Advanced → Agent-to-agent for the install: the one listener that serves
-  // every agent to the agents outside it, and the caller keys it accepts. The
-  // listener's settings are staged and saved with the rest of the hub's
-  // `config.toml`. Caller keys act at once. Each agent's own visibility is its
-  // own section's setting.
-
   let { scope, section }: AllSectionProps = $props();
 
   const on = $derived(scope.config.a2a_enabled);

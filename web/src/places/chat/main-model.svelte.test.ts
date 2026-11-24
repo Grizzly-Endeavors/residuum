@@ -3,9 +3,6 @@ import type * as Models from "../../lib/models";
 import { MainModel, modelControlLabel, thinkingBadge } from "./main-model.svelte";
 import { waitFor } from "../../test/wait";
 
-// The coordinator writes a patch the server merges into the file; these tests
-// check the patch the control builds from the file as it is.
-
 type Listener = (change: { source: symbol | null }) => void;
 
 const { disk, patches, listeners, surface } = vi.hoisted(() => ({

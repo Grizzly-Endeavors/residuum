@@ -1,21 +1,11 @@
 import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "../support/fixtures";
 
-/**
- * A file panel that names its agent (`panel=agent-file:<agent>:<path>`), as a
- * mail attachment opens beside its thread: it reads that agent's workspace
- * from the Inbox, whichever agent was viewed last, follows the file on disk
- * while the agent runs, opens its links as the same agent's files without
- * leaving the Inbox, and still loads and saves when the agent is stopped.
- */
-
-/** Path and query of the page's URL, decoded, so a test can compare them exactly. */
 function address(page: Page): string {
   const url = new URL(page.url());
   return decodeURIComponent(`${url.pathname}${url.search}`);
 }
 
-/** The context panel showing `name`: a column, or on a phone a full-screen sheet. */
 function filePanel(page: Page, isMobile: boolean, name: string): Locator {
   return page.getByRole(isMobile ? "dialog" : "complementary", { name });
 }
@@ -43,7 +33,6 @@ test("an agent's file opens beside the Inbox, follows the disk, and its links st
   await expect(plan.getByText("First draft.")).toBeVisible();
   expect(address(page)).toBe("/inbox?panel=agent-file:scout:notes/plan.md");
 
-  // The page's own connection to scout is up once the mock reports it watching the file.
   await expect
     .poll(
       async () => {

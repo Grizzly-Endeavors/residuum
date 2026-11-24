@@ -116,7 +116,6 @@ describe("the Settings modal frame", () => {
       expect(screen.getByRole("heading", { name: "General" })).toBeTruthy();
     });
     expect(saveBar()).toBeNull();
-    // Runtime isn't an All agents section, so the switch landed on General and comes back on Model.
     await router.switchSettingsScope(agent);
     await waitFor(() => {
       expect(screen.getByRole("heading", { name: "Model" })).toBeTruthy();

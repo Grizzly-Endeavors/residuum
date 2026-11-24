@@ -1,7 +1,3 @@
-//! Pulse scheduling in the event loop: the minute tick that starts each due
-//! pulse's fire (see [`super::pulse_fire`]), and the bus results that feed
-//! pulse state back into the scheduler.
-
 use super::pulse_fire::{FireDeps, start_pulse_fire};
 use crate::types::AgentRuntime;
 use residuum_bus::notice::publish_notice;
@@ -13,11 +9,6 @@ use residuum_proactivity::pulse::executor::PulseContext;
 use residuum_proactivity::pulse::scheduler::PulseScheduler;
 use residuum_proactivity::pulse::types::PulseDef;
 
-/// Build the plain-language outcome of this tick's `HEARTBEAT.yml` reload,
-/// for delivery to the agent whose own write caused it (see
-/// `ConfigWriteWatch`). Independent of the deduped, change-only user notice
-/// `take_problem_notice` returns — the agent asked about this specific
-/// write, not "is there anything new to tell the owner".
 fn heartbeat_reload_outcome(
     scheduler: &residuum_proactivity::pulse::scheduler::PulseScheduler,
 ) -> String {
@@ -34,12 +25,6 @@ fn heartbeat_reload_outcome(
     }
 }
 
-/// Resolve a pulse's `context_from` target to a [`PulseContext`], if it sets
-/// one — looking up the named pulse's last delivered output in `scheduler`.
-/// `output` is `None` when the named pulse has never delivered one (it
-/// doesn't exist, has never fired, or has never completed with anything but
-/// `HEARTBEAT_OK`); `build_pulse_prompt` turns that into an explicit "no
-/// prior output" note rather than silently omitting the section.
 fn resolve_pulse_context(pulse: &PulseDef, scheduler: &PulseScheduler) -> Option<PulseContext> {
     let source_pulse = pulse.context_from.clone()?;
     let output = scheduler.last_output(&source_pulse).map(str::to_string);
@@ -49,16 +34,6 @@ fn resolve_pulse_context(pulse: &PulseDef, scheduler: &PulseScheduler) -> Option
     })
 }
 
-/// Extract `(pulse_name, summary)` from a pulse result eligible to become
-/// that pulse's `last_output`, or `None` if it isn't. Split out as a pure
-/// function (rather than inlined into [`handle_pulse_result_event`]) so the
-/// eligibility rule is testable without a full `AgentRuntime`.
-///
-/// Only a `Completed` run with a non-empty summary whose disposition isn't
-/// `Silent` (a `HEARTBEAT_OK` result) counts as "delivered" — a failed or
-/// cancelled run never updates the stored output. A result whose
-/// `source_label` doesn't start with `pulse:` (a spawned session, an action,
-/// a webhook) isn't a pulse result and is ignored.
 fn delivered_pulse_output(event: &AgentResultEvent) -> Option<(&str, &str)> {
     let pulse_name = event.source_label.strip_prefix("pulse:")?;
     if !matches!(event.status, AgentResultStatus::Completed) {
@@ -70,13 +45,6 @@ fn delivered_pulse_output(event: &AgentResultEvent) -> Option<(&str, &str)> {
     Some((pulse_name, event.summary.as_str()))
 }
 
-/// Record a completed pulse run's delivered output into `pulse_scheduler`,
-/// for a later `context_from` pulse to inject at fire time — see
-/// [`delivered_pulse_output`] for which results count as "delivered".
-/// `Ok(None)` (subscriber closed) and `Err` (lagged/mismatched) are dropped
-/// silently, same as the gateway's other best-effort bus subscriptions (see
-/// `error_subscriber` in `run_event_loop`) — this is a secondary enrichment
-/// of pulse state, not something worth failing the loop over.
 pub fn handle_pulse_result_event(
     event: Result<Option<AgentResultEvent>, BusError>,
     rt: &mut AgentRuntime,
@@ -90,9 +58,6 @@ pub fn handle_pulse_result_event(
     }
 }
 
-/// The outcome a pulse fire's change leaves for `pulse_state.json`: a
-/// finished fire's, when no session run ended it (the session store records
-/// those). Split out so the rule is testable without a full `AgentRuntime`.
 fn unsessioned_fire_outcome(
     event: &PulseFireEvent,
 ) -> Option<(&str, &residuum_bus::PulseFireOutcome)> {
@@ -112,11 +77,6 @@ fn unsessioned_fire_outcome(
     }
 }
 
-/// Record the outcome of a pulse fire that ended without a session run (a
-/// `script_only` fire, silent ones included; one stopped during its
-/// scripts; one whose session couldn't start) in `pulse_state.json`, where
-/// the Schedule place reads it as the pulse's last run. A closed or
-/// mismatched subscription is dropped like [`handle_pulse_result_event`]'s.
 pub fn handle_pulse_fire_event(
     event: Result<Option<PulseFireEvent>, BusError>,
     rt: &mut AgentRuntime,
@@ -130,19 +90,10 @@ pub fn handle_pulse_fire_event(
     }
 }
 
-/// Process all due pulses.
-///
-/// Each due pulse fires on its own task (see [`start_pulse_fire`]), so the
-/// loop never waits on a script or a session.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn handle_pulse_tick(rt: &mut AgentRuntime) {
     use residuum_core::time;
 
-    // Consumed once, up front: whether this tick is the first one after the
-    // agent's own write to HEARTBEAT.yml — see `ConfigWriteWatch`. Unlike
-    // config.toml/mcp.json, HEARTBEAT.yml has no discrete `ReloadSignal`; it
-    // hot-reloads on every scheduler tick, so "the reload this write
-    // triggered" is simply the very next tick.
     let deliver_to_agent = rt
         .config_reload_tracker
         .take_if_matches(residuum_tools::config_reload_tracker::ConfigReloadKind::Heartbeat);
@@ -206,8 +157,6 @@ mod tests {
             &path,
             &residuum_config::ModelCatalog::default(),
         );
-        // Drain the deduped owner notice — the agent-facing outcome must not
-        // depend on whether anything is left for the owner to be told.
         let _notice = scheduler.take_problem_notice();
 
         let outcome = heartbeat_reload_outcome(&scheduler);
@@ -236,8 +185,6 @@ mod tests {
             "outcome should say the file failed to parse: {outcome}"
         );
     }
-
-    // ── context_from resolution ────────────────────────────────────────
 
     fn sample_pulse_def(
         name: &str,
@@ -282,8 +229,6 @@ mod tests {
         assert_eq!(context.source_pulse, "never_ran");
         assert_eq!(context.output, None);
     }
-
-    // ── delivered_pulse_output eligibility ───────────────────────────────
 
     fn sample_result_event(
         source_label: &str,
@@ -371,8 +316,6 @@ mod tests {
         );
         assert_eq!(delivered_pulse_output(&event), None);
     }
-
-    // ── recorded fire outcomes ───────────────────────────────────────────
 
     fn fire_event(change: PulseFireChange) -> PulseFireEvent {
         PulseFireEvent {

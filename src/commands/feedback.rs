@@ -1,16 +1,10 @@
-//! Feedback subcommand: send a short, single-shot feedback message to
-//! the developer. No trace dump, no editor mode — intentionally
-//! low-friction.
-
 use residuum::util::FatalError;
 use serde::Deserialize;
 
 #[derive(clap::Args)]
 pub(super) struct FeedbackArgs {
-    /// Feedback message (required)
     #[arg(short, long)]
     pub message: String,
-    /// Optional category tag (free-form; e.g. "ui", "docs")
     #[arg(short, long)]
     pub category: Option<String>,
 }
@@ -20,11 +14,6 @@ struct SubmissionReceipt {
     public_id: String,
 }
 
-/// Submit feedback to the developer endpoint via the local gateway.
-///
-/// # Errors
-/// Returns a `FatalError::Gateway` if the gateway is unreachable or
-/// the upstream returns a non-2xx response.
 pub(super) async fn run_feedback_command(
     args: &FeedbackArgs,
     gateway_addr: &str,

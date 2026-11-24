@@ -5,7 +5,6 @@ import { POLL_INTERVAL_MS, PairingFlow, type PairingEnvironment } from "./pairin
 let opened: number;
 let cleared: number;
 let hash: string;
-/** How the gateway answers each route. */
 let answers: Record<string, () => Response>;
 let requests: { url: string; body: unknown }[];
 

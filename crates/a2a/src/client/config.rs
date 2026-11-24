@@ -1,9 +1,3 @@
-//! `config/a2a.json`: the remote agents this instance's A2A client can
-//! reach, keyed by name. Loader modeled on
-//! `residuum_workspace::config::load_mcp_servers_map`: a bad entry is skipped
-//! with a warning rather than failing the whole file. See
-//! `docs/systems-usage/a2a.md`.
-
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -12,13 +6,8 @@ use serde::Deserialize;
 
 use residuum_config::agent_keys::AgentKeyStore;
 
-/// Longest accepted agent name.
 const MAX_NAME_LEN: usize = 64;
 
-/// Check an agent name: `[a-z][a-z0-9_]*`, at most 64 characters — the same
-/// shape as an agent-key name (`residuum_config::agent_keys::validate_name`), reused
-/// here because `a2a:<name>` addresses live alongside other agent
-/// identifiers the model sees.
 #[must_use]
 pub fn is_valid_agent_name(name: &str) -> bool {
     name.len() <= MAX_NAME_LEN
@@ -28,8 +17,6 @@ pub fn is_valid_agent_name(name: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
-/// One remote agent entry after header expansion, ready to use for a card
-/// fetch or a protocol client.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct A2aAgentEntry {
     pub name: String,
@@ -37,7 +24,6 @@ pub struct A2aAgentEntry {
     pub headers: HashMap<String, String>,
 }
 
-/// Raw JSON structure for `config/a2a.json`.
 #[derive(Deserialize)]
 struct A2aAgentsFile {
     #[serde(default)]
@@ -51,11 +37,6 @@ struct A2aAgentRaw {
     headers: HashMap<String, String>,
 }
 
-/// Problems with one raw a2a agent entry: an invalid name, an empty url.
-///
-/// Shared by [`load_a2a_agents_map`] (skip-with-warning, keeping the rest of
-/// the file) and [`diagnose_a2a_json`] (collect-all), so the two can never
-/// disagree about which entries are usable.
 fn entry_problems(name: &str, raw: &A2aAgentRaw) -> Vec<String> {
     let mut problems = Vec::new();
     if !is_valid_agent_name(name) {
@@ -70,14 +51,6 @@ fn entry_problems(name: &str, raw: &A2aAgentRaw) -> Vec<String> {
     problems
 }
 
-/// Diagnostics for `content` as `config/a2a.json`.
-///
-/// Reuses `entry_problems`, the same per-entry check
-/// [`load_a2a_agents_map`] applies, so a diagnostic can never disagree with
-/// what loading skips. A JSON syntax error carries `serde_json`'s own
-/// line/column. Doesn't check `${agent-key:...}`/`${ENV}` header references
-/// — those need the agent-key store, which isn't available from content
-/// alone.
 #[must_use]
 pub fn diagnose_a2a_json(content: &str) -> Vec<residuum_core::diagnostics::Diagnostic> {
     use residuum_core::diagnostics::{Diagnostic, Location};
@@ -110,19 +83,6 @@ pub fn diagnose_a2a_json(content: &str) -> Vec<residuum_core::diagnostics::Diagn
         .collect()
 }
 
-/// Load `config/a2a.json` as a name → entry map, expanding
-/// `${agent-key:<name>}` (via `residuum_config::agent_keys::expand_references`) and
-/// `${ENV}` (via `residuum_core::util::expand_env_vars`, the same helper MCP
-/// server headers use) references in header values.
-///
-/// An entry with an invalid name, an empty url, or a header referencing an
-/// unknown agent key is skipped with a warning; the rest of the file still
-/// loads.
-///
-/// Returns an empty map if the file does not exist.
-///
-/// # Errors
-/// Returns an error if the file exists but cannot be read or parsed as JSON.
 #[tracing::instrument(skip_all, fields(path = %path.display()))]
 pub fn load_a2a_agents_map(
     path: &Path,
@@ -261,8 +221,6 @@ mod tests {
 
     #[test]
     fn expands_env_var_references_with_default_in_headers() {
-        // Uses the `${VAR:-default}` fallback form so the test needs no
-        // process-wide env mutation (which would race with other tests).
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("a2a.json");
         std::fs::write(
@@ -321,8 +279,6 @@ mod tests {
         let err = load_a2a_agents_map(&path, &AgentKeyStore::default()).unwrap_err();
         assert!(err.to_string().contains("failed to parse a2a.json"));
     }
-
-    // ── diagnose_a2a_json ────────────────────────────────────────────────
 
     #[test]
     fn diagnose_clean_file_has_no_diagnostics() {

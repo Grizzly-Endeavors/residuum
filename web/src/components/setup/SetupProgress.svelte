@@ -1,9 +1,6 @@
 <script lang="ts">
   import { VisuallyHidden } from "../../lib/ui";
 
-  // Where the user is in setup: one segment of vein per step, filled up to
-  // the current one. Narrow, the step names give way to "Step 2 of 6"; the
-  // list still names every step for assistive technology.
   interface Props {
     labels: readonly string[];
     current: number;

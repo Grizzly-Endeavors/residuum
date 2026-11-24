@@ -24,15 +24,8 @@ use residuum_inference::{
     build_provider_chain,
 };
 
-/// Identity label logged and reported when a call carries no artifact
-/// header (a direct `web-ui` caller, not relayed through an artifact frame).
 const WEB_UI_IDENTITY: &str = "web-ui";
 
-/// The subset of `SpawnContext` `POST /api/agents/{name}/model/complete` needs: enough to
-/// resolve the small tier's provider chain and its `bg_small` overrides,
-/// kept separate from `SpawnContext` so the HTTP layer doesn't carry every
-/// session-fork dependency (session registries, MCP, the session tool
-/// factory, ...) that type also holds.
 pub(crate) struct ModelCallResources {
     background_models: BackgroundModelsConfig,
     main_provider_specs: Vec<ProviderSpec>,
@@ -42,15 +35,10 @@ pub(crate) struct ModelCallResources {
     role_overrides: HashMap<String, RoleOverrides>,
     default_temperature: Option<f32>,
     default_thinking: Option<ThinkingConfig>,
-    /// Where each call's usage records go: the agent's own workspace.
     usage: UsageRecorder,
 }
 
 impl ModelCallResources {
-    /// Build from the current `SpawnContext`, which the gateway rebuilds
-    /// fresh on every config reload (see `crate::reload`) — a
-    /// `ModelCallResources` built here reflects the config active at the
-    /// moment it is called.
     pub(crate) fn from_spawn_context(ctx: &SpawnContext) -> Self {
         Self {
             background_models: ctx.background_config.models.clone(),
@@ -65,22 +53,16 @@ impl ModelCallResources {
         }
     }
 
-    /// The small tier's resolved provider chain: small → medium → large →
-    /// main, per `BackgroundModelsConfig::resolve_tier`.
     fn small_specs(&self) -> Vec<ProviderSpec> {
         self.background_models
             .resolve_tier(&BackgroundModelTier::Small, &self.main_provider_specs)
     }
 
-    /// The `bg_small` role override, if configured.
     fn bg_small_override(&self) -> Option<&RoleOverrides> {
         self.role_overrides.get("bg_small")
     }
 }
 
-/// Shared state for the model call API. `resources` is a `watch` receiver so
-/// every request reads whatever `ModelCallResources` the gateway last built
-/// on reload, without the HTTP router needing to be rebuilt.
 #[derive(Clone)]
 pub(crate) struct ModelApiState {
     pub(crate) resources: tokio::sync::watch::Receiver<Arc<ModelCallResources>>,
@@ -92,7 +74,6 @@ pub(crate) fn model_api_router(state: ModelApiState) -> axum::Router {
         .with_state(state)
 }
 
-/// One message in a `POST /api/agents/{name}/model/complete` request.
 #[derive(Deserialize)]
 struct RequestMessage {
     role: String,
@@ -101,9 +82,6 @@ struct RequestMessage {
     images: Vec<ImageData>,
 }
 
-/// Body for `POST /api/agents/{name}/model/complete` (design §7): either `{ "prompt" }`
-/// shorthand for one user message, or `system`/`messages` for a full
-/// conversation, plus optional `schema`, `max_tokens`, and `temperature`.
 #[derive(Deserialize)]
 pub(super) struct ModelCompleteRequest {
     #[serde(default)]
@@ -120,8 +98,6 @@ pub(super) struct ModelCompleteRequest {
     temperature: Option<f32>,
 }
 
-/// Token usage reported back to the caller. `input_tokens` is the whole
-/// prompt, cached or not; a count the provider didn't report is 0.
 #[derive(Serialize, Default)]
 #[cfg_attr(test, derive(serde::Deserialize))]
 struct UsageResponse {
@@ -138,7 +114,6 @@ impl From<Usage> for UsageResponse {
     }
 }
 
-/// Response from `POST /api/agents/{name}/model/complete`.
 #[derive(Serialize)]
 #[cfg_attr(test, derive(serde::Deserialize))]
 struct ModelCompleteResponse {
@@ -149,7 +124,6 @@ struct ModelCompleteResponse {
     usage: UsageResponse,
 }
 
-/// `{ "error": "..." }` body for a non-2xx response.
 #[derive(Serialize)]
 #[cfg_attr(test, derive(serde::Deserialize))]
 struct ErrorBody {
@@ -166,9 +140,6 @@ fn error_response(status: StatusCode, message: impl Into<String>) -> Response {
         .into_response()
 }
 
-/// Defaults applied when the request doesn't override them: the small
-/// tier's `max_tokens`, and `bg_small`'s temperature/thinking (falling back
-/// to the global default when `bg_small` doesn't set them).
 struct RequestDefaults {
     max_tokens: u32,
     temperature: Option<f32>,
@@ -190,13 +161,6 @@ impl RequestDefaults {
     }
 }
 
-/// Build the messages and completion options for one call, applying the
-/// design's override rule: the request's own `temperature`/`max_tokens` win
-/// when given, otherwise the small tier's defaults apply.
-///
-/// # Errors
-/// Returns a plain-language message for a malformed request: no
-/// `prompt`/`messages`, an unrecognized message role, or empty content.
 fn build_request(
     req: &ModelCompleteRequest,
     defaults: &RequestDefaults,
@@ -259,14 +223,6 @@ fn build_request(
     Ok((messages, options, schema_requested))
 }
 
-/// Run the completion against an already-resolved provider and map the
-/// result to the design's response/error contract (§7): `json` parsed from
-/// the model's content when a schema was requested (`502` if it doesn't
-/// parse), `504` on provider timeout, `502` with a plain message for any
-/// other provider failure (the raw error goes to logs only). The reported
-/// `model` is the one that answered, which differs from `model_label` (the
-/// primary) when the call failed over. Every attempt is recorded in `usage`
-/// under the caller's identity.
 async fn run_completion(
     usage: &UsageRecorder,
     provider: &dyn InferenceProvider,
@@ -357,8 +313,6 @@ async fn run_completion(
     }
 }
 
-/// `POST /api/agents/{name}/model/complete` — a one-shot small-model call on an
-/// artifact's behalf (design §7).
 pub(super) async fn api_model_complete(
     State(state): State<ModelApiState>,
     headers: HeaderMap,
@@ -444,8 +398,6 @@ mod tests {
 
     use residuum_inference::{HttpClientConfig, InferenceResponse, ToolDefinition};
 
-    // ── build_request ────────────────────────────────────────────────
-
     fn defaults() -> RequestDefaults {
         RequestDefaults {
             max_tokens: 512,
@@ -497,7 +449,6 @@ mod tests {
         assert_eq!(messages[0].content, "be terse");
         assert_eq!(messages[1].role, Role::User);
         assert_eq!(messages[1].images.len(), 1);
-        // Request-level max_tokens/temperature win over the defaults.
         assert_eq!(options.max_tokens, Some(64));
         assert_eq!(options.temperature, Some(0.9));
     }
@@ -580,8 +531,6 @@ mod tests {
         };
         assert!(build_request(&req, &defaults()).is_err());
     }
-
-    // ── run_completion ───────────────────────────────────────────────
 
     struct StubProvider {
         result: Mutex<Option<Result<InferenceResponse, InferenceError>>>,
@@ -789,7 +738,6 @@ mod tests {
         assert_eq!(parsed.model, "ollama/fallback-model");
     }
 
-    /// A recorder writing into a fresh workspace, kept alive by the directory.
     fn scratch_recorder() -> (tempfile::TempDir, UsageRecorder) {
         let dir = tempfile::tempdir().unwrap();
         let recorder = UsageRecorder::new(&residuum_config::WorkspaceLayout::new(dir.path()));
@@ -872,8 +820,6 @@ mod tests {
         .await;
         assert_eq!(resp.status(), StatusCode::GATEWAY_TIMEOUT);
     }
-
-    // ── small-tier resolution and reload-following ──────────────────
 
     fn spec(name: &str) -> ProviderSpec {
         ProviderSpec {
@@ -962,8 +908,6 @@ mod tests {
             "old-model"
         );
 
-        // Simulate a config reload rebuilding resources and pushing them,
-        // the same way `crate::reload` does on every root reload.
         let updated = Arc::new(resources_with(
             BackgroundModelsConfig {
                 small: Some(vec![spec("new-model")]),

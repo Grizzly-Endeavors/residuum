@@ -1,10 +1,3 @@
-//! The devices file: every registered subscription and its preferences.
-//!
-//! The file holds push endpoints and authentication secrets, so it is written
-//! readable only by its owner. Every change reads the file, applies the
-//! change and writes it back under one lock, so a delivery result recorded
-//! while a device is being registered never loses either.
-
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -27,12 +20,9 @@ struct DevicesFile {
     devices: Vec<StoredDevice>,
 }
 
-/// The devices file and the lock that serializes changes to it.
 pub(super) struct DeviceStore {
     path: PathBuf,
     write_lock: tokio::sync::Mutex<()>,
-    /// Bumped after every change is saved, so a waiting retry can check
-    /// whether its device is still there.
     changes: tokio::sync::watch::Sender<u64>,
 }
 
@@ -45,28 +35,14 @@ impl DeviceStore {
         }
     }
 
-    /// Changes as they are saved: the value moves on after each one.
     pub(super) fn subscribe_changes(&self) -> tokio::sync::watch::Receiver<u64> {
         self.changes.subscribe()
     }
 
-    /// Every device, oldest first. A missing file holds no devices.
-    ///
-    /// A file that exists but can't be read is an error and is left as it is,
-    /// so a fault never turns into the loss of every registration.
-    ///
-    /// # Errors
-    /// Returns [`PushError::Failed`] if the file can't be read or parsed.
     pub(super) async fn read(&self) -> Result<Vec<StoredDevice>, PushError> {
         read_file(&self.path).await
     }
 
-    /// Apply `change` to the devices and save them, when it returns `Some`.
-    /// Returning `None` means it changed nothing, and nothing is written.
-    ///
-    /// # Errors
-    /// Returns [`PushError::Failed`] if the file can't be read, parsed or
-    /// written.
     pub(super) async fn update<T>(
         &self,
         change: impl FnOnce(&mut Vec<StoredDevice>) -> Option<T>,

@@ -67,7 +67,6 @@ describe("the Teams setup wizard mock routes", () => {
   });
 
   it("validates replace_existing when Teams is already configured", async () => {
-    // Configure teams in agent's config
     const state = harness.hub.agents.get(agent)?.state;
     expect(state).toBeDefined();
     if (!state) return;
@@ -117,20 +116,17 @@ describe("the Teams setup wizard mock routes", () => {
     expect(startRes.status).toBe(200);
     let job = startRes.body as TeamsSetupJob;
 
-    // After start, it moves through prereqs and install_cli to sign_in
     expect(job.phase).toBe("sign_in");
     expect(job.state).toBe("waiting_for_user");
     expect(job.sign_in).not.toBeNull();
     expect(job.sign_in?.login_url).toBe("http://localhost:4321/auth");
 
-    // Invalid redirect URL rejected with 400
     const badRedirect = await call("POST", "/job/redirect", {
       url: "https://login.microsoft.com/bad",
     });
     expect(badRedirect.status).toBe(400);
     expect((badRedirect.body as { error: string }).error).toContain("http://localhost:4321/");
 
-    // Valid redirect URL accepted, job enters scaffold
     const goodRedirect = await call("POST", "/job/redirect", {
       url: "http://localhost:4321/auth?code=mock-code-123",
     });
@@ -139,20 +135,17 @@ describe("the Teams setup wizard mock routes", () => {
     expect(job.phase).toBe("scaffold");
     expect(job.state).toBe("running");
 
-    // Next poll advances through scaffold to provision
     const poll1 = await getJob();
     expect(poll1.status).toBe(200);
     job = poll1.job;
     expect(job.phase).toBe("provision");
     expect(job.state).toBe("running");
 
-    // Next poll advances through provision to import
     const poll2 = await getJob();
     expect(poll2.status).toBe(200);
     job = poll2.job;
     expect(job.phase).toBe("import");
 
-    // Next poll advances through import to succeeded
     const poll3 = await getJob();
     expect(poll3.status).toBe(200);
     job = poll3.job;
@@ -162,17 +155,14 @@ describe("the Teams setup wizard mock routes", () => {
     expect(job.created.bot_id).toBe("28374619-abcd-4ef0-9123-abcdef012345");
     expect(job.created.teams_app_id).toBe("teams-app-777888999");
 
-    // App installation
     const installRes = await call("POST", "/job/install-app");
     expect(installRes.status).toBe(200);
     expect((installRes.body as TeamsSetupJob).app_installed).toBe(true);
 
-    // Package download
     const pkgRes = await fetch(`${harness.baseUrl}/api/agents/${agent}/teams-setup/job/package`);
     expect(pkgRes.status).toBe(200);
     expect(pkgRes.headers.get("Content-Type")).toBe("application/zip");
 
-    // Delete completed job
     const delStatus = (
       await fetchText(`${harness.baseUrl}/api/agents/${agent}/teams-setup/job`, {
         method: "DELETE",
@@ -180,13 +170,11 @@ describe("the Teams setup wizard mock routes", () => {
     ).status;
     expect(delStatus).toBe(204);
 
-    // After delete, job is 404
     const afterDel = await call("GET", "/job");
     expect(afterDel.status).toBe(404);
   });
 
   it("can be driven to failure during provision, preserving created bot_id without teams_app_id", async () => {
-    // Bot name containing "fail" causes provision to fail
     const startRes = await call("POST", "/job", {
       form: { ...validForm, bot_name: "fail_provision_bot" },
       consent_install_cli: true,
@@ -194,13 +182,10 @@ describe("the Teams setup wizard mock routes", () => {
     });
     expect(startRes.status).toBe(200);
 
-    // Complete sign-in
     await call("POST", "/job/redirect", { url: "http://localhost:4321/auth?code=mock" });
 
-    // Poll scaffold -> provision
     await getJob();
 
-    // Poll provision -> fails!
     const failedPoll = await getJob();
     const job = failedPoll.job;
     expect(job.state).toBe("failed");
@@ -208,7 +193,6 @@ describe("the Teams setup wizard mock routes", () => {
     expect(job.created.bot_id).not.toBeNull();
     expect(job.created.teams_app_id).toBeNull(); // Only bot_id created before failure!
 
-    // Retrying restarts from failed phase
     const retryRes = await call("POST", "/job/retry");
     expect(retryRes.status).toBe(200);
     const retriedJob = retryRes.body as TeamsSetupJob;
@@ -227,7 +211,6 @@ describe("the Teams setup wizard mock routes", () => {
     const job = cancelRes.body as TeamsSetupJob;
     expect(job.state).toBe("cancelled");
 
-    // Can delete cancelled job
     const delStatus = (
       await fetchText(`${harness.baseUrl}/api/agents/${agent}/teams-setup/job`, {
         method: "DELETE",
@@ -290,14 +273,12 @@ describe("the Teams setup wizard mock routes", () => {
       replace_existing: false,
     });
 
-    // Non-localhost URL
     const external = await call("POST", "/job/redirect", {
       url: "https://example.com:4321/auth?code=123",
     });
     expect(external.status).toBe(400);
     expect((external.body as { error: string }).error).toContain("localhost");
 
-    // Wrong port
     const wrongPort = await call("POST", "/job/redirect", {
       url: "http://localhost:9999/auth?code=123",
     });

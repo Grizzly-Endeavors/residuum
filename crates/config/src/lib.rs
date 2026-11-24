@@ -1,16 +1,3 @@
-//! Configuration loading and validation.
-//!
-//! Uses a two-type pattern: raw TOML deserialization structs (in `deserialize`)
-//! are validated into `Config` (runtime-safe values). Providers are defined in
-//! `[providers]`, models are assigned to roles in `[models]`, and everything
-//! resolves at load time into fully-built `ProviderSpec` values.
-//!
-//! The crate also holds [`agent_keys`], whose store encrypts with the secret
-//! store's key handling.
-//!
-//! The `test-support` feature adds `WorkspaceLayout::with_tempdir_guard` and
-//! `testing`, the fixtures other crates' tests build a `Config` with.
-
 pub mod agent_keys;
 mod agent_name;
 mod bootstrap;
@@ -33,8 +20,6 @@ pub mod testing;
 mod thinking;
 mod tolerant;
 mod types;
-
-// ── Public re-exports ─────────────────────────────────────────────────────────
 
 pub use agent_name::{
     allocate_slug, canonicalize_display_name, display_name_in_toml, display_name_key,

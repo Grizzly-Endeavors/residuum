@@ -1,12 +1,3 @@
-// ── One session run in the context panel (Svelte 5 runes) ────────────
-//
-// What the session panel shows: a run's transcript, its live frames, and the
-// commands that act on it. It works for a run on any agent, so it reads
-// nothing from the bound agent's socket: the transcript loads over HTTP, live
-// frames come through the hub socket's session relay, and messages and stops
-// go to the agent's session routes. The panel host owns it, so it outlives
-// the panel's frame drawing its content again at another width.
-
 import { SvelteMap, SvelteSet } from "svelte/reactivity";
 import { fetchSessionTranscript, messageSession, stopSession } from "./api";
 import { userErrorMessage } from "./errors";
@@ -26,7 +17,6 @@ import { isSessionFrame, type RunFrame, type SessionFrame } from "./sessions.sve
 import { isoNow, localTimestamp } from "./time";
 import type { FeedItem, SessionSummary, ToolCallState } from "./types";
 
-/** The hub socket, as far as a run follows its session through it. */
 export interface SessionRelayLink {
   readonly connected: boolean;
   send: (msg: HubClientMessage) => void;
@@ -43,25 +33,16 @@ const hubRelay: SessionRelayLink = {
   onFrame: (listener) => hub.onFrame(listener),
 };
 
-/**
- * A message this page sent the session that it hasn't read yet. The turn in
- * flight takes it in at its next checkpoint; otherwise it starts a turn, which
- * reads it as it begins. It joins the transcript where the session read it.
- */
 export interface SessionWaitingMessage {
-  /** The message's id, which the session's `session_user_message` frame names once it reads it. */
   id: string;
   content: string;
 }
 
 type ReadFrame = Extract<RunFrame, { type: "session_user_message" }>;
 
-/** The sender address the backend gives the owner's messages. */
 const OWNER_ADDRESS = "owner";
-/** The prefix of a workbench artifact's sender address, `artifact:<name>`. */
 const ARTIFACT_SENDER_PREFIX = "artifact:";
 
-/** A message the session read, as the transcript shows it from its live frame. */
 function readMessageItem(frame: ReadFrame): FeedItem {
   const said = {
     id: nextFeedId(),
@@ -87,7 +68,6 @@ function readMessageItem(frame: ReadFrame): FeedItem {
   };
 }
 
-/** What is known of a run before its transcript arrives. */
 export interface KnownRun {
   summary?: SessionSummary | null;
   address?: string | null;
@@ -102,42 +82,25 @@ export class SessionRun {
   runId = $state("");
   summary = $state<SessionSummary | null>(null);
   items = $state<FeedItem[]>([]);
-  /** The transcript has arrived at least once. */
   loaded = $state(false);
   loadError = $state<string | null>(null);
-  /** The turn in flight, whose items are tagged with it; null between turns. */
   activeTurnId = $state<string | null>(null);
-  /** What the panel saw of each turn while it ran, for the activity line. */
   readonly observed = new ObservedTurns();
-  /** The message box's text, kept here so it survives the panel drawing again. */
   draft = $state("");
   sending = $state(false);
-  /** Messages this page sent that the session hasn't read yet, in the order sent. */
   waiting = $state<SessionWaitingMessage[]>([]);
-  /** A stop was asked for and the run hasn't finished yet. */
   stopping = $state(false);
 
   private address: string | null;
-  /** The relay connection this run is subscribed on has acknowledged it. */
   private subscribed = false;
-  /** A message sent from here may start a new run at this address; the panel follows it. */
   private followNextRun = false;
   private pendingTools = new SvelteMap<string, ToolCallState>();
-  /** Frames for this run that arrived while its transcript was loading. */
   private buffered: RunFrame[] = [];
-  /** Status lines this page wrote while the transcript was loading; no transcript holds them. */
   private notes: FeedItem[] = [];
   private loading = false;
-  /** Identifies the latest load; an older one finishing late is ignored. */
   private loadToken = 0;
-  /** Where the turn in flight began, for tagging its message with the turn id (Undo this turn). */
   private turnStart: number | null = null;
-  /**
-   * The turn in flight has only started: nothing of it has arrived but the
-   * messages it read as it began, so a message it reads now starts it too.
-   */
   private turnFresh = false;
-  /** The ids of the messages the transcript holds, so a read is shown once. */
   private readIds = new SvelteSet<string>();
 
   constructor(
@@ -151,12 +114,10 @@ export class SessionRun {
     this.address = known.summary?.address ?? known.address ?? null;
   }
 
-  /** The run may still produce frames. */
   get live(): boolean {
     return this.summary?.state !== "completed";
   }
 
-  /** Start following the run: load it and subscribe to its frames. Returns a function that stops. */
   open(): () => void {
     const stopListening = this.relay.onFrame((msg) => {
       this.handleHubFrame(msg);
@@ -171,7 +132,6 @@ export class SessionRun {
     };
   }
 
-  /** Load (or load again) the run's transcript, then replay frames that raced it. */
   async load(): Promise<void> {
     const token = ++this.loadToken;
     const runId = this.runId;
@@ -198,13 +158,8 @@ export class SessionRun {
     this.turnStart = null;
     this.items = convertHistoryMessages(transcript.messages, { mode: "session" });
     this.readIds = new SvelteSet(transcript.messages.flatMap((message) => message.id ?? []));
-    // A message the transcript holds was read while this page wasn't looking.
-    // One it doesn't hold is still waiting.
     this.waiting = this.waiting.filter((message) => !this.readIds.has(message.id));
     this.items.push(...this.notes.splice(0));
-    // The transcript renders every finished turn again, without timing. A
-    // turn still running goes on from here; what it did so far is in the
-    // transcript.
     this.observed.clear(this.activeTurnId);
     if (this.activeTurnId !== null) this.turnStart = this.items.length;
     this.loading = false;
@@ -219,19 +174,14 @@ export class SessionRun {
     }
   }
 
-  // ── Commands ─────────────────────────────────────────────────────
-
-  /** Send the message box's text to the session: to this run, or a new one if it finished. */
   async send(): Promise<void> {
     const content = this.draft.trim();
     const address = this.address;
     if (content === "" || address === null || this.sending) return;
     this.sending = true;
     this.draft = "";
-    // It waits until the session reads it, and its read places it in the transcript.
     const id = newMessageId();
     this.waiting.push({ id, content });
-    // The new run a finished session starts can announce itself before the reply.
     this.followNextRun = true;
     try {
       const { outcome } = await messageSession(this.agent, address, content, id);
@@ -253,17 +203,11 @@ export class SessionRun {
     }
   }
 
-  /**
-   * Stop showing a message as waiting, for one the session will never read
-   * (its run ended and the panel lost the run that took it up). Only this
-   * page forgets it: a read that does arrive still places it.
-   */
   dismissWaiting(id: string): void {
     this.dropWaiting(id);
     this.settleFollow();
   }
 
-  /** Stop the run. Its frames show it finishing. */
   async stop(): Promise<void> {
     const address = this.address;
     if (address === null || this.stopping) return;
@@ -271,7 +215,6 @@ export class SessionRun {
     if (this.activeTurnId !== null) this.observed.askStop(this.activeTurnId);
     try {
       await stopSession(this.agent, address);
-      // Its completion may have arrived first.
       if (this.live) this.pushStatus("info", "Stopping this session…");
     } catch (err) {
       this.stopping = false;
@@ -285,8 +228,6 @@ export class SessionRun {
     }
   }
 
-  // ── Frames ───────────────────────────────────────────────────────
-
   private subscribe(): void {
     if (this.address === null || !this.relay.connected) return;
     this.relay.send({ type: "subscribe_session", agent: this.agent, address: this.address });
@@ -294,7 +235,6 @@ export class SessionRun {
 
   private handleHubFrame(msg: HubServerMessage): void {
     if (msg.type === "hub_boot") {
-      // A new connection: subscriptions ended with the old one.
       this.subscribed = false;
       this.subscribe();
     } else if (
@@ -303,7 +243,6 @@ export class SessionRun {
       msg.address === this.address
     ) {
       this.subscribed = true;
-      // Frames between the transcript's reading and now never reached this page.
       if (this.live) void this.load();
     } else if (msg.type === "session_relay_lagged") {
       if (this.subscribed) void this.load();
@@ -319,18 +258,10 @@ export class SessionRun {
       return;
     }
     if (!("run_id" in frame) || frame.run_id !== this.runId) return;
-    // The backend resumes a run's unread messages as a new run once it ends
-    // (`finish_run`); the panel follows that run, whose reads resolve them.
-    // Set on arrival, not when applied: mid-load the completion waits in the
-    // buffer, while the new run's start is handled at once.
     if (frame.type === "session_completed" && this.waiting.length > 0) this.followNextRun = true;
     this.applyFrame(frame);
   }
 
-  /**
-   * Apply a live frame for this run. `dedupe` is set when replaying frames
-   * that arrived during the transcript fetch, which may already be in it.
-   */
   private applyFrame(frame: RunFrame, dedupe = false): void {
     if (this.loading) {
       this.buffered.push(frame);
@@ -383,8 +314,6 @@ export class SessionRun {
           summary.error_details = frame.error_details ?? null;
           summary.memory_pending = frame.memory_pending;
         }
-        // A run that ends mid-turn ends the turn with it: stopped when the
-        // user asked, cut off otherwise.
         if (this.activeTurnId !== null) {
           const asked = this.observed.get(this.activeTurnId)?.stopAsked === true;
           this.closeTurn(this.activeTurnId, asked ? "stopped" : "interrupted");
@@ -396,8 +325,6 @@ export class SessionRun {
         );
         break;
       case "session_memory_merged":
-        // Arrives after `session_completed`, once the run's memory merge
-        // has recorded its outcome.
         if (summary) {
           summary.episode_id = frame.episode_id;
           summary.memory_pending = false;
@@ -425,11 +352,6 @@ export class SessionRun {
     }
   }
 
-  /**
-   * The session read a message: it joins the transcript there. One the turn
-   * in flight read as it began starts that turn; one it read at a later
-   * checkpoint is placed where it reached the session, inside the turn.
-   */
   private placeRead(frame: ReadFrame): void {
     this.dropWaiting(frame.id);
     if (this.readIds.has(frame.id)) return;
@@ -441,7 +363,6 @@ export class SessionRun {
     const item = readMessageItem(frame);
     item.turnId = turnId;
     if (this.activeTurnId !== turnId) {
-      // Not the turn in flight: one that ended, or one this page never saw.
       this.items.push(item);
       return;
     }
@@ -451,17 +372,11 @@ export class SessionRun {
       return;
     }
     this.turnFresh = true;
-    // After the messages it read before this one, ahead of any status note.
     let at = this.turnStart ?? this.items.length;
     while (this.items[at]?.turnId === turnId) at++;
     this.items.splice(at, 0, item);
   }
 
-  /**
-   * A follow waits for the run that reads this page's waiting messages. Once
-   * none waits, the run has ended and no send is in flight, no run of this
-   * page's is coming, and a later run at the address is not one to follow.
-   */
   private settleFollow(): void {
     if (this.waiting.length === 0 && !this.live && !this.sending) this.followNextRun = false;
   }
@@ -478,12 +393,6 @@ export class SessionRun {
     else this.items.push(note);
   }
 
-  /**
-   * A frame of a turn arrived with no turn in flight: the panel opened, or
-   * its transcript loaded, while the turn ran. It becomes the turn in flight,
-   * joined partway, under a stand-in id until a frame names it. Something of
-   * the turn has arrived, so it has gone past its start.
-   */
   private joinTurn(turnId?: string): void {
     this.turnFresh = false;
     if (this.activeTurnId !== null) {
@@ -495,7 +404,6 @@ export class SessionRun {
     this.turnStart = this.items.length;
   }
 
-  /** A frame named the turn joined under a stand-in id: tag its items with the real one. */
   private nameJoinedTurn(turnId: string): void {
     const current = this.activeTurnId;
     if (current === null || current === turnId || !this.observed.isUnnamed(current)) return;
@@ -504,14 +412,12 @@ export class SessionRun {
     this.activeTurnId = turnId;
   }
 
-  /** The turn ended: settle calls still waiting on results, and record how. */
   private closeTurn(turnId: string, ending?: TurnEnding): void {
     const how = this.observed.end(turnId, ending);
     settlePendingCalls(this.pendingTools, how === "finished" ? "done" : "stopped");
     if (this.activeTurnId === turnId) this.activeTurnId = null;
   }
 
-  /** Tag the owner's message that started the turn now ending, so it can offer Undo this turn. */
   private tagTurnStart(turnId: string): void {
     if (this.turnStart === null) return;
     const item = this.items[this.turnStart];
@@ -520,10 +426,6 @@ export class SessionRun {
     }
   }
 
-  /**
-   * Continue in a new run of the same session. Mid-load, the pending load is
-   * superseded by one for the new run, whose transcript holds what started it.
-   */
   private follow(next: SessionSummary): void {
     this.followNextRun = false;
     this.runId = next.run_id;

@@ -23,7 +23,6 @@ function stubStorage(entries: Record<string, string>): Map<string, string> {
   return data;
 }
 
-/** A fresh copy of the cache module, as a new page load would get. */
 async function loadCache(): Promise<typeof CacheModule> {
   vi.resetModules();
   return import("./cache");

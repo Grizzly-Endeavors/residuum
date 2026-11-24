@@ -1,5 +1,3 @@
-//! HTTP server setup and adapter spawning in the event loop.
-
 use std::sync::Arc;
 
 use crate::types::GatewayState;
@@ -17,17 +15,11 @@ pub struct ExtraApiStates {
     pub memory: web::memory::MemoryApiState,
     pub model: web::model::ModelApiState,
     pub a2a_agents: web::a2a::A2aAgentsStatusState,
-    /// The relay tunnel's status, for the A2A status route's relay address.
     pub tunnel_status_rx: tokio::sync::watch::Receiver<residuum_net::tunnel::TunnelStatus>,
-    /// The live model catalog, for the sessions API to check a start's model.
     pub model_catalog: residuum_config::SharedModelCatalog,
-    /// The running build, for the agent status route.
     pub build: residuum_core::build_info::BuildInfo,
 }
 
-/// The agent-scoped routers [`build_gateway_app`] merges in, built once by
-/// [`build_feature_routers`] so the top-level function stays under the
-/// line-count lint.
 struct FeatureRouters {
     webhook: axum::Router,
     sessions: axum::Router,
@@ -38,13 +30,7 @@ struct FeatureRouters {
     a2a_agents: axum::Router,
 }
 
-/// Build every feature router [`build_gateway_app`] merges onto the base
-/// `/ws` router. Split out purely to keep that function's line count under
-/// the lint threshold — each router here is independent and self-contained.
 fn build_feature_routers(state: &GatewayState, extra: ExtraApiStates) -> FeatureRouters {
-    // Always mounted: the table is swapped on reload, so webhooks added later
-    // work without rebinding the server. Unknown names get a 404. The hub
-    // serves it at `/webhook/{agent}/{name}`.
     let webhook = axum::Router::new()
         .route(
             "/webhook/{name}",
@@ -87,16 +73,6 @@ fn build_feature_routers(state: &GatewayState, extra: ExtraApiStates) -> Feature
     }
 }
 
-/// Build one running agent's router, rooted at `/`: its WebSocket, webhooks,
-/// sessions, scheduled work, inbox, memory search, model completion,
-/// A2A settings, and status. The chat history, usage, user inbox, and A2A
-/// settings routes are the same file routes a stopped agent gets from
-/// `hub::AgentDirectory::agent_file_router`, here on the agent's own open
-/// state. The file links, workspace and token, are among them, served from
-/// the agent's live file registry. It carries no hub-level
-/// route, no repair route (see `hub::web::agent_repair_api_router`), no static
-/// assets and no request guards; the hub router serves it under
-/// `/api/agents/{name}/` and applies those.
 pub fn build_gateway_app(
     state: GatewayState,
     config_api_state: residuum_hub::web::ConfigApiState,
@@ -134,7 +110,6 @@ pub fn build_gateway_app(
         }))
 }
 
-/// Spawn the Discord, Telegram, and Teams adapters that are configured.
 pub fn spawn_adapters(
     cfg: &Config,
     senders: &AdapterSenders,
@@ -208,9 +183,6 @@ pub fn spawn_adapters(
     chat
 }
 
-/// Run the Teams adapter until it stops. A failure to start (most often a
-/// port another program or agent already holds) is logged and told to the
-/// user as a hub notice naming the agent and the port.
 pub(crate) async fn run_teams_adapter(
     iface: residuum_interfaces::teams::TeamsInterface,
     port: u16,
@@ -227,30 +199,15 @@ pub(crate) async fn run_teams_adapter(
     }
 }
 
-/// What [`build_agent_a2a`] needs beyond `Config`: the agent's live runtime
-/// state (sessions, messaging, skills, and the bus) rather than anything
-/// derivable from config alone.
 pub(crate) struct A2aServingDeps {
     pub session_registry: Arc<SessionRegistry>,
     pub agent_messenger: Arc<residuum_background::messaging::AgentMessenger>,
     pub skill_state: residuum_skills::SharedSkillState,
     pub bus_handle: residuum_bus::BusHandle,
-    /// Turns `true` once the session spawn listener is subscribed. Restart
-    /// continuations wait on it: a session spawn published before then has
-    /// no listener and would be lost.
     pub sessions_ready: tokio::sync::watch::Receiver<bool>,
-    /// The relay tunnel's status, so the agent's card advertises its relay
-    /// address while the tunnel is connected.
     pub tunnel_status_rx: tokio::sync::watch::Receiver<residuum_net::tunnel::TunnelStatus>,
 }
 
-/// Build the agent's A2A server with [`residuum_a2a::agent_a2a_router`]. The
-/// hub's A2A listener serves the router at `/agents/<name>/`.
-///
-/// Shared between startup and reload: both rebuild the agent's A2A state from
-/// scratch when `[a2a]` changes, since a visibility flip and a new base URL
-/// both need a fresh card. A build failure is logged and reported as `None`:
-/// the rest of the agent still runs, and the next successful reload retries.
 pub(crate) async fn build_agent_a2a(
     cfg: &Config,
     deps: A2aServingDeps,
@@ -272,8 +229,6 @@ pub(crate) async fn build_agent_a2a(
     .await
     {
         Ok(mut agent) => {
-            // Its handlers run under the hub's A2A listener, outside any agent
-            // span, so the router carries the span itself.
             agent.router = super::agent_span_layer(&cfg.agent_name, agent.router);
             tracing::info!(
                 visibility = %cfg.a2a.visibility,

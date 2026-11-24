@@ -12,17 +12,14 @@ use super::{StreamDelta, StreamSink};
 use residuum_core::testing::gate::GateEntry;
 use residuum_core::util::spawn_in_span;
 
-/// A sink that keeps everything pushed to it.
 #[derive(Default)]
 pub(crate) struct RecordingSink(Mutex<Vec<StreamDelta>>);
 
 impl RecordingSink {
-    /// What has been pushed, in order.
     pub(crate) fn deltas(&self) -> Vec<StreamDelta> {
         self.0.lock().unwrap().clone()
     }
 
-    /// The text pushed since the last restart, joined.
     pub(crate) fn text(&self) -> String {
         self.kept(|delta| match delta {
             StreamDelta::Text(text) => Some(text.as_str()),
@@ -30,7 +27,6 @@ impl RecordingSink {
         })
     }
 
-    /// The thinking pushed since the last restart, joined.
     pub(crate) fn thinking(&self) -> String {
         self.kept(|delta| match delta {
             StreamDelta::Thinking(text) => Some(text.as_str()),
@@ -54,18 +50,13 @@ impl StreamSink for RecordingSink {
     }
 }
 
-/// One step of a scripted response.
 pub(crate) enum Step {
-    /// Send these bytes now.
     Write(Vec<u8>),
-    /// Send nothing for this long.
     Pause(Duration),
-    /// Send nothing until the test lets this step through its gate.
     Hold(GateEntry),
 }
 
 impl Step {
-    /// A status line and headers announcing a chunked body of `content_type`.
     pub(crate) fn head(status: u16, content_type: &str) -> Self {
         Self::Write(
             format!(
@@ -76,7 +67,6 @@ impl Step {
         )
     }
 
-    /// One chunk of the body.
     pub(crate) fn chunk(bytes: impl AsRef<[u8]>) -> Self {
         let bytes = bytes.as_ref();
         let mut framed = format!("{:x}\r\n", bytes.len()).into_bytes();
@@ -85,29 +75,21 @@ impl Step {
         Self::Write(framed)
     }
 
-    /// The terminating chunk that marks a body as complete. A script without
-    /// it ends in a truncated body.
     pub(crate) fn end() -> Self {
         Self::Write(b"0\r\n\r\n".to_vec())
     }
 
-    /// Wait before the next step.
     pub(crate) fn pause(duration: Duration) -> Self {
         Self::Pause(duration)
     }
 }
 
-/// A complete streamed response: a `200` event stream carrying each of
-/// `chunks` as its own network chunk.
 pub(crate) fn sse_response<T: AsRef<[u8]>>(chunks: &[T]) -> Vec<Step> {
     let mut script = sse_chunks(chunks);
     script.push(Step::end());
     script
 }
 
-/// The head and chunks of a `200` event stream, left open so the caller
-/// decides how the stream ends (or whether it does). A short pause after
-/// each chunk keeps the receiver from reading two as one.
 pub(crate) fn sse_chunks<T: AsRef<[u8]>>(chunks: &[T]) -> Vec<Step> {
     let mut script = vec![Step::head(200, "text/event-stream")];
     for chunk in chunks {
@@ -117,7 +99,6 @@ pub(crate) fn sse_chunks<T: AsRef<[u8]>>(chunks: &[T]) -> Vec<Step> {
     script
 }
 
-/// A complete NDJSON stream: each line its own network chunk.
 pub(crate) fn ndjson_response<T: AsRef<[u8]>>(lines: &[T]) -> Vec<Step> {
     let mut script = vec![Step::head(200, "application/x-ndjson")];
     for line in lines {
@@ -128,21 +109,16 @@ pub(crate) fn ndjson_response<T: AsRef<[u8]>>(lines: &[T]) -> Vec<Step> {
     script
 }
 
-/// Split a stream's text into network chunks of `size` bytes, ignoring
-/// character boundaries as the network does.
 pub(crate) fn split_bytes(text: &str, size: usize) -> Vec<Vec<u8>> {
     text.as_bytes().chunks(size).map(<[u8]>::to_vec).collect()
 }
 
-/// The value at a JSON pointer such as `/thinking/type`; the test fails when
-/// there is none.
 pub(crate) fn at<'a>(value: &'a serde_json::Value, pointer: &str) -> &'a serde_json::Value {
     value
         .pointer(pointer)
         .unwrap_or_else(|| panic!("no {pointer} in {value}"))
 }
 
-/// Assert two responses are the same in every field.
 pub(crate) fn assert_same_response(
     streamed: &super::InferenceResponse,
     whole: &super::InferenceResponse,
@@ -154,7 +130,6 @@ pub(crate) fn assert_same_response(
     );
 }
 
-/// A complete non-streamed response with a JSON body.
 pub(crate) fn json_response(status: u16, body: &str) -> Vec<Step> {
     vec![
         Step::head(status, "application/json"),
@@ -163,19 +138,14 @@ pub(crate) fn json_response(status: u16, body: &str) -> Vec<Step> {
     ]
 }
 
-/// What the server received in one request.
 #[derive(Debug, Clone)]
 pub(crate) struct RecordedRequest {
-    /// The request target, including any query string.
     pub(crate) target: String,
-    /// Header names (lowercased) and values.
     pub(crate) headers: Vec<(String, String)>,
-    /// The request body.
     pub(crate) body: String,
 }
 
 impl RecordedRequest {
-    /// The value of a header, by lowercase name.
     pub(crate) fn header(&self, name: &str) -> Option<&str> {
         self.headers
             .iter()
@@ -183,21 +153,17 @@ impl RecordedRequest {
             .map(|(_, value)| value.as_str())
     }
 
-    /// The body parsed as JSON.
     pub(crate) fn json(&self) -> serde_json::Value {
         serde_json::from_str(&self.body).unwrap()
     }
 }
 
-/// Serves one scripted response per connection, in order, and records the
-/// requests it receives. A connection past the end of the script gets a `500`.
 pub(crate) struct ScriptedServer {
     uri: String,
     requests: Arc<Mutex<Vec<RecordedRequest>>>,
 }
 
 impl ScriptedServer {
-    /// Start serving `responses` on a free local port.
     pub(crate) async fn start(responses: Vec<Vec<Step>>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let uri = format!("http://{}", listener.local_addr().unwrap());
@@ -213,12 +179,10 @@ impl ScriptedServer {
         Self { uri, requests }
     }
 
-    /// The server's base URL.
     pub(crate) fn uri(&self) -> String {
         self.uri.clone()
     }
 
-    /// Every request received so far.
     pub(crate) fn requests(&self) -> Vec<RecordedRequest> {
         self.requests.lock().unwrap().clone()
     }
@@ -244,9 +208,7 @@ async fn serve(
             Step::Hold(entry) => entry.pass().await,
         }
     }
-    if socket.shutdown().await.is_err() {
-        // The client already hung up; nothing left to send.
-    }
+    if socket.shutdown().await.is_err() {}
 }
 
 async fn read_request(socket: &mut TcpStream) -> Option<RecordedRequest> {

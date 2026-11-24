@@ -1,10 +1,5 @@
-//! Files a chat interface sends out: their metadata and MIME type detection.
-
 use std::path::{Path, PathBuf};
 
-/// Detect MIME type from a file's extension.
-///
-/// Uses `mime_guess` for known extensions, falls back to `application/octet-stream`.
 #[must_use]
 pub fn detect_mime_type(path: &Path) -> String {
     mime_guess::from_path(path)
@@ -13,25 +8,15 @@ pub fn detect_mime_type(path: &Path) -> String {
         .to_string()
 }
 
-/// Metadata for an outbound file attachment.
 #[derive(Debug, Clone)]
 pub struct FileAttachment {
-    /// Absolute path to the file on disk.
     pub path: PathBuf,
-    /// Original filename (from the path).
     pub filename: String,
-    /// Detected MIME type.
     pub mime_type: String,
-    /// File size in bytes.
     pub size: u64,
 }
 
 impl FileAttachment {
-    /// Create a `FileAttachment` by validating and inspecting a file path.
-    ///
-    /// # Errors
-    ///
-    /// Returns a descriptive error string if the file does not exist or is not readable.
     pub async fn from_path(path: &Path) -> Result<Self, String> {
         let metadata = tokio::fs::metadata(path).await.map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {

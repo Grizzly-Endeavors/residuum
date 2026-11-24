@@ -4,23 +4,11 @@
   import { splitFrontmatter } from "./frontmatter";
   import type { FileSource } from "./file-source";
 
-  // A file's content as read, not edited: Markdown through `feed/Prose.svelte`
-  // (the same sanitizer and image rules as a reply), its leading frontmatter
-  // as a key/value block, or plain text with its characters shown as written.
-  // Relative links to other Markdown files open them in the same tree. In a
-  // panel that names its agent, a link opens as that agent's file in the same
-  // way, so the place under the panel (the Inbox) stays.
-
   interface Props {
-    /** The file's text. */
     content: string;
-    /** The file's path in its tree (the team's folder, for a team source). */
     path: string;
-    /** The tree the file is in: an agent's workspace, or the team's folder. */
     source: FileSource;
-    /** `markdown` renders the text; `text` shows it as it is, wrapped and unformatted. */
     mode: "markdown" | "text";
-    /** The panel names the file's agent, so a link opens as that agent's file whatever place the panel is beside. */
     agentNamed?: boolean;
   }
 

@@ -1,11 +1,3 @@
-//! Central pub/sub message broker.
-//!
-//! The bus provides topic-based event routing between subsystems. Publishers
-//! send events to named topics; subscribers receive events from topics they
-//! have registered interest in. The broker routes each event by `(TopicId,
-//! TypeId)` composite key, delivering only to subscribers that match both
-//! the topic and event type.
-
 pub mod attachment;
 pub mod auto_mode;
 mod broker;

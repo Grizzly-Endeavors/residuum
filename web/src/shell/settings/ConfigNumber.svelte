@@ -4,24 +4,13 @@
   import type { TextKey } from "./config-keys";
   import { fieldError, type SettingsScope } from "./sections";
 
-  // A number in the scope's `config.toml` form, bound through
-  // `lib/settings-bind.ts`. The form keeps it as text, so a blank box is an
-  // unset key, which is read as its default. `fallback` shows that default in
-  // the box while it's blank and ends the hint, with the unit, so every number
-  // reads with what it counts; a section that words the default itself passes
-  // `placeholder` alone.
-
   interface Props {
     scope: SettingsScope;
     field: TextKey;
     label: string;
-    /** What the number does, in a sentence. */
     hint?: string;
-    /** What the number counts, shown after the box: "minutes", "tokens". */
     unit?: string;
-    /** What the agent uses while the box is blank, when that is a number. */
     fallback?: number;
-    /** Shown while the box is blank, when blank means something other than a number. */
     placeholder?: string;
     min?: number;
     max?: number;

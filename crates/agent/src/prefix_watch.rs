@@ -21,52 +21,27 @@ use serde::Serialize;
 
 use crate::turn::ModelRequest;
 
-/// Why an earlier part of a request differs from the previous request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Cause {
-    /// A tool was added or removed: a config reload or an MCP server
-    /// connecting or leaving.
     ToolSetChanged,
-    /// The same tools went out in a different order.
     ToolOrderChanged,
-    /// Between turns, a tool's definition changed while the set and order
-    /// stayed: a reload rewrote a description or schema, or a definition does
-    /// not render the same way twice.
     ToolDefinitionChanged,
-    /// Within one turn, a tool's definition changed while the set and order
-    /// stayed. Nothing reloads tools mid-turn.
     ToolDefinitionChangedMidTurn,
-    /// Between turns, the system prompt changed: an identity file, the team,
-    /// memory or the skills changed, or a section does not render the same
-    /// way twice.
     SystemChanged,
-    /// The system prompt changed in the same request as a history rewrite:
-    /// the observer moved the conversation into memory.
     SystemChangedWithHistory,
-    /// Within one turn, the system prompt changed. Its inputs are fixed for
-    /// the turn.
     SystemChangedMidTurn,
-    /// The agent rewrote its history (observer rotation or a clear).
     HistoryRewritten,
-    /// A message the previous request sent changed or went missing, and the
-    /// history was not rewritten.
     HistoryChanged,
 }
 
-/// How loudly a change is logged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Level {
-    /// An expected change.
     Debug,
-    /// A change with a legitimate source that the code can't tell apart
-    /// from a rendering bug.
     Info,
-    /// A change nothing legitimate makes.
     Warn,
 }
 
 impl Cause {
-    /// The request part this cause changes.
     fn part(self) -> &'static str {
         match self {
             Self::ToolSetChanged
@@ -80,7 +55,6 @@ impl Cause {
         }
     }
 
-    /// The level the first change with this cause logs at.
     fn level(self) -> Level {
         match self {
             Self::SystemChangedWithHistory | Self::HistoryRewritten => Level::Debug,
@@ -92,7 +66,6 @@ impl Cause {
         }
     }
 
-    /// The cause as a log field.
     fn name(self) -> &'static str {
         match self {
             Self::ToolSetChanged => "tool_set_changed",
@@ -108,35 +81,20 @@ impl Cause {
     }
 }
 
-/// One earlier part of a request that differs from the previous request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Divergence {
     pub(crate) cause: Cause,
-    /// The first index that differs: a position in the tool list, a byte
-    /// offset in the system prompt, or a position in the request's messages
-    /// (the system prompt is message 0).
     pub(crate) index: usize,
-    /// For a system prompt change, the section the first changed byte is in.
     pub(crate) section: Option<String>,
-    /// The level this change logs at.
     pub(crate) level: Level,
 }
 
-/// What a request sent, as fingerprints.
 struct SentParts {
-    /// Each tool's name and a hash of its whole definition, in request order.
     tools: Vec<(String, u64)>,
-    /// The system prompt's text.
     system: String,
-    /// A hash of each message after the system prompt.
     history: Vec<u64>,
 }
 
-/// Watches the requests one conversation sends.
-///
-/// The first change with a given cause logs at that cause's level; later
-/// changes with the same cause log at `debug`, so a recurring break shows up
-/// once at `warn` or `info` without flooding the log.
 #[derive(Default)]
 pub(crate) struct PrefixWatch {
     last: Option<SentParts>,
@@ -145,15 +103,10 @@ pub(crate) struct PrefixWatch {
 }
 
 impl PrefixWatch {
-    /// Note that the history was rewritten (rotated or cleared), so the next
-    /// request's history change is expected.
     pub(crate) fn history_rewritten(&mut self) {
         self.rewrite_pending = true;
     }
 
-    /// Compare `request` with the previous request and log each earlier
-    /// part that changed. `within_turn` is whether `request` is a later call
-    /// of the same turn as the previous one.
     pub(crate) fn observe(&mut self, request: &ModelRequest, within_turn: bool) {
         let conversation = request
             .options
@@ -166,8 +119,6 @@ impl PrefixWatch {
         }
     }
 
-    /// The earlier parts of `request` that differ from the previous request,
-    /// recording `request` as the one the next request is compared with.
     pub(crate) fn compare(&mut self, request: &ModelRequest, within_turn: bool) -> Vec<Divergence> {
         let rewritten = std::mem::take(&mut self.rewrite_pending);
         let sent = match SentParts::of(request) {
@@ -199,8 +150,6 @@ impl PrefixWatch {
             .collect()
     }
 
-    /// The level a change with `cause` logs at now: its own the first time,
-    /// `debug` after that.
     fn level_for(&mut self, cause: Cause) -> Level {
         let level = cause.level();
         if level == Level::Debug || !self.reported.insert(cause) {
@@ -234,8 +183,6 @@ impl SentParts {
     }
 }
 
-/// Each earlier part of `sent` that differs from `last`, with its cause, the
-/// first index that differs and, for the system prompt, the section.
 fn diff(
     last: &SentParts,
     sent: &SentParts,
@@ -263,13 +210,11 @@ fn diff(
         } else {
             Cause::HistoryChanged
         };
-        // The system prompt is message 0.
         found.push((cause, position + 1, None));
     }
     found
 }
 
-/// How the tool list changed, with the first position that differs.
 fn tools_change(
     last: &[(String, u64)],
     sent: &[(String, u64)],
@@ -299,8 +244,6 @@ fn tools_change(
     Some((cause, first_difference(last, sent)))
 }
 
-/// The first position where `a` and `b` differ (the shorter length when one
-/// extends the other).
 fn first_difference<T: PartialEq>(a: &[T], b: &[T]) -> usize {
     a.iter()
         .zip(b)
@@ -308,15 +251,11 @@ fn first_difference<T: PartialEq>(a: &[T], b: &[T]) -> usize {
         .unwrap_or_else(|| a.len().min(b.len()))
 }
 
-/// The first position of `last` that `sent` does not repeat, when `sent`
-/// does not start with all of `last`.
 fn first_missing(last: &[u64], sent: &[u64]) -> Option<usize> {
     let index = first_difference(last, sent);
     (index < last.len()).then_some(index)
 }
 
-/// The length of the longest common byte prefix of `a` and `b`, rounded
-/// down to a character boundary of `b`.
 fn common_prefix_len(a: &str, b: &str) -> usize {
     let mut len = a.bytes().zip(b.bytes()).take_while(|(x, y)| x == y).count();
     while !b.is_char_boundary(len) {
@@ -325,10 +264,6 @@ fn common_prefix_len(a: &str, b: &str) -> usize {
     len
 }
 
-/// The tag of the system prompt section the byte at `offset` is in. A
-/// section is `<TAG>` at the start of the prompt or after a blank line; a
-/// change that starts at the blank line before a section counts as that
-/// section's.
 fn section_at(system: &str, offset: usize) -> Option<String> {
     let mut end = offset.saturating_add(3).min(system.len());
     while !system.is_char_boundary(end) {
@@ -345,14 +280,12 @@ fn section_at(system: &str, offset: usize) -> Option<String> {
     is_tag.then(|| tag.to_string())
 }
 
-/// A hash of `value`'s JSON, streamed into the hasher.
 fn fingerprint<T: Serialize>(value: &T) -> Result<u64, serde_json::Error> {
     let mut writer = HashWriter(DefaultHasher::new());
     serde_json::to_writer(&mut writer, value)?;
     Ok(writer.0.finish())
 }
 
-/// Feeds written bytes to a hasher.
 struct HashWriter(DefaultHasher);
 
 impl std::io::Write for HashWriter {
@@ -366,7 +299,6 @@ impl std::io::Write for HashWriter {
     }
 }
 
-/// The log line every change writes.
 const DIVERGENCE_MESSAGE: &str = "prompt cache prefix changed: an earlier part of this model request differs from the conversation's previous request";
 
 fn log_divergence(conversation: &str, divergence: &Divergence) {

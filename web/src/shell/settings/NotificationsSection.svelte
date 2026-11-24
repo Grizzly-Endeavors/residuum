@@ -12,11 +12,6 @@
   import SettingsSection from "./SettingsSection.svelte";
   import ThisDeviceGroup from "./ThisDeviceGroup.svelte";
 
-  // Notifications: push on this device, every other device that
-  // gets notifications with how delivery to it is going, and under More
-  // options the contact push services are given. The devices act at once;
-  // only the contact is staged and saved with Save changes.
-
   let { scope, section }: AllSectionProps = $props();
 
   let removing = $state<string | null>(null);
@@ -24,7 +19,6 @@
   const others = $derived(push.devices?.filter((d) => d.id !== push.deviceId) ?? []);
 
   const contact = $derived(scope.config.push_contact.trim());
-  // A flag, not a block: the hub drops a contact it can't use and says so.
   const contactError = $derived(
     configFieldError(scope, "push_contact") ??
       (contact !== "" && !/^(mailto:|https:\/\/)/i.test(contact)
@@ -53,10 +47,6 @@
 
   onMount(() => {
     void push.load();
-    // A device the hub pruned (its subscription expired, or a rotation's
-    // resubscribe failed) reaches the user as a plain hub notice; there's no
-    // structured frame naming the device, so any notice is cause to read the
-    // list again rather than leave it stale until the section remounts.
     return hub.onFrame((msg) => {
       if (msg.type === "notice") void push.load();
     });

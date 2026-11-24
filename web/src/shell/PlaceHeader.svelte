@@ -4,18 +4,11 @@
   import { hub } from "../lib/hub.svelte";
   import { StatusDot } from "../lib/ui";
 
-  // A place's compact title bar: the place's name, or on an agent's places the
-  // agent with its state mark and a line under the name.
-
   interface Props {
     title: string;
-    /** The agent whose place this is; its state mark leads the title. */
     agent?: string;
-    /** A quiet line beside the title: the agent's role, or the place within the agent. */
     sub?: string | null;
-    /** More beside the title, such as Home's tally of its agents. */
     children?: Snippet;
-    /** Buttons at the far end of the bar, for what the place shows. */
     actions?: Snippet;
   }
 

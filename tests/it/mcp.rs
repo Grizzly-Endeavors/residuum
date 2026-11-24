@@ -51,24 +51,20 @@ async fn connect_list_tools_and_disconnect() {
     );
     assert_eq!(report.started, 1, "should start one server");
 
-    // Verify server is running
     let servers = registry.servers();
     assert_eq!(servers.len(), 1);
     assert_eq!(servers.first().unwrap().status, McpStatus::Running);
 
-    // Should have discovered tools
     let tool_defs = registry.tool_definitions();
     assert!(
         !tool_defs.is_empty(),
         "server-everything should advertise at least one tool"
     );
 
-    // Tool names should be non-empty strings
     for td in &tool_defs {
         assert!(!td.name.is_empty(), "tool name should not be empty");
     }
 
-    // Disconnect
     let disconnected = registry.disconnect_all().await;
     assert_eq!(disconnected, vec!["echo"]);
     assert!(registry.servers().is_empty());
@@ -88,7 +84,6 @@ async fn call_tool_on_live_server() {
         report.failures
     );
 
-    // The "echo" tool from server-everything returns what you send
     let tool_defs = registry.tool_definitions();
     let has_echo = tool_defs.iter().any(|t| t.name == "echo");
     assert!(

@@ -1,5 +1,3 @@
-//! Session management tools: `stop_agent`, `list_agents`, and `subagent_spawn`.
-
 use std::fmt::Write as _;
 use std::sync::Arc;
 
@@ -20,21 +18,14 @@ use residuum_skills::SharedSkillState;
 use residuum_agent::Tool;
 use residuum_inference::{ToolError, ToolResult};
 
-// ─── StopAgentTool ───────────────────────────────────────────────────────────
-
-/// Tool for stopping a live session by address, or an open remote A2A task
-/// (`a2a:<name>`).
 pub struct StopAgentTool {
     registry: Arc<SessionRegistry>,
-    /// This agent's own address, used to look up its own open remote task
-    /// with `a2a:<name>`.
     self_address: SessionAddress,
     a2a_hub: Arc<A2aClientHub>,
     a2a_tracker: Arc<RemoteTaskTracker>,
 }
 
 impl StopAgentTool {
-    /// Create a new `StopAgentTool`.
     #[must_use]
     pub fn new(
         registry: Arc<SessionRegistry>,
@@ -120,16 +111,10 @@ impl Tool for StopAgentTool {
     }
 }
 
-// ─── ListAgentsTool ──────────────────────────────────────────────────────────
-
-/// How much of a remote agent's card description `list_agents` shows.
 const REMOTE_DESCRIPTION_MAX_CHARS: usize = 200;
 
-/// How many of a remote agent's skills `list_agents` names.
 const REMOTE_SKILLS_MAX: usize = 10;
 
-/// A remote agent's card description, cut to [`REMOTE_DESCRIPTION_MAX_CHARS`]
-/// with a note of how much was left out.
 fn remote_description(description: &str) -> String {
     let (shown, omitted) = crate::split_chars(description, REMOTE_DESCRIPTION_MAX_CHARS);
     if omitted == 0 {
@@ -138,8 +123,6 @@ fn remote_description(description: &str) -> String {
     format!("{shown}… [{omitted} more characters cut]")
 }
 
-/// A remote agent's skills, each already formatted, up to
-/// [`REMOTE_SKILLS_MAX`], with a note of how many were left out.
 fn remote_skills(skills: &[String]) -> String {
     let mut text = skills
         .iter()
@@ -154,8 +137,6 @@ fn remote_skills(skills: &[String]) -> String {
     text
 }
 
-/// Tool for listing the main agent, every live session, every teammate, and
-/// every remote A2A agent.
 pub struct ListAgentsTool {
     registry: Arc<SessionRegistry>,
     self_address: SessionAddress,
@@ -165,7 +146,6 @@ pub struct ListAgentsTool {
 }
 
 impl ListAgentsTool {
-    /// Create a new `ListAgentsTool`.
     #[must_use]
     pub fn new(
         registry: Arc<SessionRegistry>,
@@ -306,37 +286,21 @@ impl Tool for ListAgentsTool {
     }
 }
 
-// ─── SubagentSpawnTool ──────────────────────────────────────────────────────
-
-/// What a `subagent_spawn` tool needs, grouped to keep its constructor short.
 pub(crate) struct SpawnToolDeps {
     pub(crate) publisher: residuum_bus::Publisher,
-    /// Main agent skill state — read to validate a requested skill name.
     pub(crate) skill_state: SharedSkillState,
-    /// The caller's own address, recorded as the spawner of any session this
-    /// tool forks (`main`, or a session's own address).
     pub(crate) spawner_address: SessionAddress,
-    /// The caller's own depth from the main agent (main = 0).
     pub(crate) depth: u32,
-    /// Maximum depth a spawned session may have. Spawning is refused once
-    /// `depth + 1` would exceed this.
     pub(crate) depth_cap: u32,
-    /// This agent's current-turn hop counter — the new session's first turn
-    /// carries one more than the highest hop count among the inputs driving
-    /// this (the spawning) turn.
     pub(crate) hop_counter: HopCounter,
-    /// The live catalog an explicit `model` is checked against before the
-    /// spawn is published.
     pub(crate) models: SharedModelCatalog,
 }
 
-/// Tool for forking sessions on demand.
 pub struct SubagentSpawnTool {
     deps: SpawnToolDeps,
 }
 
 impl SubagentSpawnTool {
-    /// Create a new `SubagentSpawnTool`.
     #[must_use]
     pub(crate) fn new(deps: SpawnToolDeps) -> Self {
         Self { deps }
@@ -402,8 +366,6 @@ impl Tool for SubagentSpawnTool {
                 ));
             }
 
-            // Validate against the in-memory skill index so an unknown name fails
-            // here, rather than surfacing later as a failed session result.
             let state = self.deps.skill_state.lock().await;
             if state.index().find_by_name(name).is_none() {
                 let available: Vec<&str> = state
@@ -475,11 +437,6 @@ impl Tool for SubagentSpawnTool {
     }
 }
 
-/// Parse a `model` argument and check that it can run.
-///
-/// # Errors
-/// Returns `ToolError::InvalidArguments` naming the value when it is neither
-/// a tier nor a `provider/model` id, or names a model that doesn't resolve.
 async fn parse_model(raw: &str, models: &SharedModelCatalog) -> Result<ModelSelector, ToolError> {
     let model = raw
         .parse::<ModelSelector>()
@@ -579,11 +536,9 @@ mod tests {
     async fn task_required() {
         let tool = make_tool();
 
-        // Missing task
         let missing_result = tool.execute(serde_json::json!({})).await;
         assert!(missing_result.is_err(), "should error on missing task");
 
-        // Empty task
         let empty_result = tool.execute(serde_json::json!({"task": "  "})).await;
         assert!(empty_result.is_err(), "should error on empty task");
     }
@@ -643,7 +598,6 @@ mod tests {
 
     #[tokio::test]
     async fn spawns_without_a_skill_and_returns_address() {
-        // Omitting `skill` spawns a plain session — no index lookup, no error.
         let tool = make_tool();
 
         let res = tool
@@ -750,8 +704,6 @@ mod tests {
 
     #[tokio::test]
     async fn spawn_at_the_depth_cap_is_refused() {
-        // A session at depth 2 with a cap of 2 would create a depth-3 child,
-        // which exceeds the cap.
         let tool = make_tool_with_depth("spawned-parent-0001", 2, 2);
 
         let result = tool
@@ -774,8 +726,6 @@ mod tests {
 
     #[tokio::test]
     async fn spawn_at_depth_below_cap_succeeds() {
-        // A session at depth 1 with a cap of 2 creates a depth-2 child, which
-        // is exactly at the cap and still allowed.
         let tool = make_tool_with_depth("spawned-parent-0001", 1, 2);
 
         let result = tool
@@ -821,9 +771,6 @@ mod tests {
         );
     }
 
-    /// A tracker with no persisted state and an unopened outbound file — safe
-    /// to build fresh per test since nothing here touches the real filesystem
-    /// beyond a throwaway temp dir the caller keeps alive.
     async fn bare_a2a(dir: &std::path::Path) -> (Arc<A2aClientHub>, Arc<RemoteTaskTracker>) {
         let bus_handle = residuum_bus::spawn_broker();
         let registry = Arc::new(SessionRegistry::new());

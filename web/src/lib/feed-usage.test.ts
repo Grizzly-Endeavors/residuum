@@ -107,8 +107,6 @@ describe("FeedStore turn usage", () => {
       tool_calls: 4,
       session_totals: null,
     });
-    // A later usage event still carries the turn's running total (never
-    // reset mid-turn), the same way output_tokens does.
     store.handleMessage({
       type: "turn_usage",
       reply_to: "t1",

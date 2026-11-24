@@ -5,14 +5,10 @@
   import type { ChannelState } from "./channel-state";
   import SettingsGroup from "./SettingsGroup.svelte";
 
-  // One place people can talk to the agent: its state beside the title, the
-  // fields, and a link to the platform's own instructions.
-
   interface Props {
     title: string;
     lede: string;
     state: ChannelState | null;
-    /** Staged: clears what the channel connects with. Given only while the form holds credentials. */
     ondisconnect?: () => void;
     guide: { href: string; label: string };
     children: Snippet;

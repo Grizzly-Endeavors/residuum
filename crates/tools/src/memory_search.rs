@@ -1,5 +1,3 @@
-//! Memory search tool for querying past observations, interaction chunks, and wiki pages.
-
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -11,14 +9,10 @@ use residuum_inference::{ToolError, ToolResult};
 use residuum_memory::search::{HybridSearcher, SearchFilters};
 use residuum_memory::types::DocSource;
 
-/// How many results a call returns when it names no `limit`.
 const DEFAULT_LIMIT: usize = 5;
 
-/// The most results one call returns; a larger `limit` counts as this.
 const MAX_LIMIT: usize = 50;
 
-/// The `limit` a call asks for: the default when it names none, and never more
-/// than [`MAX_LIMIT`] or less than one.
 fn requested_limit(arguments: &Value) -> usize {
     match arguments.get("limit").and_then(Value::as_u64) {
         Some(l) => usize::try_from(l).unwrap_or(MAX_LIMIT).clamp(1, MAX_LIMIT),
@@ -26,13 +20,11 @@ fn requested_limit(arguments: &Value) -> usize {
     }
 }
 
-/// Tool that searches the memory index using hybrid BM25 + vector search.
 pub struct MemorySearchTool {
     searcher: Arc<HybridSearcher>,
 }
 
 impl MemorySearchTool {
-    /// Create a new memory search tool with the given hybrid searcher.
     #[must_use]
     pub fn new(searcher: Arc<HybridSearcher>) -> Self {
         Self { searcher }
@@ -46,9 +38,6 @@ impl Tool for MemorySearchTool {
     }
 
     fn definition(&self) -> ToolDefinition {
-        // One fixed description: the model sees the same bytes whether or not
-        // vector search is available, so a runtime change to the embedder
-        // can't invalidate the prompt cache.
         let desc = "Search past conversation observations, interaction chunks, and knowledge \
              wiki pages by keyword (BM25 full-text search), adding vector similarity when \
              vector search is available. Returns matching results with relevance scores and \
@@ -111,10 +100,6 @@ impl Tool for MemorySearchTool {
 
         let limit = requested_limit(&arguments);
 
-        // Map the tool-facing source names onto the internal DocSource vocabulary,
-        // shared with the `/api/agents/{name}/memory/search` HTTP endpoint. Omitted → None
-        // (search every source); an unrecognized value is rejected rather than
-        // silently falling back to searching everything.
         let source_filter = match arguments.get("source").and_then(Value::as_str) {
             Some(s) => Some(DocSource::from_query_str(s).ok_or_else(|| {
                 ToolError::InvalidArguments(format!(
@@ -329,7 +314,6 @@ mod tests {
     #[tokio::test]
     async fn search_tool_with_source_filter() {
         let (_dir, tool) = create_test_tool();
-        // Tool accepts "observations" (design-doc value), mapped to internal "observation"
         let result = tool
             .execute(serde_json::json!({
                 "query": "rust memory",
@@ -382,8 +366,6 @@ mod tests {
     #[tokio::test]
     async fn search_tool_rejects_unknown_source() {
         let (_dir, tool) = create_test_tool();
-        // An unrecognized source value is a caller mistake — reject it clearly
-        // instead of silently searching both sources.
         let result = tool
             .execute(serde_json::json!({
                 "query": "rust memory",
@@ -420,7 +402,6 @@ mod tests {
             result.output
         );
 
-        // A date range that doesn't include the indexed observation (2026-02-19) should return nothing
         let result_outside = tool
             .execute(serde_json::json!({
                 "query": "rust memory",
@@ -481,9 +462,6 @@ mod tests {
         let index_dir = dir.path().join(".index");
         let index = MemoryIndex::open_or_create(&index_dir).unwrap();
 
-        // A single-result search always normalizes to score 1.0, so it can
-        // never itself be filtered; two observations with a relevance gap
-        // let the weaker one fall below a high threshold.
         let strong = Observation {
             timestamp: chrono::Utc::now().naive_utc(),
             source_episodes: Some("ep-001".to_string()),
@@ -526,7 +504,6 @@ mod tests {
             result.output
         );
 
-        // Overriding min_score for this call surfaces the weaker match too.
         let relaxed = tool
             .execute(serde_json::json!({"query": "rust ownership", "min_score": 0.0}))
             .await

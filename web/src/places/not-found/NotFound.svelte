@@ -5,13 +5,8 @@
   import { Button, EmptyState } from "../../lib/ui";
   import PlaceHeader from "../../shell/PlaceHeader.svelte";
 
-  // Where an address that leads nowhere in the app lands: it names the
-  // address and offers the way back. The rail (or the phone's bottom bar)
-  // stays beside it with every agent and place.
-
   let { path }: { path: string } = $props();
 
-  /** The address as a person typed it: decoded where it can be. */
   const shown = $derived.by(() => {
     try {
       return decodeURIComponent(path);

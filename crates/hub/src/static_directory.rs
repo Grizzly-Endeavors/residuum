@@ -1,12 +1,3 @@
-//! An [`AgentDirectory`] over a fixed set of A2A routers, for the hub's
-//! tests.
-//!
-//! It wraps the A2A listener's [`StaticAgentDirectory`] for the lookups and
-//! adds what the hub reads of a full directory: hub events and the set of
-//! agents whose stop has begun. Changing an agent's state or visibility, or
-//! adding or removing an agent, publishes the matching hub event. It refuses
-//! everything else.
-
 use std::collections::BTreeSet;
 use std::sync::{PoisonError, RwLock};
 
@@ -22,13 +13,9 @@ use residuum_background::team::{
     LifecycleError, TeamDirectory,
 };
 
-/// A directory of agents whose A2A routers are supplied up front, publishing
-/// hub events as they change.
 pub(crate) struct StaticHubDirectory {
     inner: StaticAgentDirectory,
     events: broadcast::Sender<HubEvent>,
-    /// Set by [`Self::begin_stopping`], as a real stop request would from
-    /// the moment it is made until the state changes.
     stopping: RwLock<BTreeSet<String>>,
 }
 
@@ -43,14 +30,11 @@ impl Default for StaticHubDirectory {
 }
 
 impl StaticHubDirectory {
-    /// An empty directory.
     #[must_use]
     pub(crate) fn new() -> Self {
         Self::default()
     }
 
-    /// Add a running agent serving `router` (its A2A routes, rooted at `/`).
-    /// Clears [`Self::begin_stopping`]'s flag for that name, as [`Self::add_agent`] does.
     #[must_use]
     pub(crate) fn with_agent(
         self,
@@ -66,18 +50,12 @@ impl StaticHubDirectory {
         }
     }
 
-    /// Move an agent to `state`, as a stop or failure would, and publish the
-    /// change. Clears [`Self::begin_stopping`]'s flag, as a real state
-    /// change does by replacing the agent's running handle.
     pub(crate) fn set_state(&self, name: &str, state: AgentState) {
         self.inner.set_state(name, state);
         self.stopping_set().remove(name);
         self.publish_state(name);
     }
 
-    /// Mark a running agent as having begun stopping, as
-    /// `AgentHost::stop_locked` does before the agent's event loop actually
-    /// exits, and publish [`HubEvent::AgentStopping`].
     pub(crate) fn begin_stopping(&self, name: &str) {
         if self.inner.summary(name).is_err() {
             return;
@@ -90,13 +68,11 @@ impl StaticHubDirectory {
             .ok();
     }
 
-    /// Change an agent's A2A visibility and publish the change.
     pub(crate) fn set_visibility(&self, name: &str, visibility: A2aVisibility) {
         self.inner.set_visibility(name, visibility);
         self.publish_state(name);
     }
 
-    /// Add a running agent after construction and publish its creation.
     pub(crate) fn add_agent(&self, name: &str, visibility: A2aVisibility, router: Router) {
         self.inner.add_agent(name, visibility, router);
         self.stopping_set().remove(name);
@@ -110,7 +86,6 @@ impl StaticHubDirectory {
         }
     }
 
-    /// Remove an agent and publish its deletion.
     pub(crate) fn remove_agent(&self, name: &str) {
         if self.inner.summary(name).is_err() {
             return;

@@ -1,12 +1,3 @@
-//! Per-run session memory: threshold-based mid-run staging and the
-//! completion pipeline that merges a finished run into global memory.
-//!
-//! Mirrors the main agent's observer flow (the gateway's `memory` module):
-//! the run's own messages are checked against the same observer thresholds,
-//! staged extractions are held locally (invisible to any other agent until
-//! the run completes), and the run's full transcript is submitted to the
-//! [`MemoryMergeWriter`] on completion.
-
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
@@ -25,9 +16,6 @@ use residuum_memory::observer::{
 use residuum_memory::recent_messages::RecentMessage;
 use residuum_memory::types::{SourceTag, Visibility};
 
-/// The subsystems a run's memory pipeline writes through, grouped because
-/// both a live run's completion and startup recovery of an interrupted run
-/// need the exact same set.
 pub struct SessionMemoryEnv<'a> {
     pub observer: &'a Observer,
     pub merge_writer: &'a MemoryMergeWriter,
@@ -36,45 +24,28 @@ pub struct SessionMemoryEnv<'a> {
     pub tz: Tz,
 }
 
-/// One message of a run's own transcript and when it was recorded. A
-/// message read back from a transcript line written without a time has
-/// none, and is stamped with the time the pipeline reads it.
 #[derive(Clone, Copy)]
 pub(crate) struct TimedMessage<'a> {
     pub(crate) message: &'a Message,
     pub(crate) recorded_at: Option<DateTime<Utc>>,
 }
 
-/// A run's working memory: observations extracted mid-run but not yet
-/// merged, plus how much of the transcript they already cover.
 #[derive(Default)]
 pub(crate) struct SessionMemory {
-    /// Observations extracted so far but not yet merged.
     extracted: Vec<ExtractedObservation>,
-    /// Narrative captured at the last extraction, if any.
     narrative: Option<String>,
-    /// How many leading transcript messages `extracted`/`narrative` already
-    /// cover — later extractions only read the tail past this.
     covered_through: usize,
 }
 
 impl SessionMemory {
-    /// Create empty working memory for a new run.
     pub(crate) fn new() -> Self {
         Self::default()
     }
 
-    /// Whether anything has been staged yet.
     pub(crate) fn has_staged(&self) -> bool {
         !self.extracted.is_empty()
     }
 
-    /// Check the run's transcript so far against the observer's thresholds
-    /// and, if the force threshold is crossed, extract the unstaged tail
-    /// into the staging area immediately — the same rotation the main agent
-    /// performs when its own recent-message threshold is crossed. Staged
-    /// observations are not visible to any other agent until the run
-    /// completes. Each extraction's usage is recorded under `run_id`.
     pub(crate) async fn maybe_stage(
         &mut self,
         transcript: &[TimedMessage<'_>],
@@ -88,21 +59,12 @@ impl SessionMemory {
         self.stage(&tail, Some(run_id), env).await;
     }
 
-    /// The part of `items` (a run's transcript, wrapped or not) that nothing
-    /// has been extracted from yet.
     fn unstaged<'a, T>(&self, items: &'a [T]) -> &'a [T] {
         items
             .get(self.covered_through.min(items.len())..)
             .unwrap_or_default()
     }
 
-    /// Extract `tail` (the transcript past `covered_through`) into the
-    /// staging area, in consecutive chunks that each fit the observer's
-    /// force threshold, oldest first. Each chunk's observations are added
-    /// and its narrative replaces the last one. Stops at the first chunk
-    /// whose extraction fails, leaving it and everything after it unstaged:
-    /// a later staging pass picks it up again, and a failure is usually the
-    /// model being unreachable, which the remaining chunks would hit too.
     async fn stage(
         &mut self,
         tail: &[RecentMessage],
@@ -141,13 +103,6 @@ impl SessionMemory {
     }
 }
 
-/// Split `messages` into consecutive chunks whose extraction tokens (see
-/// [`extraction_tokens`]) stay within `budget`, so each chunk's observer
-/// request stays near the budget. A single message larger than `budget` gets
-/// a chunk of its own, since a message is never split or dropped. A
-/// remainder of at most a quarter of the budget joins the chunk before it:
-/// on its own it would cost an observer call, with the extraction prompt, for
-/// a fragment.
 fn chunk_within(messages: &[RecentMessage], budget: usize) -> Vec<&[RecentMessage]> {
     let mut chunks = Vec::new();
     let mut rest = messages;
@@ -163,9 +118,6 @@ fn chunk_within(messages: &[RecentMessage], budget: usize) -> Vec<&[RecentMessag
     chunks
 }
 
-/// How many leading messages of `messages` fit within `budget` extraction
-/// tokens. Always at least one, so a message over the budget still makes
-/// progress.
 fn fitting_len(messages: &[RecentMessage], budget: usize) -> usize {
     let mut tokens = 0_usize;
     for (i, rm) in messages.iter().enumerate() {
@@ -177,7 +129,6 @@ fn fitting_len(messages: &[RecentMessage], budget: usize) -> usize {
     messages.len()
 }
 
-/// Whether `messages` together come to at most `limit` extraction tokens.
 fn within(messages: &[RecentMessage], limit: usize) -> bool {
     let mut tokens = 0_usize;
     for rm in messages {
@@ -189,9 +140,6 @@ fn within(messages: &[RecentMessage], limit: usize) -> bool {
     true
 }
 
-/// Wrap a run's messages as `RecentMessage`s with `Background` visibility,
-/// for the observer's extraction and threshold-check APIs. Each keeps its
-/// recorded time; one with none gets the current time.
 fn wrap(messages: &[TimedMessage<'_>], tz: Tz) -> Vec<RecentMessage> {
     let now = residuum_core::time::now_local(tz);
     messages
@@ -207,23 +155,6 @@ fn wrap(messages: &[TimedMessage<'_>], tz: Tz) -> Vec<RecentMessage> {
         .collect()
 }
 
-/// Run a finished run's completion memory pipeline: the skip check, a final
-/// extraction over whatever the run staged nothing of yet, and the merge
-/// into global memory. Returns the merged episode id, or `None` if the run
-/// produced no episode — it staged nothing over the course of its run and
-/// either ended with `HEARTBEAT_OK` or its transcript fell below the skip
-/// token floor (its transcript is still kept in the session store either
-/// way). Anything staged mid-run is merged regardless of how the run ended.
-///
-/// The final extraction goes through the same chunked staging as mid-run
-/// staging, so each observer request carries about the force threshold's
-/// worth of messages however long the unstaged tail is; a single message
-/// larger than the threshold is sent on its own.
-///
-/// Takes the run's address/run id/category as a [`SourceTag`] rather than a
-/// [`residuum_bus::session::SessionInfo`] so it can be reused both by a live run's
-/// completion and by startup recovery, which only has a persisted
-/// [`super::store::RunRecord`] to work from.
 #[tracing::instrument(skip_all, fields(session.address = tag.session_address.as_deref().unwrap_or("unknown"), run.id = tag.run_id.as_deref().unwrap_or("unknown")))]
 pub(crate) async fn complete_session_memory(
     tag: SourceTag,
@@ -238,11 +169,6 @@ pub(crate) async fn complete_session_memory(
     let total_tokens: usize = wrapped.iter().map(extraction_tokens).sum();
     let below_floor = total_tokens < env.episode_skip_token_floor;
 
-    // A run with nothing staged skips producing an episode when it ended
-    // quietly (HEARTBEAT_OK) or never accumulated enough content to be worth
-    // one. Anything staged mid-run is real, already-extracted work — it
-    // merges regardless of how the run ended, so a HEARTBEAT_OK finish never
-    // discards it.
     if !has_staged && (ended_with_heartbeat_ok || below_floor) {
         tracing::debug!(
             has_staged,
@@ -287,8 +213,6 @@ pub(crate) async fn complete_session_memory(
     }
 }
 
-/// Owned handles on the memory subsystems a run's completion merge writes
-/// through, so the merge can outlive the run's resources.
 #[derive(Clone)]
 pub(crate) struct MergeHandles {
     pub(crate) observer: Arc<Observer>,
@@ -298,7 +222,6 @@ pub(crate) struct MergeHandles {
 }
 
 impl MergeHandles {
-    /// Borrow these handles as the pipeline's environment.
     fn env(&self, tz: Tz) -> SessionMemoryEnv<'_> {
         SessionMemoryEnv {
             observer: &self.observer,
@@ -310,11 +233,6 @@ impl MergeHandles {
     }
 }
 
-/// A finished run's completion memory pipeline with every input owned, so
-/// it can run on its own task after the run has released its address.
-///
-/// Built at teardown; [`Self::run`] does the LLM and merge work. Nothing
-/// here touches the registry or the store.
 pub(crate) struct CompletionMerge {
     tag: SourceTag,
     summary: String,
@@ -325,7 +243,6 @@ pub(crate) struct CompletionMerge {
 }
 
 impl CompletionMerge {
-    /// The merge of `info`'s run, whose final turn said `summary`.
     pub(crate) fn for_run(
         info: &SessionInfo,
         summary: String,
@@ -348,8 +265,6 @@ impl CompletionMerge {
         }
     }
 
-    /// Run the pipeline (see [`complete_session_memory`]) and return the
-    /// merged episode id, or `None` if the run produced no episode.
     pub(crate) async fn run(self) -> Option<String> {
         let timed: Vec<TimedMessage<'_>> =
             self.transcript.iter().map(TranscriptLine::timed).collect();
@@ -358,8 +273,6 @@ impl CompletionMerge {
     }
 }
 
-/// A transcript of messages with no recorded times, for tests that don't
-/// check timestamps.
 #[cfg(test)]
 pub(crate) fn untimed(messages: &[Message]) -> Vec<TimedMessage<'_>> {
     messages
@@ -443,12 +356,6 @@ mod tests {
 
     #[tokio::test]
     async fn summary_merely_mentioning_heartbeat_ok_still_merges() {
-        // A substantial reply that discusses the HEARTBEAT_OK sentinel in
-        // prose (e.g. explaining that it deliberately did not end with one)
-        // contains the literal text without meaning "nothing to report". A
-        // plain substring check on the summary misdetects this the same way
-        // a HEARTBEAT_OK ending does; only a summary that actually *ends*
-        // with the sentinel should skip the episode.
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path());
         let observer = observer_with_thresholds(100_000, 200_000);
@@ -457,9 +364,6 @@ mod tests {
             observer: &observer,
             merge_writer: &mw,
             layout: &layout,
-            // Isolate the heartbeat-ok check from the separate below-floor
-            // skip: this transcript is short, so a non-trivial floor would
-            // skip it for that reason regardless of the sentinel check.
             episode_skip_token_floor: 1,
             tz: chrono_tz::UTC,
         };
@@ -488,9 +392,6 @@ mod tests {
 
     #[tokio::test]
     async fn heartbeat_ok_run_with_staged_observations_still_merges() {
-        // A run that staged observations mid-run before ending quietly must
-        // not have that work discarded — only a run with nothing staged
-        // skips producing an episode on a HEARTBEAT_OK ending.
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path());
         let observer = observer_with_thresholds(100_000, 200_000);
@@ -702,10 +603,6 @@ mod tests {
         assert_eq!(memory.covered_through, 0);
     }
 
-    /// Answers every observer call with [`SAMPLE_RESPONSE`] — or fails the
-    /// call numbered `fail_on_call` (1-based) and every one after it — and
-    /// keeps each call's prompt text, so a test can check what the observer
-    /// was sent and in what order.
     struct RecordingProvider {
         calls: Arc<std::sync::Mutex<Vec<String>>>,
         fail_on_call: Option<usize>,
@@ -762,9 +659,6 @@ mod tests {
         (observer, calls)
     }
 
-    /// Six messages of about 47 extraction tokens each (a rendered entry of
-    /// 185 characters), every one carrying a distinct marker so a test can
-    /// tell which observer call saw it.
     fn marked_transcript() -> Vec<Message> {
         (0..6)
             .map(|i| Message::user(format!("<<m{i}>> {}", "x".repeat(123))))
@@ -775,7 +669,6 @@ mod tests {
     async fn long_unstaged_tail_is_extracted_in_bounded_chunks_in_order() {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path());
-        // Two marked messages fit under 100 tokens, three do not.
         let (observer, calls) = recording_observer(100, None);
         let mw = merge_writer(dir.path());
         let env = SessionMemoryEnv {
@@ -877,9 +770,6 @@ mod tests {
             episode_skip_token_floor: 1,
             tz: chrono_tz::UTC,
         };
-        // The third message is what pushes the run over the threshold, on its
-        // reasoning. The observer is sent only its short text, which is a
-        // remainder small enough to ride with the two before it: one call.
         let mut transcript: Vec<Message> = marked_transcript().into_iter().take(2).collect();
         transcript.push(
             Message::assistant("<<m2>> ok", None)
@@ -988,7 +878,6 @@ mod tests {
     fn chunks_stay_within_budget_and_keep_every_message_in_order() {
         let now = chrono::Utc::now();
         let mut messages: Vec<Message> = marked_transcript();
-        // One message alone over budget still gets extracted, on its own.
         messages.insert(3, Message::user("y".repeat(1000)));
         let timed: Vec<TimedMessage<'_>> = messages
             .iter()
@@ -1071,7 +960,6 @@ mod tests {
         assert!(id.is_some());
         let calls = calls.lock().unwrap();
         let prompt = calls.first().unwrap();
-        // 09:15 and 10:45 UTC are 04:15 and 05:45 in New York (EST).
         assert!(
             prompt.contains("[2026-03-01T04:15:00] [user]"),
             "the first message should carry its own recorded time: {prompt}"
@@ -1095,8 +983,6 @@ mod tests {
             episode_skip_token_floor: 1,
             tz: chrono_tz::UTC,
         };
-        // Each message's reasoning alone is over the budget. The observer is
-        // never sent it, so both short messages still fit one request.
         let transcript: Vec<Message> = marked_transcript()
             .into_iter()
             .take(2)
@@ -1138,8 +1024,6 @@ mod tests {
             episode_skip_token_floor: 2000,
             tz: chrono_tz::UTC,
         };
-        // About 2,600 tokens by the threshold estimate, which counts the
-        // reasoning and the image. The observer receives neither.
         let image = ImageData {
             media_type: "image/png".to_string(),
             data: "iVBORw0KGgo=".to_string(),

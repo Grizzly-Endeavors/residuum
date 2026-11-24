@@ -1,6 +1,3 @@
-//! The cursor a newest-first list of inbox entries hands out, so a caller can
-//! page past the end of a page.
-
 use std::cmp::Ordering;
 use std::fmt;
 
@@ -9,28 +6,17 @@ use chrono_tz::Tz;
 
 use crate::inbox::InboxRef;
 
-/// Where a page of a newest-first list stopped: the time and the ref of its
-/// last entry, written `<unix milliseconds>:<ref>`. A ref may hold `:`, so the
-/// ref is everything after the first one.
-///
-/// Cursors compare in the order the lists use: newest first, then by ref
-/// ascending. The entries a cursor leaves for the next page are the ones that
-/// come after it, which is [`Self::precedes`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MailCursor {
     at_ms: i64,
     item: InboxRef,
 }
 
-/// The order of every list a cursor pages: the later time first, a tie going
-/// to the lower ref.
 fn list_order(a_ms: i64, a: &InboxRef, b_ms: i64, b: &InboxRef) -> Ordering {
     b_ms.cmp(&a_ms).then_with(|| a.cmp(b))
 }
 
 impl MailCursor {
-    /// The cursor of the entry written at `at` and named by `item`: a thread
-    /// by its latest time and thread id, a single message by its own.
     #[must_use]
     pub fn new(at: DateTime<Tz>, item: InboxRef) -> Self {
         Self {
@@ -39,8 +25,6 @@ impl MailCursor {
         }
     }
 
-    /// The cursor a [`Display`](fmt::Display) rendering wrote, or `None` when
-    /// `raw` is not one.
     #[must_use]
     pub fn parse(raw: &str) -> Option<Self> {
         let (at, item) = raw.split_once(':')?;
@@ -50,8 +34,6 @@ impl MailCursor {
         })
     }
 
-    /// Whether the entry written at `at` and named by `item` comes after this
-    /// cursor in the list's order.
     #[must_use]
     pub fn precedes(&self, at: DateTime<Tz>, item: &InboxRef) -> bool {
         list_order(self.at_ms, &self.item, at.timestamp_millis(), item) == Ordering::Less

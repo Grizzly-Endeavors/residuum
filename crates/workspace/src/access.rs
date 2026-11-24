@@ -1,41 +1,7 @@
-//! Workspace access policy: which paths the workspace HTTP file API and the
-//! change feed must never expose.
-//!
-//! One pure function owns the rule, matched by path segment or exact
-//! workspace-relative path rather than substring, so every caller agrees on
-//! what is hidden: the internal search index directory, Residuum's own
-//! database files and their sidecars, and the temporary files atomic writes
-//! create and rename away.
-//!
-//! The index and databases are Residuum's own data, open while it runs, so
-//! bulk operations (recursive delete, directory moves) that would carry them
-//! along are refused too: [`dir_holds_internal_data`] finds them.
-
 use std::path::Path;
 
-/// Residuum's own database files, as paths in the workspace namespace (the
-/// team layer's database appears under `team/`).
-///
-/// Matched exactly (plus each path's `-wal`/`-shm`/`-journal` sidecars), not
-/// by extension: a user's own `*.db`/`*.sqlite` file elsewhere in the
-/// workspace is their data, not Residuum's, and is not hidden.
 const INTERNAL_DB_PATHS: &[&str] = &["memory/vectors.db", "team/vectors.db"];
 
-/// Returns true if `relative` names a path that must never be exposed
-/// through the workspace file API or change feed.
-///
-/// Blocks:
-/// - Any segment named exactly `.index` (the search index directory), at any
-///   depth, including the directory itself.
-/// - One of `INTERNAL_DB_PATHS`, or one of its `-wal`/`-shm`/`-journal`
-///   sidecar files.
-/// - An atomic-write temp file (see [`residuum_core::util::fs::is_atomic_write_temp`]).
-/// - A `config/*.last-known-good.toml` copy. Last-known-good copies live in
-///   `hub/`; a copy inside the workspace's `config/` directory would hold
-///   plaintext provider keys, so it is never exposed even if one appears.
-///
-/// A look-alike name that merely contains these as a substring — `index.md`,
-/// `my.index.md`, or a user's own `notes.db` — is never blocked.
 #[must_use]
 pub fn is_blocked_path(relative: &str) -> bool {
     if is_internal_data_path(relative) || is_last_known_good_copy(relative) {
@@ -48,8 +14,6 @@ pub fn is_blocked_path(relative: &str) -> bool {
         .is_some_and(residuum_core::util::fs::is_atomic_write_temp)
 }
 
-/// Whether `relative` is a `*.last-known-good.toml` file directly inside the
-/// workspace's `config/` directory.
 fn is_last_known_good_copy(relative: &str) -> bool {
     let path = Path::new(relative.trim_start_matches("./"));
     path.parent() == Some(Path::new("config"))
@@ -59,13 +23,6 @@ fn is_last_known_good_copy(relative: &str) -> bool {
             .is_some_and(|n| n.ends_with(".last-known-good.toml"))
 }
 
-/// Returns true if `relative` names Residuum's own data: a `.index` segment
-/// at any depth, or one of [`INTERNAL_DB_PATHS`] (or its sidecar files).
-///
-/// Distinct from an atomic-write temp file (see [`is_blocked_path`]): a bulk
-/// delete/move carrying away an in-flight temp write is fine, only carrying
-/// away Residuum's own persistent data is refused (see
-/// [`dir_holds_internal_data`]).
 fn is_internal_data_path(relative: &str) -> bool {
     if Path::new(relative)
         .components()
@@ -83,21 +40,6 @@ fn is_internal_data_path(relative: &str) -> bool {
     })
 }
 
-/// Whether the directory at `dir` — reached from the workspace root by
-/// `relative` — holds Residuum's internal data (the search index or one of
-/// `INTERNAL_DB_PATHS`) at any depth. Symlinks are not followed.
-///
-/// `relative` lets each entry's full workspace-relative path be checked
-/// exactly, so a same-named file *outside* an internal path (e.g. a user's
-/// own `vectors.db` sitting somewhere other than `memory/`) is not mistaken
-/// for Residuum's own data. An in-flight atomic-write temp file is not
-/// treated as internal data here — carrying one away in a bulk delete/move
-/// is fine; only Residuum's own persistent data blocks the operation.
-///
-/// Blocking: call it from a blocking context.
-///
-/// # Errors
-/// Returns an error if a directory under `dir` cannot be read.
 pub fn dir_holds_internal_data(dir: &Path, relative: &str) -> std::io::Result<bool> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
@@ -159,8 +101,6 @@ mod tests {
 
     #[test]
     fn a_users_own_db_or_sqlite_file_is_not_blocked() {
-        // Only Residuum's own database paths are hidden -- a same-named or
-        // same-extension file elsewhere in the workspace is the user's data.
         assert!(!is_blocked_path("data.db"));
         assert!(!is_blocked_path("store.sqlite"));
         assert!(!is_blocked_path("notes/vectors.db"));

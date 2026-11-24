@@ -1,11 +1,3 @@
-//! Tests for `GET /api/hub/overview` and the overview frames, against the
-//! fake directory's agents: `scout` (running), `quiet` (stopped) and, in some
-//! tests, `broken` (failed).
-//!
-//! A change reaches the overview the way it does in the hub: published on the
-//! harness's feed of agent changes, or on the directory's events. Files are
-//! written where the agent's own would be.
-
 use chrono::{NaiveDate, NaiveDateTime, TimeZone as _};
 use tokio::time::Instant;
 
@@ -26,7 +18,6 @@ fn minute(hour: u32, minute: u32) -> NaiveDateTime {
         .unwrap()
 }
 
-/// `GET /api/hub/overview`, and the entry of `agent`.
 pub(super) async fn overview_of(h: &Harness, agent: &str) -> Value {
     let body = h.get_expect("/api/hub/overview", StatusCode::OK).await;
     body["agents"]
@@ -38,7 +29,6 @@ pub(super) async fn overview_of(h: &Harness, agent: &str) -> Value {
         .clone()
 }
 
-/// Write `agent`'s recent history: `(message, visibility, when)`, oldest first.
 fn write_recent(h: &Harness, agent: &str, messages: Vec<(Message, Visibility, NaiveDateTime)>) {
     let layout = WorkspaceLayout::new(h.agent_dir(agent));
     let recent: Vec<RecentMessage> = messages
@@ -58,8 +48,6 @@ fn write_recent(h: &Harness, agent: &str, messages: Vec<(Message, Visibility, Na
     .unwrap();
 }
 
-/// Write an episode of `agent`'s main conversation (or of a session run
-/// when `session` is true) dated `date`.
 async fn write_episode(
     h: &Harness,
     agent: &str,
@@ -84,7 +72,6 @@ async fn write_episode(
         .unwrap();
 }
 
-/// Save an unread active item `id` in `agent`'s user inbox.
 async fn place_item(h: &Harness, agent: &str, id: &str) {
     let inbox = WorkspaceLayout::new(h.agent_dir(agent)).user_inbox_dir();
     tokio::fs::create_dir_all(&inbox).await.unwrap();
@@ -123,7 +110,6 @@ fn session_info(label: &str, state: SessionState) -> SessionInfo {
     }
 }
 
-/// Say that `agent` changed, as its watcher would.
 pub(super) fn changed(h: &Harness, agent: &str, kind: AgentChangeKind) {
     h.changes.publish(&AgentChange {
         agent: agent.to_string(),
@@ -131,7 +117,6 @@ pub(super) fn changed(h: &Harness, agent: &str, kind: AgentChangeKind) {
     });
 }
 
-/// Say that `agent`'s main turn ended, and when.
 fn turn_ended(
     h: &Harness,
     agent: &str,
@@ -154,7 +139,6 @@ fn turn_ended(
     at
 }
 
-/// Move `agent` to `state`, and say so as the host does.
 pub(super) fn move_to(h: &Harness, agent: &str, state: AgentState) {
     let moved = h.directory.set_state(agent, state).unwrap();
     h.directory
@@ -163,8 +147,6 @@ pub(super) fn move_to(h: &Harness, agent: &str, state: AgentState) {
         .unwrap();
 }
 
-/// The next overview frame within `within` of paused time, or `None`. The
-/// test must run on a paused clock (see `residuum_core::testing::clock`).
 pub(super) async fn frame_within(
     frames: &mut broadcast::Receiver<AgentOverview>,
     within: Duration,
@@ -174,7 +156,6 @@ pub(super) async fn frame_within(
         .and_then(Result::ok)
 }
 
-/// The next overview frame, which must come.
 pub(super) async fn next_overview(
     frames: &mut broadcast::Receiver<AgentOverview>,
 ) -> AgentOverview {
@@ -183,7 +164,6 @@ pub(super) async fn next_overview(
         .expect("an overview frame arrives")
 }
 
-/// Check that no frame comes for several windows of paused time.
 pub(super) async fn expect_no_frame(frames: &mut broadcast::Receiver<AgentOverview>) {
     let got = frame_within(frames, OVERVIEW_WINDOW * 3).await;
     assert!(got.is_none(), "no frame was due, but one came: {got:?}");
@@ -510,8 +490,6 @@ async fn live_sessions_appear_as_they_start_and_clear_as_they_end_or_when_the_ag
     let actual = &next_overview(&mut frames).await.live_sessions;
     assert!(actual.is_empty(), "expected {actual:?} to be empty");
 
-    // The agent stops with a session the registry still lists: a stopped
-    // agent has none.
     h.directory.sessions.lock().unwrap().push((
         "scout".to_string(),
         session_info("wiki", SessionState::Running),
@@ -549,7 +527,6 @@ async fn the_unread_count_follows_the_inbox_tool_and_files_placed_by_hand() {
     );
     assert_eq!(next_overview(&mut frames).await.inbox_unread, 2);
 
-    // Other watched files don't touch the count.
     changed(
         &h,
         "scout",
@@ -604,7 +581,6 @@ async fn the_hubs_mail_actions_update_the_count_of_a_running_and_of_a_stopped_ag
         "no watcher reports a stopped agent's inbox, so the hub's action does"
     );
 
-    // An action that fails changes nothing.
     h.post_expect(
         "/api/hub/mail/threads/scout%2Fuser%2Fmissing/read",
         StatusCode::NOT_FOUND,
@@ -633,20 +609,8 @@ async fn a_request_counts_a_stopped_agents_inbox_again_and_tells_other_clients_w
     expect_no_frame(&mut frames).await;
 }
 
-/// How long the burst waits between one change and the next. Forty of them
-/// last three windows, so the overview has to gather the changes into more
-/// than one frame.
 const BURST_GAP: Duration = Duration::from_millis(15);
 
-/// The overview sends a frame at most once a window and always sends the
-/// last state.
-///
-/// The clock is paused so that the time a frame is taken is the time it was
-/// sent: a paused clock moves only when every task is waiting, and the task
-/// that takes the frames is ready as soon as one is sent. On the real clock a
-/// test that takes the frames after the burst reads one that waited in the
-/// channel next to one that was just sent, which looks like two frames less
-/// than a window apart whenever the burst outlasts a window.
 #[tokio::test(start_paused = true)]
 async fn a_burst_of_changes_is_gathered_into_frames_a_window_apart_and_the_last_state_is_sent() {
     let h = Harness::new();
@@ -691,8 +655,6 @@ async fn a_burst_of_changes_is_gathered_into_frames_a_window_apart_and_the_last_
     }
 }
 
-/// On the paused clock the second change lands halfway through the wait
-/// however slow the machine is.
 #[tokio::test(start_paused = true)]
 async fn a_change_during_the_wait_is_in_the_frame_the_wait_ends_with() {
     let h = Harness::new();
@@ -726,8 +688,6 @@ async fn a_change_during_the_wait_is_in_the_frame_the_wait_ends_with() {
     expect_no_frame(&mut frames).await;
 }
 
-/// On the paused clock a frame that waits for the window shows as the window
-/// having passed, however fast the machine is.
 #[tokio::test(start_paused = true)]
 async fn a_new_agent_is_sent_at_once_and_a_deleted_agent_gets_no_further_frames() {
     let h = Harness::new();

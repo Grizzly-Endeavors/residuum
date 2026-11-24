@@ -2,11 +2,6 @@
   import type { StagedAttachment, StagedAttachments } from "../lib/staged-attachments.svelte";
   import { AttachmentChip, Button, type AttachmentState } from "../lib/ui";
 
-  // The files staged on a message being written, each uploading, uploaded or
-  // failed, and the note about files that were too large to attach. Every
-  // chip can be removed before the message is sent; a failed one can be
-  // uploaded again. The mail composers and the chat composer show the same.
-
   interface Props {
     files: StagedAttachments;
   }

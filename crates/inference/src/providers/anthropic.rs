@@ -1,5 +1,3 @@
-//! Anthropic Messages API provider implementation.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex, PoisonError};
@@ -26,7 +24,6 @@ use crate::{
 use residuum_config::{ProviderKind, RetryConfig};
 use residuum_config::{ThinkingConfig, ThinkingLevel};
 
-/// Anthropic Messages API version header value.
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
 /// Beta headers and identity required for OAuth token access to newer models.
@@ -34,22 +31,16 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 /// require Claude Code identity markers to access models like claude-sonnet-4-6
 /// and claude-opus-4-6.
 pub const OAUTH_BETA: &str = "claude-code-20250219,oauth-2025-04-20";
-/// The user agent an OAuth token request identifies itself with.
 pub const OAUTH_USER_AGENT: &str = "claude-cli/2.1.75";
 const OAUTH_IDENTITY: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
 
-/// Lets a model that takes a manual thinking budget reason between tool calls.
 const INTERLEAVED_THINKING_BETA: &str = "interleaved-thinking-2025-05-14";
 
-/// Lets a request say what happens to a replayed thinking block whose
-/// conversation changed after it was written (`thinking.block_binding`).
 const THINKING_BINDING_BETA: &str = "thinking-binding-controls-2026-08-01";
 
 /// The least thinking budget the API accepts in manual mode.
 const MIN_THINKING_BUDGET: u32 = 1024;
 
-/// Models already warned about a dropped temperature. Process-wide because
-/// clients are rebuilt per background session, and each would warn again.
 static WARNED_SAMPLING_DROP: LazyLock<Mutex<BTreeSet<String>>> =
     LazyLock::new(|| Mutex::new(BTreeSet::new()));
 
@@ -65,7 +56,6 @@ fn rejects_sampling_params(model: &str) -> bool {
     let mut parts = id.split('-');
     let family = parts.next().unwrap_or_default();
     let major = parts.next().and_then(|p| p.parse::<u32>().ok());
-    // A date suffix (`claude-opus-4-20250514`) is not a minor version.
     let minor = parts
         .next()
         .and_then(|p| p.parse::<u32>().ok())
@@ -79,15 +69,6 @@ fn rejects_sampling_params(model: &str) -> bool {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Public client
-// ---------------------------------------------------------------------------
-
-/// Client for the Anthropic Messages API.
-///
-/// Sends chat completions to Anthropic's `/v1/messages` endpoint, handling
-/// the Anthropic-specific message format (system as top-level field, content
-/// blocks, tool use/result blocks).
 pub(crate) struct AnthropicClient {
     http: SharedHttpClient,
     base_url: String,
@@ -98,21 +79,10 @@ pub(crate) struct AnthropicClient {
     /// Set once the API has refused adaptive thinking for this client's
     /// model, after which requests ask for a manual budget straight away.
     manual_thinking: AtomicBool,
-    /// Set once the API has refused a replayed thinking block as bound to a
-    /// different conversation, after which adaptive requests ask it to drop
-    /// such blocks instead (see [`AnthropicBlockBinding`]).
     drop_mismatched_thinking: AtomicBool,
 }
 
 impl AnthropicClient {
-    /// Create a new Anthropic client.
-    ///
-    /// # Arguments
-    /// * `http` - Shared HTTP client for connection pooling
-    /// * `base_url` - API base URL (e.g. `https://api.anthropic.com`)
-    /// * `api_key` - Anthropic API key
-    /// * `model` - Model identifier (e.g. `claude-sonnet-4-20250514`)
-    /// * `max_tokens` - Default maximum tokens for completions
     #[must_use]
     pub fn new(
         http: SharedHttpClient,
@@ -136,13 +106,10 @@ impl AnthropicClient {
         }
     }
 
-    /// Build the full endpoint URL.
     fn endpoint(&self) -> String {
         format!("{}/v1/messages", self.base_url)
     }
 
-    /// Who the reasoning this client returns is recorded as coming from, and
-    /// the only origin whose reasoning it sends back.
     fn origin(&self) -> ThinkingOrigin {
         ThinkingOrigin::new(ProviderApi::Anthropic, &self.model)
     }
@@ -235,9 +202,6 @@ impl AnthropicClient {
             api_messages.push(converted);
         }
         if let Some(first_message) = first_unbound {
-            // A prefix that should hold and doesn't (a section moving in the
-            // system prompt, a reshuffled tool list) shows up only as lost
-            // cache reads; this says where the conversation diverged.
             debug!(
                 left_out = unbound,
                 first_message,
@@ -247,16 +211,11 @@ impl AnthropicClient {
 
         ConvertedMessages {
             system,
-            // Merge consecutive same-role messages (required by Anthropic API for tool results)
             messages: merge_consecutive_messages(api_messages),
             binding: prefix.binding(),
         }
     }
 
-    /// Convert tool definitions to Anthropic's format.
-    ///
-    /// Returns a heterogeneous vec of tool entries. If `web_search` is set,
-    /// a server-side `web_search_20250305` entry is appended.
     fn convert_tools(
         tools: &[ToolDefinition],
         web_search: Option<&crate::WebSearchNativeConfig>,
@@ -285,8 +244,6 @@ impl AnthropicClient {
         entries
     }
 
-    /// The temperature to send: the requested one, or none when this model
-    /// rejects it. The drop is logged once per model.
     fn temperature_to_send(&self, requested: Option<f32>) -> Option<f32> {
         let temperature = requested?;
         if !rejects_sampling_params(&self.model) {
@@ -306,10 +263,6 @@ impl AnthropicClient {
         None
     }
 
-    /// Convert a request's tools and conversation, replaying this client's
-    /// own reasoning when the request has thinking on. Both the request that
-    /// is sent and [`InferenceProvider::replayed_reasoning`] come from here,
-    /// so what the context breakdown counts is what goes on the wire.
     fn convert_request(
         &self,
         messages: &[Message],
@@ -329,7 +282,6 @@ impl AnthropicClient {
         (tools, converted)
     }
 
-    /// Build everything about a request that stays the same across retries.
     fn prepare(
         &self,
         messages: &[Message],
@@ -379,8 +331,6 @@ impl AnthropicClient {
         }
     }
 
-    /// Run a prepared request to completion: retrying transient failures,
-    /// and streaming the response into `sink` when there is one.
     async fn run(
         &self,
         messages: &[Message],
@@ -410,10 +360,6 @@ impl AnthropicClient {
         Ok(response)
     }
 
-    /// Send a request asking for adaptive thinking, and again with a manual
-    /// budget if the model turns out not to support adaptive thinking, or
-    /// with mismatched thinking blocks dropped if the API refuses one as
-    /// bound to a different conversation.
     async fn send_with_thinking_fallback(
         &self,
         prepared: &PreparedRequest,
@@ -459,8 +405,6 @@ impl AnthropicClient {
         }
     }
 
-    /// Send a pre-built request to the Anthropic API and parse the response,
-    /// recording the request as one attempt of the call.
     #[tracing::instrument(skip_all, fields(
         model = %request.model,
         message_count = request.messages.len(),
@@ -505,8 +449,6 @@ impl AnthropicClient {
             .header("anthropic-version", ANTHROPIC_VERSION)
             .header("content-type", "application/json");
 
-        // OAuth tokens (sk-ant-oat01-*) use Bearer auth + Claude Code identity
-        // headers; standard API keys use x-api-key.
         let oauth = is_oauth_key(&self.api_key);
         if oauth {
             req_builder = req_builder
@@ -658,9 +600,7 @@ impl AnthropicClient {
                         server: None,
                     });
                 }
-                AnthropicContentBlock::Image { .. } | AnthropicContentBlock::ToolResult { .. } => {
-                    // request-only blocks — skip in response parsing
-                }
+                AnthropicContentBlock::Image { .. } | AnthropicContentBlock::ToolResult { .. } => {}
                 AnthropicContentBlock::ServerToolUse { id, name, .. } => {
                     debug!(id = %id, name = %name, "server tool use block in response");
                 }
@@ -713,13 +653,6 @@ impl InferenceProvider for AnthropicClient {
         self.run(messages, tools, options, None).await
     }
 
-    /// Like `complete`, streaming the response's text and thinking into
-    /// `sink` as they arrive.
-    ///
-    /// # Errors
-    /// Returns the errors `complete` does, plus `InferenceError::Stalled`
-    /// when the stream goes quiet for the configured timeout and
-    /// `InferenceError::StreamInterrupted` when it breaks or ends early.
     #[tracing::instrument(skip_all, fields(model = %self.model, message_count = messages.len(), tool_count = tools.len()))]
     async fn complete_streaming(
         &self,
@@ -731,8 +664,6 @@ impl InferenceProvider for AnthropicClient {
         self.run(messages, tools, options, Some(sink)).await
     }
 
-    /// The text of each `thinking` block the converted request carries;
-    /// redacted blocks carry none.
     fn replayed_reasoning(
         &self,
         messages: &[Message],
@@ -763,8 +694,6 @@ impl InferenceProvider for AnthropicClient {
     }
 }
 
-/// How many replayed thinking blocks the API reports dropping. The turn
-/// tells the user; the paths are only worth a debug line.
 fn count_dropped_thinking(transformations: &[AnthropicInputTransformation]) -> usize {
     let mut dropped = 0;
     for t in transformations {
@@ -783,14 +712,11 @@ fn count_dropped_thinking(transformations: &[AnthropicInputTransformation]) -> u
     dropped
 }
 
-/// Whether `key` is an OAuth token (`sk-ant-oat01-…`) rather than an API key.
 #[must_use]
 pub fn is_oauth_key(key: &str) -> bool {
     key.starts_with("sk-ant-oat01-")
 }
 
-/// Whether the API refused a request because the model does not accept
-/// adaptive thinking.
 fn is_adaptive_unsupported(error: &InferenceError) -> bool {
     let InferenceError::Api(message) = error.underlying() else {
         return false;
@@ -799,10 +725,6 @@ fn is_adaptive_unsupported(error: &InferenceError) -> bool {
     lower.contains("adaptive") && lower.contains("not supported")
 }
 
-/// Whether the API refused a replayed thinking block because the
-/// conversation ahead of it changed since it was written: "Invalid
-/// `signature` in `thinking` block. The block is bound to a different
-/// conversation."
 fn is_thinking_bound_elsewhere(error: &InferenceError) -> bool {
     let InferenceError::Api(message) = error.underlying() else {
         return false;
@@ -812,7 +734,6 @@ fn is_thinking_bound_elsewhere(error: &InferenceError) -> bool {
         .contains("bound to a different conversation")
 }
 
-/// Turn a failed response into the error callers see.
 fn api_error(status: reqwest::StatusCode, body: &str) -> InferenceError {
     let message = serde_json::from_str::<AnthropicErrorResponse>(body).map_or_else(
         |_| format!("anthropic api error {status}: {body}"),
@@ -830,43 +751,6 @@ fn api_error(status: reqwest::StatusCode, body: &str) -> InferenceError {
     InferenceError::Api(message)
 }
 
-// ---------------------------------------------------------------------------
-// Thinking
-// ---------------------------------------------------------------------------
-
-/// The blocks of an assistant message's reasoning that go back to the API:
-/// each readable block with its signature, and redacted blocks unchanged,
-/// provided `reader`'s own model produced them and, for a message before the
-/// tool-use exchange in progress (`ahead` is the fingerprint of the request
-/// up to that message), the conversation ahead of them is unchanged.
-///
-/// A signature is verified against the model that issued it, and on current
-/// models against the conversation before it too. A block another provider
-/// wrote (after a failover or a provider change) fails verification and the
-/// request with it. A block another Claude model wrote is one the answering
-/// model may or may not be able to read (which models read which depends on
-/// the generation), and the API drops one it cannot read; sending only the
-/// model's own blocks never depends on that. A block without a signature or
-/// encrypted data would be rejected, so it is left out too.
-///
-/// Current models accept a block back only while the system prompt, the
-/// tools and every message ahead of it are what they were when it was
-/// written, and refuse the request (or drop the block and every one after
-/// it) otherwise. Those change between turns: the system prompt's memory
-/// sections, the tool list, observation rotating history out. So an earlier
-/// turn's block goes back only while its recorded `binding` matches `ahead`.
-/// Once a block is left out, every block written after it was bound to a
-/// conversation that still held it, so their bindings no longer match
-/// either and they are left out with it: what is sent never has a gap the
-/// API would refuse. A block saved without a binding is never sent back
-/// from an earlier turn. Within the exchange in progress (`ahead` is
-/// `None`) every block goes back, because a model on a manual budget
-/// refuses an exchange whose last assistant turn lost its reasoning; a
-/// changed prefix there is left to the API's refusal and the `drop_block`
-/// retry (see [`AnthropicBlockBinding`]).
-///
-/// Also returns how many blocks that could otherwise go back were left out
-/// because their binding does not match `ahead`.
 fn replayable_thinking(
     thinking: &[ThinkingBlock],
     reader: &ThinkingOrigin,
@@ -905,13 +789,6 @@ fn replayable_thinking(
     (blocks, unbound)
 }
 
-/// Convert one assistant message: its replayable reasoning first, then its
-/// text and tool calls.
-///
-/// `ahead` is the fingerprint of the request ahead of this message when it is
-/// an earlier turn, and `None` for the current exchange (see
-/// [`replayable_thinking`]). Returns the message and how many reasoning blocks
-/// were left out because their binding did not match.
 fn assistant_message(
     msg: &Message,
     replay_thinking: Option<&ThinkingOrigin>,
@@ -952,18 +829,7 @@ fn assistant_message(
     (message, left_out)
 }
 
-/// A running fingerprint of a request's bytes in the order the API reads
-/// them (tools, system prompt, messages), taken over the same JSON the
-/// request sends. A response's reasoning records the fingerprint of the
-/// whole request that produced it as its `binding`, and a later request
-/// compares that with its own fingerprint up to the message the reasoning
-/// belongs to (see [`replayable_thinking`]).
-///
-/// 64-bit FNV-1a: a fixed function, so a binding saved by one build matches
-/// in the next. A collision would only send a block the API then refuses,
-/// which the `drop_block` retry absorbs.
 struct PrefixFingerprint {
-    /// `None` once a part could not be serialized; nothing then matches.
     state: Option<u64>,
 }
 
@@ -977,7 +843,6 @@ impl PrefixFingerprint {
         }
     }
 
-    /// Extend the fingerprint with `part` as the request serializes it.
     fn add(&mut self, part: &impl Serialize) {
         if self.state.is_none() {
             return;
@@ -991,7 +856,6 @@ impl PrefixFingerprint {
         }
     }
 
-    /// The fingerprint so far, as a block's `binding` records it.
     fn binding(&self) -> Option<String> {
         self.state.map(|state| format!("{state:016x}"))
     }
@@ -1013,28 +877,17 @@ impl std::io::Write for PrefixFingerprint {
     }
 }
 
-/// A conversation in the Messages API's shape.
 struct ConvertedMessages {
-    /// The top-level system prompt text.
     system: Option<String>,
     messages: Vec<AnthropicMessage>,
-    /// The fingerprint of the whole request: the `binding` of the reasoning
-    /// its response carries.
     binding: Option<String>,
 }
 
-/// How a request asks for thinking: the `thinking` field and the effort that
-/// goes beside it in `output_config`.
 struct ThinkingRequest {
     thinking: Option<AnthropicThinking>,
     effort: Option<&'static str>,
 }
 
-/// Decide how to ask for the configured thinking.
-///
-/// Current models take only `adaptive` thinking, whose depth is the separate
-/// `effort`; older ones take only a manual `budget_tokens`. Adaptive is tried
-/// first, and `manual` is set once a model has refused it.
 fn build_thinking(
     config: Option<&ThinkingConfig>,
     max_tokens: u32,
@@ -1067,7 +920,6 @@ fn build_thinking(
         ThinkingConfig::Level(ThinkingLevel::Medium) | ThinkingConfig::Toggle(_) => max_tokens / 2,
         ThinkingConfig::Level(ThinkingLevel::High) => max_tokens - max_tokens / 4,
     };
-    // The budget must be at least 1024 tokens and leave room below max_tokens.
     if max_tokens <= MIN_THINKING_BUDGET {
         warn!(
             max_tokens,
@@ -1083,14 +935,6 @@ fn build_thinking(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Streaming
-// ---------------------------------------------------------------------------
-
-/// Read a streamed Messages response to its end, pushing text and thinking to
-/// `sink` as it arrives, and return it as the response a non-streaming
-/// request would have returned. A stream that fails after reporting usage
-/// (`message_start` carries the input counts) keeps that usage on its error.
 async fn read_stream(
     response: reqwest::Response,
     idle_secs: u64,
@@ -1107,7 +951,6 @@ async fn read_stream(
     }
 }
 
-/// One streamed event, by its `type`.
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum StreamEvent {
@@ -1133,7 +976,6 @@ enum StreamEvent {
     Error {
         error: StreamErrorBody,
     },
-    /// An event type this client does not know; the API may add more.
     #[serde(other)]
     Unknown,
 }
@@ -1161,7 +1003,6 @@ enum BlockDelta {
     InputJsonDelta {
         partial_json: String,
     },
-    /// A delta type this client does not use, such as `citations_delta`.
     #[serde(other)]
     Other,
 }
@@ -1180,13 +1021,6 @@ struct StreamErrorBody {
     message: String,
 }
 
-/// Token counts as Anthropic reports them, whole or streamed.
-///
-/// `input_tokens` excludes the cache: reads and writes are reported beside
-/// it, so the three are already the disjoint parts [`Usage`] wants. Any
-/// field may be missing; a missing one stays unknown. A stream reports
-/// cumulative counts in `message_start` and `message_delta`, so merging
-/// keeps the last value each field was given.
 #[derive(Debug, Deserialize, Default, Clone, Copy)]
 struct AnthropicUsage {
     #[serde(default, rename = "input_tokens")]
@@ -1197,7 +1031,6 @@ struct AnthropicUsage {
     cache_write: Option<u32>,
     #[serde(default, rename = "cache_read_input_tokens")]
     cache_read: Option<u32>,
-    /// The cache writes split by TTL.
     #[serde(default, rename = "cache_creation")]
     cache_write_by_ttl: Option<AnthropicCacheWriteByTtl>,
 }
@@ -1231,12 +1064,8 @@ impl AnthropicUsage {
     }
 }
 
-/// A content block as it builds up from its deltas.
 struct StreamBlock {
-    /// `Other` for a block this client cannot read, which keeps its place.
     block: AnthropicContentBlock,
-    /// The tool input, which arrives as fragments of JSON text and is parsed
-    /// once the whole response is in.
     partial_json: String,
 }
 
@@ -1373,8 +1202,6 @@ impl<'a> StreamAssembler<'a> {
         }
     }
 
-    /// Assemble the blocks into the response a non-streaming request would
-    /// have returned. Fails when the stream stopped short of `message_stop`.
     fn finish(self) -> Result<AnthropicResponse, InferenceError> {
         if !self.stopped {
             return Err(InferenceError::StreamInterrupted(
@@ -1391,9 +1218,6 @@ impl<'a> StreamAssembler<'a> {
                     | AnthropicContentBlock::ServerToolUse { name, input, .. } => {
                         match serde_json::from_str(&entry.partial_json) {
                             Ok(parsed) => *input = parsed,
-                            // A response cut off by max_tokens ends mid-way
-                            // through a tool call's input; that call is lost,
-                            // and the stop reason tells the caller why.
                             Err(e) if truncated => {
                                 warn!(
                                     tool = %name,
@@ -1430,11 +1254,6 @@ impl<'a> StreamAssembler<'a> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Image helpers
-// ---------------------------------------------------------------------------
-
-/// Append `Image` content blocks for each `ImageData` entry.
 fn append_image_blocks(blocks: &mut Vec<AnthropicContentBlock>, images: &[ImageData]) {
     for img in images {
         blocks.push(AnthropicContentBlock::Image {
@@ -1446,10 +1265,6 @@ fn append_image_blocks(blocks: &mut Vec<AnthropicContentBlock>, images: &[ImageD
         });
     }
 }
-
-// ---------------------------------------------------------------------------
-// Message merging
-// ---------------------------------------------------------------------------
 
 /// Merge consecutive messages that share the same role.
 ///
@@ -1477,10 +1292,6 @@ fn merge_consecutive_messages(messages: Vec<AnthropicMessage>) -> Vec<AnthropicM
     merged
 }
 
-// ---------------------------------------------------------------------------
-// Anthropic API serde types (private)
-// ---------------------------------------------------------------------------
-
 /// A cache breakpoint: on a block, or top level for automatic caching, which
 /// the API places on the request's last cacheable block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -1507,11 +1318,9 @@ impl AnthropicCacheControl {
     }
 }
 
-/// The request's `thinking` field.
 #[derive(Debug, Clone, Serialize)]
 struct AnthropicThinking {
     r#type: &'static str,
-    /// How the reasoning comes back. Current models omit it unless asked.
     #[serde(skip_serializing_if = "Option::is_none")]
     display: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1521,7 +1330,6 @@ struct AnthropicThinking {
 }
 
 impl AnthropicThinking {
-    /// The model decides how much to think; the response carries a summary.
     fn adaptive() -> Self {
         Self {
             r#type: "adaptive",
@@ -1531,9 +1339,6 @@ impl AnthropicThinking {
         }
     }
 
-    /// Think for up to `budget_tokens`. Only models without adaptive thinking
-    /// get this, and they don't bind thinking blocks to the conversation, so
-    /// it never carries a `block_binding`.
     fn manual(budget_tokens: u32) -> Self {
         Self {
             r#type: "enabled",
@@ -1586,7 +1391,6 @@ impl AnthropicBlockBinding {
 struct AnthropicInputTransformation {
     #[serde(default)]
     r#type: Option<String>,
-    /// Where in the request, e.g. `messages.1.content.0`.
     #[serde(default)]
     path: Option<String>,
     #[serde(default)]
@@ -1602,13 +1406,10 @@ impl AnthropicInputTransformation {
 /// How an attempt asks for thinking, as learned from the API's refusals.
 #[derive(Debug, Clone, Copy, Default)]
 struct ThinkingMode {
-    /// A manual budget instead of adaptive thinking.
     manual: bool,
-    /// Ask the API to drop replayed blocks bound to a different conversation.
     drop_mismatched: bool,
 }
 
-/// System prompt content — plain string or array of text blocks.
 #[derive(Debug, Serialize, Clone)]
 #[serde(untagged)]
 enum AnthropicSystem {
@@ -1617,16 +1418,6 @@ enum AnthropicSystem {
 }
 
 impl AnthropicSystem {
-    /// The `system` field for a request whose system prompt is `system`,
-    /// with the stable part of it ending at byte `cache_boundary`.
-    ///
-    /// A system prompt with a cache boundary goes as blocks, its stable part
-    /// carrying an explicit `cache_control` breakpoint, so the tools and that
-    /// part stay cached when the rest of the system prompt changes. That is
-    /// one breakpoint besides the request's top-level automatic one, well
-    /// under the API's four. OAuth tokens require the Claude Code identity
-    /// as an isolated first block to access newer models, so their system
-    /// prompt is always an array. Anything else goes as a plain string.
     fn build(
         system: Option<String>,
         cache_boundary: Option<usize>,
@@ -1670,7 +1461,6 @@ struct AnthropicSystemBlock {
 }
 
 impl AnthropicSystemBlock {
-    /// A text block with no cache breakpoint.
     fn text(text: &str) -> Self {
         Self {
             r#type: "text",
@@ -1680,7 +1470,6 @@ impl AnthropicSystemBlock {
     }
 }
 
-/// What stays the same across a request's attempts.
 struct PreparedRequest {
     system: Option<AnthropicSystem>,
     messages: Vec<AnthropicMessage>,
@@ -1689,15 +1478,11 @@ struct PreparedRequest {
     temperature: Option<f32>,
     max_tokens: u32,
     thinking: Option<ThinkingConfig>,
-    /// What the reasoning in the response is bound to (see
-    /// [`ConvertedMessages::binding`]).
     binding: Option<String>,
-    /// The request's top-level automatic cache breakpoint.
     cache_control: AnthropicCacheControl,
 }
 
 impl PreparedRequest {
-    /// The request body for one attempt.
     fn request<'a>(
         &'a self,
         model: &'a str,
@@ -1759,7 +1544,6 @@ struct AnthropicMessage {
     content: AnthropicContent,
 }
 
-/// Content can be a simple string or an array of content blocks.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(untagged)]
 enum AnthropicContent {
@@ -1768,7 +1552,6 @@ enum AnthropicContent {
 }
 
 impl AnthropicContent {
-    /// Convert into a vec of content blocks regardless of variant.
     fn into_blocks(self) -> Vec<AnthropicContentBlock> {
         match self {
             Self::Text(s) => vec![AnthropicContentBlock::Text { text: s }],
@@ -1806,23 +1589,17 @@ enum AnthropicContentBlock {
         tool_use_id: String,
         content: String,
     },
-    /// Server-side tool invocation (e.g. web search). Informational only —
-    /// results are already incorporated into the model's text response.
     ServerToolUse {
         id: String,
         name: String,
         #[serde(default)]
         input: Value,
     },
-    /// Result of a server-side tool (e.g. web search results).
     WebSearchToolResult {
         tool_use_id: String,
         #[serde(default)]
         content: Value,
     },
-    /// A response block of a type this client does not know. It still holds
-    /// a place in the response, which decides what reasoning can go back
-    /// (see `parse_response`). Never part of a request.
     #[serde(other, skip_serializing)]
     Other,
 }
@@ -1841,9 +1618,7 @@ struct AnthropicImageSource {
 #[derive(Debug, Serialize, Clone)]
 #[serde(untagged)]
 enum AnthropicToolEntry {
-    /// Standard function tool (name, description, `input_schema`).
     Function(AnthropicTool),
-    /// Server-side web search tool.
     WebSearch(AnthropicWebSearchTool),
 }
 
@@ -1866,8 +1641,6 @@ struct AnthropicWebSearchTool {
     blocked_domains: Option<Vec<String>>,
 }
 
-/// The request's `output_config`: the shape of the answer and how hard the
-/// model should work on it.
 #[derive(Debug, Serialize)]
 struct AnthropicOutputConfig<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1891,7 +1664,6 @@ struct AnthropicResponse {
     input_transformations: Option<Vec<AnthropicInputTransformation>>,
 }
 
-/// Map Anthropic's `stop_reason` to the provider-agnostic [`StopReason`].
 fn map_stop_reason(raw: &str) -> StopReason {
     match raw {
         "end_turn" => StopReason::EndTurn,
@@ -1909,15 +1681,10 @@ struct AnthropicErrorResponse {
 
 #[derive(Debug, Deserialize)]
 struct AnthropicErrorDetail {
-    /// Error classification (e.g. `invalid_request_error`, `authentication_error`).
     #[serde(default)]
     r#type: String,
     message: String,
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 #[expect(
@@ -1941,19 +1708,15 @@ mod tests {
 
     const TEST_MODEL: &str = "claude-sonnet-4-20250514";
 
-    /// Where the test client's own reasoning comes from.
     fn test_origin() -> ThinkingOrigin {
         ThinkingOrigin::new(ProviderApi::Anthropic, TEST_MODEL)
     }
 
-    /// The system text and messages the test client sends for `messages`,
-    /// with no tools and thinking on.
     fn convert(messages: &[Message]) -> (Option<String>, Vec<AnthropicMessage>) {
         let converted = AnthropicClient::convert_messages(messages, None, Some(&test_origin()));
         (converted.system, converted.messages)
     }
 
-    /// Create a test client pointing at the given mock server URL.
     fn test_client(base_url: &str) -> AnthropicClient {
         let http = SharedHttpClient::new(&HttpClientConfig::with_timeout(5)).unwrap();
         AnthropicClient::new(
@@ -1970,8 +1733,6 @@ mod tests {
         vec![Message::user("Hello")]
     }
 
-    /// `block` as the test client records it in a response to
-    /// [`simple_user_message`] with no tools: bound to that request.
     fn answering_hello(mut block: ThinkingBlock) -> ThinkingBlock {
         block.binding =
             AnthropicClient::convert_messages(&simple_user_message(), None, None).binding;
@@ -2126,7 +1887,6 @@ mod tests {
         let result = client.complete(&messages, &[], &options).await;
         assert!(result.is_ok(), "system message request should succeed");
 
-        // Verify system was extracted properly by checking the conversion
         let (system, api_msgs) = convert(&messages);
         assert_eq!(
             system.as_deref(),
@@ -2215,14 +1975,12 @@ mod tests {
         assert!(system.is_none(), "no system message expected");
         assert_eq!(api_msgs.len(), 3, "should have 3 API messages");
 
-        // Check the tool result message
         let tool_result_msg = api_msgs.get(2).unwrap();
         assert_eq!(
             tool_result_msg.role, "user",
             "tool result should be sent as user role"
         );
 
-        // Verify serialization produces correct structure
         let serialized = serde_json::to_value(tool_result_msg).unwrap();
         let content = serialized.get("content").unwrap();
         assert!(
@@ -2367,8 +2125,6 @@ mod tests {
 
     #[tokio::test]
     async fn timeout_handling() {
-        // The reply waits at a gate that never opens, so only the client's own
-        // 5 second timeout can end the call.
         let model = GatedModel::replying("unused").await;
         let client = test_client(&model.uri());
         let result = client
@@ -2457,7 +2213,6 @@ mod tests {
         assert!(result.is_ok(), "request with temperature should succeed");
     }
 
-    /// Usage as Anthropic documents it, with the cache writes split by TTL.
     fn documented_usage() -> Value {
         json!({
             "input_tokens": 12,
@@ -2524,8 +2279,6 @@ mod tests {
         );
     }
 
-    /// The fields of the completed span named `name`, captured while `run`
-    /// ran on this thread.
     async fn span_fields<F: std::future::Future>(name: &str, run: F) -> Vec<(String, String)> {
         use residuum_core::util::telemetry::{SpanBufferConfig, SpanBufferLayer};
         use tracing_subscriber::layer::SubscriberExt;
@@ -2597,7 +2350,6 @@ mod tests {
         let result = client.complete(&simple_user_message(), &[], &options).await;
         assert!(result.is_ok(), "request without temperature should succeed");
 
-        // Verify by checking the request body does not contain "temperature"
         let requests = server.received_requests().await.unwrap();
         let body: serde_json::Value =
             serde_json::from_slice(&requests.first().unwrap().body).unwrap();
@@ -3022,7 +2774,6 @@ mod tests {
 
         let (_system, api_msgs) = convert(&messages);
 
-        // user, assistant, merged-user (two tool results)
         assert_eq!(
             api_msgs.len(),
             3,
@@ -3095,7 +2846,6 @@ mod tests {
 
         let (_system, api_msgs) = convert(&messages);
 
-        // assistant, merged-user (tool_result + user text)
         assert_eq!(
             api_msgs.len(),
             2,
@@ -3171,11 +2921,8 @@ mod tests {
         );
     }
 
-    // --- Prompt caching: system breakpoint and TTL ---
-
     const OAUTH_TEST_KEY: &str = "sk-ant-oat01-test-key";
 
-    /// Every `cache_control` marker in a request body, top level included.
     fn cache_breakpoints(value: &Value) -> usize {
         match value {
             Value::Object(map) => map
@@ -3197,8 +2944,6 @@ mod tests {
         }
     }
 
-    /// A conversation whose system prompt has a stable part and a part that
-    /// changes, as the agent's own system prompt does.
     fn conversation_with_cache_boundary() -> Vec<Message> {
         vec![
             Message::system_with_cache_boundary("stable sections", "\n\nchanging sections"),
@@ -3206,7 +2951,6 @@ mod tests {
         ]
     }
 
-    /// The single request body `key` sent with `options`.
     async fn body_sent_with(key: &str, messages: &[Message], options: &CompletionOptions) -> Value {
         let server = MockServer::start().await;
         mount_ok(&server).await;
@@ -3499,9 +3243,6 @@ mod tests {
             Some("First instruction."),
             "only first system message goes to system field"
         );
-        // The extra system-as-user message and the real user message are
-        // consecutive same-role messages, so merge_consecutive_messages
-        // combines them into one.
         assert_eq!(api_msgs.len(), 1, "merged into single user message");
         let merged = api_msgs.first().unwrap();
         assert_eq!(merged.role, "user");
@@ -3638,8 +3379,6 @@ mod tests {
             "second block should be the user system message"
         );
     }
-
-    // --- Thinking: request shape, fallback, replay ---
 
     fn thinking_options(max_tokens: u32) -> CompletionOptions {
         CompletionOptions {
@@ -3849,7 +3588,6 @@ mod tests {
         );
     }
 
-    /// A signed block the test client itself produced.
     fn signed(text: &str, signature: &str) -> ThinkingBlock {
         ThinkingBlock {
             text: text.to_string(),
@@ -3859,7 +3597,6 @@ mod tests {
         }
     }
 
-    /// An encrypted block the test client itself produced.
     fn redacted(data: &str) -> ThinkingBlock {
         ThinkingBlock {
             redacted: Some(data.to_string()),
@@ -3887,7 +3624,6 @@ mod tests {
         message
     }
 
-    /// The block types of each message's content, in order, comma-joined.
     fn block_types(messages: &[AnthropicMessage]) -> Vec<String> {
         messages
             .iter()
@@ -3971,8 +3707,6 @@ mod tests {
         );
     }
 
-    /// Append the reply the test client records for a request made of
-    /// `history` (no tools): its reasoning bound to that request.
     fn reply(
         history: &mut Vec<Message>,
         content: &str,
@@ -3991,8 +3725,6 @@ mod tests {
         history.push(assistant_with_thinking(content, calls, thinking));
     }
 
-    /// A finished first turn: a tool call with signed and redacted
-    /// reasoning, its result, and a reasoned reply.
     fn first_turn() -> Vec<Message> {
         let mut history = vec![
             Message::system("You are helpful."),
@@ -4132,9 +3864,6 @@ mod tests {
         );
     }
 
-    /// A reply's reasoning is bound to the status line its message arrived
-    /// with, as the agent sends it, and not to where the system prompt's
-    /// cache breakpoint sits.
     #[test]
     fn earlier_reasoning_is_bound_to_the_stored_status_line_but_not_the_cache_boundary() {
         let mut history = vec![
@@ -4271,8 +4000,6 @@ mod tests {
         );
     }
 
-    /// A reply that reasons, searches the web, and reasons again (signed and
-    /// encrypted) before `tail`, as a non-streaming response body.
     fn reasoning_around_a_search(tail: Value, stop_reason: &str) -> Value {
         let mut content = vec![
             json!({"type": "thinking", "thinking": "plan", "signature": "sig-a"}),
@@ -4333,10 +4060,6 @@ mod tests {
         assert_eq!(parsed.content, "answer", "the rest of the response is read");
     }
 
-    /// Run `body` through a non-streaming exchange of two requests with
-    /// thinking on: the first gets `body` back, and `continue_with` turns
-    /// that response into the history of the second. Returns the second
-    /// request as sent.
     async fn next_request_after(
         body: Value,
         continue_with: impl FnOnce(&mut Vec<Message>, InferenceResponse),
@@ -4551,8 +4274,6 @@ mod tests {
         assert_eq!(parsed.content, "answer", "text is unaffected");
     }
 
-    // --- Streaming ---
-
     fn event(name: &str, data: impl Into<Value>) -> String {
         let data: Value = data.into();
         format!("event: {name}\ndata: {data}\n\n")
@@ -4602,7 +4323,6 @@ mod tests {
         ) + &event("message_stop", json!({"type": "message_stop"}))
     }
 
-    /// A reply with thinking, text and a tool call, as the API streams it.
     fn full_stream() -> String {
         [
             message_start(json!({
@@ -4647,7 +4367,6 @@ mod tests {
         .concat()
     }
 
-    /// The same reply as `full_stream`, as a non-streaming response.
     fn full_response_body() -> Value {
         json!({
             "content": [
@@ -4683,8 +4402,6 @@ mod tests {
         (result, sink, server)
     }
 
-    /// A text reply streamed with the given `message_start` and
-    /// `message_delta` usage.
     fn text_stream(start_usage: Value, end_usage: Value) -> String {
         [
             message_start(start_usage),
@@ -5026,7 +4743,6 @@ mod tests {
         ]
         .concat();
         let mut script = sse_chunks(&[started]);
-        // Held rather than paused: nothing more arrives, so only the idle timeout ends the stream.
         let stall = Gate::closed("stalled stream");
         script.push(Step::Hold(stall.entry()));
 
@@ -5522,8 +5238,6 @@ mod tests {
         );
     }
 
-    // --- Thinking blocks bound to a different conversation ---
-
     fn bound_elsewhere_body() -> Value {
         json!({
             "type": "error",
@@ -5534,8 +5248,6 @@ mod tests {
         })
     }
 
-    /// Answer requests that ask to drop mismatched blocks, and refuse every
-    /// other request as carrying a block bound to a different conversation.
     async fn mount_binding_refusal(server: &MockServer) {
         Mock::given(method("POST"))
             .and(path("/v1/messages"))
@@ -5733,10 +5445,6 @@ mod tests {
         );
     }
 
-    // --- Input transformations ---
-
-    /// Two input transformations: one dropped thinking block, and one of a
-    /// kind this client doesn't act on, with `null` fields.
     fn transformations() -> Value {
         json!([
             {"type": "thinking_dropped", "path": "messages.1.content.0",

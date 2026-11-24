@@ -7,16 +7,10 @@
   import Input from "./Input.svelte";
   import type { SecretSource } from "./types";
 
-  // A key or token that is never shown once saved. With a saved value it
-  // says where the value lives, and Change (stored) or Replace (environment
-  // variable) opens a box for a new one; Cancel closes it again. Without one,
-  // the box is open from the start. The typed value is the caller's to store.
   interface Props {
     label: string;
     source: SecretSource;
-    /** What the user typed as the new value. */
     value?: string;
-    /** Whether the box for a new value is open over a saved one. */
     editing?: boolean;
     hint?: string;
     error?: string;

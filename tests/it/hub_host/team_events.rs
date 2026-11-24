@@ -1,5 +1,3 @@
-//! The team event log against real agents: each kind of entry appears once,
-//! from the thing that really causes it, and nothing else does.
 #![expect(
     clippy::tests_outside_test_module,
     reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
@@ -13,7 +11,6 @@ use residuum::hub::team_events::{
     PageQuery, TeamEvent, TeamEventKind, TeamEventLevel, TeamEventTarget,
 };
 
-/// Every entry the recorder has written so far, oldest first.
 fn logged(hub: &Fixture) -> Vec<TeamEvent> {
     let mut all = hub
         .team_events
@@ -26,7 +23,6 @@ fn logged(hub: &Fixture) -> Vec<TeamEvent> {
     all
 }
 
-/// The entries of `kind` so far.
 fn of_kind(hub: &Fixture, kind: TeamEventKind) -> Vec<TeamEvent> {
     logged(hub)
         .into_iter()
@@ -34,7 +30,6 @@ fn of_kind(hub: &Fixture, kind: TeamEventKind) -> Vec<TeamEvent> {
         .collect()
 }
 
-/// Wait for an entry of `kind` about `agent` (any agent when `None`).
 async fn entry(hub: &Fixture, kind: TeamEventKind, agent: Option<&str>) -> TeamEvent {
     wait::until(&format!("a {kind:?} entry"), || async {
         of_kind(hub, kind)
@@ -66,8 +61,6 @@ async fn starting_and_stopping_an_agent_are_each_told_once() {
     assert_eq!(stopped.summary, "scout stopped");
     assert_eq!(stopped.target, Some(chat_of("scout")));
 
-    // Changing a setting publishes the agent's state again without changing
-    // it; that is not a start.
     hub.host
         .patch(
             "scout",
@@ -230,7 +223,6 @@ async fn a_reply_is_told_once_per_turn_and_a_background_turn_is_not_told() {
     assert_eq!(replied.level, TeamEventLevel::Info);
     assert_eq!(replied.target, Some(chat_of("scout")));
 
-    // A teammate's message starts a background turn that still replies.
     let link = TeamLink::new("guest", Arc::clone(&hub.services.team_router));
     let target = parse_team_address("agent:scout").unwrap().unwrap();
     let main =
@@ -248,8 +240,6 @@ async fn a_reply_is_told_once_per_turn_and_a_background_turn_is_not_told() {
         }
     }
 
-    // The feed is ordered, so once the second user turn is told, the
-    // background turn before it has been read too.
     hub.chat("scout", "second question").await;
     wait::until("the second reply", || async {
         (of_kind(&hub, TeamEventKind::AgentReplied).len() >= 2).then_some(())
@@ -294,7 +284,6 @@ async fn an_item_the_inbox_tool_saved_is_told_and_a_hand_placed_file_is_not() {
             .is_file(),
         "the entry names the saved item {item_id}"
     );
-    // Later entries from the same agent arrive after the file changes did.
     hub.chat("scout", "anything else").await;
     wait::until("the later reply", || async {
         (of_kind(&hub, TeamEventKind::AgentReplied).len() >= 2).then_some(())
@@ -347,8 +336,6 @@ async fn a_session_is_told_when_it_starts_and_when_stopping_the_agent_ends_it() 
     );
 }
 
-/// Schedule an action named "nightly digest" that is already due, and let
-/// scheduled sessions complete as soon as their turn ends.
 fn schedule_a_due_action(hub: &Fixture) {
     let due = chrono::Utc::now() - chrono::Duration::seconds(5);
     std::fs::write(

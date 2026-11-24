@@ -1,11 +1,3 @@
-//! When a pulse next runs: the one calculation behind the team overview's
-//! `upcoming` and the Schedule place's `next_fire_at`.
-//!
-//! It asks the same [`Cadence`] the scheduler asks on its minute ticks (see
-//! [`PulseScheduler::due_pulses`](super::scheduler::PulseScheduler::due_pulses)),
-//! so the two can't disagree. All of it is read in the hub's timezone, on the
-//! naive local times the scheduler keeps.
-
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -16,22 +8,6 @@ use super::types::{PulseDef, is_within_active_hours};
 use residuum_bus::PulseFireOutcome;
 use residuum_core::time::local_to_instant;
 
-/// When `pulse` next runs, given its anchor (`None` if the scheduler has not
-/// seen it yet) and the instant `now`. See [`Cadence`] for how the anchor
-/// spaces runs.
-///
-/// That is the first moment at or after the later of `now` and the next
-/// scheduled time that falls inside its active hours. A pulse the scheduler
-/// has not seen is first seen at `now` (or when its active hours next open),
-/// so it runs one schedule later, or on its first listed day after that. A
-/// pulse that is due already is reported at the start of the current minute,
-/// because the scheduler decides once a minute and a result that moved with
-/// every second would read as a change every time it was asked for.
-///
-/// `None` when the pulse will not run: it is disabled, its timing settings
-/// can't be read (the scheduler skips it and reports why), or its active
-/// hours are an empty window. Whether the agent's pulse system is on at all
-/// is the caller's to check.
 #[must_use]
 pub fn next_run_at(
     pulse: &PulseDef,
@@ -70,8 +46,6 @@ pub fn next_run_at(
     Some(local_to_instant(tz, at).with_timezone(&Utc))
 }
 
-/// The first moment at or after `at` inside the window from `start` to `end`.
-/// `None` for a window that is empty, which never opens.
 fn next_active_moment(
     at: NaiveDateTime,
     start: NaiveTime,
@@ -83,9 +57,6 @@ fn next_active_moment(
     if is_within_active_hours(at, start, end) {
         return Some(at);
     }
-    // Outside a window, the time is before today's opening or after today's
-    // closing. An overnight window closes in the morning and opens in the
-    // evening, so outside it the next opening is always today's.
     let opens_today = at.date().and_time(start);
     if at < opens_today {
         Some(opens_today)
@@ -94,24 +65,14 @@ fn next_active_moment(
     }
 }
 
-/// What a reader outside the scheduler needs from `pulse_state.json`.
 #[derive(Debug, Default, serde::Deserialize)]
 pub struct RecordedPulseState {
-    /// Each pulse's anchor, in the hub's local time (see [`Cadence`]). Older
-    /// files stored these under `last_run`, holding fire times instead; those
-    /// still serve as starting anchors.
     #[serde(default, alias = "last_run")]
     pub anchor: HashMap<String, NaiveDateTime>,
-    /// The outcome of each pulse's most recent fire that ended without a
-    /// session run (see `PulseScheduler::record_fire_outcome`).
     #[serde(default)]
     pub last_fire: HashMap<String, PulseFireOutcome>,
 }
 
-/// The `pulse_state.json` at `path`, read directly, the way the scheduler's
-/// own load does, rather than through a live scheduler. A missing file is
-/// empty; an unreadable one is logged and treated as empty, as the scheduler
-/// treats it, so every pulse reads as never run.
 #[must_use]
 pub fn load_recorded_state(path: &Path) -> RecordedPulseState {
     super::types::read_and_parse(path, |contents| {
@@ -120,8 +81,6 @@ pub fn load_recorded_state(path: &Path) -> RecordedPulseState {
     .unwrap_or_default()
 }
 
-/// The anchor of each pulse in the `pulse_state.json` at `path` (see
-/// [`load_recorded_state`]).
 #[must_use]
 pub fn load_anchors(path: &Path) -> HashMap<String, NaiveDateTime> {
     load_recorded_state(path).anchor
@@ -312,8 +271,6 @@ mod tests {
     #[test]
     fn the_schedule_and_the_active_hours_are_read_in_the_hub_timezone() {
         let new_york: chrono_tz::Tz = "America/New_York".parse().unwrap();
-        // 2026-03-01 is before New York's spring-forward, so it is UTC-5, and
-        // 00:30 UTC on the 2nd is 19:30 there, after the window closed.
         let at = next_run_at(
             &pulse("1h", Some("09:00-17:00")),
             None,
@@ -341,7 +298,6 @@ mod tests {
     #[test]
     fn a_run_inside_a_spring_forward_gap_lands_later_by_the_gap() {
         let new_york: chrono_tz::Tz = "America/New_York".parse().unwrap();
-        // New York skips 02:00-03:00 on 2026-03-08: 02:30 local reads as 03:30 (UTC-4).
         let at = next_run_at(
             &pulse("30m", None),
             Some(local(8, 2, 0)),
@@ -406,7 +362,6 @@ mod tests {
         }
     }
 
-    // 2026-03-08 is a Sunday.
     #[test]
     fn a_day_pulse_is_next_at_the_window_start_on_its_next_listed_day() {
         let sunday = on_days(&["sun"], Some("09:00-10:00"));
@@ -472,9 +427,6 @@ mod tests {
             active_hours: Some("17:00-23:00".to_string()),
             ..pulse("7d", None)
         };
-        // Anchored to Sunday 15 at 17:30, the run is due Sunday 22 at 17:30. The
-        // gateway is back Monday 23 at 09:00, outside the window, which
-        // reopens at 17:00 that day.
         assert_eq!(
             next_run_at(
                 &weekly,
@@ -485,8 +437,6 @@ mod tests {
             Some(utc(23, 17, 0)),
             "the overdue run lands when the window reopens"
         );
-        // Once it has run, its anchor is Sunday 22 at 17:30, so the next run
-        // is the Sunday after, not Monday.
         assert_eq!(
             next_run_at(
                 &weekly,

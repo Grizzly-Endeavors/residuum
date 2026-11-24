@@ -1,9 +1,5 @@
-//! Fixtures the gateway's tests share.
-
 use residuum_config::Config;
 
-/// A minimal agent config: no models, no chat interfaces, every section
-/// at its default and UTC as the timezone.
 pub(crate) fn test_config() -> Config {
     Config {
         agent_name: "test-agent".to_string(),

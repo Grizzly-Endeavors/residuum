@@ -1,15 +1,9 @@
-//! Windows Toast notification bridge.
-//!
-//! Isolates the `WinRT` Toast API so the rest of the notification system
-//! stays platform-agnostic and testable without a Windows runtime.
-
 use async_trait::async_trait;
 
 use super::WindowsChannelConfig;
 use crate::batch_aggregator::{self, NotificationBridge};
 use residuum_bus::NotificationEvent;
 
-/// Thin wrapper around the `WinRT` Toast API for notification delivery.
 #[derive(Clone)]
 pub struct WindowsBridge {
     app_id: String,
@@ -50,9 +44,6 @@ impl NotificationBridge for WindowsBridge {
     }
 }
 
-/// Show a Toast. An urgent one uses the `Reminder` scenario, which stays on
-/// screen until dismissed, the Windows counterpart of the macOS
-/// `time_sensitive` interruption level.
 #[cfg(target_os = "windows")]
 async fn post_toast(bridge: &WindowsBridge, title: &str, body: &str, urgent: bool) {
     let app_id = bridge.app_id.clone();
@@ -60,9 +51,6 @@ async fn post_toast(bridge: &WindowsBridge, title: &str, body: &str, urgent: boo
     let body = body.to_string();
     let sound = bridge.sound;
 
-    // spawn_blocking because tauri-winrt-notification's show() is synchronous; the
-    // join result is only interesting if the task panicked, which we can't
-    // act on here, so it's intentionally not inspected.
     let _join_result = residuum_core::util::spawn_blocking_in_span(move || {
         use tauri_winrt_notification::{Scenario, Toast};
         let mut toast = Toast::new(&app_id).title(&title).text1(&body);
@@ -84,6 +72,4 @@ async fn post_toast(bridge: &WindowsBridge, title: &str, body: &str, urgent: boo
 }
 
 #[cfg(not(target_os = "windows"))]
-async fn post_toast(_bridge: &WindowsBridge, _title: &str, _body: &str, _urgent: bool) {
-    // No-op on non-Windows platforms
-}
+async fn post_toast(_bridge: &WindowsBridge, _title: &str, _body: &str, _urgent: bool) {}

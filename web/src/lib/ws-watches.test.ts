@@ -4,7 +4,6 @@ import { setViewedAgent } from "./viewed-agent";
 import { ws } from "./ws.svelte";
 import type { WatchHandler, WatchOwner } from "./watch-registry";
 
-/** The watch frames a socket was sent, parsed. */
 function watchFrames(socket: FakeWebSocket): unknown[] {
   return socket.sentFrames().filter((f) => (f as { type: string }).type === "watch_workspace");
 }
@@ -22,7 +21,6 @@ function register(handler: WatchHandler = nothing, agent?: string): WatchOwner {
 beforeEach(() => {
   FakeWebSocket.install();
   vi.stubGlobal("location", { protocol: "http:", host: "localhost:7700" });
-  // Connecting loads history and usage; none of it matters here, so it never answers.
   vi.stubGlobal(
     "fetch",
     vi.fn(() => new Promise<Response>(() => {})),

@@ -63,7 +63,6 @@ interface Bench {
   requests: string[];
 }
 
-/** Answer the workbench routes from `bench`, which a test may change between reads. */
 function serveBench(initial: Partial<Bench> = {}): Bench {
   const bench: Bench = {
     artifacts: [tip, graph],

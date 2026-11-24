@@ -1,5 +1,3 @@
-//! Outbound calls to the Bot Connector: token acquisition and sending activities.
-
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
@@ -7,14 +5,10 @@ use serde::Deserialize;
 use super::store::ConversationRef;
 
 const CONNECTOR_SCOPE: &str = "https://api.botframework.com/.default";
-/// Refresh the connector token this long before it actually expires.
 const TOKEN_EXPIRY_MARGIN: Duration = Duration::from_mins(5);
-/// Attempts per send when the connector throttles us (HTTP 429).
 const MAX_SEND_ATTEMPTS: u32 = 3;
-/// Backoff when a 429 carries no usable `Retry-After`.
 const DEFAULT_RETRY_AFTER: Duration = Duration::from_secs(2);
 
-/// Why an outbound call to Teams failed.
 #[derive(Debug, thiserror::Error)]
 pub(super) enum ConnectorError {
     #[error("could not get a bot token from Microsoft: {0}")]
@@ -39,7 +33,6 @@ struct CachedToken {
     refresh_at: Instant,
 }
 
-/// Credentials and a cached bearer token for the Bot Connector.
 pub(super) struct ConnectorClient {
     http: reqwest::Client,
     token_url: String,
@@ -64,7 +57,6 @@ impl ConnectorClient {
         }
     }
 
-    /// A valid connector bearer token, fetched with client credentials when needed.
     pub(super) async fn bearer_token(&self) -> Result<String, ConnectorError> {
         let mut cached = self.token.lock().await;
         if let Some(token) = cached.as_ref().filter(|t| Instant::now() < t.refresh_at) {
@@ -111,7 +103,6 @@ impl ConnectorClient {
         Ok(token.access_token)
     }
 
-    /// Post an activity into a conversation.
     pub(super) async fn send_activity(
         &self,
         target: &ConversationRef,
@@ -147,7 +138,6 @@ impl ConnectorClient {
                 continue;
             }
             if status == reqwest::StatusCode::UNAUTHORIZED {
-                // A revoked or rotated secret invalidates the cached token early.
                 self.token.lock().await.take();
             }
             let body = response.text().await.unwrap_or_default();
@@ -155,8 +145,6 @@ impl ConnectorClient {
         }
     }
 
-    /// Download an attachment the connector hosts (inline images in chats),
-    /// which requires the bot's bearer token.
     pub(super) async fn download(&self, url: &str) -> Result<Vec<u8>, ConnectorError> {
         let token = self.bearer_token().await?;
         let response = self.http.get(url).bearer_auth(&token).send().await?;
@@ -181,8 +169,6 @@ fn retry_after(response: &reqwest::Response) -> Option<Duration> {
         .map(Duration::from_secs)
 }
 
-/// `{serviceUrl}/v3/conversations/{id}/activities`, with the conversation ID
-/// percent-encoded (channel thread IDs contain `;` and `=`).
 fn activities_url(service_url: &str, conversation_id: &str) -> String {
     let encoded: String =
         url::form_urlencoded::byte_serialize(conversation_id.as_bytes()).collect();
@@ -192,7 +178,6 @@ fn activities_url(service_url: &str, conversation_id: &str) -> String {
     )
 }
 
-/// A plain markdown message activity.
 pub(super) fn message_activity(text: &str) -> serde_json::Value {
     serde_json::json!({
         "type": "message",
@@ -201,7 +186,6 @@ pub(super) fn message_activity(text: &str) -> serde_json::Value {
     })
 }
 
-/// A typing indicator activity.
 pub(super) fn typing_activity() -> serde_json::Value {
     serde_json::json!({ "type": "typing" })
 }

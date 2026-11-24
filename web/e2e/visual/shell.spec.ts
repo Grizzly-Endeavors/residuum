@@ -1,8 +1,6 @@
 import { expect, test } from "../support/fixtures";
 import { expectScreenshot } from "../support/screenshot";
 
-/** The shell's design reference: the navigation rail, which a phone opens as a drawer from Menu. */
-
 test.describe("shell", { tag: "@visual" }, () => {
   test("the navigation rail, or the drawer on a phone", async ({ page, isMobile }) => {
     await page.goto("/agent/atlas/schedule");

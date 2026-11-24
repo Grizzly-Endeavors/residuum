@@ -3,43 +3,4 @@ import type { A2aVisibility } from "./A2aVisibility";
 import type { AgentLastError } from "./AgentLastError";
 import type { AgentState } from "./AgentState";
 
-/**
- * One hosted agent as the hub API and hub WebSocket describe it.
- */
-export type AgentSummary = { 
-/**
- * The agent's folder name: its URL, its A2A path, and the key its
- * checkpoint history is stored under.
- */
-name: string, 
-/**
- * The name people see and address (`agent:<display name>`). The same as
- * `name` when no separate name was set.
- */
-display_name: string, 
-/**
- * Current lifecycle state.
- */
-state: AgentState, 
-/**
- * Set only while `state` is [`AgentState::Failed`].
- */
-last_error: AgentLastError | null, 
-/**
- * Whether the agent starts with the hub.
- */
-autostart: boolean, 
-/**
- * One-line role from the agent's wiki role page, if it has one.
- */
-role: string | null, 
-/**
- * The agent's A2A visibility.
- */
-a2a_visibility: A2aVisibility, 
-/**
- * Whether the agent's config has a complete `[teams]` section. The relay
- * accepts Teams messages for the agent while this is set. A stopped agent
- * stays configured; delivery retries until its listener is back.
- */
-teams_configured: boolean, };
+export type AgentSummary = { name: string, display_name: string, state: AgentState, last_error: AgentLastError | null, autostart: boolean, role: string | null, a2a_visibility: A2aVisibility, teams_configured: boolean, };

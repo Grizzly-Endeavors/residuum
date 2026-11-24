@@ -1,19 +1,11 @@
 import type { QueuedMessage, ServerMessage, TurnInProgress } from "../src/lib/generated/protocol";
 
-/**
- * The main conversation's turn in flight, as the backend's turn journal keeps
- * it, so a page that asks (`resync_turn`) is shown what the turn did before
- * it connected: every frame of the turn so far, each model call's streamed
- * pieces joined, and only the newest usage. It also keeps the people's
- * messages still waiting for the agent to read them.
- */
 export class MockTurnJournal {
   private turn: TurnInProgress | null = null;
   private waiting: QueuedMessage[] = [];
 
   constructor(private readonly now: () => string) {}
 
-  /** Note a frame the agent's socket broadcast. Frames of no main-agent turn are ignored. */
   record(frame: ServerMessage): void {
     if (frame.type === "message_queued") {
       this.waiting.push(structuredClone(frame.message));
@@ -49,24 +41,20 @@ export class MockTurnJournal {
     this.turn.frames.push({ at, frame: structuredClone(frame) });
   }
 
-  /** The turn in flight so far, or `null` when none runs. */
   snapshot(): TurnInProgress | null {
     return this.turn === null ? null : { ...structuredClone(this.turn), now: this.now() };
   }
 
-  /** The messages waiting for the agent to read them, oldest first. */
   queued(): QueuedMessage[] {
     return structuredClone(this.waiting);
   }
 
-  /** Forget the turn and what waited for it, as a restarted agent would. */
   clear(): void {
     this.turn = null;
     this.waiting = [];
   }
 }
 
-/** The main-agent turn `frame` belongs to, or `null` for a frame of none. */
 function turnOf(frame: ServerMessage): string | null {
   switch (frame.type) {
     case "user_message":
@@ -83,7 +71,6 @@ function turnOf(frame: ServerMessage): string | null {
     case "broadcast_response":
       return frame.reply_to;
     case "response":
-      // A message posted outside any turn names none.
       return frame.reply_to === "" ? null : frame.reply_to;
     case "post_turn_activity":
     case "session_memory_merged":

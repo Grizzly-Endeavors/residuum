@@ -7,17 +7,11 @@
   import { Banner, Button } from "../../lib/ui";
   import type { SettingsScope } from "./sections";
 
-  // The top of every settings section: its title, a line on what it holds,
-  // and the problems the last save found that none of its fields shows. The
-  // section's own content follows. While Raw config holds unsaved edits to a
-  // file this section edits, the content is read-only.
-
   interface Props {
     scope: SettingsScope;
     section: SectionId;
     title: string;
     lede: string;
-    /** Problems to show here instead of the scope's section problems, for content that can't show a field's own. */
     problems?: readonly Diagnostic[];
     children: Snippet;
   }
@@ -83,7 +77,6 @@
     margin-bottom: var(--space-16);
   }
 
-  /* It only disables what it holds; the content lays out as if it weren't there. */
   .section-fields {
     display: contents;
   }

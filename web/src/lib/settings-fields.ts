@@ -1,15 +1,3 @@
-// ── Settings field map ───────────────────────────────────────────────
-//
-// Every field a settings form edits, and the key it saves to. Diffing a form
-// into a patch (`settings-toml.ts`) and placing a diagnostic on a field both
-// read this one map, so a field that saves to a key is also the field that
-// shows that key's error.
-//
-// A field is named by a `FieldRef`. Fields of the config files are plain
-// (`config`, `role`); the entries of a collection (`provider`, `webhook`,
-// `mcp`, `price`) are named by the entry's name, with no `field` for the entry
-// as a whole.
-
 import type { AgentConfigFileName } from "./config-coordinator";
 import { sectionForConfigKey, type ScopeKind, type SectionId } from "./settings-sections";
 import {
@@ -23,24 +11,18 @@ import {
 } from "./settings-toml";
 import type { Diagnostic, McpServerEntry, ModelRoleKey, SettingsProviderEntry } from "./types";
 
-/** A config file of one scope. The hub's only one is `config`. */
 export type FieldFile = AgentConfigFileName;
 
-/** The fields of a collection's entry. The entry's `name` is its key in the file, not a field. */
 type EntryField<T> = Exclude<keyof T, "name">;
 
 export type FieldRef =
-  /** A field of `ConfigFields`, including its lists and the `webhooks` collection as a whole. */
   | { kind: "config"; field: keyof ConfigFields }
   | { kind: "webhook"; name: string; field?: EntryField<WebhookFormEntry> }
   | { kind: "provider"; name: string; field?: EntryField<SettingsProviderEntry> }
-  /** A model role. `field` names its temperature or thinking override. */
   | { kind: "role"; role: ModelRoleKey; field?: "temperature" | "thinking" }
   | { kind: "mcp"; name: string; field?: EntryField<McpServerEntry> }
-  /** A `[pricing]` entry, keyed `provider/model`. Its rates are named by their own keys. */
   | { kind: "price"; name: string; field?: PriceRate };
 
-/** Where each field of a collection's entry saves, inside the entry's own table. */
 const WEBHOOK_KEYS = {
   secret: "secret",
   routing: "routing",
@@ -65,7 +47,6 @@ const MCP_KEYS = {
   headers: "headers",
 } as const satisfies Record<EntryField<McpServerEntry>, string>;
 
-/** The key of each role, from the model-role map the diff uses, and the embedding model it leaves out. */
 const ROLE_PATHS: Readonly<Record<ModelRoleKey, readonly string[]>> = {
   ...(Object.fromEntries(MODEL_ROLE_MAP.map((role) => [role.formKey, role.path])) as Record<
     Exclude<ModelRoleKey, "embedding">,
@@ -80,7 +61,6 @@ const CONFIG_PATHS: ReadonlyMap<keyof ConfigFields, readonly string[]> = new Map
   ["pricing", ["pricing"]] as const,
 ]);
 
-/** The key a field saves to, as path segments: `["models", "main"]` for `models.main`. */
 export function keyPathOf(ref: FieldRef): readonly string[] {
   switch (ref.kind) {
     case "config":
@@ -102,7 +82,6 @@ export function keyPathOf(ref: FieldRef): readonly string[] {
   }
 }
 
-/** A string that is the same for the same field. */
 export function fieldRefKey(ref: FieldRef): string {
   switch (ref.kind) {
     case "config":
@@ -117,9 +96,6 @@ export function fieldRefKey(ref: FieldRef): string {
   }
 }
 
-// ── Placing a key path ───────────────────────────────────────────────
-
-/** A key path in a diagnostic (`mcpServers.fs`, `skills.dirs[0]`) as segments. */
 function segmentsOf(path: string): string[] {
   return path
     .replace(/\[(\w+)\]/g, ".$1")
@@ -131,7 +107,6 @@ function startsWith(path: readonly string[], prefix: readonly string[]): boolean
   return prefix.length <= path.length && prefix.every((segment, i) => segment === path[i]);
 }
 
-/** The field whose key `segments` is, or lies inside. A table that holds several fields has none. */
 function locateConfigField(segments: readonly string[], owner: "hub" | "agent"): FieldRef | null {
   const specs = CONFIG_FIELD_MAP.filter((spec) => configFieldOwner(spec.path) === owner);
   const inside = specs
@@ -151,7 +126,6 @@ function entryField<K extends string>(
   return (Object.keys(keys) as K[]).find((field) => keys[field] === key);
 }
 
-/** The field a key path names in `file` of a scope of `kind`, or null when no form field holds that key. */
 export function locateField(kind: ScopeKind, file: FieldFile, path: string): FieldRef | null {
   const segments = segmentsOf(path);
   const [head, name, key] = segments;
@@ -190,17 +164,13 @@ export function locateField(kind: ScopeKind, file: FieldFile, path: string): Fie
   }
 }
 
-/** A diagnostic from a save, with the form field and section its key path leads to. */
 export interface PlacedDiagnostic {
   diagnostic: Diagnostic;
   file: FieldFile;
-  /** The field the key path names. Null for a diagnostic with no key path, or one no form field holds. */
   field: FieldRef | null;
-  /** The section whose form edits the key. Null when the diagnostic has no key path, which leaves it for whichever section is open. */
   section: SectionId | null;
 }
 
-/** Place a diagnostic from a save of `file` in a scope of `kind`. */
 export function placeDiagnostic(
   kind: ScopeKind,
   file: FieldFile,

@@ -1,20 +1,8 @@
-//! Stop subcommand: gracefully shut down the running hub and every agent in it.
-
 use residuum::util::FatalError;
 
 #[derive(clap::Args)]
 pub(super) struct StopArgs;
 
-/// Stop a running gateway daemon.
-///
-/// Uses a layered approach:
-/// 1. Check file lock on PID file — if unlocked, process is dead (clean up stale file)
-/// 2. Send HTTP shutdown request to the gateway API
-/// 3. Fall back to SIGTERM if HTTP fails
-///
-/// # Errors
-///
-/// Returns `FatalError` if the process cannot be stopped.
 #[tracing::instrument(skip_all)]
 pub(super) async fn run_stop_command(_args: &StopArgs) -> Result<(), FatalError> {
     use residuum::daemon::{is_pid_locked, read_pid_file, remove_pid_file, send_sigterm};
@@ -22,7 +10,6 @@ pub(super) async fn run_stop_command(_args: &StopArgs) -> Result<(), FatalError>
     let pid_path = residuum::daemon::pid_file_path()?;
     let label = "gateway";
 
-    // Layer 1: File lock check
     if !pid_path.exists() {
         println!("residuum: no {label} running (no pid file)");
         return Ok(());
@@ -38,7 +25,6 @@ pub(super) async fn run_stop_command(_args: &StopArgs) -> Result<(), FatalError>
 
     let pid = read_pid_file(&pid_path)?;
 
-    // Layer 2: HTTP graceful shutdown
     let gateway_addr = super::resolve_gateway_addr(&residuum::config::residuum_root()?);
 
     let http_ok = try_http_shutdown(&gateway_addr).await;
@@ -55,7 +41,6 @@ pub(super) async fn run_stop_command(_args: &StopArgs) -> Result<(), FatalError>
         );
     }
 
-    // Layer 3: terminate process (SIGTERM on Unix, TerminateProcess on Windows)
     send_sigterm(pid)?;
 
     if poll_for_exit(&pid_path, pid, label).await? {
@@ -68,9 +53,6 @@ pub(super) async fn run_stop_command(_args: &StopArgs) -> Result<(), FatalError>
     )))
 }
 
-/// Attempt to shut down the gateway via its HTTP API.
-///
-/// Returns `true` if the server accepted the shutdown request.
 async fn try_http_shutdown(gateway_addr: &str) -> bool {
     let url = format!("http://{gateway_addr}/api/hub/shutdown");
     let client = super::hub_client::local_hub_client()
@@ -98,14 +80,6 @@ async fn try_http_shutdown(gateway_addr: &str) -> bool {
     }
 }
 
-/// Poll for the process to exit after a shutdown signal.
-///
-/// Checks both the file lock and process status. Returns `true` if the
-/// process exited within 5 seconds.
-///
-/// # Errors
-///
-/// Returns `FatalError` if file operations fail.
 async fn poll_for_exit(
     pid_path: &std::path::Path,
     pid: u32,

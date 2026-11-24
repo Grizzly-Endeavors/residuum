@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-# Shared configuration and helpers for the Windows VM harness.
-# Sourced by the other scripts in this directory; not meant to be run directly.
-# See docs/runbooks/windows-harness.md.
 
 HARNESS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(git -C "$HARNESS_DIR" rev-parse --show-toplevel)"
@@ -34,8 +31,6 @@ PASSWORD_FILE="$VM_DIR/password"
 KNOWN_HOSTS="$VM_DIR/known_hosts"
 QEMU_PID="$VM_DIR/qemu.pid"
 MONITOR_SOCK="$VM_DIR/monitor.sock"
-# What the guest writes to COM1 (first-logon.ps1 reports its steps there). It is
-# truncated each time QEMU starts.
 SERIAL_LOG="$VM_DIR/guest-serial.log"
 
 die() {
@@ -68,7 +63,6 @@ vm_running() {
     [ -f "$QEMU_PID" ] && kill -0 "$(cat "$QEMU_PID")" 2>/dev/null
 }
 
-# Send one command to the QEMU human monitor.
 monitor_cmd() {
     python3 - "$MONITOR_SOCK" "$1" <<'PY'
 import socket, sys, time
@@ -80,11 +74,8 @@ s.close()
 PY
 }
 
-# Extra QEMU arguments for the next start_vm (create-vm.sh attaches the install
-# media this way).
 EXTRA_QEMU_ARGS=()
 
-# Start swtpm and QEMU in the background.
 start_vm() {
     require_kvm
     if vm_running; then
@@ -147,11 +138,6 @@ ssh_opts() {
         -o LogLevel=ERROR
 }
 
-# Run a PowerShell snippet in the guest. The snippet is base64-encoded so no
-# quoting survives (or breaks on) the trip through ssh and PowerShell. Any
-# PowerShell error stops the snippet and exits nonzero, since an error inside
-# iex otherwise leaves the exit code at 0. A native command's exit code is the
-# snippet's to check.
 guest_ps() {
     local encoded
     encoded="$(printf '%s' "$1" | base64 -w0)"
@@ -195,9 +181,6 @@ show_guest_progress() {
     fi
 }
 
-# Wait for SSH, printing what first-logon.ps1 reports on COM1 as it arrives and,
-# every five minutes, the last thing it said, so a stalled guest shows on the host.
-# Nothing is printed when SSH already answers.
 wait_for_ssh() {
     local timeout_secs="$1" waited=0 last
     until ssh_ready; do
@@ -220,10 +203,6 @@ require_ssh() {
     wait_for_ssh 300
 }
 
-# Copy the working tree (tracked and untracked-but-not-ignored files, plus the
-# built web/dist that build.rs needs) to a fresh source directory in the guest.
-# Some web/dist files are tracked, so the list is deduplicated: the guest's tar
-# fails on a repeated entry.
 sync_tree() {
     [ -f "$REPO_ROOT/web/dist/index.html" ] || die "web/dist is not built. Run 'npm run build' in web/ first."
     local tarball

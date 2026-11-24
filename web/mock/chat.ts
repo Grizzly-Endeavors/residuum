@@ -28,18 +28,8 @@ import { json } from "./http";
 import type { Route } from "./routes";
 import type { MockAgent, MockHub, MockState } from "./state";
 
-/**
- * What one simulated turn adds to the conversation's totals: two model calls
- * and three tools, with the context growing by the turn's messages.
- */
 const TURN_USAGE = { input: 37_000, output: 420, tools: 3, context: 17_900, growth: 500 } as const;
 
-/**
- * One page of the main conversation, matching the backend's
- * `ChatHistorySegment` tagged union (see `crates/hub/src/web/chat.rs`), or `null`
- * when `cursor` names no episode. An agent that has no conversation yet has
- * neither the sample messages nor the sample episodes.
- */
 export function chatHistorySegment(
   state: MockState,
   cursor: string | null,
@@ -62,7 +52,6 @@ export function chatHistorySegment(
         kind: "episode",
         episode_id: "ep-004",
         date: clock.dateDaysAgo(0),
-        // Episodes don't record visibility.
         messages: compressed.map((m) => ({ ...m, visibility: "user" })),
         next_cursor: episodes[0]?.id ?? null,
       };
@@ -91,7 +80,6 @@ export function chatHistorySegment(
   };
 }
 
-/** The chat history and usage routes, in the unscoped `/api/...` spelling. */
 export const chatRoutes: readonly Route[] = [
   {
     method: "GET",
@@ -116,58 +104,36 @@ export const chatRoutes: readonly Route[] = [
 
 type SendMessage = Extract<ClientMessage, { type: "send_message" }>;
 
-/** The files a chat turn reads, after searching memory. */
 const READ_PATHS = ["team/wiki/index.md", "team/wiki/projects/residuum.md"] as const;
 
-/** What a chat turn's first model call thinks before it searches memory. */
 const PLAIN_THOUGHT =
   "The message is about the wiki, so I should search my memory for recent notes before I read any pages.";
 
-/**
- * How long a turn runs. One that loses its connection either ends while the
- * page is away, or is still running when the page is back.
- */
 function turnLengthMs(drop: boolean, finishWhileDown: boolean): number {
   if (!drop) return 1500;
   return finishWhileDown ? 900 : 4000;
 }
 
-/**
- * Why a failed turn can't be run again: it isn't the conversation's latest
- * failure any more (another turn started, or it was already retried), or the
- * agent is busy.
- */
 export const RETRY_GONE =
   "That message can't be retried anymore because the conversation has moved on. Send it again to try once more.";
 
-/** Where a turn's message came from: this page's own socket, or another channel. */
 export interface MessageSource {
-  /** The endpoint the message arrived on: `ws`, `telegram`, ... */
   endpoint: string;
-  /** The person behind it, for a channel that identifies one. */
   sender?: MessageSender;
-  /** Images sent with it. */
   images?: ImageAttachment[];
-  /** Files sent with it, as the agent saved them. */
   attachments?: MessageAttachment[];
-  /** The agent behind it, for a message one of the agent's own sessions sent main. */
   agentSender?: AgentSender;
 }
 
-/** A main-agent turn that has started and not yet ended. */
 interface TurnInFlight {
   content: string;
   source: MessageSource;
-  /** The turn runs a failed turn's message again: history already holds the message. */
   rerun: boolean;
   cancels: Array<() => void>;
-  /** The sessions' messages the turn read while it ran, as history records them. */
   folded: RecentMessage[];
 }
 
-/** Runs simulated main-agent turns for one agent. */
 export interface ChatSimulator {
-  /** Start a turn for a message this page sent, with the files its uploads were saved as. */
   send: (
     msg: SendMessage,
     attachments?: readonly MessageAttachment[],
@@ -175,45 +141,13 @@ export interface ChatSimulator {
   ) => void;
   /** Start a turn for a message another channel brought, such as Telegram. */
   receive: (content: string, source: MessageSource) => void;
-  /** Take a message one of the agent's own sessions sent main (see `receiveFromSession`). */
   receiveFromSession: (content: string, sender: AgentSender) => void;
-  /** Stop the turn answering `replyTo`, if it is still running. */
   cancel: (replyTo: string) => void;
-  /**
-   * Run the failed turn `replyTo` again on its message (`retry_turn`); false
-   * when it can't be: it isn't the latest turn's failure, or the agent is busy.
-   */
   retry: (replyTo: string) => boolean;
-  /** Send a waiting message now (`send_queued_now`); false when it isn't waiting. */
   sendWaitingNow: (id: string) => boolean;
-  /** Take back a waiting message (`withdraw_queued`); false when it isn't waiting. */
   withdrawWaiting: (id: string) => boolean;
 }
 
-/**
- * Simulate main-agent turns: live frames to every connected page, then the
- * whole turn recorded in history when it ends, as the real gateway does. A
- * message first reaches every page as a `user_message` frame, then the turn
- * starts. The agent thinks and writes in pieces, the way a model streams,
- * and each piece is followed by the complete message.
- *
- * A message starting with "drop" loses the connection mid-turn:
- * - "drop finish": the turn ends while disconnected; history has it on reconnect.
- * - "drop compress": as "drop", and the observer compresses history into a
- *   new episode meanwhile, so the page has to reload history.
- * - "drop" (anything else): the turn is still running at reconnect and
- *   finishes live afterwards.
- *
- * Each turn reports its usage, and adds it to the conversation's totals. A
- * message starting with "remember" is followed by two seconds of memory work.
- * Other prefixes run the scripted turns of `chat-scenarios.ts`. A turn that
- * failed (`error`) can be run again (`retry_turn`) until another turn starts:
- * the rerun keeps its id, announces no message, and ends with a reply.
- * A message starting with "markdown" is answered with `markdownShowcase`,
- * and one starting with "images" with `imageShowcase`, instead of the next
- * canned reply, which keeps its place.
- */
-/** The showcase reply a message asks for by its first word, if it asks for one. */
 function showcaseFor(lower: string): string | undefined {
   if (lower.startsWith("markdown")) return markdownShowcase;
   if (lower.startsWith("images")) return imageShowcase;
@@ -224,14 +158,11 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
   const { state } = agent;
   const { env } = hub;
   const inFlight = new Map<string, TurnInFlight>();
-  /** Messages that arrived while a turn ran, oldest first, waiting for the agent to read them. */
   const waiting: Array<{ id: string; content: string; source: MessageSource }> = [];
-  /** The latest turn, when it failed and nothing has started since: the one a retry runs again. */
   let latestFailure: { id: string; content: string; source: MessageSource } | null = null;
   let responseIndex = 0;
   const WEB: MessageSource = { endpoint: "ws" };
 
-  /** The message that started or joined a turn, as history records it. */
   function userRecord(content: string, source: MessageSource): RecentMessage {
     return {
       role: "user",
@@ -249,13 +180,7 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
     };
   }
 
-  /**
-   * Record a turn in history: the message that started it, the turn's own
-   * messages, and the sessions' messages it read along the way, which come
-   * before its last message.
-   */
   function recordTurn(turn: TurnInFlight, opening: RecentMessage, own: RecentMessage[]): void {
-    // A rerun's message was recorded when the turn first ran.
     state.extraRecent.push(
       ...(turn.rerun ? [] : [opening]),
       ...own.slice(0, -1),
@@ -264,7 +189,6 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
     );
   }
 
-  /** Add a turn's model calls and tools to the conversation's totals. */
   function addUsage(tools: number): void {
     const { usage } = state;
     state.usage = {
@@ -277,10 +201,6 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
     };
   }
 
-  /**
-   * The frames that start a turn: the message every page is told of, then the
-   * turn. A rerun has no message to tell of.
-   */
   function startFrames(
     replyTo: string,
     content: string,
@@ -317,7 +237,6 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
     ];
   }
 
-  /** A turn is over: the agent is no longer busy, and a reply the user hasn't seen counts as unread. */
   function settleTurn(failed: boolean): void {
     hub.setBusy(agent, false);
     if (failed) return;
@@ -325,7 +244,6 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
     if (agent.connectedClients() === 0) hub.addUnread(agent);
   }
 
-  /** Run a scripted turn: its frames at their times, then its ending, held where a test holds turns. */
   function runScenario(
     replyTo: string,
     content: string,
@@ -364,7 +282,6 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
     later(scenario.endAt, () => {
       turn.cancels.push(
         env.whenTurnReleased("end", () => {
-          // What the turn's last model call writes, timed from the moment it is let end.
           for (const step of scenario.finale) {
             later(step.at, () => {
               emit(step.frames);
@@ -406,7 +323,6 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
             emit([{ type: "turn_ended", reply_to: replyTo }]);
             settleTurn(scenario.failure !== null);
             if (scenario.failure !== null) latestFailure = { id: replyTo, content, source };
-            // Like the backend, every message of the turn carries its correlation id.
             const ofTurn = {
               timestamp: env.clock.iso(),
               visibility: "user",
@@ -425,7 +341,6 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
     });
   }
 
-  /** The scripted turn that answers a message, or null for one the plain simulated turn answers. */
   function scenarioOf(replyTo: string, content: string, source: MessageSource): Scenario | null {
     if (source.endpoint === "ws") return scenarioFor(content, replyTo, env.nextId);
     if (source.agentSender !== undefined) {
@@ -435,7 +350,6 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
   }
 
   function start(replyTo: string, content: string, source: MessageSource): void {
-    // Whatever failed before, the conversation has moved past it.
     latestFailure = null;
     const scenario = scenarioOf(replyTo, content, source);
     if (scenario !== null) {
@@ -455,7 +369,6 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
         timestamp: env.clock.iso(),
       },
     ]);
-    // Then two files read at once; a message starting with "fail" can't read the second.
     const reads = READ_PATHS.map((path, i) => ({
       id: `tc_mock_${String(env.nextId())}`,
       path,
@@ -475,7 +388,6 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
       turn.cancels.push(env.after(ms, action));
     };
 
-    // Live frames stop while the connection is down; the agent's turn journal still keeps them.
     let down = false;
     const live = (frame: ServerMessage): void => {
       if (down) state.journalOnly(frame);
@@ -484,7 +396,6 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
 
     for (const frame of startFrames(replyTo, content, source)) live(frame);
     hub.setBusy(agent, true);
-    // The first model call thinks, then writes its note in pieces, ahead of the complete messages.
     const note = "Looking through recent notes first.";
     deltaFrames(replyTo, "thinking", 0, PLAIN_THOUGHT).forEach((frame, i) => {
       later(20 + i * PIECE_MS, () => {
@@ -563,7 +474,6 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
         if (compress) state.compressedAt = state.extraRecent.length;
         state.dropSockets();
       });
-      // Reconnected by the time a still-running turn finishes.
       if (!finishWhileDown) {
         later(3500, () => {
           down = false;
@@ -575,7 +485,6 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
       turn.cancels.push(env.whenTurnReleased("end", endTurn));
     });
 
-    /** The last model call writes its reply in pieces, unless no page is listening, then the turn ends. */
     function endTurn(): void {
       if (down) {
         finishTurn();
@@ -619,7 +528,6 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
       }
       settleTurn(false);
       const now = env.clock.iso();
-      // Like the backend, every message of the turn carries its correlation id.
       const ofTurn = { timestamp: now, visibility: "user", turn_id: replyTo } as const;
       recordTurn(turn, { ...userRecord(content, source), turn_id: replyTo }, [
         {
@@ -653,12 +561,6 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
     }
   }
 
-  /**
-   * Start a turn for a message, or, while a turn runs, keep it waiting and
-   * tell every page so. The mock reads a waiting message only once the
-   * running turn ends, as the backend does with one that arrives after the
-   * turn's last checkpoint.
-   */
   function arrive(id: string, content: string, source: MessageSource): void {
     if (inFlight.size === 0 && waiting.length === 0) {
       start(id, content, source);
@@ -682,7 +584,6 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
     });
   }
 
-  /** The turn that ran has ended: the oldest waiting message starts the next. */
   function startNextWaiting(): void {
     if (inFlight.size > 0) return;
     const next = waiting.shift();
@@ -705,13 +606,6 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
     arrive(`${source.endpoint}-${String(env.nextId())}`, content, source);
   }
 
-  /**
-   * A message one of the agent's own sessions sent main. While a turn runs,
-   * the backend reads it at the turn's next checkpoint and announces it then,
-   * as a `user_message` of that turn, which the turn journal keeps; the mock
-   * reads it as it arrives. With no turn running, it starts one. Nothing tells
-   * pages it is waiting: only a person's message waits that way.
-   */
   function receiveFromSession(content: string, sender: AgentSender): void {
     const source: MessageSource = { endpoint: "background", agentSender: sender };
     const id = `background-${String(env.nextId())}`;
@@ -732,12 +626,6 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
     turn.folded.push({ ...userRecord(content, source), turn_id: turnId });
   }
 
-  /**
-   * Run the failed turn again under its own id: no message is announced or
-   * recorded again, and the provider answers this time, so the rerun ends
-   * with a reply. False when the turn isn't the latest one's failure, or the
-   * agent is busy.
-   */
   function retry(replyTo: string): boolean {
     const turn = latestFailure;
     if (turn?.id !== replyTo || inFlight.size > 0) return false;
@@ -758,10 +646,6 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
     startNextWaiting();
   }
 
-  /**
-   * Send a waiting message now: it goes first, and the running turn stops.
-   * False when it isn't waiting.
-   */
   function sendWaitingNow(id: string): boolean {
     const index = waiting.findIndex((message) => message.id === id);
     if (index === -1) return false;
@@ -771,7 +655,6 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
     return true;
   }
 
-  /** Take back a waiting message, telling every page. False when it isn't waiting. */
   function withdrawWaiting(id: string): boolean {
     const index = waiting.findIndex((message) => message.id === id);
     if (index === -1) return false;

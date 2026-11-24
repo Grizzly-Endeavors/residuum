@@ -1,30 +1,17 @@
-// What a message's attachments do in the conversation: which open beside the
-// thread in the Files panel, where the others download from, and which
-// `[Attachment: …]` text lines the attachment chips stand in for.
-
 import { agentPath } from "./paths";
 import type { MessageAttachment } from "./types";
 
-/** Extensions the file panel shows as text, so the attachment opens beside the thread. */
 const PANEL_EXTENSIONS = [".md", ".txt"];
 
-/** The attachment opens in the file panel rather than downloading. */
 export function opensInPanel(attachment: Pick<MessageAttachment, "filename">): boolean {
   const name = attachment.filename.toLowerCase();
   return PANEL_EXTENSIONS.some((extension) => name.endsWith(extension));
 }
 
-/** Where a saved attachment's bytes download from, served whether its agent runs or not. */
 export function attachmentDownloadPath(agent: string, itemId: string): string {
   return agentPath(agent, `/inbox/agent/${encodeURIComponent(itemId)}/attachments/0`);
 }
 
-/**
- * The message text without the `[Attachment: …]` lines its attachments stand
- * for. Each attachment takes one line, matched by its name and by the arrow
- * that comes before its path; a line that says the download failed has an
- * em dash instead and stays. Other text is kept as it is.
- */
 export function withoutAttachmentLines(
   content: string,
   attachments: readonly Pick<MessageAttachment, "filename">[],

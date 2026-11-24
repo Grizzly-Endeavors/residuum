@@ -1,17 +1,3 @@
-//! `gix` (gitoxide) wrapper: the only file in the checkpoints system that
-//! knows about the git object model. Every other module works with plain
-//! [`super::types::CheckpointSummary`]/[`super::types::ChangedPath`]/`String` ids, so swapping the git
-//! library later only touches this file.
-//!
-//! Each checkpoint repository is a bare git directory (no work tree of its
-//! own — the association between a git directory and the directory it
-//! snapshots is data [`crate::engine`] carries, not something
-//! `gix` is asked to understand). A single branch, `refs/heads/checkpoints`,
-//! is the linear history of checkpoints; every commit's tree is rebuilt from
-//! scratch from the currently-included files rather than patched onto the
-//! parent, so a file that disappeared from the snapshot is simply never
-//! re-added — no separate deletion bookkeeping needed.
-
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, TimeZone, Utc};
@@ -20,48 +6,29 @@ use gix::objs::tree::EntryKind;
 
 use super::types::{ChangeKind, ChangedPath, CheckpointError, CheckpointTrigger};
 
-/// The one branch every checkpoint repository keeps its history on.
 const REF_NAME: &str = "refs/heads/checkpoints";
 
-/// Author/committer identity stamped on every checkpoint commit.
 const COMMITTER_NAME: &str = "Residuum";
 const COMMITTER_EMAIL: &str = "checkpoints@residuum.local";
 
-/// Lock file, inside the git-dir, serializing a commit's read-tip ->
-/// write-commit -> update-ref sequence across processes: the gateway and a
-/// `residuum` CLI command may both want to commit to the same repository
-/// at once.
 const COMMIT_LOCK_FILE: &str = "checkpoint.lock";
 
-/// How many times to poll for the cross-process commit lock before giving
-/// up. Checkpointing must never block its caller for long, so this is a
-/// short, bounded wait, not an indefinite one.
 const LOCK_RETRY_ATTEMPTS: u32 = 40;
 const LOCK_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(25);
 
-/// How many times to retry the write-commit -> update-ref step if the ref
-/// changed underneath us. With the commit lock held this should never
-/// actually happen -- it's a defensive second layer, not the primary
-/// safety mechanism.
 const REF_CAS_RETRY_ATTEMPTS: u32 = 3;
 
-/// A file to include in a snapshot commit: its path relative to the
-/// snapshotted directory (`/`-separated), its absolute path on disk, and
-/// whether it should be recorded as executable.
 pub(super) struct SnapshotFile {
     pub(super) rel_path: String,
     pub(super) abs_path: PathBuf,
     pub(super) executable: bool,
 }
 
-/// One page of [`GitRepo::log`]: commits (newest first) with their parsed
-/// fields and changed-path counts, plus a cursor for the next page.
 type LogPage = (
     Vec<(gix::ObjectId, CommitFields, usize)>,
     Option<gix::ObjectId>,
 );
 
-/// Metadata recorded on a checkpoint commit, parsed back out of its trailer.
 pub(super) struct CommitFields {
     pub(super) address: String,
     pub(super) run_id: Option<String>,
@@ -71,7 +38,6 @@ pub(super) struct CommitFields {
     pub(super) timestamp: DateTime<Utc>,
 }
 
-/// A bare checkpoint git repository.
 pub(super) struct GitRepo {
     repo: gix::Repository,
 }
@@ -84,17 +50,12 @@ fn io_err(e: impl std::fmt::Display) -> CheckpointError {
     CheckpointError::Io(e.to_string())
 }
 
-/// What [`GitRepo::commit_snapshot_outcome`] did with a snapshot.
 pub(super) enum SnapshotCommit {
-    /// A new checkpoint was written.
     Recorded(String),
-    /// The tree already matched the tip. `tip` is that checkpoint's id, or
-    /// `None` when the repository has no commits yet.
     Unchanged { tip: Option<String> },
 }
 
 impl SnapshotCommit {
-    /// The id of a checkpoint this call newly wrote, if it wrote one.
     pub(super) fn recorded_id(&self) -> Option<String> {
         match self {
             Self::Recorded(id) => Some(id.clone()),
@@ -102,8 +63,6 @@ impl SnapshotCommit {
         }
     }
 
-    /// The checkpoint that holds this tree: the one just written, or the
-    /// existing tip when nothing changed.
     pub(super) fn current_id(&self) -> Option<String> {
         match self {
             Self::Recorded(id) => Some(id.clone()),
@@ -113,8 +72,6 @@ impl SnapshotCommit {
 }
 
 impl GitRepo {
-    /// Open the checkpoint repository at `git_dir`, initializing a fresh
-    /// bare repository there if it doesn't exist yet.
     pub(super) fn open_or_init(git_dir: &Path) -> Result<Self, CheckpointError> {
         if git_dir.join("HEAD").is_file() {
             let repo = gix::open(git_dir).map_err(git_err)?;
@@ -126,8 +83,6 @@ impl GitRepo {
         Ok(Self { repo })
     }
 
-    /// The current tip of `refs/heads/checkpoints`, or `None` before the
-    /// first checkpoint.
     pub(super) fn tip(&self) -> Result<Option<gix::ObjectId>, CheckpointError> {
         match self.repo.try_find_reference(REF_NAME).map_err(git_err)? {
             Some(mut reference) => Ok(reference.peel_to_id().ok().map(gix::Id::detach)),
@@ -135,8 +90,6 @@ impl GitRepo {
         }
     }
 
-    /// Resolve a full checkpoint id (as handed out by this module — never
-    /// abbreviated) to an object id known to exist as a commit.
     pub(super) fn resolve_commit(&self, id: &str) -> Result<gix::ObjectId, CheckpointError> {
         let oid = gix::ObjectId::from_hex(id.as_bytes()).map_err(|e| {
             tracing::debug!(error = %e, id, "checkpoint id is not valid hex");
@@ -149,8 +102,6 @@ impl GitRepo {
         Ok(oid)
     }
 
-    /// The first parent of commit `id`, or `None` when it has none (the
-    /// repository's first checkpoint).
     pub(super) fn parent_of(
         &self,
         id: gix::ObjectId,
@@ -159,19 +110,6 @@ impl GitRepo {
         Ok(commit.parent_ids().next().map(gix::Id::detach))
     }
 
-    /// Build a tree from exactly `files` (starting from the empty tree, so a
-    /// path not present in `files` is simply absent from the result) and, if
-    /// it differs from the current tip's tree, commit it as a new
-    /// checkpoint. Returns `None` when nothing changed.
-    ///
-    /// Serializes the read-tip -> write-commit -> update-ref sequence
-    /// against every other process (a running gateway, a `residuum` CLI
-    /// command, or another instance of either) that might commit to this
-    /// same repository at the same moment, via a lock file in the git-dir.
-    /// The ref update itself additionally requires the tip to still match
-    /// what was just read (rather than writing unconditionally), and
-    /// retries a few times on a mismatch, as a second, independent layer
-    /// in case the lock ever doesn't cover a real race.
     pub(super) fn commit_snapshot(
         &self,
         files: &[SnapshotFile],
@@ -183,10 +121,6 @@ impl GitRepo {
             .recorded_id())
     }
 
-    /// Same commit as [`Self::commit_snapshot`], but an unchanged tree still
-    /// names the tip that already holds it. Callers that undo a later action
-    /// need that id: skipping the commit doesn't mean there is no snapshot
-    /// of the pre-action state.
     pub(super) fn commit_snapshot_outcome(
         &self,
         files: &[SnapshotFile],
@@ -219,10 +153,6 @@ impl GitRepo {
         }))
     }
 
-    /// Acquire this repository's cross-process commit lock, polling briefly
-    /// if another process currently holds it. Held by the caller for the
-    /// duration of a commit attempt; released when the returned file is
-    /// dropped.
     fn acquire_commit_lock(&self) -> Result<std::fs::File, CheckpointError> {
         let lock_path = self.repo.git_dir().join(COMMIT_LOCK_FILE);
         let file = std::fs::OpenOptions::new()
@@ -251,9 +181,6 @@ impl GitRepo {
         }
     }
 
-    /// Build a tree object from `files`, starting from the empty tree and
-    /// skipping any file that vanished on disk between the directory walk and
-    /// the read.
     fn build_tree(&self, files: &[SnapshotFile]) -> Result<gix::ObjectId, CheckpointError> {
         let empty_tree_id = self.repo.empty_tree().id().detach();
         let mut editor = self.repo.edit_tree(empty_tree_id).map_err(git_err)?;
@@ -276,8 +203,6 @@ impl GitRepo {
         Ok(editor.write().map_err(git_err)?.detach())
     }
 
-    /// The tree id of `commit`, or the empty tree when there is no commit
-    /// yet.
     fn tree_id_of(&self, commit: Option<gix::ObjectId>) -> Result<gix::ObjectId, CheckpointError> {
         match commit {
             Some(id) => Ok(self
@@ -291,9 +216,6 @@ impl GitRepo {
         }
     }
 
-    /// Write a commit object on top of `parent` (or as the repository's
-    /// first commit when `parent` is `None`) and move `refs/heads/checkpoints`
-    /// to it.
     fn write_commit(
         &self,
         tree: gix::ObjectId,
@@ -317,13 +239,6 @@ impl GitRepo {
             extra_headers: vec![],
         };
         let commit_id = self.repo.write_object(commit).map_err(git_err)?.detach();
-        // CAS on the ref: it must still be exactly what we read as `parent`
-        // (or must not exist yet, for the repository's first commit). This
-        // is what actually makes the retry loop in `commit_snapshot`
-        // meaningful — with `PreviousValue::Any` here the write would
-        // always succeed unconditionally and silently orphan a sibling
-        // commit written by another process between our `tip()` read and
-        // this write.
         let expected = match parent {
             Some(p) => gix::refs::transaction::PreviousValue::MustExistAndMatch(
                 gix::refs::Target::Object(p),
@@ -336,7 +251,6 @@ impl GitRepo {
         Ok(commit_id)
     }
 
-    /// The trailer-parsed metadata for `id`.
     pub(super) fn commit_fields(&self, id: gix::ObjectId) -> Result<CommitFields, CheckpointError> {
         let commit = self.repo.find_commit(id).map_err(git_err)?;
         let message = commit.message_raw().map_err(git_err)?.to_string();
@@ -348,8 +262,6 @@ impl GitRepo {
         Ok(parse_message(&message, timestamp))
     }
 
-    /// Changed paths between `id` and its first parent (or the empty tree,
-    /// for the repository's first commit).
     pub(super) fn changed_paths(
         &self,
         id: gix::ObjectId,
@@ -370,8 +282,6 @@ impl GitRepo {
         Ok(changes.into_iter().filter_map(changed_path_from).collect())
     }
 
-    /// Unified-diff text for `path` between `id` and its first parent.
-    /// `None` when `path` didn't change.
     pub(super) fn file_diff(
         &self,
         id: gix::ObjectId,
@@ -394,7 +304,6 @@ impl GitRepo {
         ))
     }
 
-    /// The parent commit's tree, or `None` when `commit` has no parent.
     fn parent_tree<'repo>(
         &'repo self,
         commit: &gix::Commit<'repo>,
@@ -408,8 +317,6 @@ impl GitRepo {
         }
     }
 
-    /// A file's bytes at `path` inside `tree`, or `None` if `path` doesn't
-    /// exist there or names a directory.
     fn blob_at_path(
         &self,
         tree: &gix::Tree<'_>,
@@ -430,8 +337,6 @@ impl GitRepo {
         ))
     }
 
-    /// File content at `path` at checkpoint `id`. `None` if `path` doesn't
-    /// exist there or names a directory.
     pub(super) fn file_content_at(
         &self,
         id: gix::ObjectId,
@@ -442,8 +347,6 @@ impl GitRepo {
         self.blob_at_path(&tree, path)
     }
 
-    /// Every file at or under `path` in checkpoint `id`, as root-relative
-    /// slash paths. Empty when `path` is not present there.
     pub(super) fn files_under(
         &self,
         id: gix::ObjectId,
@@ -466,7 +369,6 @@ impl GitRepo {
         Ok(files)
     }
 
-    /// The names of the top-level entries of checkpoint `id`'s tree.
     pub(super) fn root_entry_names(
         &self,
         id: gix::ObjectId,
@@ -500,15 +402,6 @@ impl GitRepo {
         Ok(())
     }
 
-    /// Restore `path` (a file or a directory) from checkpoint `id` onto
-    /// disk under `dest_root`, returning the workspace-relative paths that
-    /// were written or removed. A directory restore makes the on-disk
-    /// subtree match the checkpoint's subtree exactly: files present now
-    /// but absent from the checkpoint at that path are removed.
-    ///
-    /// # Errors
-    /// Returns [`CheckpointError::PathNotFound`] if `path` isn't present in
-    /// the checkpoint's tree.
     pub(super) fn restore_paths(
         &self,
         id: gix::ObjectId,
@@ -545,11 +438,6 @@ impl GitRepo {
         Ok(written)
     }
 
-    /// Write back every top-level entry of checkpoint `id`'s tree under
-    /// `dest_root`, making each restored directory match the checkpoint
-    /// exactly. Top-level entries of `dest_root` the checkpoint doesn't have
-    /// are left alone, so a whole-tree restore into a fresh directory never
-    /// deletes anything. Returns the paths written.
     pub(super) fn restore_root(
         &self,
         id: gix::ObjectId,
@@ -577,9 +465,6 @@ impl GitRepo {
         Ok(written)
     }
 
-    /// Make `dest_dir` match the tree at `tree_id` exactly: write every
-    /// entry the tree has, and remove anything under `dest_dir` the tree
-    /// doesn't have.
     fn replace_directory(
         &self,
         tree_id: gix::ObjectId,
@@ -612,8 +497,6 @@ impl GitRepo {
         Ok(())
     }
 
-    /// Write blob `id`'s content to `dest_path`, creating parent
-    /// directories as needed and setting the executable bit on Unix.
     fn write_blob_to_disk(
         &self,
         id: gix::ObjectId,
@@ -629,17 +512,6 @@ impl GitRepo {
         Ok(())
     }
 
-    /// Walk history from the tip backward, newest first, yielding parsed
-    /// commit fields alongside each commit's id and how many paths it
-    /// changed. `before` (a previously returned cursor) resumes exactly
-    /// there; `limit` bounds how many are returned. When `path_filter` is
-    /// set, only checkpoints that changed a path equal to it or nested
-    /// under it as a directory count toward `limit` or appear in the
-    /// result; when `turn_filter` is set, only checkpoints recorded against
-    /// that exact turn id do (used to find a turn's turn-start/turn-end
-    /// pair for "undo this turn") — every commit in history is still walked
-    /// to find them, so a narrow filter over a long history costs
-    /// proportionally more.
     pub(super) fn log(
         &self,
         before: Option<gix::ObjectId>,
@@ -651,9 +523,6 @@ impl GitRepo {
             return Ok((Vec::new(), None));
         };
 
-        // `before` is a cursor this method previously returned as the next
-        // (not-yet-shown) checkpoint, so resuming starts exactly there
-        // rather than skipping past it.
         let mut current = before.or(Some(tip));
 
         let mut items = Vec::new();
@@ -680,7 +549,6 @@ impl GitRepo {
         Ok((items, next_cursor))
     }
 
-    /// Total number of checkpoints, and when the oldest was taken.
     pub(super) fn stats(&self) -> Result<(u64, Option<DateTime<Utc>>), CheckpointError> {
         let Some(tip) = self.tip()? else {
             return Ok((0, None));
@@ -699,8 +567,6 @@ impl GitRepo {
     }
 }
 
-/// Whether `changed_path` (a checkpoint's changed file, e.g.
-/// `"wiki/index.md"`) is `filter` itself or nested under it as a directory.
 fn path_matches(changed_path: &str, filter: &str) -> bool {
     changed_path == filter
         || changed_path
@@ -708,8 +574,6 @@ fn path_matches(changed_path: &str, filter: &str) -> bool {
             .is_some_and(|rest| rest.starts_with('/'))
 }
 
-/// Remove any file or directory directly under `dir` whose name isn't in
-/// `keep`. No-op if `dir` doesn't exist (nothing to prune).
 fn remove_stale_entries(
     dir: &Path,
     keep: &std::collections::HashSet<String>,
@@ -750,7 +614,6 @@ fn set_executable(path: &Path, executable: bool) -> std::io::Result<()> {
     reason = "same signature as the Unix version, which can fail setting the mode"
 )]
 fn set_executable(_path: &Path, _executable: bool) -> std::io::Result<()> {
-    // No executable bit to preserve outside Unix.
     Ok(())
 }
 
@@ -780,11 +643,6 @@ fn changed_path_from(change: gix::object::tree::diff::ChangeDetached) -> Option<
             path: location.to_string(),
             kind: ChangeKind::Modified,
         }),
-        // Rewrite tracking is never enabled (see `commit_snapshot`'s use of
-        // `gix::diff::Options::default()`), so this never fires in
-        // practice; treated as a modification at the new location so the
-        // match stays exhaustive without silently dropping data if that
-        // ever changes.
         gix::object::tree::diff::ChangeDetached::Rewrite {
             location,
             entry_mode,
@@ -796,9 +654,6 @@ fn changed_path_from(change: gix::object::tree::diff::ChangeDetached) -> Option<
     }
 }
 
-/// Render a unified diff between `old` and `new` file content. `None` when
-/// both sides are absent or identical. Binary content on either side falls
-/// back to a one-line placeholder rather than a byte-level diff.
 fn render_unified_diff(path: &str, old: Option<&[u8]>, new: Option<&[u8]>) -> Option<String> {
     if old == new {
         return None;
@@ -818,13 +673,10 @@ fn render_unified_diff(path: &str, old: Option<&[u8]>, new: Option<&[u8]>) -> Op
     )
 }
 
-/// Decode `data` as UTF-8 text, or `None` if it isn't (treated as binary).
 fn content_as_text(data: &[u8]) -> Option<String> {
     std::str::from_utf8(data).ok().map(str::to_string)
 }
 
-/// Build a commit message: the summary, then a blank line, then trailers
-/// carrying every field needed to reconstruct a [`super::types::CheckpointContext`].
 fn build_message(ctx: &super::types::CheckpointContext) -> String {
     use std::fmt::Write as _;
 
@@ -846,11 +698,6 @@ fn build_message(ctx: &super::types::CheckpointContext) -> String {
     message
 }
 
-/// Parse a message [`build_message`] produced back into its fields. Never
-/// fails: a message from an unrecognized shape (there shouldn't be any,
-/// since this repository only ever holds commits this module wrote) is
-/// treated as an untitled `turn_end` checkpoint by `system` rather than
-/// erroring the whole listing over one row.
 fn parse_message(message: &str, timestamp: DateTime<Utc>) -> CommitFields {
     let lines: Vec<&str> = message.lines().collect();
 
@@ -1025,11 +872,6 @@ mod tests {
 
     #[test]
     fn concurrent_commits_from_independent_repo_handles_never_lose_one() {
-        // Two independently-opened `GitRepo`s over the same git-dir, each
-        // with its own in-process state, simulate the gateway and a
-        // `residuum` CLI command committing to the same checkpoint
-        // repository at once -- only the on-disk commit lock (never a
-        // shared Rust `Mutex`) can serialize them.
         let dir = tempfile::tempdir().unwrap();
         let git_dir = dir.path().join("workspace.git");
         let workspace_a = dir.path().join("a");
@@ -1072,8 +914,6 @@ mod tests {
             "both concurrent commits should produce a checkpoint, not silently no-op"
         );
 
-        // Neither commit lost: history has both, one linear chain (a
-        // silently-overwritten ref would leave only one).
         let repo = GitRepo::open_or_init(&git_dir).unwrap();
         let (items, _) = repo.log(None, 10, None, None).unwrap();
         assert_eq!(
@@ -1113,7 +953,6 @@ mod tests {
         assert!(paths_after_first.contains(&"a.txt".to_string()));
         assert!(paths_after_first.contains(&"b.txt".to_string()));
 
-        // "delete" b.txt by omitting it from the next snapshot's file list.
         let remaining = write_files(dir.path(), &[("a.txt", "hello")]);
         let after_delete = repo
             .commit_snapshot(
@@ -1222,7 +1061,6 @@ mod tests {
             &ctx_with_turn(CheckpointTrigger::TurnEnd, "did stuff", "turn-1"),
         )
         .unwrap();
-        // A different turn shouldn't show up in "turn-1"'s filtered results.
         let other = write_files(dir.path(), &[("a.txt", "3")]);
         repo.commit_snapshot(
             &other,
@@ -1311,9 +1149,6 @@ mod tests {
                 ("inbox/agent/item.json", "archived mid-snapshot"),
             ],
         );
-        // Simulate `inbox_archive` moving or removing the file after
-        // `collect_tree_files` walked the directory but before `build_tree`
-        // reads each file's bytes.
         std::fs::remove_file(dir.path().join("inbox/agent/item.json")).unwrap();
 
         let id = repo

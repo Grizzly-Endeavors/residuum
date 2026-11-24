@@ -5,39 +5,21 @@ import { expectNoAxeViolations } from "../support/axe";
 import { expect, test } from "../support/fixtures";
 import { expectFileOpen, expectFileRendered } from "../support/lazy";
 
-/**
- * The Inbox as mail: conversations between you and your agents, in three
- * folders (Inbox, Sent, Archived), for every agent or one, with the open
- * thread beside the list. The scenario's mail (`mock/data/mail.ts`) gives
- * atlas and scout each an unread "Deploy tomorrow" and a read "Daily Digest",
- * and an archived "Last week's digest"; scout's "Research: local-first sync
- * libraries" carries a Markdown file, a text file and an image; the "Wiki
- * audit: stale pages" thread (sent to atlas and scout, with their replies and
- * your answer) carries a Markdown file and a PDF; "Pick up the weekly
- * changelog" went to drifter, which is stopped, and nobody answered; "Backup
- * rotation" was asked, answered and archived. Opening a thread marks it read,
- * which is what the rail's count follows.
- */
-
 const AUDIT = MAIL_SEED.wikiAudit;
 const SYNC = MAIL_SEED.syncResearch;
 const CHANGELOG = MAIL_SEED.changelog;
 
-/** Where scout's copy of the research message keeps its attachments, in scout's workspace. */
 const SYNC_FILES = `inbox/user/attachments/${SYNC.id}`;
 
-/** Path and query of the page's URL, decoded, so a test can compare them exactly. */
 function address(page: Page): string {
   const url = new URL(page.url());
   return decodeURIComponent(`${url.pathname}${url.search}`);
 }
 
-/** The conversations of the folder shown. On a phone it hides while a thread or New message is open. */
 function conversations(page: Page): Locator {
   return page.getByRole("region", { name: "Conversations", exact: true });
 }
 
-/** The open thread. */
 function conversation(page: Page): Locator {
   return page.getByRole("region", { name: "Conversation", exact: true });
 }
@@ -50,7 +32,6 @@ function matching(text: string): RegExp {
   return new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
 }
 
-/** A conversation's row by its subject, and by who it is with when two share a subject. */
 function row(page: Page, subject: string, who?: string): Locator {
   const name =
     who === undefined
@@ -71,7 +52,6 @@ function folder(page: Page, name: "Inbox" | "Sent" | "Archived"): Locator {
     .getByRole("link", { name: matching(name) });
 }
 
-/** The Inbox link with its count: in the rail, or in the phone's bottom bar. */
 function inboxLink(page: Page, isMobile: boolean): Locator {
   const nav = isMobile
     ? page.getByRole("navigation", { name: "Main" })
@@ -79,22 +59,18 @@ function inboxLink(page: Page, isMobile: boolean): Locator {
   return nav.getByRole("link", { name: /^Inbox/ });
 }
 
-/** The context panel showing `name`: a column beside the main region, or on a phone a full-screen sheet. */
 function filePanel(page: Page, isMobile: boolean, name: string): Locator {
   return page.getByRole(isMobile ? "dialog" : "complementary", { name });
 }
 
-/** The panel's way out, Close panel, on a phone's sheet as beside the main region. */
 function closePanel(panel: Locator): Locator {
   return panel.getByRole("button", { name: "Close panel", exact: true });
 }
 
-/** The composer's file picker, which a button opens. */
 function picker(page: Page): Locator {
   return page.getByLabel("Files to attach");
 }
 
-/** What the mock has on disk for one of scout's files. */
 async function onDisk(page: Page, agent: string, path: string): Promise<string> {
   const response = await page.request.get(
     `/api/agents/${agent}/workspace/file?path=${encodeURIComponent(path)}`,
@@ -102,12 +78,10 @@ async function onDisk(page: Page, agent: string, path: string): Promise<string> 
   return response.text();
 }
 
-/** The toast saying `text`, with its Undo. An earlier toast stays up while manual time holds the clock, so it is found by its words. */
 function toastWith(page: Page, text: string): Locator {
   return page.locator(".ui-toast", { hasText: text });
 }
 
-/** The URLs of the requests the page makes with `method` to `path`, filled in as they happen. */
 function requestsTo(page: Page, method: string, path: string): string[] {
   const urls: string[] = [];
   page.on("request", (request) => {
@@ -118,7 +92,6 @@ function requestsTo(page: Page, method: string, path: string): string[] {
   return urls;
 }
 
-/** The phone shows the list or the thread, so it goes back to the list to see a row. */
 async function toList(page: Page, isMobile: boolean): Promise<void> {
   if (isMobile) await conversation(page).getByRole("button", { name: "Back to list" }).click();
   await expect(conversations(page)).toBeVisible();
@@ -140,10 +113,8 @@ test.describe("the folders and the agent filter", () => {
     await expect(folder(page, "Inbox")).toHaveAccessibleName("Inbox 2 unread");
     await expect(folder(page, "Inbox")).toHaveAttribute("aria-current", "page");
     await expect(inboxLink(page, isMobile)).toHaveAccessibleName("Inbox 2 unread");
-    // The list with its rows, on a phone as well as a desktop.
     await expectNoAxeViolations(page);
 
-    // Sent holds what you wrote, worded by who it went to.
     await folder(page, "Sent").click();
     await expect.poll(() => address(page)).toBe("/inbox?folder=sent");
     await expect(folder(page, "Sent")).toHaveAttribute("aria-current", "page");
@@ -177,7 +148,6 @@ test.describe("the folders and the agent filter", () => {
     await expect(row(page, "Deploy tomorrow", "atlas")).toHaveCount(0);
     await expect(row(page, "Research: local-first sync libraries")).toBeVisible();
 
-    // The folder keeps the filter, and the Sent rows are the ones that include scout.
     await folder(page, "Sent").click();
     await expect.poll(() => address(page)).toBe("/inbox?folder=sent&agent=scout");
     await expect(rows(page)).toHaveCount(1);
@@ -227,13 +197,11 @@ test.describe("reading a thread", () => {
     ).toBeVisible();
     await expect(count).toHaveAccessibleName("Inbox 1 unread");
     if (!isMobile) {
-      // The list is beside the thread: the row is the open one, and no longer unread.
       await expect(row(page, "Deploy tomorrow", "atlas")).toHaveAttribute("aria-current", "true");
       await expect(row(page, "Deploy tomorrow", "atlas")).not.toHaveAccessibleName(/unread/);
       await expect(folder(page, "Inbox")).toHaveAccessibleName("Inbox 1 unread");
     }
 
-    // A link opens it too, and reading the last unread thread clears the count.
     await page.goto("/inbox?thread=scout/user/mock_1");
     await expect(heading(page, "Deploy tomorrow")).toBeVisible();
     await expect(count).toHaveAccessibleName("Inbox");
@@ -263,11 +231,9 @@ test.describe("reading a thread", () => {
     await expect.poll(() => address(page)).toBe("/inbox?thread=scout/user/mock_2");
 
     if (isMobile) {
-      // The thread has the screen to itself; Back to list returns to the row it came from.
       await conversation(page).getByRole("button", { name: "Back to list" }).click();
       await expect(row(page, "Daily Digest", "scout")).toBeFocused();
     } else {
-      // Another thread takes its place without adding to the history.
       await row(page, "Daily Digest", "atlas").click();
       await expect.poll(() => address(page)).toBe("/inbox?thread=atlas/user/mock_2");
       await page.goBack();
@@ -320,13 +286,11 @@ test.describe("Archive and Move to Inbox", () => {
   }) => {
     await page.goto("/inbox?thread=atlas/user/mock_2");
     await expect(heading(page, "Daily Digest")).toBeVisible();
-    // Manual time holds the toast's own dismissal while the spec clicks Undo.
     await mock.manualTime();
 
     await conversation(page).getByRole("button", { name: "Archive" }).click();
     const archived = toastWith(page, "Archived “Daily Digest”.");
     await expect(archived).toBeVisible();
-    // The thread closes and the list is back, without it.
     await expect.poll(() => address(page)).toBe("/inbox");
     await expect(row(page, "Daily Digest", "atlas")).toHaveCount(0);
     await expect(rows(page)).toHaveCount(5);
@@ -335,7 +299,6 @@ test.describe("Archive and Move to Inbox", () => {
     await expect(row(page, "Daily Digest", "atlas")).toBeVisible();
     await expect(rows(page)).toHaveCount(6);
 
-    // Archive it again and find it in Archived, where Move to Inbox brings it back.
     await row(page, "Daily Digest", "atlas").click();
     await conversation(page).getByRole("button", { name: "Archive" }).click();
     await expect(row(page, "Daily Digest", "atlas")).toHaveCount(0);
@@ -352,7 +315,6 @@ test.describe("Archive and Move to Inbox", () => {
 
     await moved.getByRole("button", { name: "Undo" }).click();
     await expect(row(page, "Daily Digest", "atlas")).toBeVisible();
-    // "Not in the Inbox" means something only once the Inbox has loaded: five of its six seeded threads.
     await folder(page, "Inbox").click();
     await expect.poll(() => address(page)).toBe("/inbox");
     await expect(rows(page)).toHaveCount(5);
@@ -394,7 +356,6 @@ test.describe("Sent, and replying", () => {
       "To: drifter",
     );
 
-    // Sent doesn't count toward the unread mail.
     await expect(inboxLink(page, isMobile)).toHaveAccessibleName("Inbox 2 unread");
   });
 
@@ -419,7 +380,6 @@ test.describe("Sent, and replying", () => {
     await expect(latest).toContainText("Not seen yet by atlas or scout");
     await expect(reply.getByRole("textbox", { name: "Reply" })).toHaveValue("");
 
-    // The answer is in the thread for good: reopening it shows five messages.
     await page.reload();
     await expect(thread.getByRole("article")).toHaveCount(5);
   });
@@ -460,15 +420,12 @@ test.describe("New message", () => {
       "true",
     );
 
-    // The message is complete before Enter, so only Enter itself could send it. In the
-    // Subject it moves on to the message instead.
     await compose
       .getByRole("textbox", { name: /^Message/ })
       .fill("Please **review** the checklist before Friday.");
     await compose.getByRole("textbox", { name: "Subject" }).fill("Release checklist");
     await compose.getByRole("textbox", { name: "Subject" }).press("Enter");
     await expect(compose.getByRole("textbox", { name: /^Message/ })).toBeFocused();
-    // The keypress belongs to the Subject, so the message doesn't gain a line break.
     await expect(compose.getByRole("textbox", { name: /^Message/ })).toHaveValue(
       "Please **review** the checklist before Friday.",
     );
@@ -498,7 +455,6 @@ test.describe("New message", () => {
     await expect(thread.getByText("to atlas and scout")).toBeVisible();
     await expect(thread.getByText("review", { exact: true })).toBeVisible();
     await expect(thread.getByRole("button", { name: "Open checklist.txt" })).toBeVisible();
-    // One send, the Send button's: a send from Enter would be a second request, or would have left the form before the click.
     expect(sends).toHaveLength(1);
 
     await toList(page, isMobile);
@@ -543,7 +499,6 @@ test.describe("New message", () => {
       input.dispatchEvent(new Event("change", { bubbles: true }));
     }, MAX_UPLOAD_BYTES + 1);
 
-    // The big file is named and left out; the small one from the same pick is attached.
     await expect(
       compose.getByText(
         "huge-video.mov is larger than the 50 MB upload limit, so it wasn't attached.",
@@ -552,7 +507,6 @@ test.describe("New message", () => {
     const staged = compose.getByRole("list", { name: "Attached files" });
     await expect(staged.getByRole("button", { name: "Remove notes.txt" })).toBeVisible();
     await expect(staged.getByRole("listitem")).toHaveCount(1);
-    // The small file's upload is done, and was the only one that started.
     await expect(staged.getByRole("progressbar")).toHaveCount(0);
     expect(uploads).toHaveLength(1);
     expect(uploads[0]).toContain("filename=notes.txt");
@@ -564,7 +518,6 @@ test.describe("New message", () => {
 
   test("Send waits for a file that is still uploading, and sends once it has", async ({ page }) => {
     const sends = requestsTo(page, "POST", "/api/hub/mail/send");
-    // The upload is held at the network until the test lets it through.
     let finishUpload = (): void => undefined;
     const uploadMayFinish = new Promise<void>((resolve) => {
       finishUpload = resolve;
@@ -589,7 +542,6 @@ test.describe("New message", () => {
 
     const send = compose.getByRole("button", { name: "Send" });
     await send.click();
-    // Send is waiting, not refused: it says so, and nothing is sent while the file is on its way.
     await expect(compose.getByText("Sending once the files finish uploading.")).toBeVisible();
     await expect(send).toHaveAttribute("aria-busy", "true");
     await expect(compose.getByRole("alert")).toHaveCount(0);
@@ -647,14 +599,12 @@ test.describe("attachments", () => {
         "ElectricSQL assumes Postgres, which doesn't fit a workspace of plain files.",
       ),
     ).toBeVisible();
-    // The thread it came from stays open beside the panel.
     await expect(heading(page, SYNC.subject)).toBeVisible();
     if (isMobile) await expectNoAxeViolations(page, { within: "[data-overlay-host]" });
     else await expectNoAxeViolations(page);
 
     await panel.getByRole("button", { name: "Edit" }).click();
     const editor = await expectFileOpen(page, "findings.md");
-    // The file has to be in the editor before the edit starts, or loading it replaces the edit.
     await expect(editor).toHaveValue(/Prototype \*\*Yjs\*\* first/);
     await editor.press("Control+End");
     await editor.pressSequentially("- Added in the panel.\n");
@@ -666,7 +616,6 @@ test.describe("attachments", () => {
       /- Added in the panel\.\n$/,
     );
 
-    // Back to the rendered view, which shows the saved line.
     await panel.getByRole("button", { name: "Edit" }).click();
     await expect(panel.getByText("Added in the panel.")).toBeVisible();
 
@@ -687,7 +636,6 @@ test.describe("attachments", () => {
     await expect(panel).toBeVisible();
     await expectFileRendered(page, "Local-first sync: findings");
 
-    // Room for the panel and the thread takes the list's place, so the thread offers Back to list.
     await conversation(page).getByRole("button", { name: "Back to list" }).click();
     await expect(panel).toBeHidden();
     await expect.poll(() => address(page)).toBe("/inbox");
@@ -739,7 +687,6 @@ test.describe("attachments", () => {
     expect(served.headers()["content-type"]).toBe("image/png");
     expect((await served.body()).subarray(1, 4).toString("latin1")).toBe("PNG");
 
-    // The Markdown file loads from the stopped agent's workspace too.
     await conversation(page).getByRole("button", { name: "Open findings.md" }).click();
     await expect(filePanel(page, isMobile, "findings.md")).toBeVisible();
     await expectFileRendered(page, "Local-first sync: findings");
@@ -766,7 +713,6 @@ test.describe("links", () => {
   });
 
   test("any message's address opens its thread under the thread's own", async ({ page }) => {
-    // The Wiki audit thread began with the copy sent to atlas; atlas's reply names a message in it.
     await page.goto(`/inbox?thread=atlas/user/${AUDIT.replyId}`);
     await expect(heading(page, AUDIT.subject)).toBeVisible();
     await expect.poll(() => address(page)).toBe(`/inbox?thread=${AUDIT.threadId}`);
@@ -884,14 +830,12 @@ test.describe("when something fails", () => {
       buffer: Buffer.from("Agreed on the rollout order.\n"),
     });
 
-    // The chip says it failed and offers Try again beside Remove.
     const chip = compose.getByRole("list", { name: "Attached files" }).getByRole("listitem");
     await expect(chip.getByRole("status")).toContainText("Couldn't upload call-notes.txt.");
     const tryAgain = chip.getByRole("button", { name: "Try again call-notes.txt" });
     await expect(tryAgain).toBeVisible();
     await expect(chip.getByRole("button", { name: "Remove call-notes.txt" })).toBeVisible();
 
-    // A message with a file that didn't upload is not sent, and says why.
     await compose.getByRole("button", { name: "Send" }).click();
     await expect(compose.getByRole("alert")).toHaveText(
       "call-notes.txt didn't upload. Try it again or remove it, then send.",
@@ -899,7 +843,6 @@ test.describe("when something fails", () => {
     expect(sends).toEqual([]);
     expect(address(page)).toBe("/inbox?compose=1&to=atlas");
 
-    // Once the network is back, Try again uploads the file, and the message goes with it.
     await page.unroute(uploading);
     await tryAgain.click();
     await expect(tryAgain).toHaveCount(0);

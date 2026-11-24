@@ -8,17 +8,10 @@
   import PlaceHeader from "./PlaceHeader.svelte";
   import { agentPlaceEntry } from "./rail-model";
 
-  // The header of an agent's Activity, Schedule or Files, wherever it shows:
-  // the place's title bar on its page, with a button that opens it beside the
-  // agent's Chat, or the context panel's header beside Chat, with a button
-  // that maximizes it to its page.
-
   interface Props {
     agent: string;
     kind: AgentPanelKind;
-    /** Shown in the context panel beside the agent's Chat, rather than as the page. */
     inPanel?: boolean;
-    /** The place's own buttons, ahead of the move. */
     actions?: Snippet;
   }
 

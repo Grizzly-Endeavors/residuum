@@ -1,14 +1,8 @@
 import { Marked, type Tokens } from "marked";
 import DOMPurify from "dompurify";
 
-/** One path segment: letters, digits, `.`, `_` or `-`, and not only dots. */
 const PATH_SEGMENT = /^(?!\.+$)[\p{L}\p{N}._-]+$/u;
 
-/**
- * Whether `text` is a whole workspace path: two or more `/`-separated
- * segments of letters, digits, `.`, `_` or `-`, the last with a `.` in it.
- * `team/wiki/index.md` is one; `team/wiki`, `/etc/hosts` and `../a.md` aren't.
- */
 export function isWorkspacePath(text: string): boolean {
   const segments = text.split("/");
   const last = segments.at(-1) ?? "";
@@ -19,34 +13,20 @@ export function isWorkspacePath(text: string): boolean {
   );
 }
 
-/** The links to a Markdown file's relative references to other files in the workspace. */
 export interface RelativeFileLinks {
-  /** The workspace path of the file shown; its folder is what the links are relative to. */
   base: string;
-  /** The link for a workspace path, which opens that file. */
   href: (path: string) => string;
 }
 
 export interface MarkdownOptions {
-  /**
-   * The link for inline code whose whole text is a workspace path. Without
-   * it, paths stay plain code.
-   */
   pathHref?: (path: string) => string;
-  /** Makes a relative link to another Markdown file in the workspace open that file. */
   relativeFileLinks?: RelativeFileLinks;
 }
 
-/** Whether a link target is relative: no scheme, not rooted, not a fragment. */
 function isRelativeHref(href: string): boolean {
   return !/^([a-z][a-z0-9+.-]*:|\/|#)/i.test(href);
 }
 
-/**
- * The workspace path a relative link to a Markdown file names, resolved from
- * the folder of `base`, or null when the link names no such file or climbs
- * above the root. A query and a fragment are dropped.
- */
 export function resolveRelativeFileLink(base: string, href: string): string | null {
   if (!isRelativeHref(href)) return null;
   let target: string;
@@ -78,22 +58,11 @@ function escapeHtml(text: string): string {
     .replace(/'/g, "&#39;");
 }
 
-/**
- * What a reply's HTML may not carry. A reply is text a model wrote, often
- * after reading the web, so markup that restyles or covers the app, shows a
- * form that posts elsewhere, or loads a document, frame or script has no
- * place in it. The sanitizer's profile already drops several of these; they
- * are named here as well so a change of profile can't bring one back. A
- * removed element leaves its text behind, except `style`, `script` and the
- * like, whose contents the sanitizer drops with them.
- */
 const FORBIDDEN_TAGS = [
-  // Restyle the whole page from inside a message.
   "style",
   "link",
   "meta",
   "base",
-  // Forms: a reply can't ask for input or post it anywhere.
   "form",
   "input",
   "button",
@@ -106,20 +75,14 @@ const FORBIDDEN_TAGS = [
   "legend",
   "label",
   "output",
-  // Documents, frames and plug-ins.
   "iframe",
   "object",
   "embed",
   "svg",
   "math",
-  // Holds markup the page never shows, out of reach of the passes below.
   "template",
-  // Content placed over the page or moving on its own.
   "dialog",
   "marquee",
-  // Media and image maps. A source is fetched as soon as the element is
-  // shown, so a reply could send what it read to another server in the URL;
-  // images get their own handling in `fitToPage`.
   "video",
   "audio",
   "source",
@@ -129,31 +92,12 @@ const FORBIDDEN_TAGS = [
   "map",
 ];
 
-/**
- * Attributes dropped from every element. Inline `style` can position content
- * over the app (`position: fixed`), so no inline style is kept: a reply is
- * styled by the message's own stylesheet, never its own. `popover` makes an
- * element a top-layer overlay. `srcset`, `background` and `poster` load a URL
- * as soon as the element is shown, the way an image's `src` does.
- */
 const FORBIDDEN_ATTRS = ["style", "popover", "srcset", "background", "poster"];
 
-/** What an image shown as a link says it stands for, before its alt text or URL. */
 export const IMAGE_LINK_KIND = "Image";
 
-/**
- * An agent's file on the hub: `/api/agents/{name}/files/{id}`, or
- * `/api/agents/{name}/files/workspace?path=…` for a workspace file, the URLs
- * the gateway hands out for files an agent shares.
- */
 const AGENT_FILE_PATH = /^\/api\/agents\/[^/]+\/files\/[^/]/;
 
-/**
- * Whether an image source is a file the reply may show: a `data:` URI, or an
- * agent's file on the page's own origin. Loading any other URL is a request
- * the reply chose, to another server or to one of the hub's own routes, and
- * some hub routes change state on a plain `GET`.
- */
 function isShownImageSource(src: string): boolean {
   let url: URL;
   try {
@@ -165,17 +109,6 @@ function isShownImageSource(src: string): boolean {
   return url.origin === window.location.origin && AGENT_FILE_PATH.test(url.pathname);
 }
 
-/**
- * Replace each image that isn't an agent's file or a `data:` URI with a link
- * to it. A reply is text a model wrote, and a model can be steered
- * by what it read into writing an image whose URL carries the conversation to
- * someone else's server, or calls one of the hub's own routes; the browser
- * would send the request the moment the reply is shown. A link sends nothing
- * until the user follows it. It reads `Image`, then the alt text, or the URL
- * when there is none. An image already inside a link becomes that text, since
- * a link can't hold another, and so does an image left with no source (the
- * sanitizer drops a `javascript:` one, for example), which has nothing to open.
- */
 function linkUnshownImages(fragment: DocumentFragment): void {
   const doc = fragment.ownerDocument;
 
@@ -198,31 +131,18 @@ function linkUnshownImages(fragment: DocumentFragment): void {
   }
 }
 
-/** How far a reply's headings sit below the page's own: a reply's `#` is an `h3`. */
 const HEADING_DEMOTION = 2;
 const DEEPEST_HEADING = 6;
 
-/** What a task item's glyph says to assistive technology, which can't see it. */
 const TASK_DONE = "Done: ";
 const TASK_TO_DO = "To do: ";
 
-/** A code block's Copy button: what it shows, and what assistive technology calls it. */
 export const COPY_LABEL = "Copy";
 export const COPY_NAME = "Copy code";
 
-/**
- * What a reply's HTML needs after the sanitizer and before the page: headings
- * moved below the page's own, each table inside a scroller the keyboard can
- * reach, links that open beside the app rather than over it, a link in place
- * of each image that isn't an agent's file, and a Copy button on each code
- * block. These are DOM changes, not Markdown renderers, because they have to
- * hold for the raw HTML a reply can carry as well, the sanitizer
- * drops `target`, and it drops buttons: the Copy button is made here, after it.
- */
 function fitToPage(fragment: DocumentFragment): void {
   const doc = fragment.ownerDocument;
 
-  // Before the links below, so an image's link opens in a new tab too.
   linkUnshownImages(fragment);
 
   for (const block of fragment.querySelectorAll(".prose-code")) {
@@ -254,7 +174,6 @@ function fitToPage(fragment: DocumentFragment): void {
   }
 
   for (const link of fragment.querySelectorAll("a[href]")) {
-    // A workspace path opens in the app's panel, and a fragment stays on the page.
     if (link.hasAttribute("data-path") || link.getAttribute("href")?.startsWith("#") === true) {
       continue;
     }
@@ -263,24 +182,6 @@ function fitToPage(fragment: DocumentFragment): void {
   }
 }
 
-/**
- * Render message Markdown (GFM, single line breaks kept) to sanitized DOM
- * nodes: the sanitizer parses the HTML, so no unsanitized string reaches the
- * page. Each code block carries a `data-copy-code` button, and a workspace
- * path in inline code becomes an `a[data-path]` when `pathHref` is given; the
- * view showing the nodes handles their clicks. A task list item leads with a
- * `.prose-check` that names its state to assistive technology. Headings sit
- * two levels below the page's own, tables scroll in a labelled group the
- * keyboard can focus, and links outside the app open in a new tab. Only an
- * agent's file (`/api/agents/{name}/files/…` on this origin) or a `data:`
- * image shows as an image; any other image is a link to it
- * (`.prose-image-link`), so showing a reply never makes the browser request a
- * URL the reply chose. Raw HTML in the reply keeps its text but loses styles,
- * forms, frames, media and the other elements and attributes in
- * `FORBIDDEN_TAGS` and `FORBIDDEN_ATTRS`. A reply the sanitizer can't make a
- * fragment of (one that opens with `<frameset>`, which replaces the document's
- * body) shows as its plain text.
- */
 export function renderMarkdown(content: string, options: MarkdownOptions = {}): DocumentFragment {
   const { pathHref, relativeFileLinks } = options;
   const marked = new Marked({
@@ -291,7 +192,6 @@ export function renderMarkdown(content: string, options: MarkdownOptions = {}): 
         const language = /^\S+/.exec(lang ?? "")?.[0];
         const langClass = language ? ` class="language-${escapeHtml(language)}"` : "";
         const label = language ? `Code, ${escapeHtml(language)}` : "Code";
-        // The block scrolls sideways, so the keyboard has to be able to reach it.
         return `<div class="prose-code"><pre tabindex="0" role="group" aria-label="${label}"><code${langClass}>${escapeHtml(text)}\n</code></pre></div>\n`;
       },
       link({ href, title, tokens }: Tokens.Link): string {
@@ -322,8 +222,6 @@ export function renderMarkdown(content: string, options: MarkdownOptions = {}): 
     },
   });
   const rawHtml = marked.parse(content, { async: false });
-  // Typed as never null, but a `<frameset>` that takes the body's place leaves
-  // the sanitizer no body to return.
   const fragment = DOMPurify.sanitize(rawHtml, {
     USE_PROFILES: { html: true },
     FORBID_TAGS: FORBIDDEN_TAGS,

@@ -11,15 +11,10 @@ use super::state::DEVICE_LIFETIME_DAYS;
 /// shared UI host.
 const NAME_PREFIX: &str = "__Host-residuum_device_";
 
-/// The slug used when Residuum Cloud has not announced one.
 pub(super) const FALLBACK_SLUG: &str = "default";
 
-/// The longest slug the relay allows.
 const MAX_SLUG_LEN: usize = 24;
 
-/// Whether `slug` is one the relay could have announced: 1 to 24 lowercase
-/// letters, digits or hyphens, not starting or ending with a hyphen. Anything
-/// else could not be part of a cookie name safely.
 pub(super) fn is_valid_slug(slug: &str) -> bool {
     !slug.is_empty()
         && slug.len() <= MAX_SLUG_LEN
@@ -30,12 +25,10 @@ pub(super) fn is_valid_slug(slug: &str) -> bool {
         && !slug.ends_with('-')
 }
 
-/// The cookie's name for the instance with `slug`.
 pub(super) fn cookie_name(slug: Option<&str>) -> String {
     format!("{NAME_PREFIX}{}", slug.unwrap_or(FALLBACK_SLUG))
 }
 
-/// The `Set-Cookie` value that stores `secret` for 400 days.
 pub(super) fn set_cookie_value(name: &str, secret: &str) -> String {
     let max_age = DEVICE_LIFETIME_DAYS * 24 * 60 * 60;
     format!("{name}={secret}; Max-Age={max_age}; Path=/; Secure; HttpOnly; SameSite=Lax")
@@ -53,7 +46,6 @@ pub fn cookie_header(headers: &HeaderMap) -> Option<String> {
     (!fields.is_empty()).then(|| fields.join("; "))
 }
 
-/// The value of cookie `name` in a `Cookie` header, if it is there.
 pub(super) fn find_cookie<'a>(cookie_header: &'a str, name: &str) -> Option<&'a str> {
     cookie_header.split(';').find_map(|pair| {
         let (key, value) = pair.trim().split_once('=')?;

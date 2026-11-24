@@ -2,13 +2,8 @@
   import type { AppAction } from "../lib/action-registry.svelte";
   import ActionOption from "../shell/ActionOption.svelte";
 
-  // A composer's `/` menu: the actions it offers, above the message box,
-  // which keeps focus and points at the active one. Option ids are the
-  // menu's id and the index: `${id}-${index}`.
-
   interface Props {
     id: string;
-    /** The list's name, such as "Chat actions". */
     label: string;
     actions: readonly AppAction[];
     active: number;

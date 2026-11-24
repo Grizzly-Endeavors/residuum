@@ -1,18 +1,3 @@
-//! `Agent2Agent` (A2A) protocol support: the caller-key store, each agent's
-//! card, the hub's dedicated listener and its per-request auth, the per-agent
-//! server assembly ([`agent_a2a_router`]), the session executor, the
-//! persistent task store, `ResiduumA2aHandler`, and the outbound client. See
-//! `docs/systems-usage/a2a.md`.
-//!
-//! [`client`] is the client side: reaching other agents through the native
-//! `list_agents`/`message_agent`/`stop_agent` tools. The web settings UI lives
-//! elsewhere and is not part of this module.
-//!
-//! [`diagnostics_dispatch`] picks the validator for a strictly-parsed workspace
-//! or config file by its path. It lives here because a2a is the lowest module
-//! below both of its users, the file tools and the workspace file routes, that
-//! can reach every validator, `config/a2a.json`'s included.
-
 #[cfg(test)]
 #[path = "../../core/src/testing/crypto.rs"]
 mod crypto;

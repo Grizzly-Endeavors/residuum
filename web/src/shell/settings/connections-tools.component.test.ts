@@ -27,16 +27,13 @@ let agent = "";
 let server: FakeAgentConfig;
 let count = 0;
 let answer: FetchHandler;
-/** The credentials sent to the secret store, as `[name, value]`. */
 let secrets: [string, string][] = [];
-/** Cloud status the Connections section reads. Null leaves the request hanging, like the other fetches this page doesn't answer. */
 let cloud: CloudStatusResponse | null = null;
 
 const saveBar = (): HTMLElement | null => screen.queryByRole("region", { name: "Unsaved changes" });
 const group = (name: string): BoundFunctions<typeof queries> =>
   within(screen.getByRole("region", { name }));
 
-/** The diffs the page sent to the agent's `config.toml`. */
 const patches = (): unknown[] =>
   server.requests
     .filter((request) => request.method === "PATCH" && request.url.endsWith("/config/patch"))
@@ -203,7 +200,6 @@ describe("Connections", () => {
     await open("connections", { config: '[discord]\ntoken = "secret:discord"\n' });
     expect(screen.getByText(`Start ${agent} to see which of these are connected.`)).toBeTruthy();
     expect(group("Discord").queryByText("Connected")).toBeNull();
-    // What the file holds stays editable.
     expect(group("Discord").getByText("Stored securely")).toBeTruthy();
   });
 
@@ -332,7 +328,6 @@ describe("Webhooks", () => {
     await click("Add webhook", hooks);
     expect(hooks.getByText("New webhook")).toBeTruthy();
     expect(hooks.getByLabelText("Name")).toHaveFocus();
-    // An unnamed webhook is nothing to save yet.
     expect(saveBar()).toBeNull();
 
     await type(hooks.getByLabelText("Name"), "deploys");

@@ -1,47 +1,23 @@
-//! Tool results too long to keep in history.
-//!
-//! Every tool result stays in history and is sent again with every later
-//! model call, so one huge result (a long MCP response, a big `exec` dump)
-//! would make every request after it larger. The turn loop hands each
-//! redacted result to [`ToolResultStore::keep_for_history`]: a result over
-//! [`HISTORY_RESULT_MAX_CHARS`] is saved to a file, and history keeps its
-//! head and tail with a note naming the file. The note is computed once and
-//! stored as the tool message, so replaying history sends the same bytes.
-
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use tokio::io::AsyncWriteExt;
 
-/// A tool result longer than this many characters is saved to a file and
-/// kept in history as an excerpt. About 8k tokens of English text.
-///
-/// Tools that page or cap their own output size their pages below this, so
-/// an ordinary read is never cut a second time here.
 pub const HISTORY_RESULT_MAX_CHARS: usize = 32_000;
 
-/// Characters of the result's start kept in history.
 const HEAD_CHARS: usize = 8_000;
 
-/// Characters of the result's end kept in history, where errors and
-/// summaries usually are.
 const TAIL_CHARS: usize = 4_000;
 
-/// How long a saved result is kept before [`ToolResultStore::sweep_expired`]
-/// deletes it.
 const RETENTION: Duration = Duration::from_hours(7 * 24);
 
-/// Where an agent's oversized tool results are saved.
 #[derive(Debug, Clone)]
 pub struct ToolResultStore {
-    /// The directory every agent's results live under (`hub/tool-results`).
     root: PathBuf,
-    /// This agent's own directory under `root`.
     dir: PathBuf,
 }
 
 impl ToolResultStore {
-    /// A store saving into `root/<agent>`.
     #[must_use]
     pub fn new(root: impl Into<PathBuf>, agent: &str) -> Self {
         let root = root.into();
@@ -49,21 +25,11 @@ impl ToolResultStore {
         Self { root, dir }
     }
 
-    /// This agent's directory of saved results.
     #[must_use]
     pub fn dir(&self) -> &Path {
         &self.dir
     }
 
-    /// What history keeps for `output`: `output` itself when it is short
-    /// enough, otherwise its head and tail around a note naming the file the
-    /// full text was saved to.
-    ///
-    /// When the file can't be written, the full output is kept, so nothing
-    /// the tool returned is lost; the failure is logged.
-    ///
-    /// Each save also starts a background [`Self::sweep_expired`], so a
-    /// daemon that stays up for weeks still deletes expired results.
     pub(crate) async fn keep_for_history(
         &self,
         output: String,
@@ -121,9 +87,6 @@ impl ToolResultStore {
         Ok(path)
     }
 
-    /// Delete saved results older than seven days, for every agent under
-    /// the store's root (including agents since deleted). Returns how many
-    /// files were removed.
     pub async fn sweep_expired(&self) -> usize {
         let cutoff = SystemTime::now()
             .checked_sub(RETENTION)
@@ -131,8 +94,6 @@ impl ToolResultStore {
         self.sweep_before(cutoff).await
     }
 
-    /// Delete saved results last modified before `cutoff`: files directly
-    /// under the root and in each agent directory under it.
     async fn sweep_before(&self, cutoff: SystemTime) -> usize {
         let mut removed = 0;
         let mut agent_dirs = Vec::new();
@@ -168,7 +129,6 @@ impl ToolResultStore {
     }
 }
 
-/// Every entry of `dir`; empty when it doesn't exist (nothing saved yet).
 async fn list_dir(dir: &Path) -> Vec<tokio::fs::DirEntry> {
     let mut entries = match tokio::fs::read_dir(dir).await {
         Ok(entries) => entries,
@@ -192,8 +152,6 @@ async fn list_dir(dir: &Path) -> Vec<tokio::fs::DirEntry> {
     out
 }
 
-/// Remove `path` if it was last modified before `cutoff`. A file another
-/// sweep already removed counts as not removed here.
 async fn remove_if_expired(path: &Path, cutoff: SystemTime) -> bool {
     let modified = match tokio::fs::metadata(path).await.and_then(|m| m.modified()) {
         Ok(modified) => modified,
@@ -216,8 +174,6 @@ async fn remove_if_expired(path: &Path, cutoff: SystemTime) -> bool {
     }
 }
 
-/// A unique, filesystem-safe name: the time saved, then the tool and call id
-/// so a person browsing the directory can tell results apart.
 fn file_name(tool_name: &str, tool_call_id: &str) -> String {
     let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%S%.9fZ");
     format!(
@@ -227,7 +183,6 @@ fn file_name(tool_name: &str, tool_call_id: &str) -> String {
     )
 }
 
-/// `part` reduced to ASCII letters, digits, `-` and `_`, at most 48 of them.
 fn file_name_part(part: &str) -> String {
     part.chars()
         .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
@@ -235,8 +190,6 @@ fn file_name_part(part: &str) -> String {
         .collect()
 }
 
-/// The head and tail of `output` around a note naming `path`, the omitted
-/// line range, and how to read it.
 fn excerpt(output: &str, path: &Path) -> String {
     let head_end = head_end(output);
     let tail_start = tail_start(output).max(head_end);
@@ -278,8 +231,6 @@ fn excerpt(output: &str, path: &Path) -> String {
     format!("{}\n\n{note}\n\n{tail}", head.trim_end_matches('\n'))
 }
 
-/// Byte index the head ends at: after [`HEAD_CHARS`] characters, moved back
-/// to the end of the last whole line when one ends in the second half.
 fn head_end(output: &str) -> usize {
     let cut = output
         .char_indices()
@@ -292,9 +243,6 @@ fn head_end(output: &str) -> usize {
     }
 }
 
-/// Byte index the tail starts at: [`TAIL_CHARS`] characters before the end,
-/// moved forward to the start of the next whole line when one starts in the
-/// first half.
 fn tail_start(output: &str) -> usize {
     let cut = output
         .char_indices()
@@ -345,8 +293,6 @@ mod tests {
     async fn the_threshold_counts_characters_not_bytes() {
         let root = tempfile::tempdir().unwrap();
         let store = ToolResultStore::new(root.path(), "scout");
-        // Three bytes per character: over the threshold in bytes, under it in
-        // characters.
         let output = "€".repeat(HISTORY_RESULT_MAX_CHARS);
 
         let kept = store
@@ -393,8 +339,6 @@ mod tests {
             "the note gives the size: {kept}"
         );
 
-        // The note's line range matches what the head and tail hold, and the
-        // read_file offset it suggests starts right after the head.
         let (head, rest) = kept.split_once("\n\n[").unwrap();
         let (note, tail) = rest.split_once("]\n\n").unwrap();
         let last_head_line: usize = head

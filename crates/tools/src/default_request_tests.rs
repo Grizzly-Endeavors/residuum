@@ -1,22 +1,3 @@
-//! The request a default main agent sends: golden files of its system prompt
-//! and tool list, and checks that a reload that changes nothing leaves the
-//! request's prefix byte-identical.
-//!
-//! The golden files live in `crates/tools/golden/`. A change to prompt or
-//! tool text shows up as a diff to them; `just golden-update` rewrites them
-//! from the current code, and the diff is reviewed with the change.
-//!
-//! The agent is a freshly bootstrapped workspace named `assistant` (its
-//! first-run `SOUL.md` and `BOOTSTRAP.md`, the team's default `AGENTS.md`,
-//! `USER.md` and wiki index, and the bundled skills), with the main tool set
-//! built the way startup builds it (UTC, the default model catalog, every
-//! optional tool turned on). Nothing in the system prompt or the tool list
-//! depends on the clock; the hub's temporary directory is replaced by
-//! `<hub>` so the files don't depend on where the test runs.
-//!
-//! `exec`'s description names the platform's shell, so the golden files are
-//! checked on Unix only.
-
 use residuum_agent::ToolRegistry;
 use residuum_agent::testing::{RequestInputs, render_model_request};
 use residuum_config::{SkillDir, WorkspaceLayout};
@@ -26,7 +7,6 @@ use residuum_workspace::testing::TeamHub;
 
 use crate::testing::RegistryHarness;
 
-/// A bootstrapped workspace for the agent `assistant` in `hub`.
 async fn bootstrapped_layout(hub: &TeamHub) -> WorkspaceLayout {
     let layout = WorkspaceLayout::new(hub.agent_dir("assistant"));
     residuum_workspace::team::ensure_team(layout.team(), None, None)
@@ -38,7 +18,6 @@ async fn bootstrapped_layout(hub: &TeamHub) -> WorkspaceLayout {
     layout
 }
 
-/// The skill directories a default agent scans, in priority order.
 fn skill_dirs(layout: &WorkspaceLayout) -> Vec<SkillDir> {
     vec![
         SkillDir::agent(layout.skills_dir()),
@@ -46,7 +25,6 @@ fn skill_dirs(layout: &WorkspaceLayout) -> Vec<SkillDir> {
     ]
 }
 
-/// The golden files, checked on Unix only (see the module doc).
 #[cfg(unix)]
 mod golden {
     use std::fmt::Write as _;
@@ -63,7 +41,6 @@ mod golden {
     use super::{bootstrapped_layout, skill_dirs};
     use crate::testing::RegistryHarness;
 
-    /// Set to rewrite the golden files instead of checking them.
     const UPDATE_VAR: &str = "RESIDUUM_UPDATE_GOLDEN";
 
     fn golden_path(name: &str) -> PathBuf {
@@ -72,8 +49,6 @@ mod golden {
             .join(name)
     }
 
-    /// Check `actual` against the golden file `name`, or rewrite the file when
-    /// [`UPDATE_VAR`] is set.
     fn assert_golden(name: &str, actual: &str) {
         let path = golden_path(name);
         if std::env::var_os(UPDATE_VAR).is_some() {
@@ -105,7 +80,6 @@ mod golden {
         );
     }
 
-    /// The request inputs of a default agent's first turn.
     async fn default_agent_inputs(layout: &WorkspaceLayout) -> RequestInputs {
         let identity = IdentityFiles::load(layout).await.unwrap();
         let index = SkillIndex::scan(&skill_dirs(layout)).await.unwrap();
@@ -116,7 +90,6 @@ mod golden {
         }
     }
 
-    /// Each tool as a heading, its description, and its parameter schema.
     fn render_tools(tools: &[ToolDefinition]) -> String {
         let mut out = String::new();
         for tool in tools {
@@ -131,7 +104,6 @@ mod golden {
         out
     }
 
-    /// `text` with the hub's temporary directory replaced by `<hub>`.
     fn without_hub_dir(text: &str, hub: &TeamHub) -> String {
         text.replace(&hub.dir.path().display().to_string(), "<hub>")
     }
@@ -163,8 +135,6 @@ mod golden {
     }
 }
 
-/// The tools and system prompt of the request `inputs` and `tools` render,
-/// as the JSON they serialize to.
 async fn sent_prefix(inputs: &RequestInputs, tools: &ToolRegistry) -> (String, String) {
     let request = render_model_request(inputs, tools).await;
     (
@@ -181,7 +151,6 @@ async fn a_config_reload_that_changes_nothing_keeps_the_request_prefix() {
     let inputs = RequestInputs::default();
     let before = sent_prefix(&inputs, &tools).await;
 
-    // What the gateway's config reload does to the main registry.
     crate::registration::reload_timezone_tools(
         &mut tools,
         &crate::registration::RegistryInjections::default(),
@@ -227,7 +196,6 @@ async fn a_skill_rescan_that_finds_nothing_new_keeps_the_request_prefix() {
     let tools = ToolRegistry::new();
     let before = sent_prefix(&inputs_of(&state), &tools).await;
 
-    // What the gateway's config reload does to the skills.
     state.rescan().await.unwrap();
 
     assert_eq!(

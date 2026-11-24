@@ -1,6 +1,3 @@
-//! Both halves of a join as operations: approving a request on the instance
-//! being joined, and running a join from the instance that asks.
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -17,7 +14,6 @@ use crate::remote_access::pins::{NewPin, PinClient, PinError};
 use crate::remote_access::status::{JoinProgress, JoinState};
 use crate::remote_access::store::StateStore;
 
-/// How a join waits for the other side's person.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct JoinTimings {
     pub(crate) poll_every: Duration,
@@ -33,27 +29,22 @@ impl Default for JoinTimings {
     }
 }
 
-/// Why an approval didn't happen.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ApproveError {
-    /// No request is waiting under that id (decided, expired, or never there).
     #[error(
         "That join request isn't waiting any more. It may have expired; ask the other instance to start the join again."
     )]
     Unknown,
-    /// The pin service refused or couldn't be reached; the request stays waiting.
     #[error(
         "The certificate account couldn't be added: {0} The request is still waiting; try approving again."
     )]
     Pins(PinError),
-    /// The keys couldn't be saved; the request stays waiting.
     #[error(
         "Residuum couldn't save the new sibling: {0:#} The request is still waiting; try approving again."
     )]
     Storage(anyhow::Error),
 }
 
-/// What an approval needs from the instance approving.
 pub(crate) struct Approver<'a> {
     pub(crate) signer: &'a dyn AccountSigner,
     pub(crate) pins: &'a PinClient,
@@ -61,7 +52,6 @@ pub(crate) struct Approver<'a> {
     pub(crate) user: &'a str,
 }
 
-/// The join operations of one instance.
 #[derive(Clone)]
 pub(crate) struct SiblingService {
     pub(crate) host: Arc<JoinHost>,
@@ -90,9 +80,6 @@ impl SiblingService {
         self
     }
 
-    /// Approve the request waiting under `approval_id`: pin the requester's
-    /// certificate account when it isn't pinned yet, record both keys, and
-    /// let the requester's next poll collect this instance's key.
     pub(crate) async fn approve(
         &self,
         approver: &Approver<'_>,
@@ -156,8 +143,6 @@ impl SiblingService {
         Ok(request)
     }
 
-    /// Start a join with `target_slug` and follow it until it is decided.
-    /// `progress` hears each change; the result says how it ended.
     pub(crate) async fn join(
         &self,
         joiner: &Joiner<'_>,
@@ -246,8 +231,6 @@ impl SiblingService {
         }
     }
 
-    /// Store the join once the pin service confirms the other instance is
-    /// pinned under the account it named.
     async fn record(
         &self,
         joiner: &Joiner<'_>,
@@ -292,7 +275,6 @@ impl SiblingService {
     }
 }
 
-/// What the instance asking to join brings.
 pub(crate) struct Joiner<'a> {
     pub(crate) signer: &'a dyn AccountSigner,
     pub(crate) pins: &'a PinClient,
@@ -321,7 +303,6 @@ mod tests {
         give_up_after: Duration::from_secs(5),
     };
 
-    /// One instance: its account, stores and join machinery.
     struct Instance {
         account: Arc<TestAccount>,
         slug: &'static str,
@@ -333,7 +314,6 @@ mod tests {
     }
 
     impl Instance {
-        /// `reach` is the router of the instance this one will call.
         fn new(slug: &'static str, reach: Option<Router>) -> Self {
             let dir = tempfile::tempdir().unwrap();
             let account = Arc::new(TestAccount::new(&format!("https://acme.test/acct/{slug}")));
@@ -396,7 +376,6 @@ mod tests {
         }
     }
 
-    /// `laptop` is the instance being joined and is pinned; `desktop` joins it.
     async fn world() -> (Instance, Instance, FakePinService, PinClient) {
         let laptop_probe = Instance::new("laptop", None);
         let desktop = Instance::new("desktop", Some(laptop_probe.router.clone()));
@@ -428,7 +407,6 @@ mod tests {
         let approve = async {
             let id = laptop.wait_for_pending().await;
             let shown = laptop.service.host.pending(Utc::now()).remove(0);
-            // The code the approving person sees is the one the joiner reports.
             let reported = residuum_core::testing::wait::until(
                 "the joiner to report the approval code",
                 || std::future::ready(log.lock().unwrap().iter().find_map(|p| p.code.clone())),
@@ -442,18 +420,15 @@ mod tests {
         let request = approved.unwrap();
         assert_eq!(request.slug, "desktop");
 
-        // The pin service now lists the requester, added by the approver.
         assert_eq!(pins.operations(), ["add"]);
         assert!(
             pins.pins()
                 .iter()
                 .any(|(uri, slug)| uri == desktop.account.uri() && slug == "desktop")
         );
-        // Each side knows the other's certificate account.
         assert!(laptop.store.is_known(desktop.account.uri()));
         assert!(desktop.store.is_known(laptop.account.uri()));
 
-        // The key each side presents is the key the other accepts, tagged with the caller's slug.
         let laptop_to_desktop = laptop.keys.outbound_key("desktop").unwrap();
         let desktop_to_laptop = desktop.keys.outbound_key("laptop").unwrap();
         assert_eq!(
@@ -488,15 +463,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_slow_approval_outlasts_the_join_rate_limit() {
-        // The requester keeps polling while the person decides; polls must
-        // not count against the per-peer limit on join requests.
         let (laptop, desktop, _pins, client) = world().await;
         let (_log, progress) = progress_log();
         let asking = desktop.joiner(&client, "laptop");
         let (outcome, approved) = tokio::join!(desktop.service.join(&asking, &progress), async {
             let id = laptop.wait_for_pending().await;
-            // More polls than the per-peer limit allows join requests in a
-            // minute (ten), all within that minute.
             residuum_core::testing::wait::until(
                 "the requester to poll more than ten times",
                 || {
@@ -540,14 +511,11 @@ mod tests {
     #[tokio::test]
     async fn an_approval_the_pin_service_refuses_leaves_the_request_waiting() {
         let (laptop, desktop, pins, _approver_pins) = world().await;
-        // The approver talks to a pin service that doesn't know its key, so the add is refused.
         let strangers = FakePinService::start(None).await;
         let refusing = PinClient::new(strangers.url()).unwrap();
         let joiner_pins = PinClient::new(pins.url()).unwrap();
         let (_log, progress) = progress_log();
         let asking = desktop.joiner(&joiner_pins, "laptop");
-        // The join keeps waiting for the approval, so it is dropped once the
-        // refused approval has been tried and must not have finished first.
         let (id, attempt) = tokio::select! {
             _ = desktop.service.join(&asking, &progress) => {
                 panic!("the join finished before the approval was tried");
@@ -584,14 +552,12 @@ mod tests {
     #[tokio::test]
     async fn the_joiner_trusts_nothing_the_pin_service_does_not_list() {
         let (laptop, desktop, _pins, _client) = world().await;
-        // This pin service has no pin for the instance being joined.
         let empty = FakePinService::start(None).await;
         let empty_client = PinClient::new(empty.url()).unwrap();
         let (log, progress) = progress_log();
         let asking = desktop.joiner(&empty_client, "laptop");
         let (outcome, ()) = tokio::join!(desktop.service.join(&asking, &progress), async {
             let id = laptop.wait_for_pending().await;
-            // Approve without going through the pin service, as a liar would.
             let request = laptop.service.host.find_pending(&id, Utc::now()).unwrap();
             laptop.service.host.approve(
                 &request.join_id,

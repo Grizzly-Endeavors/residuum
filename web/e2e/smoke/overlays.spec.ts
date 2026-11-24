@@ -2,12 +2,6 @@ import type { Page } from "@playwright/test";
 import { expectNoAxeViolations } from "../support/axe";
 import { expect, test } from "../support/fixtures";
 
-/**
- * The modal overlays (Dialog, Sheet, Drawer and the confirm dialog), driven
- * from the primitives gallery: each opens on its own history entry, so Back
- * closes it and leaves the page where it was.
- */
-
 const GALLERY = "/dev/gallery";
 
 async function openGallery(page: Page): Promise<void> {

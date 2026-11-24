@@ -8,10 +8,6 @@ import { setViewedAgent } from "./viewed-agent";
 import { ws } from "./ws.svelte";
 import { waitFor } from "../test/wait";
 
-// The agent connection follows the hub's word on the bound agent: it is open
-// while the agent runs and closed otherwise, with history read from files.
-// Effects run here, so these live with the component tests.
-
 function agent(name: string, state: AgentState): AgentSummary {
   return {
     name,
@@ -104,7 +100,6 @@ describe("the agent connection", () => {
     await settle();
     expect(ws.transport.status).toBe("connected");
 
-    // The agent's shutdown closes the socket before the hub reports it stopped.
     socket.simulateClose();
     hub.handleFrame({ type: "agent_state", agent: agent("atlas", "stopped") });
     await settle();
@@ -113,7 +108,6 @@ describe("the agent connection", () => {
     expect(agentSockets("atlas")).toHaveLength(1);
     expect(ws.transport.status).toBe("disconnected");
     expect(ws.transport.lost).toBe(false);
-    // Nothing more of the turn will come.
     expect(ws.store.isProcessing).toBe(false);
     expect(ws.store.feed.at(-1)).toMatchObject({ kind: "user", content: "Long job" });
   });

@@ -49,7 +49,6 @@
     wizardState.secretRefs = {};
     const promises: Promise<void>[] = [];
 
-    // Provider API keys
     for (const prov of wizardState.selectedProviders) {
       const cfg = wizardState.providerConfigs[prov];
       if (prov !== "ollama" && cfg.apiKey) {
@@ -61,7 +60,6 @@
       }
     }
 
-    // Integration tokens
     if (wizardState.integrations.discordToken) {
       promises.push(
         storeSecret("discord", wizardState.integrations.discordToken).then((res) => {
@@ -84,7 +82,6 @@
       );
     }
 
-    // Tool server keys, which mcp.json references as secret:<name>
     for (const srv of wizardState.mcpServers) {
       for (const key of srv.secretEnvKeys ?? []) {
         const value = (srv.env[key] ?? "").trim();
@@ -116,7 +113,6 @@
       return;
     }
 
-    // Generate all config files with secret references
     const hubConfigToml = generateHubConfigToml(wizardState);
     const configToml = generateConfigToml(wizardState);
     const providersToml = generateProvidersToml(wizardState);

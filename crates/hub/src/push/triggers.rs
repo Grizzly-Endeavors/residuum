@@ -1,18 +1,3 @@
-//! The four things that send a Web Push, and the rule for each.
-//!
-//! [`PushTriggers`] reads the hub bus and the feed of agent changes. The
-//! rules ([`Rules`]) say which of what arrives is worth a notification, and
-//! the sender ([`Sender`]) words it, counts the unread inbox for the app
-//! badge, and hands it to [`PushService::notify`], skipping the devices whose
-//! user is looking at the app.
-//!
-//! | Event | Fires when |
-//! |---|---|
-//! | `inbox_item` | an agent's `user_inbox_add` saved an item |
-//! | `agent_failed` | an agent entered the `failed` state |
-//! | `outbound_unreachable` | a task sent to a remote agent passed the tracker's unreachable threshold, once per streak |
-//! | `reply_while_away` | a main turn the user was part of ended with a reply while no client had the agent's socket open |
-
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
@@ -32,37 +17,23 @@ use residuum_bus::remote_task::TrackedTask;
 use residuum_memory::types::Visibility;
 use residuum_workspace::inbox::{InboxKind, InboxRef};
 
-/// The title of an inbox item push whose item couldn't be read, or has none.
 const UNREADABLE_ITEM_TITLE: &str = "New inbox item";
 
-/// What [`PushTriggers`] reads and writes.
 pub struct TriggerInputs {
-    /// Sends the pushes.
     pub push: Arc<PushService>,
-    /// Where the agents' inboxes and timezone are read from.
     pub directory: Arc<dyn AgentDirectory>,
-    /// The hub bus, for agents entering the failed state.
     pub hub_events: broadcast::Receiver<HubEvent>,
-    /// The feed of agent changes, for everything else.
     pub changes: AgentChangeReceiver,
-    /// Shows the user a notice about how delivery is going.
     pub notice: Box<dyn Fn(String) + Send + Sync>,
-    /// Hears what the triggers decide about each input, for whoever is
-    /// diagnosing why something did or didn't send a push.
     pub decisions: Option<broadcast::Sender<TriggerDecision>>,
 }
 
-/// What the triggers made of one thing that arrived on their inputs: the
-/// pushes it started, none when the rules found nothing worth a notification.
-/// Sent once those pushes are handed to the push service, so a delivery each
-/// one starts is already counted by [`PushService::deliveries_pending`].
 #[derive(Debug, Clone)]
 pub struct TriggerDecision {
     pub input: TriggerInput,
     pub triggers: Vec<Trigger>,
 }
 
-/// One thing the triggers read.
 #[derive(Debug, Clone)]
 pub enum TriggerInput {
     HubEvent(HubEvent),
@@ -70,7 +41,6 @@ pub enum TriggerInput {
 }
 
 impl TriggerInput {
-    /// The agent it is about, when it is about one.
     fn agent(&self) -> Option<&str> {
         match self {
             Self::HubEvent(
@@ -85,17 +55,11 @@ impl TriggerInput {
     }
 }
 
-/// A running set of triggers. It stops when dropped.
 pub struct PushTriggers {
     task: JoinHandle<()>,
 }
 
 impl PushTriggers {
-    /// Send pushes for what arrives on the inputs' receivers, and pass the
-    /// push service's notices to the user.
-    ///
-    /// Both receivers must be subscribed before anything they should hear
-    /// about happens: neither replays. Subscribe before the agents start.
     #[must_use]
     pub fn spawn(inputs: TriggerInputs) -> Self {
         Self {
@@ -165,7 +129,6 @@ async fn run(inputs: TriggerInputs) {
                 tracing::debug!(agent, triggers = ?decision.triggers, "pushes started");
             }
             if let Some(decisions) = &decisions {
-                // A listener that went away is no reason to stop the triggers.
                 decisions.send(decision).ok();
             }
         }
@@ -173,29 +136,27 @@ async fn run(inputs: TriggerInputs) {
     tracing::debug!("push triggers stopped");
 }
 
-/// Something worth a notification, before it is worded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Trigger {
-    /// An agent saved an item in the user inbox.
-    InboxItem { agent: String, item_id: String },
-    /// An agent entered the failed state.
+    InboxItem {
+        agent: String,
+        item_id: String,
+    },
     AgentFailed {
         agent: String,
         kind: AgentErrorKind,
-        /// Whether it was running, so it stopped by itself, rather than
-        /// failing to start.
         was_running: bool,
     },
-    /// A task `agent` sent to a remote agent has been unreachable past the
-    /// tracker's notice threshold.
     OutboundUnreachable {
         agent: String,
         remote: String,
         task_id: String,
         since: DateTime<Utc>,
     },
-    /// `agent` replied to the user while no client was connected.
-    ReplyWhileAway { agent: String, reply: String },
+    ReplyWhileAway {
+        agent: String,
+        reply: String,
+    },
 }
 
 impl Trigger {
@@ -218,14 +179,9 @@ impl Trigger {
     }
 }
 
-/// The state the rules need between events.
 #[derive(Default)]
 struct Rules {
-    /// The state each agent was last seen in, to tell entering `failed` from
-    /// staying there. An agent never seen is stopped.
     states: BTreeMap<String, AgentState>,
-    /// The `(agent, task id)` of each outbound task whose current
-    /// unreachable streak has been pushed.
     pushed_outbound: HashSet<(String, String)>,
 }
 
@@ -247,8 +203,6 @@ impl Rules {
         }
     }
 
-    /// Take a fresh list of the agents after hub events were lost: one that
-    /// entered `failed` meanwhile still gets its push.
     fn reconcile(&mut self, agents: &[AgentSummary]) -> Vec<Trigger> {
         self.states
             .retain(|name, _| agents.iter().any(|agent| &agent.name == name));
@@ -258,9 +212,6 @@ impl Rules {
             .collect()
     }
 
-    /// Note the state `agent` is in. Entering `failed` is a trigger, whichever
-    /// event reported it: a created agent whose start failed is reported by
-    /// its state change and again by its creation, and only the first counts.
     fn observe(&mut self, agent: &AgentSummary) -> Option<Trigger> {
         let before = self
             .states
@@ -281,14 +232,10 @@ impl Rules {
     fn on_change(&mut self, change: AgentChange) -> Option<Trigger> {
         let AgentChange { agent, kind } = change;
         match kind {
-            // The save also arrives as a file change, which is not an
-            // addition: only the tool's own announcement counts.
             AgentChangeKind::UserInboxAdded { item_id } => {
                 Some(Trigger::InboxItem { agent, item_id })
             }
             AgentChangeKind::TurnEnded(turn) => {
-                // A background turn's reply is not for the user, and a
-                // connected client already shows the reply.
                 if turn.visibility != Visibility::User || turn.client_connected {
                     return None;
                 }
@@ -305,11 +252,6 @@ impl Rules {
         }
     }
 
-    /// The tracker announces a task at the start of an unreachable streak,
-    /// when the streak passes its threshold (`unreachable_notified` turns
-    /// true), and when it ends. Only the second is a trigger, and remembering
-    /// that it was pushed keeps any later announcement of the same streak
-    /// from sending another.
     fn on_outbound_task(&mut self, agent: String, task: &TrackedTask) -> Option<Trigger> {
         let key = (agent.clone(), task.task_id.clone());
         if !(task.unreachable_notified && task.is_open()) {
@@ -328,7 +270,6 @@ impl Rules {
     }
 }
 
-/// Words a trigger and sends it.
 struct Sender {
     push: Arc<PushService>,
     directory: Arc<dyn AgentDirectory>,
@@ -338,8 +279,6 @@ impl Sender {
     async fn send(&self, trigger: Trigger) {
         let event = trigger.event();
         let skip = self.push.presence().active_devices();
-        // Wording a push can read every agent's inbox, so a push no device
-        // would receive is not worded.
         if !self.push.would_notify(event, &skip).await {
             tracing::debug!(agent = %trigger.agent(), event = ?event, "no push sent: no device wants it, or the ones that do are in front of the app");
             return;
@@ -388,15 +327,10 @@ impl Sender {
         })
     }
 
-    /// The total of unread inbox items, which every push sets on the app
-    /// badge. An inbox that can't be read counts as none, so the push still
-    /// goes out.
     async fn badge(&self) -> u32 {
         mail::unread_total(self.directory.as_ref()).await
     }
 
-    /// `at` as the hub's timezone reads it: the time of day, with the date
-    /// when it isn't today.
     fn local_time(&self, agent: &str, at: DateTime<Utc>) -> String {
         let tz = match self.directory.agent_files(agent) {
             Ok(files) => files.timezone,
@@ -409,7 +343,6 @@ impl Sender {
     }
 }
 
-/// `at` as the time of day, and the date too when it isn't `now`'s.
 fn clock_text(at: DateTime<chrono_tz::Tz>, now: DateTime<chrono_tz::Tz>) -> String {
     if at.date_naive() == now.date_naive() {
         at.format("%H:%M").to_string()
@@ -418,8 +351,6 @@ fn clock_text(at: DateTime<chrono_tz::Tz>, now: DateTime<chrono_tz::Tz>) -> Stri
     }
 }
 
-/// The app address a push for the new user-inbox item `item_id` opens: its
-/// thread in the Inbox, or the Inbox itself for an id no ref can carry.
 fn inbox_item_target(agent: &str, item_id: &str) -> String {
     match InboxRef::new(agent, InboxKind::User, item_id) {
         Ok(item) => mail::thread_link(&item),

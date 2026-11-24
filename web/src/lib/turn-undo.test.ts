@@ -94,7 +94,6 @@ describe("turnChangedWorkspace", () => {
   });
 
   it("is true when any attempt of a retried turn changed paths", async () => {
-    // The rerun changed nothing; the failed attempt before it did.
     fetchCheckpoints.mockResolvedValue(
       page([
         checkpoint("end-rerun", "turn_end", 0),
@@ -147,8 +146,6 @@ describe("undoTurn", () => {
   });
 
   it("undoes every attempt of a retried turn, newest first, and merges the outcomes", async () => {
-    // A retried turn keeps its id: the failed attempt and the rerun each
-    // recorded a pair, and the rerun's pair comes back on a second page.
     fetchCheckpoints
       .mockResolvedValueOnce({
         items: [checkpoint("end-rerun", "turn_end", 2), checkpoint("start-rerun", "turn_start", 0)],

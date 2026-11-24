@@ -7,19 +7,14 @@
   interface Props {
     open: boolean;
     title: string;
-    /** A line under the title. It is the dialog's description for assistive technology. */
     description?: string;
     size?: DialogSize;
-    /** Fill the screen at phone width, for long content and forms. */
     fullscreenOnPhone?: boolean;
     role?: "dialog" | "alertdialog";
-    /** What takes focus on open: a selector's match, or false for the dialog itself. */
     initialFocus?: string | false;
     closeButton?: boolean;
-    /** The dialog closed from the UI or by Back. */
     onclose?: () => void;
     children?: Snippet;
-    /** Buttons along the bottom edge, the main action last. */
     actions?: Snippet;
   }
 

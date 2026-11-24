@@ -67,7 +67,6 @@ describe("the artifacts listener", () => {
   beforeEach(async () => {
     state = createState("hub");
     logged = [];
-    // Forwarding to the API has its own tests (`artifacts-origin.test.ts`).
     server = startArtifactsListener(
       state,
       (message) => {
@@ -90,12 +89,10 @@ describe("the artifacts listener", () => {
   const port = (): number => (server.address() as AddressInfo).port;
   const origin = (): string => `http://127.0.0.1:${port()}`;
 
-  /** A request that keeps its path as written and follows no redirect. */
   async function get(path: string, init?: RequestInit): Promise<Response> {
     return fetch(`${origin()}${path}`, { redirect: "manual", ...init });
   }
 
-  /** A request whose path reaches the server as written, with none of a URL parser's clean-up. */
   function rawGet(path: string): Promise<number | undefined> {
     return new Promise((resolve, reject) => {
       request({ host: "127.0.0.1", port: port(), path }, (res) => {

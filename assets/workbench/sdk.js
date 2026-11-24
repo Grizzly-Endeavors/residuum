@@ -1,15 +1,3 @@
-// Residuum workbench SDK, injected into every HTML page a workbench artifact serves.
-//
-// An artifact page runs on the artifacts origin, which forwards `/api` to
-// Residuum (docs/systems-usage/workbench.md, "API forwarding"), so the SDK
-// talks to Residuum directly on the page's own origin: HTTP with relative
-// URLs, live events over the hub socket, and one agent's frames over that
-// agent's socket when the page asks for them. Artifacts belong to the team,
-// so nothing defaults to an agent: every agent-specific call names one.
-//
-// The artifacts listener prepends `__RESIDUUM_ARTIFACT__`, `__RESIDUUM_VERSION__`,
-// and `__RESIDUUM_FEATURES__` const declarations to this script before serving it,
-// so this closure reads them from its enclosing scope.
 (() => {
   "use strict";
   if (window.residuum) return;
@@ -17,8 +5,6 @@
   const ARTIFACT = __RESIDUUM_ARTIFACT__;
   const ARTIFACT_HEADER = "X-Residuum-Artifact";
   const nativeFetch = window.fetch.bind(window);
-
-  // ── Handlers ─────────────────────────────────────────────────────────
 
   function addHandler(handlers, type, handler) {
     if (!handlers.has(type)) handlers.set(type, new Set());
@@ -36,7 +22,6 @@
     }
   }
 
-  // Each handler registered for the frame's type, then each registered for "*".
   function emit(handlers, frame) {
     for (const key of [frame.type, "*"]) {
       for (const handler of [...(handlers.get(key) || [])]) {
@@ -45,8 +30,6 @@
     }
   }
 
-  // A `connection` handler hears the state the socket is already in, then
-  // every change, so registering after the socket opened misses nothing.
   function replayConnection(handlers, handler, state) {
     if (state === null) return;
     queueMicrotask(() => {
@@ -56,10 +39,6 @@
     });
   }
 
-  // ── Calling the API ──────────────────────────────────────────────────
-
-  // Unscoped paths whose home is the hub or the team rather than one agent,
-  // mapped onto their scope. Every other unscoped path belongs to an agent.
   const HUB_PREFIXES = [
     "/api/secrets",
     "/api/agent-keys",
@@ -91,8 +70,6 @@
     return `${pathname} belongs to one agent, so the path has to name it: /api/agents/<name>${pathname.slice("/api".length)}. The agents are listed at /api/hub/agents.`;
   }
 
-  // `{ url }` to send, or `{ refusal }` for a path that isn't sent: one outside
-  // the API, or one that belongs to an agent and names none.
   function resolveApiPath(method, path) {
     let url;
     try {
@@ -133,15 +110,11 @@
     });
   }
 
-  // Also true for an object from another realm, whose prototype is that
-  // realm's `Object.prototype`.
   function isPlainObject(value) {
     const proto = Object.getPrototypeOf(value);
     return proto === null || Object.getPrototypeOf(proto) === null;
   }
 
-  // A plain object or array is sent as JSON; a string, `ArrayBuffer`, typed
-  // array or `Blob` is sent unchanged.
   function encodeBody(body, headers) {
     if (body === undefined || body === null) return undefined;
     if (
@@ -161,14 +134,11 @@
     );
   }
 
-  // At most `limit` tasks at once; the rest wait in the order they arrived.
   function lane(limit) {
     let active = 0;
     const waiting = [];
     return async (task) => {
       if (active >= limit) {
-        // A finishing task hands its slot straight over, so a caller arriving
-        // in between can't take it and push the count past the limit.
         await new Promise((resolve) => waiting.push(resolve));
       } else {
         active += 1;
@@ -183,9 +153,6 @@
     };
   }
 
-  // Ordinary requests share one lane so a page's bulk load can't flood the
-  // instance, and slow model calls get a lane of their own so they never hold
-  // up the page's other requests.
   const requestLane = lane(8);
   const modelCallLane = lane(4);
   const MODEL_CALL_PATH = /^\/api\/agents\/[^/]+\/model\/complete$/;
@@ -224,19 +191,14 @@
     try {
       body = await resp.json();
     } catch {
-      // Not JSON; fall back to the plain message.
     }
     const err = new Error(body && typeof body.error === "string" ? body.error : fallback);
     if (body && typeof body.code === "string") err.code = body.code;
-    // A refusal for an agent that isn't running names its state.
     if (body && typeof body.state === "string") err.state = body.state;
     err.status = resp.status;
     return err;
   }
 
-  // ── Artifact state ───────────────────────────────────────────────────
-
-  // Relative to the team directory, which is what the team file API addresses.
   function statePath() {
     return `workbench/${ARTIFACT}.state.json`;
   }
@@ -261,10 +223,6 @@
     if (!res.ok) throw await errorFrom(res, `residuum.state.set failed with status ${res.status}`);
   }
 
-  // ── Model calls ──────────────────────────────────────────────────────
-
-  // A model call runs on one agent's models, so the request names the agent:
-  // `residuum.ask(prompt, { agent })` or `residuum.ask({ agent, prompt, ... })`.
   function ask(promptOrRequest, options) {
     let body;
     if (typeof promptOrRequest === "string") {
@@ -298,11 +256,6 @@
     );
   }
 
-  // ── Live connections ─────────────────────────────────────────────────
-
-  // A socket on the page's own origin that reconnects with backoff for as
-  // long as the page is open. Nothing is queued while it is down: `opened`
-  // sends what the connection needs, again after every reconnect.
   function liveSocket(path, label, { keepalive, opened, received, changed }) {
     const url = `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}${path}`;
     let socket = null;
@@ -325,7 +278,6 @@
       ws.onopen = () => {
         delay = 1000;
         if (keepalive) ping = setInterval(() => send({ type: "ping" }), 30000);
-        // What the connection needs goes out before anyone hears it is up.
         opened();
         setState("connected");
       };
@@ -362,10 +314,6 @@
     };
   }
 
-  // ── Watching files ───────────────────────────────────────────────────
-
-  // Normalizes like Residuum: `/`-separated, no empty or `.` segments, "" for
-  // the whole namespace. Throws for paths outside it.
   function normalizePrefix(call, prefix) {
     if (typeof prefix !== "string") {
       throw new TypeError(`${call} prefix must be a workspace path like "team/wiki"`);
@@ -390,8 +338,6 @@
     ancestor === "" ||
     path === ancestor ||
     (path.startsWith(ancestor) && path[ancestor.length] === "/");
-  // A change concerns a prefix when it is the prefix, lies under it, or is a
-  // folder containing it (renaming or removing that folder carries it along).
   const concerns = (path, prefix) => isWithin(path, prefix) || isWithin(prefix, path);
 
   const WORKSPACE_FRAMES = new Set([
@@ -416,7 +362,6 @@
     }
   }
 
-  // `sync` sends the watchers' prefixes to the socket that serves them.
   function addWatcher(watchers, prefix, handler, sync) {
     const watcher = { prefix, handler };
     watchers.add(watcher);
@@ -425,8 +370,6 @@
       if (watchers.delete(watcher)) sync();
     };
   }
-
-  // ── Hub events ───────────────────────────────────────────────────────
 
   const HUB_EVENT_TYPES = new Set(["artifact_updated", "artifact_removed", "connection"]);
   const hubHandlers = new Map();
@@ -463,8 +406,6 @@
     });
   }
 
-  // Live reload: the page reloads when its own artifact changes, unless it
-  // registered an `artifact_updated` handler to deal with that itself.
   function artifactEvent(frame) {
     emit(hubHandlers, frame);
     if (
@@ -475,8 +416,6 @@
       location.reload();
     }
   }
-
-  // ── Agents ───────────────────────────────────────────────────────────
 
   const agentHandles = new Map();
 
@@ -503,7 +442,6 @@
       socket?.send({ type: "watch_workspace", prefixes: prefixesOf(watchers) });
     };
 
-    // Opened on first use and kept for as long as the page is open.
     function connection() {
       socket ??= liveSocket(
         `/api/agents/${encodeURIComponent(name)}/ws`,
@@ -550,11 +488,6 @@
     });
   }
 
-  // ── Sessions ─────────────────────────────────────────────────────────
-
-  // The page follows its artifact's sessions, on every agent, through the hub
-  // socket's session relay: subscribed on the first start, and again after
-  // every reconnect.
   const SUBSCRIBE_TIMEOUT_MS = 10000;
   const relay = { requested: false, active: false, activeBefore: false, waiting: [] };
 
@@ -589,19 +522,13 @@
     if (!relay.requested || relay.active) return;
     relay.active = true;
     for (const ready of relay.waiting.splice(0)) ready();
-    // Frames sent while the socket was down are lost.
     if (relay.activeBefore) void resyncSessions();
     relay.activeBefore = true;
   }
 
-  // Two agents can hold sessions at the same address, so a session is
-  // identified by (agent, address).
   const sessionKey = (agentName, address) => `${agentName}\n${address}`;
   const sessionRoutes = new Map();
 
-  // A session's first frames can arrive before the start request's reply says
-  // which address is the page's. While any start is in flight, frames no handle
-  // claims are kept here and handed to the handle that turns out to own them.
   let startsInFlight = 0;
   let unclaimed = [];
 
@@ -622,11 +549,6 @@
     else if (startsInFlight > 0) unclaimed.push({ key, frame });
   }
 
-  // Reads one agent's sessions for this artifact and hands each of `routes`
-  // `resync` with its session as listed now, or the reason the list couldn't
-  // be read. Shared by the bulk resync below and a single freshly followed
-  // session, which wants its current state without waiting for a lag or a
-  // reconnect.
   async function resyncRoutes(agentName, routes) {
     let listing = null;
     let error = null;
@@ -651,9 +573,6 @@
     }
   }
 
-  // Lost frames can't be replayed, so each handle hears `resync` with its
-  // session as Residuum lists it now (`null` when it isn't listed), or the
-  // reason the list couldn't be read.
   async function resyncSessions() {
     const byAgent = new Map();
     for (const route of sessionRoutes.values()) {
@@ -663,9 +582,6 @@
     await Promise.all([...byAgent].map(([agentName, routes]) => resyncRoutes(agentName, routes)));
   }
 
-  // `early` holds the frames that arrived before the handle existed. Each
-  // handler registered for their type gets them first, so `session_started`
-  // (which carries the run id) and early output aren't lost.
   function sessionHandle(agentName, address, early) {
     const handlers = new Map();
     sessionRoutes.set(sessionKey(agentName, address), {
@@ -710,10 +626,6 @@
     });
   }
 
-  // A session runs on one agent, so the start names it. The page subscribes
-  // first, so it hears the session from its first frame on whichever agent
-  // runs it; without a live connection it doesn't start a session it couldn't
-  // follow.
   async function startSession(options) {
     if (!options || typeof options.agent !== "string" || options.agent === "") {
       throw new TypeError(
@@ -740,8 +652,6 @@
       if (!resp.ok) throw await errorFrom(resp, "Couldn't start the session.");
       address = (await resp.json()).address;
     } finally {
-      // Still counted as in flight until here, so no frame for this session
-      // slips past both the buffer and its handle.
       startsInFlight -= 1;
       if (address !== null) {
         const key = sessionKey(agentName, address);
@@ -752,13 +662,6 @@
     return sessionHandle(agentName, address, early);
   }
 
-  // A session already running when the page opens, or still running across a
-  // reload, has no handle: `residuum.sessions.start` only ever hears a
-  // session from its own start request on. `follow` subscribes to it
-  // directly, by (agent, address), over the same relay (`subscribe_session`,
-  // not the artifact-wide `subscribe_artifact_sessions` a start registers),
-  // and resyncs it at once so the handle has the session's current state
-  // without waiting for a lag or a reconnect to ask for it.
   const followedSessions = new Map();
 
   function sendFollowSubscriptions() {
@@ -767,9 +670,6 @@
     }
   }
 
-  // The subscription ends with the connection, so a reconnect's frames are
-  // lost the same way a lag's are: resync once it is active again, but not
-  // the first time, when the handle's own resync below already covers it.
   function sessionSubscribed(agentName, address) {
     const key = sessionKey(agentName, address);
     const followed = followedSessions.get(key);
@@ -802,8 +702,6 @@
     if (route) void resyncRoutes(agentName, [route]);
     return handle;
   }
-
-  // ── The hub socket ───────────────────────────────────────────────────
 
   let hubConnectedBefore = false;
 
@@ -838,13 +736,10 @@
         void resyncSessions();
         return;
       default:
-        // The rest of the hub's frames are for the Residuum app.
         return;
     }
   }
 
-  // Opened as the page loads, for live reload, artifact events, team watches
-  // and sessions.
   const hub = liveSocket("/api/hub/ws", "Residuum's live connection", {
     keepalive: false,
     opened: hubOpened,

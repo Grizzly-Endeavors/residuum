@@ -1,12 +1,5 @@
-//! Structured log parsing and formatting for NDJSON log files.
-//!
-//! Parses JSON log lines produced by `tracing-subscriber`'s JSON formatter
-//! and renders them as human-readable text with optional filtering by module
-//! or log level. Used by `residuum logs`.
-
 use std::fmt::Write;
 
-/// A single parsed log entry from a JSON log line.
 #[derive(serde::Deserialize)]
 pub struct LogEntry {
     pub timestamp: String,
@@ -19,7 +12,6 @@ pub struct LogEntry {
     pub spans: Vec<SpanEntry>,
 }
 
-/// A span in the active span stack at the time of the log event.
 #[derive(serde::Deserialize)]
 pub struct SpanEntry {
     pub name: String,
@@ -27,7 +19,6 @@ pub struct SpanEntry {
     pub fields: serde_json::Map<String, serde_json::Value>,
 }
 
-/// Log severity levels in ascending order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LogLevel {
     Trace,
@@ -38,7 +29,6 @@ pub enum LogLevel {
 }
 
 impl LogLevel {
-    /// Parse a level string (case-insensitive).
     #[must_use]
     pub fn parse(s: &str) -> Option<Self> {
         match s.to_ascii_uppercase().as_str() {
@@ -52,10 +42,6 @@ impl LogLevel {
     }
 }
 
-/// Display form of a log target: `residuum::` is removed from the front, and a
-/// crate target `residuum_<x>::…` shows as `<x>::…`, and a crate's root target
-/// `residuum_<x>` shows as `<x>`. Any other target without `::` is returned
-/// unchanged.
 #[must_use]
 pub fn display_target(target: &str) -> String {
     let Some((first, rest)) = target.split_once("::") else {
@@ -73,18 +59,11 @@ pub fn display_target(target: &str) -> String {
     }
 }
 
-/// Module form of a log target: the target with its first segment removed. A
-/// target without `::` is a crate root, so its module form is empty.
 #[must_use]
 pub fn module_target(target: &str) -> &str {
     target.split_once("::").map_or("", |(_, rest)| rest)
 }
 
-/// Whether a `--module` value selects a log target.
-///
-/// `filter` is the value as typed. It matches when it is a plain string prefix
-/// of the target, or when it, with one leading `residuum::` removed, is a plain
-/// string prefix of the target's display form or module form.
 #[must_use]
 pub fn module_matches(filter: &str, target: &str) -> bool {
     let bare = filter.strip_prefix("residuum::").unwrap_or(filter);
@@ -93,32 +72,21 @@ pub fn module_matches(filter: &str, target: &str) -> bool {
         || module_target(target).starts_with(bare)
 }
 
-/// Check whether a log entry's level meets the minimum severity threshold.
 #[must_use]
 pub fn meets_level(entry_level: &str, min_level: LogLevel) -> bool {
     LogLevel::parse(entry_level).is_some_and(|l| l >= min_level)
 }
 
-/// Try to parse a JSON log line into a `LogEntry`.
 #[must_use]
 pub fn parse_line(line: &str) -> Option<LogEntry> {
     serde_json::from_str(line).ok()
 }
 
-/// Format a parsed log entry as a human-readable string.
-///
-/// Output format:
-/// ```text
-/// 2026-03-23T10:15:30  INFO  [agent::core] processing user message  correlation_id=abc123
-/// ```
-///
-/// When `color` is true, the level is ANSI-colored by severity.
 #[must_use]
 pub fn format_entry(entry: &LogEntry) -> String {
     format_entry_impl(entry, false)
 }
 
-/// Format a parsed log entry with optional ANSI color on the level field.
 #[must_use]
 pub fn format_entry_colored(entry: &LogEntry) -> String {
     format_entry_impl(entry, true)
@@ -129,11 +97,9 @@ fn format_entry_impl(entry: &LogEntry, color: bool) -> String {
 
     let mut out = String::with_capacity(128);
 
-    // Timestamp — trim sub-microsecond precision for readability
     let ts = truncate_timestamp(&entry.timestamp);
     _ = write!(out, "{ts}  ");
 
-    // Level — right-padded to 5 chars, optionally colored
     if color {
         let padded = format!("{:<5}", entry.level);
         let colored = match entry.level.to_ascii_uppercase().as_str() {
@@ -150,15 +116,12 @@ fn format_entry_impl(entry: &LogEntry, color: bool) -> String {
 
     _ = write!(out, "[{}]", display_target(&entry.target));
 
-    // Message from fields
     if let Some(msg) = entry.fields.get("message").and_then(|v| v.as_str()) {
         _ = write!(out, " {msg}");
     }
 
-    // Extra structured fields (skip "message" since we already printed it)
     append_fields(&mut out, &entry.fields);
 
-    // Span context fields (flattened from the span stack)
     for span in &entry.spans {
         for (k, v) in &span.fields {
             _ = write!(out, "  {k}={}", format_value(v));
@@ -168,7 +131,6 @@ fn format_entry_impl(entry: &LogEntry, color: bool) -> String {
     out
 }
 
-/// Append non-message fields from the event's field map.
 fn append_fields(out: &mut String, fields: &serde_json::Value) {
     let Some(obj) = fields.as_object() else {
         return;
@@ -181,7 +143,6 @@ fn append_fields(out: &mut String, fields: &serde_json::Value) {
     }
 }
 
-/// Format a JSON value for display in key=value pairs.
 fn format_value(v: &serde_json::Value) -> String {
     match v {
         serde_json::Value::String(s) => s.clone(),
@@ -424,7 +385,6 @@ mod tests {
         assert!(formatted.contains("processing user message"));
         assert!(formatted.contains("source=web"));
         assert!(formatted.contains("correlation_id=abc123"));
-        // Should NOT contain the full "residuum::" prefix in target
         assert!(!formatted.contains("[residuum::agent::core]"));
     }
 

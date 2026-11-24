@@ -10,9 +10,6 @@ import { json, parseJsonObject, readBody, readJsonObject } from "./http";
 import type { Route, RouteContext } from "./routes";
 import type { MockState } from "./state";
 
-/**
- * Default prerequisites for Microsoft Teams setup wizard in mock mode.
- */
 export function defaultTeamsSetupPrereqs(state: MockState): TeamsSetupPrereqs {
   const teamsAlreadyConfigured =
     state.configToml.includes("teams_app_id") && !state.configToml.includes('teams_app_id = ""');
@@ -127,7 +124,6 @@ function advanceJob(state: MockState, job: TeamsSetupJob): void {
       break;
     }
     case "sign_in": {
-      // While waiting_for_user, does not advance automatically
       break;
     }
     case "scaffold": {
@@ -187,19 +183,16 @@ function advanceJob(state: MockState, job: TeamsSetupJob): void {
       break;
     }
     case "install_app": {
-      // Handled via POST /job/install-app
       break;
     }
   }
 }
 
-/** `GET /api/teams-setup/prereqs` */
 function getPrereqs({ res, state }: RouteContext): void {
   const prereqs = getPrereqsForState(state);
   json(res, 200, prereqs);
 }
 
-/** `GET /api/teams-setup/job` */
 function getJob({ res, state, query }: RouteContext): void {
   const job = state.teamsSetupJob;
   if (!job) {
@@ -225,14 +218,12 @@ function getJob({ res, state, query }: RouteContext): void {
   json(res, 200, responseJob);
 }
 
-/** `POST /api/teams-setup/job` */
 async function startJob({ req, res, state }: RouteContext): Promise<void> {
   const raw = await readBody(req);
   const start = parseJsonObject(raw) as unknown as TeamsSetupStart;
 
   const prereqs = getPrereqsForState(state);
 
-  // If a job is already running
   if (
     state.teamsSetupJob &&
     (state.teamsSetupJob.state === "running" || state.teamsSetupJob.state === "waiting_for_user")
@@ -241,7 +232,6 @@ async function startJob({ req, res, state }: RouteContext): Promise<void> {
     return;
   }
 
-  // Consent check
   if (!start.consent_install_cli && !prereqs.atk.installed) {
     json(res, 400, {
       error:
@@ -250,7 +240,6 @@ async function startJob({ req, res, state }: RouteContext): Promise<void> {
     return;
   }
 
-  // Existing configuration check
   if (!start.replace_existing && prereqs.teams_already_configured) {
     json(res, 400, {
       error:
@@ -259,7 +248,6 @@ async function startJob({ req, res, state }: RouteContext): Promise<void> {
     return;
   }
 
-  // Form validation
   if (!start.form.bot_name.trim()) {
     json(res, 400, { error: "Bot name is required." });
     return;
@@ -322,13 +310,11 @@ async function startJob({ req, res, state }: RouteContext): Promise<void> {
   };
   state.teamsSetupJob = job;
 
-  // Run initial phase
   advanceJob(state, job);
 
   json(res, 200, { ...job, log: state.teamsSetupAllLogs ?? [] });
 }
 
-/** `POST /api/teams-setup/job/redirect` */
 async function submitRedirect({ req, res, state }: RouteContext): Promise<void> {
   const job = state.teamsSetupJob;
   if (!job) {
@@ -391,7 +377,6 @@ async function submitRedirect({ req, res, state }: RouteContext): Promise<void> 
   json(res, 200, { ...job, log: state.teamsSetupAllLogs ?? [] });
 }
 
-/** `POST /api/teams-setup/job/cancel` */
 function cancelJob({ res, state }: RouteContext): void {
   const job = state.teamsSetupJob;
   if (!job) {
@@ -405,7 +390,6 @@ function cancelJob({ res, state }: RouteContext): void {
   json(res, 200, { ...job, log: state.teamsSetupAllLogs ?? [] });
 }
 
-/** `POST /api/teams-setup/job/retry` */
 function retryJob({ res, state }: RouteContext): void {
   const job = state.teamsSetupJob;
   if (!job) {
@@ -417,7 +401,6 @@ function retryJob({ res, state }: RouteContext): void {
   job.state = "running";
   job.phase_started_at = state.env.clock.iso();
 
-  // If provision failed, clear failure so retry can proceed
   const formData = jobFormData.get(job.agent);
   if (formData?.botName.includes("fail_provision")) {
     formData.botName = "Retried Bot";
@@ -429,7 +412,6 @@ function retryJob({ res, state }: RouteContext): void {
   json(res, 200, { ...job, log: state.teamsSetupAllLogs ?? [] });
 }
 
-/** `POST /api/teams-setup/job/install-app` */
 function installApp({ res, state }: RouteContext): void {
   const job = state.teamsSetupJob;
   if (!job) {
@@ -460,7 +442,6 @@ function installApp({ res, state }: RouteContext): void {
   json(res, 200, { ...job, log: state.teamsSetupAllLogs ?? [] });
 }
 
-/** `GET /api/teams-setup/job/package` */
 function getPackage({ res, state }: RouteContext): void {
   const job = state.teamsSetupJob;
   if (!job) {
@@ -477,7 +458,6 @@ function getPackage({ res, state }: RouteContext): void {
   res.end(zipHeader);
 }
 
-/** `DELETE /api/teams-setup/job` */
 function deleteJob({ res, state }: RouteContext): void {
   const job = state.teamsSetupJob;
   if (!job) {
@@ -498,7 +478,6 @@ function deleteJob({ res, state }: RouteContext): void {
   res.writeHead(204).end();
 }
 
-/** `POST /api/teams-setup/cleanup` */
 async function cleanup({ req, res }: RouteContext): Promise<void> {
   const body = await readJsonObject(req);
   const removed: string[] = [];
@@ -514,7 +493,6 @@ async function cleanup({ req, res }: RouteContext): Promise<void> {
   json(res, 200, result);
 }
 
-/** Mock control: `POST /api/mock/teams-setup/prereqs` */
 async function mockSetPrereqs({ req, res, state }: RouteContext): Promise<void> {
   const body = (await readJsonObject(req)) as unknown as Partial<TeamsSetupPrereqs>;
   const current = getPrereqsForState(state);
@@ -522,7 +500,6 @@ async function mockSetPrereqs({ req, res, state }: RouteContext): Promise<void> 
   json(res, 200, state.teamsSetupPrereqs);
 }
 
-/** Mock control: `POST /api/mock/teams-setup/fail-provision` */
 async function mockSetFailProvision({ req, res, state }: RouteContext): Promise<void> {
   const raw = await readBody(req);
   const parsed = raw.trim() !== "" ? parseJsonObject(raw) : {};

@@ -84,9 +84,6 @@ describe("userErrorReason", () => {
   });
 
   it("shows a long 4xx validation message verbatim instead of swapping in a generic one", () => {
-    // Regression: this used to be silently replaced once it crossed the old
-    // 240-char cap, so a real validation error (e.g. HEARTBEAT.yml) was
-    // never actually shown to the user.
     const longMessage =
       `HEARTBEAT.yml is invalid: ${"pulse configuration error detail. ".repeat(10)}`.trim();
     expect(longMessage.length).toBeGreaterThan(240);

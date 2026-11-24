@@ -56,7 +56,6 @@ function unreadThread(id: string): MailThreadSummary {
   };
 }
 
-/** The Inbox state the overview store holds: what its newest-page search found. */
 function inboxHolds(threads: number, options: { inboxUnread: number; complete: boolean }): void {
   overview.overviews = { atlas: atlasWith(options.inboxUnread) };
   overview.unreadThreads = Array.from({ length: threads }, (_, n) => unreadThread(`t${String(n)}`));

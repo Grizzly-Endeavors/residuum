@@ -8,7 +8,6 @@ import {
 } from "./test-support";
 import type { TestSocket } from "./test-support";
 
-/** What the hub says to a frame it can't read; it answers one, so a test can tell the hub has handled what came before. */
 const UNREADABLE = { type: "notice", level: "warn" };
 
 describe("the hub socket's session relay", () => {
@@ -25,7 +24,6 @@ describe("the hub socket's session relay", () => {
     await mock.close();
   });
 
-  /** Start a session for `artifact` on `agent` over HTTP, as the SDK does, and answer its address. */
   async function startSession(agent: string, artifact: string): Promise<string> {
     const res = await fetchJson(`${mock.baseUrl}/api/agents/${agent}/sessions`, {
       method: "POST",
@@ -36,7 +34,6 @@ describe("the hub socket's session relay", () => {
     return (res.body as { address: string }).address;
   }
 
-  /** Wait until the hub has handled everything the socket sent so far: it answers a message it can't read. */
   async function handled(socket: TestSocket = hubSocket): Promise<void> {
     socket.send({ type: "nonsense" });
     await socket.next((frame) => frame.type === "notice");
@@ -45,16 +42,13 @@ describe("the hub socket's session relay", () => {
   const sessionFrames = (socket: TestSocket): Frame[] =>
     socket.frames.filter((frame) => frame.type === "session_frame");
 
-  /** The session frames `socket` is sent while the mock runs the next `ms` of simulated time, to show that no more come. */
   const relayedWithin = async (socket: TestSocket, ms: number): Promise<Frame[]> =>
     (await socket.quietFrames(() => advanceMockTime(mock.hub.env, ms))).filter(
       (frame) => frame.type === "session_frame",
     );
 
-  /** The type of the frame a `session_frame` carries. */
   const carried = (frame: Frame): string => (frame.frame as { type: string }).type;
 
-  /** Wait for `socket` to be sent a session frame of `type`. */
   const nextCarrying = (socket: TestSocket, type: string): Promise<Frame> =>
     socket.next((frame) => frame.type === "session_frame" && carried(frame) === type);
 
@@ -128,7 +122,6 @@ describe("the hub socket's session relay", () => {
         session: { address, source_label: "artifact:tip-splitter" },
       });
 
-      // The hub socket has no verbose flag, and what it carries is what the agent's socket sent.
       await agentSocket.settled();
       const onAgentSocket = agentSocket.frames.filter((frame) =>
         (frame.type as string).startsWith("session_"),

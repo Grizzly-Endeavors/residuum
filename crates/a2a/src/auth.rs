@@ -1,13 +1,3 @@
-//! Request authentication for the A2A listener.
-//!
-//! Every request is authenticated as either a caller-key holder or a joined
-//! sibling instance presenting the key it was issued, per
-//! `docs/systems-usage/a2a.md`. The check runs per request, before the
-//! request is dispatched to an agent, with the target agent's visibility.
-//! The resolved caller is injected as [`CALLER_HEADER`] for the handler and
-//! executor to read; nothing downstream of this layer should trust that
-//! header from anywhere else.
-
 use std::sync::Arc;
 
 use axum::body::Body;
@@ -20,28 +10,17 @@ use residuum_config::A2aVisibility;
 use super::keys_runtime::SharedA2aKeys;
 use residuum_net::remote_access::siblings::SiblingKeyVerifier;
 
-/// Header the auth layer injects with the resolved caller identity
-/// (`key:<name>` or `sibling:<slug>`). Stripped from every incoming request
-/// before it is ever inspected, so a caller cannot forge it.
 pub const CALLER_HEADER: &str = "x-residuum-a2a-caller";
 
-/// Path the relay's directory probes and local health checks use to test
-/// whether a bearer token is currently valid, without
-/// needing a full A2A call.
 pub const AUTH_CHECK_PATH: &str = "/_a2a/auth-check";
 
-/// Who is calling the A2A listener.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Caller {
-    /// A caller key minted with `residuum a2a keys create`.
     Key(String),
-    /// Another of this user's instances: it presented a key issued to it when
-    /// it joined this one.
     Sibling(String),
 }
 
 impl Caller {
-    /// The value written to [`CALLER_HEADER`].
     #[must_use]
     pub fn header_value(&self) -> String {
         match self {
@@ -51,18 +30,12 @@ impl Caller {
     }
 }
 
-/// Hub-level state for request authentication: the one caller-key store and
-/// the joined siblings' keys, shared by every agent.
 #[derive(Clone)]
 pub struct AuthState {
-    /// Caller-key store, for verifying `Authorization: Bearer` tokens.
     pub keys: SharedA2aKeys,
-    /// Keys issued to joined siblings, each tagged with the sibling's slug.
     pub sibling_keys: Arc<dyn SiblingKeyVerifier>,
 }
 
-/// Whether `req` is the public Agent Card GET, which stays open to everyone
-/// in public visibility.
 fn is_card_get(req: &Request<Body>) -> bool {
     req.method() == Method::GET && req.uri().path() == a2a_server::WELL_KNOWN_AGENT_CARD_PATH
 }
@@ -71,8 +44,6 @@ fn is_auth_check(req: &Request<Body>) -> bool {
     req.uri().path() == AUTH_CHECK_PATH
 }
 
-/// Resolve the caller from the `Authorization` bearer token: a caller key, or
-/// the key a joined sibling was issued.
 async fn resolve_caller(state: &AuthState, authorization: Option<&str>) -> Option<Caller> {
     let token = authorization.and_then(|v| v.strip_prefix("Bearer "))?;
     if let Some(name) = state.keys.verify(token).await {
@@ -81,30 +52,17 @@ async fn resolve_caller(state: &AuthState, authorization: Option<&str>) -> Optio
     state.sibling_keys.verify(token).map(Caller::Sibling)
 }
 
-/// The result of [`authorize`].
 pub enum Admission {
-    /// The caller may proceed. The request has its credentials replaced by
-    /// the verified [`CALLER_HEADER`].
     Admitted(Request<Body>),
-    /// The caller is refused, or the request was fully answered here (the
-    /// auth-check probe). Send this response instead of dispatching.
     Answered(Response),
 }
 
-/// Authenticate `req` against an agent with the given `visibility`.
-///
-/// A caller key or a joined sibling's key admits the caller to any agent. With
-/// neither, a public agent serves only its Agent Card (everything else is
-/// `401`) and a private agent answers `404` to every route. The
-/// [`AUTH_CHECK_PATH`] probe is answered here: `204` when the caller is
-/// authenticated, `404` otherwise.
 pub async fn authorize(
     state: &AuthState,
     visibility: A2aVisibility,
     mut req: Request<Body>,
 ) -> Admission {
     let headers = req.headers_mut();
-    // Never trust a client-supplied caller header, in or out.
     headers.remove(CALLER_HEADER);
     let authorization = headers
         .get(header::AUTHORIZATION)
@@ -125,8 +83,6 @@ pub async fn authorize(
 
     match (caller, visibility) {
         (Some(caller), _) => {
-            // The credential has done its job; keep the raw key out of the
-            // SDK's service params, which the handler and executor see.
             req.headers_mut().remove(header::AUTHORIZATION);
             match HeaderValue::from_str(&caller.header_value()) {
                 Ok(value) => {
@@ -178,8 +134,6 @@ mod tests {
             .unwrap()
     }
 
-    /// The test stand-in for the hub listener: authorize, then hand the
-    /// admitted request to a router that echoes what the handler would see.
     struct TestApp {
         state: AuthState,
         visibility: A2aVisibility,
@@ -332,7 +286,6 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
-    /// A hub whose only credential is a joined sibling's key.
     async fn state_with_sibling_key(dir: &std::path::Path) -> (AuthState, String) {
         let siblings = residuum_net::remote_access::siblings::SiblingKeys::open(dir);
         let inbound = residuum_net::remote_access::siblings::issue_key();
@@ -398,7 +351,6 @@ mod tests {
             .unwrap();
         assert_eq!(without_key.status(), StatusCode::NOT_FOUND);
 
-        // A key that no sibling holds, and a real key with a character changed.
         let mut wrong = key.clone();
         wrong.replace_range(
             wrong.len() - 1..,

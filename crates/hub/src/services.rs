@@ -1,10 +1,3 @@
-//! Services the hub builds once and passes into every agent it hosts.
-//!
-//! An agent depends on no process-wide mutable state: everything it reads
-//! from the hub arrives here, as an explicit handle. Each field is either
-//! cheap to clone (an `Arc`, a channel end) or a handle that is already
-//! shared by construction.
-
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -29,24 +22,15 @@ use residuum_tracing_service::TracingService;
 use residuum_workspace::team_files::TeamWriteCoordinator;
 use residuum_workspace::watch::WatchHealth;
 
-/// The hub-level controls an agent's HTTP routes drive: the update status
-/// and the requests to restart or shut down the whole process.
 #[derive(Clone)]
 pub struct HubControl {
-    /// The running build. Every report of the running version reads it from
-    /// here.
     pub build: residuum_core::build_info::BuildInfo,
-    /// Latest result of the periodic version check.
     pub update_status: SharedUpdateStatus,
-    /// Asks the hub to stop every agent and relaunch the binary.
     pub restart_tx: mpsc::Sender<()>,
-    /// Asks the hub to stop every agent and exit.
     pub shutdown_tx: mpsc::Sender<()>,
 }
 
 impl HubControl {
-    /// The controls of the running `build`, with a fresh update status for
-    /// its version.
     pub(crate) fn new(
         build: residuum_core::build_info::BuildInfo,
         restart_tx: mpsc::Sender<()>,
@@ -61,43 +45,21 @@ impl HubControl {
     }
 }
 
-/// The hub's one change feed over the team directory.
-///
-/// It publishes `WorkspaceEvent`s on `topics::Workspace` of its own bus, with
-/// paths under the `team/` prefix. The hub WebSocket, every agent's
-/// WebSocket (for clients watching `team/...`), and every agent's artifact
-/// reload watcher read it, so a change to a team file is watched once no
-/// matter how many agents are running.
-///
-/// The hub also watches the team workbench itself, from this feed, and
-/// publishes a `WorkbenchEvent` on `topics::Workbench` of the same bus for
-/// every artifact added, changed or removed. The hub WebSocket sends them as
-/// artifact events, which therefore reach clients with no agent running.
 pub struct TeamChangeFeed {
-    /// The bus the feed publishes on.
     pub bus: BusHandle,
-    /// Whether the feed is running, so a client that starts watching can be
-    /// told when live updates are off.
     pub health: watch::Receiver<WatchHealth>,
     task: tokio::task::JoinHandle<()>,
-    /// The hub's artifact watcher; `None` when it couldn't subscribe to the
-    /// feed, which was logged.
     workbench_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl TeamChangeFeed {
-    /// Start the feed over `team_root`, creating the directory if it is
-    /// missing so the watcher has something to watch.
     pub(crate) async fn start(team_root: PathBuf) -> Self {
         if let Err(e) = tokio::fs::create_dir_all(&team_root).await {
             tracing::warn!(error = %e, path = %team_root.display(), "failed to create the team directory; changes to team files may not appear live");
         }
-        // The feed serves every agent, so the log lines of its broker and
-        // watcher belong to the hub's team feed, not to any one agent.
         let span = tracing::info_span!("team_feed");
         let bus = span.in_scope(residuum_bus::spawn_broker);
         let (health_tx, health) = watch::channel(WatchHealth::Starting);
-        // Subscribed before the feed starts, so no batch goes unseen.
         let workbench_task = crate::workbench_watcher::spawn_workbench_watcher(
             TeamPaths::new(team_root.clone()).workbench_dir(),
             &bus,
@@ -125,7 +87,6 @@ impl TeamChangeFeed {
         }
     }
 
-    /// A feed that watches nothing, for tests.
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn idle() -> Self {
@@ -147,83 +108,36 @@ impl Drop for TeamChangeFeed {
     }
 }
 
-/// Shared services handed to every agent's runtime.
 #[derive(Clone)]
 pub struct HubServices {
-    /// The residuum root (`~/.residuum`): parent of `hub/`, `team/` and
-    /// every agent directory.
     pub root: PathBuf,
-    /// The hub's own directory (`~/.residuum/hub`).
     pub hub_dir: PathBuf,
-    /// Coordinates writes to the team directory across all agents and the
-    /// web API. Each agent takes its own view with
-    /// [`TeamWriteCoordinator::view_for_agent`].
     pub team: TeamWriteCoordinator,
-    /// The team wiki's search index. Opened once; every agent's searcher
-    /// holds a clone of this handle.
     pub team_wiki: Arc<TeamWikiIndex>,
-    /// Hub-wide budget for concurrently running session turns, sized by the
-    /// hub's `[background] max_concurrent` and shared by every agent's
-    /// session runtime.
     pub session_budget: Arc<Semaphore>,
-    /// Status of the relay tunnel.
     pub tunnel_status_rx: watch::Receiver<TunnelStatus>,
-    /// The shared agent-key store (credentials injected into commands and
-    /// MCP servers).
     pub agent_keys: SharedAgentKeys,
-    /// The shared store of A2A caller keys.
     pub a2a_keys: SharedA2aKeys,
-    /// Trace export, bug reports, and the span buffer.
     pub tracing_service: Arc<TracingService>,
-    /// The team and hub-config checkpoint repositories every agent's
-    /// checkpoint engine records into.
     pub checkpoints: Arc<SharedCheckpointRepos>,
-    /// Serializes writes to the secret store, which every agent's settings
-    /// routes share.
     pub secret_lock: Arc<Mutex<()>>,
-    /// Update and process-control handles.
     pub control: HubControl,
-    /// Whether the workbench artifacts listener is running, and on which port.
     pub workbench_serving: residuum_net::workbench::WorkbenchServing,
-    /// The one change feed over the team directory.
     pub team_feed: Arc<TeamChangeFeed>,
-    /// Feeds relay-discovered sibling instances to every registered agent's
-    /// A2A client hub. Each agent registers at start and unregisters at stop.
     pub sibling_fanout: Arc<residuum_a2a::SiblingFanout>,
-    /// Carries `agent:` messages between the running agents. Each agent
-    /// registers its messenger at start and unregisters at stop.
     pub team_router: Arc<residuum_background::team::TeamRouter>,
-    /// The agent host, for agent tools that create or delete teammates. The
-    /// host binds itself when it is built.
     pub directory: residuum_background::team::DirectoryHandle,
-    /// The agent host as every agent's mailbox, for the agents' mail-aware
-    /// inbox tools. The host binds itself when it is built.
     pub mailboxes: residuum_workspace::inbox::mail::MailboxDirectoryHandle,
-    /// Web Push: registered devices and delivery. Triggers send through it.
     pub push: Arc<PushService>,
-    /// The System 1 (decision model) client every agent shares, with its
-    /// health. Rebuilt in place when `[system_one]` changes.
     pub system_one: Arc<SystemOneService>,
     /// Which browsers may reach this install through Residuum Cloud. The
     /// main router and the workbench listener share it.
     pub pairing: residuum_net::pairing::DevicePairing,
-    /// Remote access over the secure tunnel: its status and actions. The
-    /// tunnel task installs the running manager into it.
     pub remote_access: residuum_net::remote_access::slot::RemoteAccessSlot,
-    /// The staged uploads, shared by the hub routes and every send that
-    /// consumes one.
     pub uploads: UploadStore,
 }
 
 impl HubServices {
-    /// Build the shared services for the hub rooted at `root`.
-    ///
-    /// `team_embedding` is the provider that embeds team wiki pages; `None`
-    /// leaves wiki search text-only.
-    ///
-    /// # Errors
-    /// Returns `FatalError` if the team wiki index or the shared checkpoint
-    /// repositories cannot be opened.
     pub async fn open(
         root: &Path,
         hub: &HubConfig,
@@ -299,11 +213,6 @@ impl HubServices {
         })
     }
 
-    /// Shared services over a throwaway hub rooted at `root`, with a
-    /// disconnected tunnel and a text-only team wiki, for tests.
-    ///
-    /// # Panics
-    /// When the services cannot be opened under `root`.
     #[cfg(any(test, feature = "test-support"))]
     #[expect(
         clippy::unwrap_used,

@@ -24,15 +24,6 @@
   import StateCard from "./StateCard.svelte";
   import WaitingMessages from "./WaitingMessages.svelte";
 
-  // An agent's Chat: its header, the conversation, and the composer floating
-  // over the foot of the conversation, whose scrolling area runs behind it
-  // to the bottom of the place. The agent is the bound one, so the
-  // conversation is the coordinator's feed. While the agent isn't running,
-  // its state card takes the composer's place at the end of the conversation.
-  // Messages the agent hasn't read yet wait at the end of the conversation,
-  // where each can be sent now or sent to a multitask session instead.
-  // Files dropped anywhere on the place are attached to the message.
-
   let { agent, actions }: { agent: string; actions: ShellActions } = $props();
 
   const store = $derived(ws.store);
@@ -53,8 +44,6 @@
     loadOlder: () => ws.loadOlderHistory(),
   };
 
-  // Starting the agent from its card leaves the keyboard on the card, which
-  // goes once the agent runs: the composer that replaces it takes over.
   let cardEl = $state<HTMLDivElement>();
   let composerEl = $state<HTMLDivElement>();
   let composer = $state<ReturnType<typeof Composer>>();
@@ -73,11 +62,6 @@
     });
   });
 
-  // A line whose first word is a chat action's `/name` runs that action, with
-  // the rest of the line as its text; anything else is a message, a pasted
-  // path included. An action that can't run now says why and leaves the line
-  // in the box.
-  // A line sent with files is always a message, so the files go with it.
   function handleSend(text: string, attachments: StagedAttachment[]): boolean {
     if (attachments.length > 0) {
       ws.sendChat(text, attachments);
@@ -88,9 +72,6 @@
     return outcome !== "refused";
   }
 
-  // A message the agent refused goes back in the box, files and all. With no
-  // box showing (the agent stopped meanwhile, or another place is open), the
-  // coordinator puts it in the agent's draft instead.
   $effect(() => {
     const shown = composer;
     if (shown === undefined) return;
@@ -99,11 +80,6 @@
     });
   });
 
-  // ── Messages the agent hasn't read yet ─────────────────────────────
-
-  // Multitask takes the message back from the agent first, so only one of the
-  // two ever works on it. A message the agent read meanwhile stays in the
-  // chat; one taken back whose session couldn't start goes back in the box.
   async function multitask(message: WaitingMessage): Promise<void> {
     const name = hub.shownName(agent);
     if (message.images !== undefined && message.images.length > 0) {
@@ -150,11 +126,6 @@
     if (!started) composer?.restore(message.content);
   }
 
-  // ── Dropping files ─────────────────────────────────────────────────
-
-  // Files dragged anywhere over the place are for the composer, with an
-  // overlay saying so. With no composer (the agent isn't running) the place
-  // takes none; the app still keeps the browser from opening them.
   let dragging = $state(false);
 
   function ondragover(event: DragEvent): void {
@@ -296,19 +267,16 @@
     justify-content: center;
   }
 
-  /* Stands in for the conversation, in the shape of a message and a reply. */
   .chat-loading {
     display: flex;
     flex-direction: column;
     gap: var(--space-18);
   }
 
-  /* The dock supplies the stone-0 behind the composer; this is its room around it. */
   .chat-composer {
     padding: var(--space-8) var(--space-24) var(--space-18);
   }
 
-  /* Over the whole place, composer and header included, while files are dragged over it. */
   .chat-drop {
     position: absolute;
     inset: 0;

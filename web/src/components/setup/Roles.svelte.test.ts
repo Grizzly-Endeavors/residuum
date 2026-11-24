@@ -5,7 +5,6 @@ import Roles from "./Roles.svelte";
 import type { ProviderKey, SetupWizardState } from "../../lib/types";
 import { waitFor } from "../../test/wait";
 
-// Reactive, as the wizard's own state is, so the step redraws after a change.
 function wizard(overrides: Partial<SetupWizardState> = {}): SetupWizardState {
   const state = $state<SetupWizardState>({
     userName: "",

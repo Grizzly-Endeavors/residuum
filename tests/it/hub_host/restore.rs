@@ -1,6 +1,3 @@
-//! Restoring deleted agents against a real host: the HTTP round trip, the
-//! deleted-agent listing, explicit checkpoints, and the races and reuses of
-//! a name.
 #![expect(
     clippy::tests_outside_test_module,
     reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
@@ -60,7 +57,6 @@ async fn restore_over_http(hub: &Fixture, body: Value) -> (u16, Value) {
     .await
 }
 
-/// Set when the deletion of `name` is recorded as having happened.
 fn pin_deletion_time(hub: &Fixture, name: &str, at: &str) {
     let checkpoints_dir = hub.host.checkpoints_dir();
     let path = residuum::checkpoints::agent_repos_dir(&checkpoints_dir, name).join("deleted.json");
@@ -86,7 +82,6 @@ fn dir_of(hub: &Fixture, name: &str) -> std::path::PathBuf {
     hub.root.path().join(name)
 }
 
-/// Record a workspace checkpoint of the agent's directory as it is.
 async fn checkpoint(hub: &Fixture, name: &str) -> String {
     let engine = hub
         .host
@@ -351,7 +346,6 @@ async fn a_restore_racing_a_delete_of_the_same_name_never_resurrects_a_forgotten
         hub.host.restore(restore_request("nova", None), Actor::User),
     );
 
-    // Whichever order they ran in, the hub and the disk agree.
     let listed = hub.host.summary("nova").is_ok();
     assert_eq!(
         listed,
@@ -379,8 +373,6 @@ async fn the_deleted_list_names_only_agents_without_a_directory_newest_first() {
 
     delete_over_http(&hub, "nova").await;
     delete_over_http(&hub, "kit").await;
-    // The list is ordered by when each deletion happened, so pin those times
-    // rather than let the order depend on the clock between the two requests.
     pin_deletion_time(&hub, "nova", "2026-09-29T10:00:00Z");
     pin_deletion_time(&hub, "kit", "2026-09-30T10:00:00Z");
 
@@ -433,7 +425,6 @@ async fn recreating_a_deleted_name_keeps_the_old_history_intact_and_restores_the
     let first_deletion = delete_over_http(&hub, "nova").await;
     let first_checkpoint = str_at(&first_deletion, "checkpoint_id").to_string();
 
-    // A new agent with the same name reuses the name-keyed history.
     create_over_http(&hub, "nova", "second life").await;
     assert!(
         deleted_names(&hub).await.is_empty(),
@@ -446,7 +437,6 @@ async fn recreating_a_deleted_name_keeps_the_old_history_intact_and_restores_the
     let second_checkpoint = str_at(&second_deletion, "checkpoint_id").to_string();
     assert_ne!(first_checkpoint, second_checkpoint);
 
-    // Both lives are in one linear history and every checkpoint reads back.
     let engine = hub
         .host
         .checkpoint_engine_for("nova", &dir_of(&hub, "nova"))
@@ -467,7 +457,6 @@ async fn recreating_a_deleted_name_keeps_the_old_history_intact_and_restores_the
     assert_eq!(listed.len(), 1);
     assert_eq!(listed.first().unwrap().checkpoint_id, second_checkpoint);
 
-    // The default restore is the newest life; the first is one id away.
     let (newest_status, _) = restore_over_http(&hub, json!({ "name": "nova" })).await;
     assert_eq!(newest_status, 201);
     assert_eq!(

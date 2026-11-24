@@ -10,15 +10,11 @@ type Router = typeof routerInstance;
 
 interface Harness {
   router: Router;
-  /** Toasts the router raised. */
   notices: string[];
-  /** The bound agent, as published to the socket coordinator. */
   viewed: (string | null)[];
-  /** The URLs of entries pushed, and of entries replaced, since boot. */
   pushes: string[];
   replaces: string[];
   url: () => string;
-  /** The marks on the entry being shown. */
   entry: () => EntryState;
   shown: () => string;
 }
@@ -36,7 +32,6 @@ const started: Router[] = [];
  */
 const SETTLE_TURNS = 12;
 
-/** Let the browser report traversals and the router finish what they start. */
 async function settle(): Promise<void> {
   for (let turn = 0; turn < SETTLE_TURNS; turn += 1) {
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -48,7 +43,6 @@ const files = (agent: string): Place => ({ kind: "files", agent });
 const home: Place = { kind: "home" };
 const run = (agent: string, runId: string): Panel => ({ kind: "session", agent, runId });
 
-/** A fresh router on a page that opened at `url`. `lastAgent` is what local storage remembers. */
 async function boot(url: string, lastAgent: string | null = null): Promise<Harness> {
   vi.restoreAllMocks();
   vi.resetModules();
@@ -73,7 +67,6 @@ async function boot(url: string, lastAgent: string | null = null): Promise<Harne
     pushes.push(String(target));
     push(state, title, target);
   });
-  // Replacing an entry's state under the same URL (stamping its marks) isn't a navigation.
   vi.spyOn(window.history, "replaceState").mockImplementation((state, title, target) => {
     if (String(target) !== `${window.location.pathname}${window.location.search}`) {
       replaces.push(String(target));
@@ -101,10 +94,6 @@ function locationUrl(location: AppLocation): string {
   return `${JSON.stringify(location.place)}${panel}${settings}`;
 }
 
-/**
- * Asks the way the confirm dialog does: it is an overlay with its own history
- * entry, and the answer comes once the dialog has closed through its handle.
- */
 function confirmOnOverlay(router: Router, answer: boolean) {
   return (_losses: readonly string[]): Promise<boolean> =>
     new Promise((resolve) => {
@@ -602,7 +591,6 @@ describe("closing the panel and the modal", () => {
     await expect(page.router.closeSettings()).resolves.toBe(true);
     expect(page.url()).toBe("/agent/scout");
     expect(page.router.settings).toBeNull();
-    // Back, not a new entry: nothing more was pushed or replaced.
     expect(page.pushes).toEqual(["/agent/scout?settings=scout/model"]);
     expect(page.replaces).toEqual([]);
     expect(page.entry().idx).toBe(0);
@@ -766,7 +754,6 @@ describe("closing the panel and the modal", () => {
     const page = await boot("/agent/scout");
     await page.router.openSettings({ scope: "scout", section: "model" });
     page.router.stop();
-    // A reload keeps the entry's state and starts a new router on it.
     const reloaded = await bootOnCurrentEntry();
     expect(reloaded.router.settings).toEqual({ scope: "scout", section: "model" });
     await reloaded.router.closeSettings();
@@ -775,7 +762,6 @@ describe("closing the panel and the modal", () => {
   });
 });
 
-/** A new router on whatever entry the page is on, as after a reload. */
 async function bootOnCurrentEntry(): Promise<Harness> {
   const { router } = await import("./router.svelte");
   router.stop();
@@ -852,7 +838,6 @@ describe("overlay entries", () => {
     const dismissed = vi.fn();
     const handle = page.router.openOverlay(dismissed);
     await page.router.openPlace(files("scout"));
-    // The navigation replaced the overlay's entry: one entry deeper, not two.
     expect(page.replaces).toEqual(["/agent/scout/files"]);
     expect(page.entry().idx).toBe(1);
     expect(dismissed).toHaveBeenCalledTimes(1);
@@ -910,12 +895,10 @@ describe("overlay entries", () => {
     const below = page.router.openOverlay(() => {});
     const dismissedTop = vi.fn();
     page.router.openOverlay(dismissedTop);
-    // The lower overlay closes first and leaves its entry behind.
     below.close();
     window.history.back();
     await settle();
     expect(dismissedTop).toHaveBeenCalledTimes(1);
-    // Back from the top overlay landed on the stale entry and went on past it.
     expect(page.entry().idx).toBe(0);
     expect(page.entry().overlay).toBeUndefined();
   });
@@ -1032,7 +1015,6 @@ describe("the unsaved-edit guard", () => {
     await settle();
     expect(page.url()).toBe("/agent/scout/files");
     expect(page.router.place).toEqual(files("scout"));
-    // The location was put back on top of the history.
     expect(page.pushes).toEqual(["/agent/scout/files", "/agent/scout/files"]);
     expect(page.entry().idx).toBe(1);
   });
@@ -1223,7 +1205,6 @@ describe("a traversal the browser never reports", () => {
     vi.useFakeTimers();
     try {
       page.router.openOverlay(() => undefined).close();
-      // A traversal starts on the queue's next step, a microtask after the close.
       await Promise.resolve();
       expect(go).toHaveBeenCalledWith(-1);
       expect(vi.getTimerCount()).toBe(1);
@@ -1243,7 +1224,6 @@ describe("a traversal the browser never reports", () => {
     const go = vi.spyOn(window.history, "go").mockImplementation(() => undefined);
     vi.useFakeTimers();
     try {
-      // Unmounting an open modal closes it and stops the router in the same tick.
       page.router.openOverlay(() => undefined).close();
       page.router.stop();
       await Promise.resolve();

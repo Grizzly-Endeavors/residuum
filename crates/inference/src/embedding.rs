@@ -1,8 +1,3 @@
-//! Embedding provider trait and factory for vector embedding APIs.
-//!
-//! Separate from `InferenceProvider` because embedding models use different
-//! endpoints, model names, and don't need `max_tokens` or chat semantics.
-
 use async_trait::async_trait;
 
 use super::InferenceError;
@@ -14,33 +9,17 @@ use residuum_core::util::FatalError;
 /// Trait for model providers that generate vector embeddings.
 #[async_trait]
 pub trait EmbeddingProvider: Send + Sync {
-    /// Embed one or more texts into vector representations.
-    ///
-    /// Returns one embedding per input text, in the same order as `texts`.
-    ///
-    /// # Errors
-    /// Returns `InferenceError` if the request fails, times out, or the response is malformed.
     async fn embed(&self, texts: &[&str]) -> Result<EmbeddingResponse, InferenceError>;
 
-    /// Get the model identifier.
     fn model_name(&self) -> &str;
 }
 
-/// Response from an embedding provider.
 #[derive(Debug, Clone)]
 pub struct EmbeddingResponse {
-    /// One embedding vector per input text, in input order.
     pub embeddings: Vec<Vec<f32>>,
-    /// Dimensionality of each embedding vector.
     pub dimensions: usize,
 }
 
-/// Build an embedding provider from a resolved `ProviderSpec`.
-///
-/// # Errors
-/// Returns `FatalError::Config` if:
-/// - The provider is Anthropic (no embeddings API)
-/// - A required API key is missing
 pub fn build_embedding_provider(
     spec: &ProviderSpec,
     http: SharedHttpClient,

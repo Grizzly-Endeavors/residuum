@@ -6,10 +6,6 @@
   import { viewImageLabel, type ViewerImage } from "./image-viewer";
   import Timestamp from "./Timestamp.svelte";
 
-  // A file the agent sent: its caption, the image or audio inline when it is
-  // one (an image opens full size), and always the file to download with its
-  // name and size, and when it was sent beside it.
-
   let { item }: { item: FileAttachmentFeedItem } = $props();
 
   const isImage = $derived(item.mimeType.startsWith("image/"));
@@ -64,7 +60,6 @@
     --leading: var(--line-height-message);
   }
 
-  /* The image is a button that opens it full size. */
   .attachment-view {
     display: block;
     max-width: 100%;

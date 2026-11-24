@@ -1,39 +1,19 @@
-//! What remote access keeps on disk besides the ACME account and the
-//! certificate: the identity this install was enrolled under, the recovery
-//! code until the person has saved it, and the pinned accounts this install
-//! knows about.
-//!
-//! Lives at `hub/remote-access/state.json`, readable only by its owner.
-
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use serde::{Deserialize, Serialize};
 
-/// The user and instance slug this install enrolled or joined as. Every host
-/// name is derived from these and the configured base domain; nothing the
-/// relay announces replaces them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct LocalIdentity {
     pub(crate) user: String,
     pub(crate) slug: String,
 }
 
-/// A reset by email this install asked for and is waiting on. While it
-/// exists, the pending recovery code belongs to that reset and is neither
-/// shown nor discarded: it only becomes the recovery code once the reset takes
-/// effect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct EmailReset {
-    /// When the request was made, in unix seconds.
     pub(crate) requested_at: i64,
-    /// When the pin service last said the reset takes effect, in unix
-    /// seconds. Known once the person has confirmed the link.
     #[serde(default)]
     pub(crate) effective_at: Option<i64>,
-    /// Whether this install's account was already pinned when it asked. A
-    /// lone pin that is this install's account then means the reset took
-    /// effect only if the pin service said when.
     #[serde(default)]
     pub(crate) was_pinned: bool,
 }
@@ -42,30 +22,21 @@ pub(crate) struct EmailReset {
 struct Persisted {
     #[serde(default)]
     identity: Option<LocalIdentity>,
-    /// The pin recovery code, kept only until the person has saved it.
     #[serde(default)]
     pending_recovery_code: Option<String>,
-    /// The reset by email this install is waiting on, if any.
     #[serde(default)]
     email_reset: Option<EmailReset>,
-    /// ACME account URIs this install pinned or approved.
     #[serde(default)]
     known_accounts: Vec<String>,
 }
 
-/// The state file, in memory and on disk.
 pub(crate) struct StateStore {
     path: PathBuf,
     state: Mutex<Persisted>,
-    /// Serializes saves so an older snapshot never overwrites a newer one.
     write_lock: tokio::sync::Mutex<()>,
 }
 
 impl StateStore {
-    /// Open the store in `dir` (created on first save). A file that can't be
-    /// read or parsed is moved aside and logged at `error`: this install then
-    /// starts unenrolled, which is safe, because nothing is served remotely
-    /// until it enrolls or joins again.
     pub(crate) fn open(dir: &Path) -> Self {
         let path = dir.join("state.json");
         let state = load(&path);
@@ -96,7 +67,6 @@ impl StateStore {
         self.lock().known_accounts.iter().any(|a| a == account_uri)
     }
 
-    /// Store the identity and mark `own_account` as known, then save.
     pub(crate) async fn set_identity(
         &self,
         identity: LocalIdentity,
@@ -112,7 +82,6 @@ impl StateStore {
         self.save().await
     }
 
-    /// Mark `account_uri` as approved here (a sibling that joined), then save.
     pub(crate) async fn add_known(&self, account_uri: &str) -> anyhow::Result<()> {
         {
             let mut state = self.lock();
@@ -123,13 +92,11 @@ impl StateStore {
         self.save().await
     }
 
-    /// Stop treating `account_uri` as approved (its pin was removed), then save.
     pub(crate) async fn forget_known(&self, account_uri: &str) -> anyhow::Result<()> {
         self.lock().known_accounts.retain(|a| a != account_uri);
         self.save().await
     }
 
-    /// Keep `code` until the person has saved it.
     pub(crate) async fn set_pending_recovery_code(
         &self,
         code: Option<String>,
@@ -138,8 +105,6 @@ impl StateStore {
         self.save().await
     }
 
-    /// Set the pending recovery code and the reset it belongs to together, so
-    /// a crash never leaves one without the other.
     pub(crate) async fn set_recovery_state(
         &self,
         code: Option<String>,
@@ -153,7 +118,6 @@ impl StateStore {
         self.save().await
     }
 
-    /// Record when the pin service says the pending reset takes effect.
     pub(crate) async fn set_email_reset_effective_at(
         &self,
         effective_at: Option<i64>,
@@ -171,8 +135,6 @@ impl StateStore {
         self.save().await
     }
 
-    /// Forget the accounts and identity of a previous enrollment, as a pin
-    /// reset replaces them. `own_account` stays known.
     pub(crate) async fn reset_known(&self, own_account: &str) -> anyhow::Result<()> {
         self.lock().known_accounts = vec![own_account.to_string()];
         self.save().await

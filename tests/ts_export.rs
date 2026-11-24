@@ -1,11 +1,3 @@
-//! Generates TypeScript type definitions from Rust protocol types via ts-rs.
-//!
-//! Running `cargo test` produces `.ts` files in `web/src/lib/generated/`.
-//! These files are committed to git so the frontend can import them directly.
-//! `RESIDUUM_TS_EXPORT_DIR` writes them somewhere else instead, which is how
-//! `scripts/export-generated-types.sh` exports into a scratch directory for
-//! `scripts/check-generated-types.sh` and `scripts/update-generated-types.sh`.
-
 #![expect(
     clippy::tests_outside_test_module,
     reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
@@ -69,10 +61,8 @@ fn export_protocol_types() {
         .unwrap_or_else(|_| "web/src/lib/generated".to_owned());
     let cfg = ts_rs::Config::new().with_out_dir(&out_dir);
 
-    // Ensure the output directory exists
     std::fs::create_dir_all(&out_dir).unwrap();
 
-    // Export each type — dependencies are exported transitively
     ClientMessage::export_all(&cfg).unwrap();
     ServerMessage::export_all(&cfg).unwrap();
     ImageData::export_all(&cfg).unwrap();
@@ -80,9 +70,7 @@ fn export_protocol_types() {
     // HTTP response type for `GET /api/sessions` (its `SessionSummary`
     // items are also carried by the `session_started` frame).
     SessionListResponse::export_all(&cfg).unwrap();
-    // HTTP response items for `GET /api/team/workbench/artifacts`.
     ArtifactSummary::export_all(&cfg).unwrap();
-    // `GET /api/team/workbench/info` (its relay origins are exported with it).
     WorkbenchInfo::export_all(&cfg).unwrap();
     // The checkpoints API: `GET /api/checkpoints` (its `CheckpointSummary`
     // items and `CheckpointTrigger` are exported with it), `GET
@@ -124,13 +112,6 @@ fn export_protocol_types() {
     // /api/hub/agents/deleted`.
     AgentListResponse::export_all(&cfg).unwrap();
     DeletedAgentListResponse::export_all(&cfg).unwrap();
-    // The hub WebSocket: `HubEvent` is every frame the hub forwards from
-    // its bus (with `Actor`, `NoticeLevel` and `HubNoticeKind`),
-    // `HubSocketFrame` the two it sends on its own (`hub_boot` and
-    // `agents_snapshot`), and `HubClientMessage` the one message a client
-    // sends. The team change frames are the agent protocol's
-    // `ServerMessage` variants. The client message is exported under this
-    // name so it doesn't collide with the agent protocol's `ClientMessage`.
     HubEvent::export_all(&cfg).unwrap();
     HubSocketFrame::export_all(&cfg).unwrap();
     HubClientMessage::export_all(&cfg).unwrap();
@@ -153,19 +134,6 @@ fn export_protocol_types() {
     MailSendResponse::export_all(&cfg).unwrap();
     MailReplyResponse::export_all(&cfg).unwrap();
 
-    // Device pairing: `PairingStateResponse` answers `GET
-    // /api/hub/pairing/state`; `CreatePairingRequestBody` and
-    // `PairingRequestCreated` are the body and answer of `POST
-    // /api/hub/pairing/requests`; `PollPairingBody` and
-    // `PairingPollResponse` (with `PairingRequestStatus`) those of `POST
-    // .../requests/poll`; `RedeemTokenBody`, `RecoveryCodeBody` and
-    // `HandoffBody` are the bodies of the routes that pair with a token, a
-    // recovery code and a workbench handoff, all answered by
-    // `PairedResponse`. `DeviceListResponse` (with its `DeviceInfo` and
-    // `PendingPairingInfo` items) answers `GET /api/hub/devices`,
-    // `PairLinkResponse` `POST /api/hub/remote-access/pair-link`,
-    // `RecoveryCodesResponse` `POST /api/hub/devices/recovery-codes`, and
-    // `WorkbenchHandoffResponse` `POST /api/hub/devices/workbench-handoff`.
     PairingStateResponse::export_all(&cfg).unwrap();
     CreatePairingRequestBody::export_all(&cfg).unwrap();
     PairingRequestCreated::export_all(&cfg).unwrap();
@@ -183,10 +151,6 @@ fn export_protocol_types() {
     RecoveryCodesResponse::export_all(&cfg).unwrap();
     WorkbenchHandoffResponse::export_all(&cfg).unwrap();
 
-    // Remote access: `RemoteAccessStatus` (with its `RemoteAccessState`,
-    // `RemoteHosts`, `CertificateInfo`, `PinInfo`, `InstanceInfo`,
-    // `SiblingInfo`, `PendingJoinInfo` and `JoinProgress` parts) answers `GET
-    // /api/hub/remote-access/status`.
     RemoteAccessStatus::export_all(&cfg).unwrap();
     RemoteAccessState::export_all(&cfg).unwrap();
     RemoteHosts::export_all(&cfg).unwrap();
@@ -223,11 +187,6 @@ fn export_protocol_types() {
     PushPayload::export_all(&cfg).unwrap();
     PushEvent::export_all(&cfg).unwrap();
 
-    // The team event log: `TeamEventPage` (with its `TeamEvent` items and
-    // their `TeamEventKind`, `TeamEventLevel` and `TeamEventTarget`)
-    // answers `GET /api/hub/events`, and `TeamEvent` is the `event` of the
-    // hub WebSocket's `team_event` frame. `TeamEventPlace` is the `place`
-    // of an `agent_place` target.
     TeamEventPage::export_all(&cfg).unwrap();
     TeamEvent::export_all(&cfg).unwrap();
     TeamEventKind::export_all(&cfg).unwrap();
@@ -235,14 +194,9 @@ fn export_protocol_types() {
     TeamEventTarget::export_all(&cfg).unwrap();
     TeamEventPlace::export_all(&cfg).unwrap();
 
-    // The team overview: `OverviewResponse` (with its `AgentOverview`
-    // items and what they hold) answers `GET /api/hub/overview`, and
-    // `AgentOverview` is the `overview` of the hub WebSocket's
-    // `agent_overview` frame.
     OverviewResponse::export_all(&cfg).unwrap();
     AgentOverview::export_all(&cfg).unwrap();
 
-    // Microsoft Teams setup wizard via Agents Toolkit.
     ToolStatus::export_all(&cfg).unwrap();
     AtkStatus::export_all(&cfg).unwrap();
     SuggestedEndpointSource::export_all(&cfg).unwrap();
@@ -263,7 +217,6 @@ fn export_protocol_types() {
     CleanupFailure::export_all(&cfg).unwrap();
     CleanupResult::export_all(&cfg).unwrap();
 
-    // Verify the generated files exist
     assert!(
         std::path::Path::new(&out_dir)
             .join("ClientMessage.ts")

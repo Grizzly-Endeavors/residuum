@@ -1,6 +1,3 @@
-//! The recorder's translation from hub events and agent changes into
-//! entries, driven directly with the events the hub and the agents publish.
-
 use chrono::Duration;
 
 use super::*;
@@ -14,7 +11,6 @@ fn recorder() -> Recorder {
     Recorder::new(TeamEventLog::new("boot"))
 }
 
-/// Every entry in the recorder's log, oldest first.
 fn entries(recorder: &Recorder) -> Vec<TeamEvent> {
     let mut all = recorder
         .log
@@ -27,7 +23,6 @@ fn entries(recorder: &Recorder) -> Vec<TeamEvent> {
     all
 }
 
-/// The one entry the log holds.
 fn only(recorder: &Recorder) -> TeamEvent {
     let mut all = entries(recorder);
     assert_eq!(all.len(), 1, "exactly one entry: {all:?}");
@@ -141,7 +136,6 @@ fn an_agent_that_starts_is_told_once_and_only_when_its_state_changes() {
         "starting is not worth telling"
     );
     recorder.on_hub_event(state_event(summary("atlas", AgentState::Running)));
-    // A change of autostart or visibility republishes the same state.
     recorder.on_hub_event(state_event(summary("atlas", AgentState::Running)));
 
     let event = only(&recorder);
@@ -826,7 +820,6 @@ fn deleting_an_agent_forgets_its_runs_and_state() {
     assert!(recorder.runs.is_empty());
     assert!(recorder.states.is_empty());
 
-    // A new agent of the same name starts from nothing: it was not running.
     recorder.on_hub_event(state_event(summary("atlas", AgentState::Running)));
     assert_eq!(
         entries(&recorder).last().map(|event| event.kind),
@@ -889,8 +882,6 @@ async fn the_running_recorder_reads_both_sources_until_it_is_dropped() {
             None,
         ))
         .unwrap();
-    // Nothing else can run on a paused clock, so once this returns the
-    // recorder has handled everything it was sent.
     residuum_core::testing::clock::elapse(std::time::Duration::from_millis(50)).await;
     assert_eq!(
         log.page(&PageQuery::default()).events.len(),

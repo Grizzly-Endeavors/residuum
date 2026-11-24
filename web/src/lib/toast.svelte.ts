@@ -2,7 +2,6 @@ import { SvelteMap } from "svelte/reactivity";
 
 export type ToastKind = "info" | "success" | "error";
 
-/** A one-click follow-up action offered from a toast, e.g. "Undo". */
 export interface ToastAction {
   label: string;
   onClick: () => void;
@@ -16,7 +15,6 @@ export interface Toast {
 }
 
 const DISMISS_MS = 4000;
-/** Toasts carrying an action stay up longer — there's something to click. */
 const DISMISS_WITH_ACTION_MS = 10_000;
 
 class ToastStore {
@@ -49,8 +47,6 @@ class ToastStore {
     return this.show(message, "error");
   }
 
-  /** Run a toast action, then dismiss the toast regardless of outcome — a
-   * second click while it's still settling would otherwise re-run it. */
   runAction(id: number): void {
     const t = this.toasts.get(id);
     this.dismiss(id);

@@ -1,13 +1,8 @@
-//! Tunnel v2 control frames, sent as JSON text WebSocket messages. Stream data
-//! travels separately as binary messages (see [`super::stream`]). The shapes
-//! mirror the relay's `V2Frame`.
-
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-/// The host names the relay claims this instance answers for.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct WireHosts {
     pub ui: String,
@@ -15,22 +10,14 @@ pub(crate) struct WireHosts {
     pub instance: String,
 }
 
-/// One agent this hub advertises to the relay in a `V2Frame::AgentsUpdate`
-/// frame.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentInfo {
-    /// The agent's name: its identity and its A2A path segment.
     pub name: String,
-    /// A human-readable label for the agent, shown in the relay's A2A
-    /// directory.
     pub display_name: String,
-    /// Whether the agent answers A2A requests right now.
     pub a2a_enabled: bool,
-    /// Whether the agent is gated by a caller key, rather than open to anyone.
     pub a2a_private: bool,
 }
 
-/// One of the user's instances, as listed in [`V2Frame::InstancesUpdate`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct InstanceSummary {
     pub slug: String,
@@ -39,11 +26,9 @@ pub(crate) struct InstanceSummary {
     pub connected: bool,
 }
 
-/// A control frame on a v2 tunnel.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum V2Frame {
-    /// Relay to instance, first frame after registration.
     Connected {
         user: String,
         instance: String,
@@ -52,47 +37,56 @@ pub(crate) enum V2Frame {
         directory_url: String,
         a2a_token: String,
     },
-    /// Relay to instance keepalive.
     Ping,
-    /// Instance reply to [`Self::Ping`].
     Pong,
-    /// Instance to relay: the full list of the instance's agents.
-    AgentsUpdate { agents: Vec<AgentInfo> },
-    /// Relay to instance: a browser connection for `host` has arrived.
+    AgentsUpdate {
+        agents: Vec<AgentInfo>,
+    },
     StreamOpen {
         stream_id: Uuid,
         host: String,
         peer_ip: String,
     },
-    /// Either side: the stream is finished.
     StreamClose {
         stream_id: Uuid,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
     },
-    /// Either side: grant the other more send window on the stream.
-    StreamCredit { stream_id: Uuid, bytes: u64 },
-    /// Instance to relay: route TLS-ALPN-01 validation for `names` here.
-    ChallengeClaim { names: Vec<String> },
-    /// Instance to relay: stop routing validation for `names` here.
-    ChallengeRelease { names: Vec<String> },
-    /// Relay to instance: the claim is held.
-    ChallengeGranted { names: Vec<String> },
-    /// Relay to instance: another instance of the user holds the claim.
-    ChallengeBusy { names: Vec<String> },
-    /// Relay to instance: the user's instances, on connect and on change.
-    InstancesUpdate { instances: Vec<InstanceSummary> },
-    /// Instance to relay: make `slug` the user's active instance.
-    ActivateInstance { slug: String },
-    /// Instance to relay: ask for a pin-service grant.
-    PinGrantRequest { purpose: String },
-    /// Relay to instance: the grant for `purpose`, a compact JWS.
-    PinGrant { purpose: String, grant: String },
-    /// Relay to instance: no grant was issued.
-    PinGrantError { purpose: String, reason: String },
+    StreamCredit {
+        stream_id: Uuid,
+        bytes: u64,
+    },
+    ChallengeClaim {
+        names: Vec<String>,
+    },
+    ChallengeRelease {
+        names: Vec<String>,
+    },
+    ChallengeGranted {
+        names: Vec<String>,
+    },
+    ChallengeBusy {
+        names: Vec<String>,
+    },
+    InstancesUpdate {
+        instances: Vec<InstanceSummary>,
+    },
+    ActivateInstance {
+        slug: String,
+    },
+    PinGrantRequest {
+        purpose: String,
+    },
+    PinGrant {
+        purpose: String,
+        grant: String,
+    },
+    PinGrantError {
+        purpose: String,
+        reason: String,
+    },
 }
 
-/// `Debug` that never prints the relay-minted a2a token or a pin grant.
 impl fmt::Debug for V2Frame {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

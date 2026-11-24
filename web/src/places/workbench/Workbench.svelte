@@ -12,14 +12,8 @@
   import { WorkbenchList } from "./workbench-list.svelte";
   import { artifactRuns } from "./workbench-model";
 
-  // The Workbench: a launcher for the pages agents build. Each opens in its
-  // own tab on the artifacts origin, never inside the app. A row selected in
-  // the URL opens in place to its link and its running sessions; selecting
-  // pushes, switching rows replaces, and Back collapses it.
-
   let { artifact }: { artifact: string | null } = $props();
 
-  /** How often a reason that may clear by itself (Residuum Cloud connecting) is checked again. */
   const RECHECK_MS = 10_000;
 
   const list = new WorkbenchList({
@@ -29,12 +23,10 @@
   $effect(() => untrack(() => list.start()));
 
   const blocked = $derived(list.origin !== null && !list.origin.ok ? list.origin.reason : null);
-  /** The selected row lists running sessions, whose times move each second. */
   const showsRuns = $derived(
     artifact !== null && artifactRuns(overview.overviews, artifact).length > 0,
   );
 
-  // Relative times move each half minute, and a running session's time each second.
   let now = $state(Date.now());
   $effect(() => {
     const step = showsRuns ? 1000 : 30_000;
@@ -45,17 +37,12 @@
     return () => window.clearInterval(timer);
   });
 
-  // While artifacts can't open, look again now and then: Residuum Cloud may
-  // finish connecting, or the listener come up after a restart.
   $effect(() => {
     if (blocked === null) return;
     const timer = window.setInterval(() => void list.load(), RECHECK_MS);
     return () => window.clearInterval(timer);
   });
 
-  // A fresh read, or a newly selected artifact, settles the URL: an artifact
-  // that isn't in the list goes back to the list. The list dropping one this
-  // page deleted doesn't, since the delete collapses its row itself.
   $effect(() => {
     const generation = list.generation;
     if (generation === 0 || artifact === null) return;

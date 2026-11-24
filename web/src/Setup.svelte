@@ -21,7 +21,6 @@
 
   let { onComplete }: Props = $props();
 
-  /** Each step's name in the progress line, its heading, and the line under it. */
   const STEPS = [
     {
       label: "Welcome",
@@ -57,14 +56,6 @@
   const TOTAL_STEPS = STEPS.length;
   const stepLabels = STEPS.map((s) => s.label);
 
-  // ── Draft persistence ────────────────────────────────────────────────
-  // Setup is the highest-stakes form in the app (hand-typed API keys across
-  // up to 6 steps) with no undo — a refresh or crashed tab must not throw
-  // away everything the user just entered. We keep a draft in localStorage
-  // and restore it on mount, but never persist raw provider API keys, tool
-  // server keys or chat-app tokens (matching the convention in Review.svelte,
-  // which only ever sends those to the backend via storeSecret(), never
-  // stores them client-side as plain text).
   const STORAGE_KEY = "residuum-setup-draft";
 
   interface PersistedWizard {
@@ -126,9 +117,6 @@
     }
   }
 
-  // Strip fields that should never be written to localStorage in the
-  // clear, even transiently. These are exactly the fields Review.svelte
-  // exchanges for a secret reference before setup completes.
   function sanitizeForStorage(state: SetupWizardState): SetupWizardState {
     const clone = structuredClone(state);
     for (const key of Object.keys(clone.providerConfigs) as ProviderKey[]) {
@@ -157,12 +145,8 @@
   let catalogLoading = $state(false);
   let catalogError = $state<string | null>(null);
 
-  // A restored draft never carries API keys (sanitizeForStorage strips them
-  // before every save) — tell the user so a blank key field on the
-  // Providers step doesn't read as "already saved".
   let showDraftKeyNotice = $state(persisted !== null);
 
-  // Fields added after a draft was saved fall back to their defaults.
   let wizardState = $state<SetupWizardState>({
     ...defaultWizardState(),
     ...persisted?.wizardState,
@@ -183,7 +167,6 @@
 
   onMount(async () => {
     const tz = await fetchTimezone();
-    // Don't clobber a timezone the user already resolved in a prior session.
     if (!wizardState.timezone) wizardState.timezone = tz;
     void loadCatalog();
   });
@@ -203,8 +186,6 @@
     }, 500);
   }
 
-  // The cleanup also runs when the wizard goes away, so a save still waiting
-  // can't write a draft the wizard has finished with.
   $effect(() => {
     $state.snapshot(wizardState);
     step;
@@ -225,8 +206,6 @@
   let scroller = $state<HTMLElement>();
   let heading = $state<HTMLHeadingElement>();
 
-  // A new step replaces the content under the pressed button, so focus and
-  // the scroll position start again at the new step's heading.
   async function goTo(index: number) {
     step = index;
     await tick();
@@ -355,7 +334,6 @@
     font-weight: var(--font-weight-semibold);
     --leading: var(--line-height-tight);
 
-    /* Focus lands here when a step opens; the heading isn't a control. */
     &:focus {
       outline: none;
     }

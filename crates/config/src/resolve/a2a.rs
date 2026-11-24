@@ -1,19 +1,8 @@
-//! Agent-to-agent listener settings.
-//!
-//! The listener itself (`enabled`/`port`/`public_url`) is hub-level: one
-//! process, one A2A port. Visibility is per agent.
-
 use super::super::constants::DEFAULT_A2A_PORT;
 use super::super::deserialize::{AgentA2aConfigFile, HubA2aConfigFile};
 use super::super::hub_types::HubConfig;
 use super::super::types::{A2aConfig, A2aVisibility};
 
-/// Resolve the hub-level A2A listener settings from `hub/config.toml`'s
-/// `[a2a]` section.
-///
-/// Enabled by default: every request the listener answers still goes
-/// through the auth layer, so turning it on by default costs nothing until
-/// a caller key or sibling instance actually exists to use it.
 pub(super) fn resolve_hub_a2a_config(
     section: Option<&HubA2aConfigFile>,
 ) -> (bool, u16, Option<String>) {
@@ -36,8 +25,6 @@ pub(super) fn resolve_hub_a2a_config(
     )
 }
 
-/// An agent's full A2A config: the hub's listener settings plus this
-/// agent's own visibility.
 pub(super) fn resolve_agent_a2a_config(
     hub: &HubConfig,
     section: Option<&AgentA2aConfigFile>,
@@ -51,11 +38,6 @@ pub(super) fn resolve_agent_a2a_config(
     }
 }
 
-/// Resolve this agent's A2A visibility from its own config's `[a2a]` section.
-///
-/// An invalid `visibility` value falls back to the default visibility with
-/// a notice rather than failing the whole config — a2a itself still comes
-/// up, just not with the visibility the user intended until they fix it.
 pub(super) fn resolve_agent_a2a_visibility(
     section: Option<&AgentA2aConfigFile>,
     notices: &mut Vec<String>,

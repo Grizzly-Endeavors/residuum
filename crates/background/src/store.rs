@@ -1,19 +1,3 @@
-//! Session store: durable on-disk record of every run.
-//!
-//! Each run gets a metadata JSON file under the sessions directory,
-//! organized by date (`YYYY-MM/DD/<run_id>.json`). While the run is live,
-//! its transcript is durably appended to a sibling `<run_id>.transcript.jsonl`
-//! file after every model response and tool result (see
-//! `TranscriptSink`/`RunTranscriptSink`), so a crash mid-turn loses at
-//! most the message currently in flight. On completion, the full transcript
-//! is folded into the metadata file itself, so a finished run's web-facing
-//! read path is a single file; the sibling JSONL is read only for runs that
-//! haven't reached a terminal state — a live run's transcript in the web UI,
-//! and recovery of a run whose process exited or whose task panicked.
-//!
-//! [`SessionStore::list_completed_runs`] pages through finished runs newest
-//! first for the web UI's sessions listing.
-
 use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
@@ -28,94 +12,44 @@ use residuum_inference::Message;
 
 use residuum_bus::session::SessionInfo;
 
-/// On-disk record for a single run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunRecord {
-    /// Address of the owning session.
     pub address: String,
-    /// Unique run identifier.
     pub run_id: String,
-    /// `"scheduled"`, `"external"`, `"spawned"`, or `"artifact"`.
     pub category: String,
-    /// Human-readable source label (e.g. `"pulse:email_check"`).
     pub source_label: String,
-    /// The agent that started this session, if any.
     pub spawner: Option<String>,
-    /// Depth from the main agent (main = 0).
     pub depth: u32,
-    /// One-line description of what this run is doing.
     pub purpose: String,
-    /// Skill the run executed with, if any.
     pub agent_skill: Option<String>,
-    /// When the run started.
     pub started_at: DateTime<Utc>,
-    /// When the run reached a terminal state, if it has.
     pub completed_at: Option<DateTime<Utc>>,
-    /// Lifecycle state at the time this record was last written.
     pub state: String,
-    /// `true` when this run was marked completed at startup because the
-    /// process exited before it reached a terminal state on its own.
     #[serde(default)]
     pub interrupted: bool,
-    /// The episode this run's observations were merged into, once merged.
-    /// `None` when the run produced no episode — it staged nothing and
-    /// either ended with `HEARTBEAT_OK` or its transcript fell below the
-    /// skip token floor, or the merge itself failed — its transcript is
-    /// still kept either way.
     #[serde(default)]
     pub episode_id: Option<String>,
-    /// `true` from the moment the run is recorded as completed until its
-    /// memory merge has finished and [`SessionStore::finish_memory_merge`]
-    /// has written the outcome. A record still set when the process starts
-    /// is merged by startup recovery.
     #[serde(default)]
     pub memory_pending: bool,
-    /// The run's full message transcript, filled in at completion (empty
-    /// until then — the durable record while the run is live is the sibling
-    /// `<run_id>.transcript.jsonl` file, appended to by
-    /// `SessionStore::append_transcript`).
     #[serde(default)]
     pub transcript: Vec<Message>,
-    /// This run's cumulative token usage, for the session panel's Details.
-    /// Copied from the registry entry's own running total (see
-    /// [`super::registry::SessionRegistry::accumulate_usage`]) each time
-    /// this record is written, so a completed run keeps its
-    /// final totals.
     #[serde(default)]
     pub usage: residuum_bus::usage::SessionUsageTotals,
-    /// How the run ended — `"completed"`, `"cancelled"`, or `"failed"` —
-    /// filled in by [`SessionStore::complete_run`]. `None` while the run is
-    /// still live (`state` says so already), and `None` for a record written
-    /// before this field existed.
     #[serde(default)]
     pub outcome: Option<String>,
-    /// The failure reason, when `outcome` is `"failed"`. `None` otherwise.
     #[serde(default)]
     pub outcome_error: Option<String>,
-    /// Full technical cause chain behind `outcome_error`, when the failure
-    /// was classified from a model-call error. `None` for a failure with
-    /// nothing richer to show (a panic, a shutdown mid-run), and `None` for
-    /// a record written before this field existed — old records stay
-    /// loadable, they just show no details toggle.
     #[serde(default)]
     pub outcome_error_details: Option<String>,
-    /// Set when this run is a pulse fire that started while its previous run
-    /// was still live. See [`PulseOverlap`].
     #[serde(default)]
     pub overlap: Option<PulseOverlap>,
-    /// The model the run was asked to use (a tier or an explicit
-    /// `provider/model` id). `None` for a record written before this field
-    /// existed.
     #[serde(default)]
     pub model: Option<String>,
-    /// The `provider/model` id the run started on. `None` for a record
-    /// written before this field existed.
     #[serde(default)]
     pub resolved_model: Option<String>,
 }
 
 impl RunRecord {
-    /// Build the initial record for a run that has just started.
     #[must_use]
     pub fn starting(info: &SessionInfo) -> Self {
         Self {
@@ -145,23 +79,13 @@ impl RunRecord {
     }
 }
 
-/// Which completed runs [`SessionStore::list_completed_runs`] includes.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RunFilter<'a> {
-    /// Only runs in this category (a
-    /// [`SessionCategory`](residuum_bus::session::SessionCategory) label).
     pub category: Option<&'a str>,
-    /// Only runs at this session address.
     pub address: Option<&'a str>,
-    /// Only runs with exactly this source label (an artifact session's
-    /// `artifact:<name>`, for example).
     pub source_label: Option<&'a str>,
 }
 
-/// A run record as the listing reads it: every [`RunRecord`] field except
-/// the transcript, which serde skips over without allocating it — a
-/// completed run's record can hold a long transcript, and a listing page
-/// reads dozens of records.
 #[derive(Deserialize)]
 struct RunRecordHeader {
     address: String,
@@ -226,18 +150,13 @@ impl From<RunRecordHeader> for RunRecord {
     }
 }
 
-/// Position in the newest-first listing of completed runs: everything
-/// strictly older than this run (by start time, then run id) comes after it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunCursor {
-    /// Start time of the last run on the previous page.
     pub started_at: DateTime<Utc>,
-    /// Run id of the last run on the previous page.
     pub run_id: String,
 }
 
 impl RunCursor {
-    /// Encode as an opaque, URL-safe string: `<start nanos>_<run id>`.
     #[must_use]
     pub fn encode(&self) -> String {
         let nanos = self
@@ -247,8 +166,6 @@ impl RunCursor {
         format!("{nanos}_{}", self.run_id)
     }
 
-    /// Decode a string produced by [`Self::encode`]. `None` if it is
-    /// malformed or its run id is not a valid run id.
     #[must_use]
     pub fn decode(raw: &str) -> Option<Self> {
         let (nanos, run_id) = raw.split_once('_')?;
@@ -267,21 +184,15 @@ impl RunCursor {
     }
 }
 
-/// One page of completed runs, newest first.
 #[derive(Debug)]
 pub struct CompletedRunPage {
-    /// Completed runs' records, without their transcripts.
     pub runs: Vec<RunRecord>,
-    /// Where the next page starts, or `None` if this is the last page.
     pub next: Option<RunCursor>,
 }
 
 /// Longest run id accepted from outside (the web API).
 const MAX_RUN_ID_LEN: usize = 128;
 
-/// Whether `run_id` has the shape of a run id this store can hold: ASCII
-/// letters, digits, `-`, and `_` only, so it can never name a path outside
-/// the store when it comes from a client.
 #[must_use]
 pub fn is_valid_run_id(run_id: &str) -> bool {
     !run_id.is_empty()
@@ -291,8 +202,6 @@ pub fn is_valid_run_id(run_id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
-/// Directory entries of `dir` whose names satisfy `keep`, sorted newest
-/// (lexicographically greatest) first. A missing directory reads as empty.
 async fn sorted_dir_names_desc(
     dir: &Path,
     keep: impl Fn(&str) -> bool,
@@ -323,7 +232,6 @@ async fn sorted_dir_names_desc(
     Ok(names)
 }
 
-/// Whether `name` looks like a month directory (`YYYY-MM`).
 fn is_month_dir(name: &str) -> bool {
     name.len() == 7
         && name.as_bytes().get(4) == Some(&b'-')
@@ -333,23 +241,17 @@ fn is_month_dir(name: &str) -> bool {
             .all(|(i, b)| i == 4 || b.is_ascii_digit())
 }
 
-/// Whether `name` looks like a day directory (`DD`).
 fn is_day_dir(name: &str) -> bool {
     name.len() == 2 && name.bytes().all(|b| b.is_ascii_digit())
 }
 
-/// Durable on-disk record of every session run.
 pub struct SessionStore {
     sessions_dir: PathBuf,
-    /// Keeps a test fixture's backing temp directory alive (and cleaned up
-    /// on drop) for as long as this store is in use, instead of leaking it
-    /// with [`tempfile::TempDir::keep`].
     #[cfg(any(test, feature = "test-support"))]
     tempdir_guard: Option<tempfile::TempDir>,
 }
 
 impl SessionStore {
-    /// Create a store rooted at the given sessions directory.
     #[must_use]
     pub fn new(sessions_dir: PathBuf) -> Self {
         Self {
@@ -359,8 +261,6 @@ impl SessionStore {
         }
     }
 
-    /// Attach a temp directory guard so it's dropped (and cleaned up)
-    /// together with this store instead of being leaked.
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn with_tempdir_guard(mut self, dir: tempfile::TempDir) -> Self {
@@ -368,7 +268,6 @@ impl SessionStore {
         self
     }
 
-    /// Path a run's metadata record lives at, given its start time.
     fn run_path(&self, run_id: &str, started_at: DateTime<Utc>) -> PathBuf {
         self.sessions_dir
             .join(started_at.format("%Y-%m").to_string())
@@ -376,7 +275,6 @@ impl SessionStore {
             .join(format!("{run_id}.json"))
     }
 
-    /// Path a run's incrementally-appended transcript lives at.
     fn transcript_path(&self, run_id: &str, started_at: DateTime<Utc>) -> PathBuf {
         self.sessions_dir
             .join(started_at.format("%Y-%m").to_string())
@@ -384,10 +282,6 @@ impl SessionStore {
             .join(format!("{run_id}.transcript.jsonl"))
     }
 
-    /// Write the initial record for a run that has just started.
-    ///
-    /// Best-effort: failures are logged and otherwise swallowed so a disk
-    /// problem degrades observability, not session execution.
     pub async fn begin_run(&self, info: &SessionInfo) {
         let record = RunRecord::starting(info);
         let path = self.run_path(&info.run_id, info.started_at);
@@ -396,13 +290,6 @@ impl SessionStore {
         }
     }
 
-    /// Append newly-produced messages to a run's incremental transcript,
-    /// each line recording the time it was appended.
-    ///
-    /// Called after every model response and tool result while the run is
-    /// live, so a crash mid-turn loses at most the message currently in
-    /// flight. Best-effort: a failure here degrades crash recovery, not the
-    /// run itself, so it is logged and swallowed rather than propagated.
     pub async fn append_transcript(
         &self,
         run_id: &str,
@@ -468,15 +355,6 @@ impl SessionStore {
         }
     }
 
-    /// Build a system note and append it to `run_id`'s durable transcript
-    /// sidecar, returning the message so the caller can also fold it into
-    /// whatever in-memory buffer it holds for the run — a live turn's
-    /// `RecentMessages`, or a freshly reloaded transcript `Vec` (panic
-    /// recovery) — or discard it, when the note is a best-effort addition to
-    /// a *different* session's transcript the caller doesn't own a buffer
-    /// for. Shared by every place a relay/delivery failure needs to leave a
-    /// visible trace in a run's own record, rather than each duplicating the
-    /// append.
     pub(crate) async fn append_note(
         &self,
         run_id: &str,
@@ -489,10 +367,6 @@ impl SessionStore {
         message
     }
 
-    /// Read back a run's incrementally-appended transcript, for a run that
-    /// hasn't reached a terminal state — a live run's transcript in the web
-    /// UI, or recovery of a run that never finished on its own.
-    /// `Self::read_transcript_lines` also returns the recorded times.
     pub async fn read_incremental_transcript(
         &self,
         run_id: &str,
@@ -505,14 +379,6 @@ impl SessionStore {
             .collect()
     }
 
-    /// Read back a run's incrementally-appended transcript with the time
-    /// each line was appended, for recovering a run that never reached a
-    /// terminal state on its own — whether that's startup recovery after a
-    /// prior process exit, or backfilling a run whose task panicked
-    /// mid-turn. A line written without a time loads with none. Returns an
-    /// empty vec if the file is missing, and skips a line that fails to
-    /// parse (a torn write at the very end of the file, from a crash
-    /// mid-append).
     pub(crate) async fn read_transcript_lines(
         &self,
         run_id: &str,
@@ -538,16 +404,6 @@ impl SessionStore {
         }
     }
 
-    /// Find a run's metadata record file by run id, without needing to know
-    /// its start date up front — mirrors
-    /// [`residuum_memory::episode_store::find_episode_path`]'s directory walk.
-    ///
-    /// Returns `Ok(None)` when the sessions directory is missing or no run
-    /// with this id exists, and `Err` only on I/O failures reading
-    /// directories.
-    ///
-    /// # Errors
-    /// Returns an error if a directory cannot be read.
     pub(crate) async fn find_run_path(&self, run_id: &str) -> anyhow::Result<Option<PathBuf>> {
         if !matches!(tokio::fs::try_exists(&self.sessions_dir).await, Ok(true)) {
             return Ok(None);
@@ -556,15 +412,6 @@ impl SessionStore {
         find_file_by_name(&self.sessions_dir, &target).await
     }
 
-    /// Read a run's on-disk record and transcript by run id.
-    ///
-    /// A completed run's transcript is already in the record; a run that
-    /// hasn't reached a terminal state yet has an empty `transcript` field,
-    /// so this falls back to the live incremental sidecar file in that case.
-    ///
-    /// # Errors
-    /// Returns an error if the sessions directory cannot be read, or the
-    /// record file cannot be read or parsed.
     pub async fn read_run(
         &self,
         run_id: &str,
@@ -586,18 +433,6 @@ impl SessionStore {
         Ok(Some((record, transcript)))
     }
 
-    /// List completed runs newest first (by start time, then run id), one
-    /// page of at most `limit` at a time, only those matching `filter`.
-    /// `before` continues from a previous page's [`CompletedRunPage::next`].
-    ///
-    /// Runs that haven't completed yet are skipped — they are live, and
-    /// listed from the registry instead. Walks the date directories newest
-    /// first and stops as soon as the page is full, so a page costs only the
-    /// days it spans. A record that can't be read or parsed is logged and
-    /// skipped rather than failing the whole page.
-    ///
-    /// # Errors
-    /// Returns an error if a sessions directory cannot be read.
     pub async fn list_completed_runs(
         &self,
         filter: RunFilter<'_>,
@@ -646,8 +481,6 @@ impl SessionStore {
         Ok(CompletedRunPage { runs, next })
     }
 
-    /// Read every completed run record in one day directory that matches
-    /// `filter` and sorts strictly after `before`.
     async fn read_completed_day(
         &self,
         day_dir: &Path,
@@ -698,16 +531,6 @@ impl SessionStore {
         Ok(runs)
     }
 
-    /// Finalize a run's record: set its terminal state, completion time,
-    /// full transcript, its outcome (`status`) — completed, cancelled, or
-    /// failed with a reason — so a listing or reload can show what actually
-    /// happened instead of just "finished", and whether its memory merge is
-    /// still pending (`memory_pending`, see [`Self::finish_memory_merge`]).
-    /// The episode is written by that later call, not here.
-    ///
-    /// Returns the path the record was written to, or `None` if the write
-    /// failed — callers must not report a transcript to exist when it
-    /// doesn't; the failure itself is already logged with structured fields.
     pub async fn complete_run(
         &self,
         info: &SessionInfo,
@@ -741,12 +564,6 @@ impl SessionStore {
         }
     }
 
-    /// Record the outcome of a completed run's memory merge: the episode it
-    /// produced, if any, and that the merge is no longer pending.
-    ///
-    /// Best-effort like the other record writes. A failure is logged and
-    /// leaves the record pending, so startup recovery merges it (or finds
-    /// the merge already recorded) on the next start.
     pub async fn finish_memory_merge(&self, info: &SessionInfo, episode_id: Option<String>) {
         let path = self.run_path(&info.run_id, info.started_at);
         let mut record = match read_record(&path).await {
@@ -763,11 +580,6 @@ impl SessionStore {
         }
     }
 
-    /// At startup, finish every run that a prior process exit left
-    /// incomplete: a run still live when the process stopped is merged from
-    /// its persisted transcript and marked interrupted, and a completed run
-    /// whose memory merge was still pending is merged the same way. Returns
-    /// the number of runs recovered.
     pub async fn recover_incomplete_runs(
         &self,
         env: &super::session_memory::SessionMemoryEnv<'_>,
@@ -809,27 +621,6 @@ impl SessionStore {
         recovered
     }
 
-    /// Reconcile a single run record left incomplete by a prior process
-    /// exit, then rewrite it as completed. Returns `true` if the file was
-    /// rewritten.
-    ///
-    /// The metadata file's own `transcript` field is only ever populated at
-    /// completion, so for a run that never got there it reads the
-    /// incrementally-appended sibling file instead. The record also has no
-    /// separately-stored "final turn summary" — the last message's content
-    /// stands in for it, which is exactly where a session's
-    /// `HEARTBEAT_OK`/`HEARTBEAT_URGENT` sentinel would appear had the
-    /// process not exited before recording one explicitly.
-    ///
-    /// A run's completion pipeline may have already merged successfully
-    /// before the process exited — a crash between that merge and this same
-    /// record being finished (state `completed`, `memory_pending` cleared) is
-    /// exactly what leaves it here.
-    /// So this first asks the merge writer whether the run id is already
-    /// recorded as merged and, if so, backfills the record's state and
-    /// episode id from that instead of running the completion pipeline (and
-    /// its LLM extraction) again, which would otherwise merge the same
-    /// transcript a second time.
     async fn recover_if_incomplete(
         &self,
         path: &Path,
@@ -852,8 +643,6 @@ impl SessionStore {
         if record.state == "completed" && !record.memory_pending {
             return false;
         }
-        // A run still live at the process exit is interrupted; a completed
-        // run whose merge was pending only needs its merge finished.
         let interrupted = record.state != "completed";
         if interrupted {
             tracing::warn!(run_id = %record.run_id, previous_state = %record.state, "recovering run left incomplete by a prior process exit");
@@ -892,19 +681,6 @@ impl SessionStore {
         true
     }
 
-    /// Run the full completion pipeline (skip check, extraction, merge) for
-    /// a recovered run, using its last transcript message as the stand-in
-    /// "final turn summary" (see [`Self::recover_if_incomplete`]).
-    ///
-    /// Only an `Assistant` message stands in as the summary. A process exit
-    /// can leave the transcript ending on the run's own kickoff `User`
-    /// message (a crash before the model ever replied), and that prompt
-    /// routinely contains the literal string `HEARTBEAT_OK` itself — every
-    /// pulse and action prompt template tells the model to return it when
-    /// there's nothing to report. Treating that prompt text as the summary
-    /// would make the skip check's `ends_with_sentinel` check see a false
-    /// positive and silently drop a run that never got to do any work at
-    /// all.
     async fn run_completion_pipeline(
         &self,
         record: &RunRecord,
@@ -934,11 +710,6 @@ impl SessionStore {
     }
 }
 
-/// Recursively search `dir` for a file named exactly `target`, iteratively
-/// (a stack of pending directories rather than async recursion).
-///
-/// # Errors
-/// Returns an error if a directory cannot be read.
 async fn find_file_by_name(dir: &Path, target: &str) -> anyhow::Result<Option<PathBuf>> {
     let mut pending = vec![dir.to_path_buf()];
     while let Some(current) = pending.pop() {
@@ -962,7 +733,6 @@ async fn find_file_by_name(dir: &Path, target: &str) -> anyhow::Result<Option<Pa
     Ok(None)
 }
 
-/// Serialize and atomically write a run record.
 async fn write_record(path: &Path, record: &RunRecord) -> anyhow::Result<()> {
     let dir = path
         .parent()
@@ -973,7 +743,6 @@ async fn write_record(path: &Path, record: &RunRecord) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Read and parse a run record written by [`write_record`].
 async fn read_record(path: &Path) -> anyhow::Result<RunRecord> {
     let contents = tokio::fs::read_to_string(path)
         .await
@@ -982,9 +751,6 @@ async fn read_record(path: &Path) -> anyhow::Result<RunRecord> {
         .with_context(|| format!("failed to parse session run record at {}", path.display()))
 }
 
-/// One line of a run's `<run_id>.transcript.jsonl`, as read back: the
-/// message and when it was appended. `recorded_at` is `None` for a line
-/// written without a time.
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct TranscriptLine {
     #[serde(flatten)]
@@ -994,7 +760,6 @@ pub(crate) struct TranscriptLine {
 }
 
 impl TranscriptLine {
-    /// This line as the session memory pipeline reads it.
     pub(crate) fn timed(&self) -> super::session_memory::TimedMessage<'_> {
         super::session_memory::TimedMessage {
             message: &self.message,
@@ -1003,7 +768,6 @@ impl TranscriptLine {
     }
 }
 
-/// One line of a run's `<run_id>.transcript.jsonl`, as written.
 #[derive(Serialize)]
 struct TranscriptLineRef<'a> {
     #[serde(flatten)]
@@ -1011,9 +775,6 @@ struct TranscriptLineRef<'a> {
     recorded_at: DateTime<Utc>,
 }
 
-/// Binds a [`SessionStore`] to one run's identity, so the turn executor can
-/// append to its transcript file after every model response and tool
-/// result without knowing anything about sessions.
 pub(crate) struct RunTranscriptSink<'a> {
     pub(crate) store: &'a SessionStore,
     pub(crate) run_id: &'a str,
@@ -1036,8 +797,6 @@ mod tests {
     use residuum_bus::session::{SessionCategory, SessionState};
     use residuum_bus::{EventTrigger, SessionAddress};
 
-    /// Build a `SessionMemoryEnv` whose observer/reflector never fire, so
-    /// startup recovery tests exercise the skip path deterministically.
     fn test_env() -> (
         residuum_config::WorkspaceLayout,
         std::sync::Arc<residuum_memory::observer::Observer>,
@@ -1076,7 +835,6 @@ mod tests {
         tokio::fs::create_dir_all(path.parent().unwrap())
             .await
             .unwrap();
-        // A line in the format written before lines carried a time.
         tokio::fs::write(&path, "{\"role\":\"user\",\"content\":\"old line\"}\n")
             .await
             .unwrap();
@@ -1182,9 +940,6 @@ mod tests {
         let mut info = sample_info();
         store.begin_run(&info).await;
 
-        // The registry accumulates usage onto `info.usage` as the run's
-        // turns complete; the caller refreshes its own copy from the
-        // registry before finalizing (see `background::runtime::finish_run`).
         info.usage.accumulate(Some(residuum_inference::Usage {
             uncached_input_tokens: Some(200),
             output_tokens: Some(40),
@@ -1210,8 +965,6 @@ mod tests {
 
     #[test]
     fn run_record_header_without_a_usage_field_deserializes_to_default() {
-        // A record written before this field existed has no `usage` key at
-        // all; loading it must not fail.
         let json = r#"{
             "address": "spawned-x-0001",
             "run_id": "run-1",
@@ -1323,8 +1076,6 @@ mod tests {
 
     #[test]
     fn a_record_written_before_error_details_existed_still_loads() {
-        // No `outcome_error_details` key at all — as a pre-upgrade record on
-        // disk would look.
         let json = serde_json::json!({
             "address": "main",
             "run_id": "20260101-000000-abcdef",
@@ -1461,11 +1212,6 @@ mod tests {
         info.run_id = "run-test-substantial".to_string();
         store.begin_run(&info).await;
 
-        // Append a transcript large enough to clear the skip floor, the way
-        // a live run's turn would via `append_transcript`, simulating a
-        // crash after the turn produced content but before the run reached
-        // a terminal state (its metadata file is still the empty one
-        // `begin_run` wrote).
         let big_content = "a".repeat(9000);
         store
             .append_transcript(
@@ -1518,10 +1264,6 @@ mod tests {
 
     #[tokio::test]
     async fn recover_incomplete_runs_finishes_a_merge_left_pending_by_a_completed_run() {
-        // A run that completed but whose memory merge had not finished when the
-        // process exited is recorded as completed with its merge pending. Recovery
-        // must merge it and clear the pending flag, without marking the run
-        // interrupted, since it finished on its own.
         let dir = tempfile::tempdir().unwrap();
         let store = SessionStore::new(dir.path().to_path_buf());
         let mut info = sample_info();
@@ -1592,14 +1334,6 @@ mod tests {
 
     #[tokio::test]
     async fn recover_incomplete_runs_ignores_heartbeat_ok_in_the_kickoff_prompt_itself() {
-        // A crash before the model ever replies leaves the transcript ending
-        // on its own `User` kickoff message — and every pulse/action prompt
-        // template tells the model to return HEARTBEAT_OK when there's
-        // nothing to report, so that literal text routinely appears in the
-        // prompt itself. The stand-in summary must not be read from a
-        // non-`Assistant` message, or this pulse prompt would be
-        // misdetected as the run having "ended with HEARTBEAT_OK" and a
-        // substantial, never-actually-run transcript would be skipped.
         let dir = tempfile::tempdir().unwrap();
         let store = SessionStore::new(dir.path().to_path_buf());
         let mut info = sample_info();
@@ -1656,13 +1390,6 @@ mod tests {
 
     #[tokio::test]
     async fn recover_after_merge_succeeds_but_run_record_write_fails_does_not_duplicate() {
-        // Simulates the exact crash window the double-merge bug lived in: the
-        // live run's completion pipeline merged successfully (an episode and
-        // its observations landed on disk), but the process exited before
-        // `complete_run` could persist that episode id into the run's own
-        // record — so on disk the record is still the empty "running" one
-        // `begin_run` wrote. Recovery must detect the run was already merged
-        // and backfill instead of running the pipeline again.
         let dir = tempfile::tempdir().unwrap();
         let store = SessionStore::new(dir.path().to_path_buf());
         let mut info = sample_info();
@@ -1708,7 +1435,6 @@ mod tests {
             tz: chrono_tz::UTC,
         };
 
-        // The live run's completion pipeline runs and merges successfully...
         let transcript = vec![
             Message::user("investigate the issue"),
             Message::assistant(big_content, None),
@@ -1730,11 +1456,6 @@ mod tests {
             episode_id.is_some(),
             "the simulated live-run merge should have produced an episode"
         );
-
-        // ...but the process exits before `complete_run` can persist that
-        // episode id — the on-disk record is still the "running" one
-        // `begin_run` wrote, which is exactly what makes this run look
-        // incomplete to startup recovery below.
 
         let recovered = store.recover_incomplete_runs(&env).await;
         assert_eq!(recovered, 1);
@@ -1891,8 +1612,6 @@ mod tests {
 
     #[tokio::test]
     async fn complete_run_returns_none_when_write_fails() {
-        // A regular file sitting where the sessions directory should be
-        // makes `create_dir_all` fail for every run path under it.
         let dir = tempfile::tempdir().unwrap();
         let blocked_path = dir.path().join("blocked");
         tokio::fs::write(&blocked_path, b"not a directory")

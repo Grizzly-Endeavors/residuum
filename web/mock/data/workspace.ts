@@ -3,10 +3,8 @@ import type { MockClock } from "../env";
 import { byteLength, dirEntryVersion, fileVersion } from "../workspace-tree";
 import { MOCK_WORKBENCH_ARTIFACT, MOCK_WORKBENCH_ARTIFACT_NAME } from "./workbench";
 
-/** A directory entry as the sample tree declares it: its modification time and version are added when the tree is built. */
 type SampleEntry = Pick<WorkspaceEntry, "name" | "entry_type" | "size">;
 
-/** The sample artifact's page, in the team workbench folder. */
 const SAMPLE_ARTIFACT_FILE = `${MOCK_WORKBENCH_ARTIFACT_NAME}.html`;
 
 const SAMPLE_TREE: Record<string, SampleEntry[]> = {
@@ -64,11 +62,6 @@ const SAMPLE_TREE: Record<string, SampleEntry[]> = {
   archive: [],
 };
 
-/**
- * The sample workspace tree: directory path to its entries, each with the
- * size and version the listing reports. `team` is the shared team tree.
- * `contents` are the sample files, whose version a read of the file reports.
- */
 export function createWorkspaceFiles(
   contents: Readonly<Record<string, string>>,
   clock: MockClock,
@@ -88,7 +81,6 @@ export function createWorkspaceFiles(
   return tree;
 }
 
-/** The sample file contents, by workspace path. */
 export function createWorkspaceFileContents(): Record<string, string> {
   return {
     "SOUL.md":

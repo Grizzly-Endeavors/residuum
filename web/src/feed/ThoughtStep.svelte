@@ -3,11 +3,6 @@
   import type { ThinkingFeedItem } from "../lib/types";
   import { thoughtLabel } from "./activity";
 
-  // The agent's reasoning as a step of an activity line. While it streams in
-  // it is muted and clipped to its last few lines; once it is done it is one
-  // line, "Thought for 6s", which opens to the whole of it. When it is all a
-  // line holds, it is the whole of it, since the line above already says so.
-
   let { item, bare = false }: { item: ThinkingFeedItem; bare?: boolean } = $props();
 
   const uid = $props.id();
@@ -51,7 +46,6 @@
     font-size: var(--font-size-sm);
   }
 
-  /* The row's button stretches over the whole row, as a step's does. */
   .thought-row {
     position: relative;
     display: flex;
@@ -116,7 +110,6 @@
     }
   }
 
-  /* What is thought so far: its last three lines, the newest at the bottom. */
   .thought-live {
     display: flex;
     flex-direction: column;

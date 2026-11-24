@@ -16,48 +16,25 @@ import type { MockAgent } from "./state";
 import { byName } from "./util";
 import { rfc3339InZone } from "./zone";
 
-/**
- * The team overview of the hub, `crates/hub/src/overview/`: what Home shows about
- * each agent beyond its state, activity and summary. The mock reads it from
- * the same data its routes serve (the conversation, the live sessions, the
- * inbox) whenever it is asked for or sent, and tells hub clients with
- * `agent_overview` frames, gathered the way the backend gathers them.
- */
-
-/** How long an agent's changes are gathered before its overview is sent, in simulated milliseconds: `COALESCE_WINDOW` in `crates/hub/src/overview/service.rs`. */
 export const COALESCE_WINDOW_MS = 1000;
 
-/** The most characters a preview holds, the ellipsis that marks a cut included. */
 export const PREVIEW_CHARS = 200;
 
-/** The most runs an overview lists as upcoming: `MOST_UPCOMING` in `crates/hub/src/overview/upcoming.rs`. */
 export const MOST_UPCOMING = 3;
 
 /** How long an agent must stay unreachable before its task is a problem, in milliseconds: `UNREACHABLE_NOTICE_AFTER` in `crates/a2a/src/client/tracker.rs`. */
 export const OUTBOUND_NOTICE_MS = 600_000;
 
-/** Added to the wait for a task to pass the notice threshold, so the clock has passed it when the wait ends. */
 const NOTICE_SLACK_MS = 5;
 
 export interface MockOverview {
-  /** Every agent's overview by name, like `GET /api/hub/overview`. */
   response: () => OverviewResponse;
-  /**
-   * Something about the agent's overview may have changed. Its frame goes out
-   * when the window that this starts ends, and shows the agent as it is then.
-   */
   changed: (agent: MockAgent) => void;
-  /** Read a frame the hub sends to its clients: an agent starting or stopping, appearing, or going away. */
   observeHub: (frame: HubServerMessage) => void;
-  /** Read the session frames an agent sends to its clients. */
   watchAgent: (agent: MockAgent) => void;
-  /** Start over as a hub that has just started: nothing told, nothing waiting. */
   begin: () => void;
 }
 
-// ─── Previews ─────────────────────────────────────────────────────────────────
-
-/** Each rule of `plainPreview`, applied in order. */
 const MARKDOWN_RULES: ReadonlyArray<readonly [RegExp, string]> = [
   [/^[ \t]*```.*$/gm, " "],
   [/<!--[\s\S]*?-->/g, " "],
@@ -73,12 +50,6 @@ const MARKDOWN_RULES: ReadonlyArray<readonly [RegExp, string]> = [
   [/(?<!\w)(_{1,2})(?=\S)([^_\n]*?\S)\1(?!\w)/g, "$2"],
 ];
 
-/**
- * `markdown` as plain text on one line, cut to `PREVIEW_CHARS` characters
- * with a trailing `…`. A close match of the backend's `plain_preview`
- * (`crates/hub/src/overview/preview.rs`), which parses the Markdown rather than
- * matching its marks.
- */
 export function plainPreview(markdown: string): string {
   let text = markdown;
   for (const [pattern, replacement] of MARKDOWN_RULES) text = text.replace(pattern, replacement);
@@ -91,18 +62,10 @@ export function plainPreview(markdown: string): string {
     .trimEnd()}…`;
 }
 
-// ─── Reading an agent ─────────────────────────────────────────────────────────
-
-/** A stored time as RFC 3339 with whole seconds, the way the backend reports it. */
 function rfc3339(iso: string): string {
   return new Date(Date.parse(iso)).toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
-/**
- * The newest message of the agent's main conversation that the user saw: the
- * newest text from the user or the agent in its recent history, else in the
- * newest episode that has one, dated to the day.
- */
 function lastMessage(agent: MockAgent): LastMessage | null {
   let cursor: string | null = null;
   for (;;) {
@@ -132,14 +95,8 @@ function lastMessage(agent: MockAgent): LastMessage | null {
   }
 }
 
-/** Runs at the same moment list pulses before actions. */
 const KIND_ORDER: Record<UpcomingKind, number> = { pulse: 0, action: 1 };
 
-/**
- * The agent's next runs at `nowMs`, soonest first: its pulses (see
- * `nextPulseRun`) and its pending actions, whatever state it is in. An
- * overdue action keeps the time it was set for.
- */
 function upcomingOf(agent: MockAgent, nowMs: number): UpcomingRun[] {
   const { pulses, actions } = agent.state.scheduled;
   const runs: Array<{ at: number; kind: UpcomingKind; name: string }> = [
@@ -161,18 +118,11 @@ function upcomingOf(agent: MockAgent, nowMs: number): UpcomingRun[] {
     .map(({ at, kind, name }) => ({ kind, name, at: rfc3339InZone(at) }));
 }
 
-/** When the open task's unreachable streak passes the notice threshold, or `null` when it is not in one. */
 function noticeAt(task: MockAgent["state"]["outboundTasks"][number]): number | null {
   if (!task.open || task.unreachable_since === null) return null;
   return Date.parse(task.unreachable_since) + OUTBOUND_NOTICE_MS;
 }
 
-/**
- * The open tasks of a running agent whose unreachable streak has passed the
- * notice threshold at `nowMs`, the longest unreachable first. A task that is
- * not in a streak, or is closed, is not one, and nothing watches the tasks of
- * an agent that is not running.
- */
 function outboundProblemsOf(agent: MockAgent, nowMs: number): OutboundProblem[] {
   if (agent.runState !== "running") return [];
   return agent.state.outboundTasks
@@ -190,7 +140,6 @@ function outboundProblemsOf(agent: MockAgent, nowMs: number): OutboundProblem[] 
     }));
 }
 
-/** When the next unreachable streak of a running agent's tasks passes the notice threshold after `nowMs`, if one is. */
 function nextNoticeAt(agent: MockAgent, nowMs: number): number | null {
   if (agent.runState !== "running") return null;
   const coming = agent.state.outboundTasks
@@ -199,7 +148,6 @@ function nextNoticeAt(agent: MockAgent, nowMs: number): number | null {
   return coming.length === 0 ? null : Math.min(...coming);
 }
 
-/** The agent's overview at `nowMs`, read from the data its routes serve. */
 function overviewOf(agent: MockAgent, nowMs: number): AgentOverview {
   const live =
     agent.runState === "running"
@@ -223,31 +171,16 @@ function overviewOf(agent: MockAgent, nowMs: number): AgentOverview {
   };
 }
 
-// ─── The overview ─────────────────────────────────────────────────────────────
-
-/**
- * An overview of the hub's `agents` (the map the hub keeps current), whose
- * frames `send` delivers to every connected hub client.
- */
 export function createOverview(
   env: MockEnv,
   bootId: string,
   agents: ReadonlyMap<string, MockAgent>,
   send: (frame: HubServerMessage) => void,
 ): MockOverview {
-  /** What clients were last told of each agent: the last frame sent, or the answer to the request that first found it. */
   const told = new Map<string, string>();
-  /** The cancel of the wait that ends with each agent's next frame. */
   const waiting = new Map<string, () => void>();
-  /** The cancel of the wait for each agent's next unreachable streak to pass the notice threshold. */
   const noticeWaits = new Map<string, () => void>();
 
-  /**
-   * The agent's overview now. A streak passing the notice threshold is a
-   * change nothing announces, so the wait for the next one is set here, and
-   * ends with the agent's frame. A fixed clock never gets there, and the wait
-   * ends without a change.
-   */
   function read(agent: MockAgent): AgentOverview {
     const now = env.clock.now();
     noticeWaits.get(agent.name)?.();
@@ -265,7 +198,6 @@ export function createOverview(
     return overviewOf(agent, now);
   }
 
-  /** Send the agent's overview if clients don't have it. */
   function flush(name: string): void {
     const agent = agents.get(name);
     if (agent === undefined) return;
@@ -287,7 +219,6 @@ export function createOverview(
     );
   }
 
-  /** Stop waiting to send the agent's frame, and for its tasks to pass the notice threshold. */
   function stopWaiting(name: string): void {
     waiting.get(name)?.();
     waiting.delete(name);
@@ -342,9 +273,6 @@ export function createOverview(
   };
 }
 
-// ─── Routes ───────────────────────────────────────────────────────────────────
-
-/** The overview route, in the `/api/hub/...` spelling the hub keeps. */
 export const overviewRoutes: readonly Route[] = [
   {
     method: "GET",

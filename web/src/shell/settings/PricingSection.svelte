@@ -8,10 +8,6 @@
   import SettingsGroup from "./SettingsGroup.svelte";
   import SettingsSection from "./SettingsSection.svelte";
 
-  // Estimated costs use these prices in place of the built-in ones, for the
-  // model each row names. The hub writes every rate of a changed row at once,
-  // and the hub's validation refuses a row missing one.
-
   let { scope, section }: AllSectionProps = $props();
 
   const uid = $props.id();
@@ -29,7 +25,6 @@
     return price.name.trim() || "New price";
   }
 
-  /** What the row's name needs: a name, unique among the rows, and no problem the last save found. */
   function nameProblem(price: PriceFormEntry): string | undefined {
     const name = price.name.trim();
     if (name === "") return "Enter a provider and model, such as anthropic/claude-sonnet-5-5.";

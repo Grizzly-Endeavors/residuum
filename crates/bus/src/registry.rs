@@ -1,5 +1,3 @@
-//! Runtime catalog of configured I/O endpoints.
-
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -10,11 +8,6 @@ use super::endpoint::EndpointCapabilities;
 use super::types::EndpointId;
 use super::types::{EndpointName, NotifyName, TopicId};
 
-// ---------------------------------------------------------------------------
-// EndpointEntry
-// ---------------------------------------------------------------------------
-
-/// A single endpoint registered in the catalog.
 #[derive(Debug, Clone)]
 pub struct EndpointEntry {
     pub id: EndpointId,
@@ -23,18 +16,8 @@ pub struct EndpointEntry {
     pub display_name: String,
 }
 
-// ---------------------------------------------------------------------------
-// EndpointRegistry
-// ---------------------------------------------------------------------------
-
 type EntryMap = HashMap<EndpointId, EndpointEntry>;
 
-/// Shared, cheaply cloneable catalog of all configured I/O endpoints.
-///
-/// Every clone refers to the same catalog, so a [`refresh`](Self::refresh)
-/// after a config or `channels.toml` reload is seen by everything holding
-/// one — tools, the notification router, idle switching. It also carries the
-/// directory of conversations the running chat interfaces can reach.
 #[derive(Debug, Clone, Default)]
 pub struct EndpointRegistry {
     entries: Arc<std::sync::RwLock<Arc<EntryMap>>>,
@@ -46,7 +29,6 @@ fn index_entries(entries: impl IntoIterator<Item = EndpointEntry>) -> EntryMap {
 }
 
 impl EndpointRegistry {
-    /// Build a registry from a set of entries; a later entry with a duplicate ID wins.
     #[must_use]
     pub fn from_entries(entries: impl IntoIterator<Item = EndpointEntry>) -> Self {
         Self {
@@ -55,13 +37,11 @@ impl EndpointRegistry {
         }
     }
 
-    /// Build a registry from the runtime config and external channel definitions.
     #[must_use]
     pub fn from_config(config: &Config, channels: &[ExternalChannelConfig]) -> Self {
         Self::from_entries(Self::config_entries(config, channels))
     }
 
-    /// Replace the catalog for every clone of this registry.
     pub fn refresh(&self, config: &Config, channels: &[ExternalChannelConfig]) {
         let fresh = Arc::new(index_entries(Self::config_entries(config, channels)));
         *self
@@ -70,15 +50,12 @@ impl EndpointRegistry {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = fresh;
     }
 
-    /// Conversations each running chat interface can reach.
     #[must_use]
     pub fn conversations(&self) -> &ConversationDirectory {
         &self.conversations
     }
 
-    /// Snapshot of the current catalog.
     fn snapshot(&self) -> Arc<EntryMap> {
-        // The lock only guards an Arc swap; a poisoned lock still holds a whole map.
         Arc::clone(
             &self
                 .entries
@@ -88,7 +65,6 @@ impl EndpointRegistry {
     }
 
     fn config_entries(config: &Config, channels: &[ExternalChannelConfig]) -> Vec<EndpointEntry> {
-        // WebSocket — always present
         let mut entries = vec![EndpointEntry {
             id: EndpointId::from(WEB_UI_ENDPOINT),
             topic: TopicId::Endpoint(EndpointName::from(WEB_UI_ENDPOINT)),
@@ -123,11 +99,6 @@ impl EndpointRegistry {
             });
         }
 
-        // No `INTERACTIVE` capability: A2A callers never reach a session
-        // through `send_message`/`list_endpoints` — they are answered only
-        // inside a task, by the A2A executor delivering straight into the
-        // session (see the A2A session executor). No `ConversationSource`
-        // either, for the same reason.
         if config.a2a.enabled {
             entries.push(EndpointEntry {
                 id: EndpointId::from("a2a"),
@@ -155,19 +126,16 @@ impl EndpointRegistry {
         entries
     }
 
-    /// Look up an endpoint by its ID.
     #[must_use]
     pub fn get(&self, id: &EndpointId) -> Option<EndpointEntry> {
         self.snapshot().get(id).cloned()
     }
 
-    /// All interactive endpoints.
     #[must_use]
     pub fn interactive(&self) -> Vec<EndpointEntry> {
         self.with_capabilities(EndpointCapabilities::INTERACTIVE)
     }
 
-    /// All notify-only endpoints.
     #[must_use]
     pub fn notify(&self) -> Vec<EndpointEntry> {
         self.with_capabilities(EndpointCapabilities::NOTIFY_ONLY)
@@ -181,10 +149,6 @@ impl EndpointRegistry {
             .collect()
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 #[expect(clippy::indexing_slicing, reason = "test assertions")]
@@ -200,7 +164,6 @@ mod tests {
         WebSearchConfig,
     };
 
-    /// Minimal config for testing.
     fn minimal_config() -> Config {
         Config {
             agent_name: "test-agent".to_string(),
@@ -328,7 +291,6 @@ mod tests {
         assert_eq!(ws.display_name, "WebSocket");
         assert!(ws.capabilities.contains(EndpointCapabilities::INTERACTIVE));
 
-        // discord/telegram not present
         assert!(reg.get(&EndpointId::from("discord")).is_none());
         assert!(reg.get(&EndpointId::from("telegram")).is_none());
     }

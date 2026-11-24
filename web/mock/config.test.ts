@@ -124,7 +124,6 @@ describe("config routes", () => {
       expect(checked.body).toEqual(expected);
       const saved = await fetchJson(url("/api/providers/raw"), { method: "PUT", body: text });
       expect(saved.body).toEqual(expected);
-      // config.toml has no models to check.
       const config = await fetchJson(url("/api/config/validate"), { method: "POST", body: text });
       expect(config.body).toEqual({ valid: true });
     });

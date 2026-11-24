@@ -41,9 +41,6 @@
   import { router } from "../../router.svelte";
   import { toast } from "../../toast.svelte";
 
-  // Every primitive in every state, served at /dev/gallery in development and
-  // mock builds. Controls are live, so keyboard behavior can be tried here.
-
   const VARIANTS: readonly { variant: ButtonVariant; label: string }[] = [
     { variant: "primary", label: "Save changes" },
     { variant: "secondary", label: "New agent" },
@@ -128,8 +125,6 @@
   let sessionsTab = $state<"running" | "finished" | "scheduled">("running");
   let showDismissible = $state(true);
 
-  // Back closes the overlays opened here, without the router reading this
-  // page's address as a place.
   router.startForOverlays();
   provideTooltips(tooltip);
 
@@ -958,7 +953,6 @@
     color: var(--color-text-2);
   }
 
-  /* A chip's outline keeps it visible on every stone a container can be. */
   .gallery-wells {
     display: grid;
     flex: 1 1 0;

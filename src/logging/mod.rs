@@ -1,11 +1,3 @@
-//! Tracing initialization for all runtime modes.
-//!
-//! Provides two modes:
-//! - `init_default_tracing`: stderr-only (most CLI subcommands)
-//! - `init_daemon_tracing`: file + optional stderr (daemon/foreground serve)
-//!
-//! [`mod@format`] renders the structured log lines that `residuum logs` reads back.
-
 pub mod format;
 
 use std::sync::OnceLock;
@@ -13,29 +5,17 @@ use std::sync::OnceLock;
 use crate::config::LogLevel;
 use crate::hub::FilterReload;
 
-// ── Runtime filter reload ────────────────────────────────────────────
-
-/// Process-global filter reload handle, set once during daemon tracing init.
 static FILTER_HANDLE: OnceLock<Box<dyn FilterReload>> = OnceLock::new();
 
-/// Access the global filter reload handle.
-///
-/// Returns `None` if daemon tracing was not initialized (e.g. in CLI or test modes).
 #[must_use]
 pub fn global_filter_handle() -> Option<&'static dyn FilterReload> {
     FILTER_HANDLE.get().map(AsRef::as_ref)
 }
 
-/// Set the global filter reload handle. Called once during daemon tracing init.
-///
-/// Returns `Err` if the handle was already set.
 fn set_global_filter_handle(handle: Box<dyn FilterReload>) -> Result<(), Box<dyn FilterReload>> {
     FILTER_HANDLE.set(handle)
 }
 
-// ── Initialization modes ─────────────────────────────────────────────
-
-/// Initialize tracing with stderr-only output (default for serve/logs/setup).
 pub fn init_default_tracing() {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -59,17 +39,6 @@ fn fatal_no_log_appender(msg: &str) -> ! {
     panic!("{msg}")
 }
 
-/// Initialize tracing for daemonized operation.
-///
-/// Logs are written to `<log_dir>/serve.YYYY-MM-DD.log` (or `serve-<name>`)
-/// with daily rotation and 30-day retention. The log level is determined by
-/// the `log_level` parameter from config.toml (overridden by `RUST_LOG` if set).
-///
-/// When `foreground` is true, stderr output is added so logs appear in the
-/// terminal. The filter level applies equally to file and stderr output.
-///
-/// A reload handle is stored globally so the log level can be changed at
-/// runtime via config reload.
 #[expect(
     clippy::print_stderr,
     reason = "pre-tracing startup warnings — tracing is not yet initialized"
@@ -82,10 +51,8 @@ pub fn init_daemon_tracing(foreground: bool, log_level: LogLevel) {
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_filter));
 
-    // Wrap in a reload layer so the filter can be changed at runtime
     let (reload_filter, reload_handle) = tracing_subscriber::reload::Layer::new(env_filter);
 
-    // Store the reload handle globally for runtime filter changes
     let handle = ReloadFilterHandle {
         inner: reload_handle,
     };
@@ -139,7 +106,6 @@ pub fn init_daemon_tracing(foreground: bool, log_level: LogLevel) {
         .with_target(false)
         .with_writer(std::io::stderr);
 
-    // Span buffer layer — always-on, zero-cost when nothing reads from it
     let (span_buffer_layer, span_buffer_handle) = crate::util::telemetry::SpanBufferLayer::new(
         &crate::util::telemetry::SpanBufferConfig::default(),
     );
@@ -151,9 +117,7 @@ pub fn init_daemon_tracing(foreground: bool, log_level: LogLevel) {
         .with(span_buffer_layer)
         .init();
 
-    // Store handle globally for bug reports / live export
     if crate::util::telemetry::set_global_span_buffer(span_buffer_handle).is_err() {
-        // Already set — shouldn't happen, but not fatal
         tracing::warn!("span buffer handle was already initialized");
     }
 
@@ -166,13 +130,6 @@ pub fn init_daemon_tracing(foreground: bool, log_level: LogLevel) {
     );
 }
 
-// ── Reload handle implementation ─────────────────────────────────────
-
-/// Concrete `FilterReload` implementation wrapping a `tracing_subscriber::reload::Handle`.
-///
-/// The generic types capture the subscriber stack at the point where the reload
-/// layer was inserted. We use the trait to erase these types so the handle can
-/// be stored in a `OnceLock`.
 struct ReloadFilterHandle<S: Send + Sync> {
     inner: tracing_subscriber::reload::Handle<tracing_subscriber::EnvFilter, S>,
 }
@@ -199,8 +156,6 @@ mod tests {
 
     use crate::config::LogLevel;
 
-    /// Metadata that identifies the probe callsite. Targets are built per check
-    /// with [`debug_event_metadata`], which shares this callsite.
     static PROBE_META: tracing::Metadata<'static> = tracing::Metadata::new(
         "probe",
         "probe",
@@ -237,10 +192,6 @@ mod tests {
         )
     }
 
-    /// Library names of the root crate and every workspace member: `residuum`,
-    /// then each member's package name with `-` replaced by `_`. Members come
-    /// from the root manifest's `[workspace] members`; a `dir/*` pattern expands
-    /// to each directory under `dir` that has a `Cargo.toml`.
     fn workspace_library_names() -> Vec<String> {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         let root_manifest: toml::Table = toml::from_str(

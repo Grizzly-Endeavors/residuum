@@ -1,18 +1,10 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
 
-  // A card inside a settings section: an optional title with a state mark
-  // beside it, a line on what the group is, its fields, and an optional quiet
-  // action under them, such as a link to the place that shows what the group
-  // configures. Groups sit on stone-2 inside the modal's stone-1 and stack
-  // with a gap between.
-
   interface Props {
     title?: string;
     lede?: string;
-    /** A state mark beside the title, such as a Badge. */
     status?: Snippet;
-    /** A quiet action under the fields: a small quiet Button. */
     foot?: Snippet;
     children: Snippet;
   }

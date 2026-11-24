@@ -1,5 +1,3 @@
-//! Config API endpoints and types.
-
 use axum::body::Body;
 use axum::extract::State;
 use axum::http::{StatusCode, header};
@@ -8,14 +6,6 @@ use serde::{Deserialize, Serialize};
 
 use super::{ConfigApiState, HubApiState};
 
-/// Response from validation or save endpoints.
-///
-/// `diagnostics` carries the full detail (severity, plain-language message,
-/// and location) from `residuum_core::diagnostics` for a raw save or a validate-only
-/// call; `valid`/`error` are a summary kept for callers that only check
-/// whether saving is safe (`valid` is `false` if any diagnostic is an
-/// error). A raw save always writes the file regardless of `valid` — see
-/// `api_config_raw_put`/`api_providers_raw_put`.
 #[derive(Debug, Serialize)]
 #[cfg_attr(test, derive(Deserialize))]
 pub(super) struct ValidateResponse {
@@ -26,11 +16,6 @@ pub(super) struct ValidateResponse {
     pub(super) diagnostics: Vec<residuum_core::diagnostics::Diagnostic>,
 }
 
-/// Success body for a Settings form PATCH (`config.toml`, `providers.toml`,
-/// `mcp.json`): the validation summary plus the checkpoint taken just
-/// before the write, so the web UI's Undo restores exactly this save.
-/// `checkpoint_id` is absent when that checkpoint could not be recorded;
-/// the write still went through, and the UI should not offer Undo.
 #[derive(Debug, Serialize)]
 #[cfg_attr(test, derive(Deserialize))]
 pub(super) struct PatchSavedResponse {
@@ -54,9 +39,6 @@ impl PatchSavedResponse {
 }
 
 impl ValidateResponse {
-    /// Build a response from a set of diagnostics: `valid` is `false` if any
-    /// are errors, and `error` summarizes the first one for callers that
-    /// only look at the single-string field.
     pub(super) fn from_diagnostics(
         diagnostics: Vec<residuum_core::diagnostics::Diagnostic>,
         file_label: &str,
@@ -73,32 +55,23 @@ impl ValidateResponse {
     }
 }
 
-/// Timezone detection response.
 #[derive(Serialize)]
 pub(super) struct TimezoneResponse {
     timezone: String,
 }
 
-/// Request body for the complete-setup endpoint.
 #[derive(Deserialize)]
 pub(super) struct CompleteSetupRequest {
-    /// Raw `hub/config.toml` content.
     hub_config: String,
-    /// This installation's first agent name.
     agent_name: String,
-    /// The user's name, written to the team's `USER.md`.
     #[serde(default)]
     user_name: Option<String>,
-    /// Raw agent config.toml content.
     config: String,
-    /// Raw providers.toml content.
     providers: String,
-    /// Raw mcp.json content (optional, Claude Code format).
     #[serde(default)]
     mcp_json: Option<String>,
 }
 
-/// `GET /api/hub/config/raw` — return raw `hub/config.toml` contents as text.
 pub(super) async fn api_hub_config_raw_get(
     State(state): State<HubApiState>,
 ) -> Result<Response, (StatusCode, String)> {
@@ -120,13 +93,6 @@ pub(super) async fn api_hub_config_raw_get(
         })
 }
 
-/// `PUT /api/hub/config/raw` — write TOML body to `hub/config.toml`, save
-/// unconditionally, trigger a hub reload if running, and report diagnostics.
-///
-/// Same "save regardless, report what's wrong" contract as
-/// [`api_config_raw_put`] — a hub reload that can't load the new file keeps
-/// the hub running on its last-known-good config (see
-/// the gateway's `reload::handle_hub_reload`).
 pub(super) async fn api_hub_config_raw_put(
     State(state): State<HubApiState>,
     body: String,
@@ -152,12 +118,9 @@ pub(super) async fn api_hub_config_raw_put(
     )))
 }
 
-/// Why a patch to `hub/config.toml` didn't land. Nothing was written.
 #[derive(Debug)]
 pub(crate) enum HubConfigPatchError {
-    /// The diff doesn't apply to the file, or the patched file doesn't validate.
     Rejected(String),
-    /// The file couldn't be read or written.
     Io(String),
 }
 
@@ -169,21 +132,12 @@ impl std::fmt::Display for HubConfigPatchError {
     }
 }
 
-/// A JSON diff applied to `hub/config.toml` and validated, but not yet written.
-///
-/// A caller that must checkpoint the file before some related write, such as
-/// a secret, takes the checkpoint with [`Self::checkpoint`] and only then
-/// calls [`Self::write`]. The checkpoint holds the file as it stood, not as
-/// the patch leaves it.
 pub(crate) struct PreparedHubConfigPatch {
     path: std::path::PathBuf,
     text: String,
 }
 
 impl PreparedHubConfigPatch {
-    /// Checkpoint `config.toml` as it stands, named `summary` in History.
-    /// Returns the checkpoint's id, `None` when it couldn't be recorded. The
-    /// write still proceeds in that case.
     pub(crate) async fn checkpoint(
         &self,
         checkpoints: &residuum_checkpoints::CheckpointEngine,
@@ -197,7 +151,6 @@ impl PreparedHubConfigPatch {
             .await
     }
 
-    /// Replace `config.toml` with the patched text, atomically.
     pub(crate) async fn write(&self) -> Result<(), HubConfigPatchError> {
         residuum_core::util::fs::atomic_write(&self.path, &self.text)
             .await
@@ -205,10 +158,6 @@ impl PreparedHubConfigPatch {
     }
 }
 
-/// Apply a JSON `diff` to `hub_dir/config.toml`, the one path every change to
-/// that file takes. The diff is applied to the parsed document, so comments and
-/// keys the diff doesn't name survive. The patched text must pass `validate`.
-/// Nothing is written here; see [`PreparedHubConfigPatch`].
 pub(crate) async fn prepare_hub_config_patch(
     hub_dir: &std::path::Path,
     diff: &serde_json::Value,
@@ -241,8 +190,6 @@ pub(crate) async fn prepare_hub_config_patch(
     })
 }
 
-/// The API error for a hub config patch that didn't land, logged with the
-/// file's path at the level its kind of failure calls for.
 fn hub_patch_failed(
     error: HubConfigPatchError,
     config_path: &std::path::Path,
@@ -267,8 +214,6 @@ fn hub_patch_failed(
     )
 }
 
-/// `PATCH /api/hub/config/patch` — merge a JSON diff into the existing
-/// `hub/config.toml`, validate, save, trigger a hub reload if running.
 pub(super) async fn api_hub_config_patch(
     State(state): State<HubApiState>,
     Json(diff): Json<serde_json::Value>,
@@ -296,7 +241,6 @@ pub(super) async fn api_hub_config_patch(
     Ok(Json(PatchSavedResponse::saved(checkpoint_id)))
 }
 
-/// `POST /api/hub/config/validate` — validate hub config TOML body without saving.
 pub(super) async fn api_hub_config_validate(
     State(state): State<HubApiState>,
     body: String,
@@ -308,7 +252,6 @@ pub(super) async fn api_hub_config_validate(
     ))
 }
 
-/// `GET /api/agents/{name}/config/raw` — return raw `config.toml` contents as text.
 pub(super) async fn api_config_raw_get(
     State(state): State<ConfigApiState>,
 ) -> Result<Response, (StatusCode, String)> {
@@ -330,20 +273,10 @@ pub(super) async fn api_config_raw_get(
         })
 }
 
-/// `PUT /api/agents/{name}/config/raw` — write TOML body, save unconditionally, trigger
-/// reload if running, and report diagnostics.
-///
-/// The save always succeeds, even when `body` fails validation: a config
-/// reload that can't load the new file keeps the gateway running on its
-/// current config and publishes a notice (see `handle_root_reload`), so an
-/// invalid save is safe to accept and report rather than reject outright —
-/// consistent with `write_file`/`edit_file` and the workspace file editor.
 pub(super) async fn api_config_raw_put(
     State(state): State<ConfigApiState>,
     body: String,
 ) -> Result<Json<ValidateResponse>, (StatusCode, Json<ValidateResponse>)> {
-    // Diagnose first (use real config dir so secret:name references are
-    // checked), but never block the write on what it finds.
     let diagnostics = state.diagnose_agent_config(&body);
 
     let config_path = state.config_dir.join("config.toml");
@@ -361,7 +294,6 @@ pub(super) async fn api_config_raw_put(
         )
     })?;
 
-    // Trigger reload if in running mode
     if let Some(reload_tx) = &state.reload_tx {
         reload_tx
             .send(residuum_bus::control::ReloadSignal::Agent)
@@ -463,7 +395,6 @@ pub(super) async fn api_config_patch(
     Ok(Json(PatchSavedResponse::saved(checkpoint_id)))
 }
 
-/// `POST /api/agents/{name}/config/validate` — validate TOML body without saving.
 pub(super) async fn api_config_validate(
     State(state): State<ConfigApiState>,
     body: String,
@@ -475,9 +406,6 @@ pub(super) async fn api_config_validate(
     ))
 }
 
-/// `GET /api/agents/{name}/mcp/raw` — return raw `mcp.json` contents as JSON.
-///
-/// Returns `{"mcpServers":{}}` if the file doesn't exist yet.
 pub(super) async fn api_mcp_raw_get(
     State(state): State<ConfigApiState>,
 ) -> Result<Response, (StatusCode, String)> {
@@ -505,15 +433,6 @@ pub(super) async fn api_mcp_raw_get(
         })
 }
 
-/// `PUT /api/agents/{name}/mcp/raw` — write `mcp.json`, save unconditionally, trigger a
-/// workspace reload, and report diagnostics.
-///
-/// The save always succeeds, even when `body` fails validation: the loader
-/// skips an unusable server entry with a warning and keeps every other
-/// server running (see `residuum_workspace::config::load_mcp_servers_map`), so
-/// an invalid save is safe to accept and report rather than reject outright
-/// — consistent with `write_file`/`edit_file`, `config.toml`/`providers.toml`,
-/// and the workspace file editor.
 pub(super) async fn api_mcp_raw_put(
     State(state): State<ConfigApiState>,
     body: String,
@@ -553,14 +472,6 @@ pub(super) async fn api_mcp_raw_put(
     )))
 }
 
-/// `PATCH /api/agents/{name}/mcp/patch` — merge a JSON diff into the existing `mcp.json`.
-///
-/// The diff's shape mirrors `mcp.json`: `{"mcpServers": {"<name>": {...}}}`.
-/// Only the fields the Settings form actually changed need to be present —
-/// see `residuum_workspace::mcp_patch` for the exact convention. A server (or
-/// field) the diff doesn't mention survives untouched, including fields the
-/// form doesn't model (e.g. HTTP transport's `url`/`type`/`headers` when an
-/// unrelated server is edited).
 pub(super) async fn api_mcp_patch(
     State(state): State<ConfigApiState>,
     Json(diff): Json<serde_json::Value>,
@@ -603,10 +514,6 @@ pub(super) async fn api_mcp_patch(
         tokio::fs::create_dir_all(parent).await.ok();
     }
 
-    // `mcp.json` lives in the workspace, not the config repo's tracked-file
-    // allowlist, and this write happens outside any agent turn — without
-    // this it would never be checkpointed until the next turn boundary
-    // happened to snapshot it as an "outside edit".
     let checkpoint_id = state
         .checkpoint_workspace_id_before_write("patch mcp.json")
         .await;
@@ -634,8 +541,6 @@ pub(super) async fn api_mcp_patch(
     Ok(Json(PatchSavedResponse::saved(checkpoint_id)))
 }
 
-/// A 500 response saying which step failed, in the shape every config
-/// handler uses.
 fn internal_error(action: &str, e: impl std::fmt::Display) -> (StatusCode, Json<ValidateResponse>) {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -647,12 +552,6 @@ fn internal_error(action: &str, e: impl std::fmt::Display) -> (StatusCode, Json<
     )
 }
 
-/// Write the first agent's `providers.toml`, optional `mcp.json`, and
-/// `config.toml` from the onboarding request, each atomically.
-///
-/// `config.toml` goes last: an agent is discovered by that file, so a
-/// failure on an earlier write never leaves a discoverable half-configured
-/// agent behind.
 async fn write_first_agent_config_files(
     layout: &residuum_config::WorkspaceLayout,
     body: &CompleteSetupRequest,
@@ -684,8 +583,6 @@ async fn write_first_agent_config_files(
     Ok(())
 }
 
-/// Setup creates only the first agent: answer 409 when the residuum root
-/// already holds one, so a live agent is never overwritten.
 fn refuse_when_agents_exist(
     residuum_root: &std::path::Path,
     agent_name: &str,
@@ -749,8 +646,6 @@ pub(super) async fn api_complete_setup(
         .hub_dir
         .parent()
         .map_or_else(|| state.hub_dir.clone(), std::path::Path::to_path_buf);
-    // Setup only creates the first agent, so an existing directory is a
-    // conflict on the name the folder would have, before a suffix is tried.
     refuse_when_agents_exist(&residuum_root, &slug_base)?;
     let slug = residuum_config::allocate_slug(&slug_base, |candidate| {
         residuum_root
@@ -762,8 +657,6 @@ pub(super) async fn api_complete_setup(
     .map_err(err)?;
     let agent_dir = residuum_root.join(&slug);
 
-    // Parse and resolve the hub config on its own first — the agent config
-    // resolves against it (timezone, gateway, ...).
     let hub_file = toml::from_str::<residuum_config::HubConfigFile>(&body.hub_config)
         .map_err(|e| err(format!("hub config.toml parse error: {e}")))?;
     let hub = residuum_config::resolve_hub_config(Some(&hub_file), &state.hub_dir)
@@ -776,7 +669,6 @@ pub(super) async fn api_complete_setup(
     let providers_file = toml::from_str::<residuum_config::ProvidersFile>(&body.providers)
         .map_err(|e| err(format!("providers.toml parse error: {e}")))?;
 
-    // Validate the agent config together with the hub config and providers.
     residuum_config::from_file_and_env(
         Some(&config_file),
         Some(&providers_file),
@@ -786,7 +678,6 @@ pub(super) async fn api_complete_setup(
     )
     .map_err(|e| err(format!("{e}")))?;
 
-    // Write hub/config.toml, and bootstrap the hub directory (bin/, logs/).
     state
         .checkpoint_config_before_write("complete setup: hub config.toml")
         .await;
@@ -804,8 +695,6 @@ pub(super) async fn api_complete_setup(
         .await
         .map_err(|e| internal_error("write hub config.toml", e))?;
 
-    // Bootstrap the agent's full workspace (identity files, wiki, bundled
-    // skills), personalized with the user's name.
     let layout = residuum_config::WorkspaceLayout::new(&agent_dir);
     state
         .bootstrap_workspace(
@@ -828,8 +717,6 @@ pub(super) async fn api_complete_setup(
 
     write_first_agent_config_files(&layout, &body, &config).await?;
 
-    // The hub picks up the new hub config, and whoever is waiting on setup
-    // learns the first agent is on disk.
     state
         .reload_tx
         .send(residuum_bus::control::ReloadSignal::Hub)
@@ -845,13 +732,11 @@ pub(super) async fn api_complete_setup(
     }))
 }
 
-/// `GET /api/hub/system/timezone` — auto-detect system timezone.
 pub(super) async fn api_system_timezone() -> Json<TimezoneResponse> {
     let tz = iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".to_string());
     Json(TimezoneResponse { timezone: tz })
 }
 
-/// `GET /api/hub/mcp-catalog` — serve the embedded MCP catalog JSON.
 pub(super) async fn api_mcp_catalog(State(state): State<HubApiState>) -> Response {
     use axum::http::StatusCode;
 
@@ -876,11 +761,6 @@ pub(super) async fn api_mcp_catalog(State(state): State<HubApiState>) -> Respons
 mod tests {
     use super::*;
 
-    /// A state backed by a real temp directory, for tests that read/write
-    /// `config.toml`/`providers.toml` on disk. Seeds a valid hub `config.toml`
-    /// (just a timezone) so `diagnose_agent_config`/`validate_agent_config`
-    /// can actually resolve the hub side rather than reporting "hub config
-    /// couldn't be loaded" for every test.
     fn tempdir_state(dir: &std::path::Path) -> ConfigApiState {
         let hub_dir = dir.join("hub");
         std::fs::create_dir_all(&hub_dir).unwrap();
@@ -1084,8 +964,6 @@ mod tests {
         );
     }
 
-    /// A setup-mode state rooted at `root`: the hub directory is `root/hub`,
-    /// and no agent exists yet.
     fn setup_state(root: &std::path::Path) -> (HubApiState, tokio::sync::watch::Receiver<bool>) {
         let (tx, rx) = tokio::sync::watch::channel(false);
         let mut state = HubApiState::for_test(&root.join("hub"), crate::testing::fixture_assets);
@@ -1217,8 +1095,6 @@ mod tests {
     #[tokio::test]
     async fn an_interrupted_setup_leaves_no_discoverable_agent() {
         let root = tempfile::tempdir().unwrap();
-        // A directory where providers.toml must go makes that write fail
-        // after the workspace exists but before config.toml is written.
         std::fs::create_dir_all(root.path().join("scout/config/providers.toml")).unwrap();
         let (state, done_rx) = setup_state(root.path());
 

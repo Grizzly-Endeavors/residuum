@@ -1,13 +1,8 @@
-//! Fixtures other crates' tests build a `Config` with (feature `test-support`).
-
-/// The agent directory the fixtures resolve against (it need not exist).
 #[must_use]
 pub fn test_agent_dir() -> std::path::PathBuf {
     std::env::temp_dir().join("residuum-test-agent")
 }
 
-/// A hub config with every hub-owned value at its default and UTC as the
-/// timezone.
 #[must_use]
 pub fn test_hub_config() -> crate::HubConfig {
     crate::HubConfig {

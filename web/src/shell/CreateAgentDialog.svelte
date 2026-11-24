@@ -13,14 +13,8 @@
   } from "../lib/ui";
   import { PHONE_QUERY } from "../styles/breakpoints";
 
-  // Create an agent: a name checked as it is typed, what the agent should help
-  // with, and under More options whose model settings it copies and who can
-  // find it. A dialog, or a sheet on phones. What was typed stays when it
-  // closes without creating, and clears once the agent exists.
-
   interface Props {
     open: boolean;
-    /** The agent exists and the dialog has closed. */
     oncreated?: (name: string) => void;
   }
 
@@ -46,7 +40,6 @@
   let modelsFrom = $state("");
   let visibility = $state("private");
   let moreOpen = $state(false);
-  /** Create was pressed, so an empty name says so too. */
   let attempted = $state(false);
   let creating = $state(false);
   let nameInput = $state<HTMLInputElement | HTMLTextAreaElement>();
@@ -75,7 +68,6 @@
       : undefined,
   );
 
-  // The model settings come from an agent that exists: the first, until another is chosen.
   $effect(() => {
     if (!hub.agents.some((agent) => agent.name === modelsFrom)) {
       modelsFrom = hub.agents[0]?.name ?? "";
@@ -109,7 +101,6 @@
         providers_toml: null,
         a2a_visibility: visibility === "public" ? "public" : "private",
       });
-      // The hub store has said why it failed; what was typed stays for another try.
       if (agent === null) return;
       name = "";
       description = "";

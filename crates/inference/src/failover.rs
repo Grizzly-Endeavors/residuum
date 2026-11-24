@@ -1,5 +1,3 @@
-//! Failover provider: wraps multiple providers and tries each in order.
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -13,50 +11,23 @@ use super::{
     ToolDefinition,
 };
 
-/// Where a failover notice goes: one user-visible message per fallback or
-/// recovery transition. The bus `Publisher` implements it.
 #[async_trait]
 pub trait NoticeSink: Send + Sync {
-    /// Deliver `message` to the user.
     async fn notice(&self, message: String);
 }
 
-/// A provider that tries multiple underlying providers in order.
-///
-/// On error (after retries exhaust within each provider), falls back to the next.
-///
-/// The provider that answers records itself as the origin of the reasoning in
-/// its response (see [`InferenceResponse::produced_at`]), and the response
-/// passes through here untouched, so the reasoning in a failed-over reply is
-/// attributed to the fallback that wrote it, never to the primary.
 pub(crate) struct FailoverProvider {
     providers: Vec<Box<dyn InferenceProvider>>,
-    /// When set, a user notice is published on a fallback/recovery
-    /// transition — see [`Self::with_notices`].
     notices: Option<FailoverNotices>,
-    /// Index of the provider that succeeded on the previous call. Used only
-    /// to detect a transition; `complete` still tries every call starting
-    /// from index 0, the same as before this field existed.
-    ///
-    /// Shared (`Arc`) rather than owned outright so multiple short-lived
-    /// `FailoverProvider`s built for the same role — e.g. one freshly built
-    /// per background-session spawn — can track transitions jointly via
-    /// [`Self::with_shared_active_index`], instead of each instance starting
-    /// from index 0 and re-announcing a fallback that's already in effect.
     active_index: Arc<AtomicUsize>,
 }
 
-/// What a fallback/recovery notice needs: where to publish it and what to
-/// call the role it's speaking for (e.g. "the main model").
 struct FailoverNotices {
     sink: Arc<dyn NoticeSink>,
     role: String,
 }
 
 impl FailoverProvider {
-    /// Create a new failover provider from an ordered list.
-    ///
-    /// The first provider is the primary; subsequent providers are fallbacks.
     #[must_use]
     pub(crate) fn new(providers: Vec<Box<dyn InferenceProvider>>) -> Self {
         Self {
@@ -66,9 +37,6 @@ impl FailoverProvider {
         }
     }
 
-    /// Enable one user notice on a fallback transition and one when back on
-    /// the primary — never on every call while already on the fallback.
-    /// `role` names what's failing over in the notice, e.g. `"main model"`.
     #[must_use]
     pub(crate) fn with_notices(
         mut self,
@@ -82,24 +50,12 @@ impl FailoverProvider {
         self
     }
 
-    /// Track transitions in a shared counter instead of this instance's own.
-    ///
-    /// For a role whose `FailoverProvider` is rebuilt fresh per call site
-    /// (background-session tiers are built anew for every spawn), sharing
-    /// one counter across every instance for that role means a transition
-    /// notices exactly once when the tier actually fails over or recovers,
-    /// rather than once per spawn made while it's already degraded.
     #[must_use]
     pub(crate) fn with_shared_active_index(mut self, active_index: Arc<AtomicUsize>) -> Self {
         self.active_index = active_index;
         self
     }
 
-    /// Publish a notice when `idx` (the provider that just succeeded, named
-    /// by `provider_name`) differs from the provider active on the previous
-    /// call — a fallback (moving off index 0) or a recovery (back to index
-    /// 0). No-op when notices aren't configured, or the active provider
-    /// didn't change.
     async fn notice_on_transition(
         &self,
         idx: usize,
@@ -129,14 +85,6 @@ impl FailoverProvider {
         notices.sink.notice(message).await;
     }
 
-    /// The order to try the providers in for this request, each with whether
-    /// a later hop takes images (see [`InferenceProvider::complete_as_hop`]).
-    ///
-    /// A request without images, or one no provider can take the images of,
-    /// tries them in the configured order. Otherwise the providers that take
-    /// images go first, in order, so a vision-capable fallback answers rather
-    /// than a text-only primary that would leave the images out; the
-    /// text-only ones follow, in case every provider that takes images fails.
     fn attempt_order(&self, messages: &[Message]) -> Vec<(usize, bool)> {
         let has_images = messages.iter().any(|message| !message.images.is_empty());
         let takes: Vec<bool> = self
@@ -156,10 +104,6 @@ impl FailoverProvider {
         taking.chain(text_only).collect()
     }
 
-    /// Try each provider in turn, streaming into `sink` when there is one.
-    /// Whatever a failed provider already streamed is voided before the next
-    /// one is tried. The result lists the attempts of every hop tried, in
-    /// order.
     async fn run(
         &self,
         messages: &[Message],
@@ -171,13 +115,7 @@ impl FailoverProvider {
         let total = order.len();
         let previously_active = self.active_index.load(Ordering::SeqCst);
         let mut last_error: Option<InferenceError> = None;
-        // The cause of leaving whichever provider was active going into
-        // this call, captured only if that specific provider fails again
-        // this time — the reason a fallback notice names.
         let mut active_provider_cause: Option<&'static str> = None;
-        // Which providers failed this call for a reason other than turning
-        // down its images. Only a switch past providers that all failed is a
-        // failover worth telling the user about.
         let mut failed = vec![false; self.providers.len()];
         let mut spent = Vec::new();
 
@@ -191,10 +129,6 @@ impl FailoverProvider {
                 .await;
             match attempt {
                 Ok(response) if failed.iter().take(idx).any(|&earlier| !earlier) => {
-                    // A provider ahead of this one was passed over for this
-                    // request's images (it can't take them, or just turned
-                    // them down) rather than failing: nothing to tell the
-                    // user, and the chain stays on the provider it was on.
                     debug!(
                         answered_by = provider.model_name(),
                         "request with images answered by a provider that takes them"
@@ -247,7 +181,6 @@ impl FailoverProvider {
             }
         }
 
-        // All providers failed — return the last error
         Err(last_error
             .unwrap_or_else(|| {
                 InferenceError::Api("no providers configured in failover chain".to_string())
@@ -268,9 +201,6 @@ impl InferenceProvider for FailoverProvider {
         self.run(messages, tools, options, None).await
     }
 
-    /// Like `complete`, streaming the successful provider's response into
-    /// `sink`. When a provider fails after streaming something, the sink is
-    /// told to start over before the next provider is tried.
     #[tracing::instrument(skip_all, fields(provider_count = self.providers.len(), primary = self.providers.first().map_or("empty", |p| p.model_name())))]
     async fn complete_streaming(
         &self,
@@ -283,15 +213,12 @@ impl InferenceProvider for FailoverProvider {
         self.run(messages, tools, options, Some(&tracked)).await
     }
 
-    /// Whether any hop takes images: a request with images goes to one that
-    /// does first (see `attempt_order`).
     fn takes_images(&self) -> bool {
         self.providers
             .iter()
             .any(|provider| provider.takes_images())
     }
 
-    /// The reasoning the hop tried first for this request sends back.
     fn replayed_reasoning(
         &self,
         messages: &[Message],
@@ -305,8 +232,6 @@ impl InferenceProvider for FailoverProvider {
             .unwrap_or_default()
     }
 
-    /// The primary's model, whichever provider answers a call: the model
-    /// that answered is the last of the response's `attempts`.
     fn model_name(&self) -> &str {
         self.providers
             .first()
@@ -320,7 +245,6 @@ mod tests {
     use crate::StreamDelta;
     use crate::test_support::RecordingSink;
 
-    /// A mock provider that always succeeds with a fixed response.
     struct SuccessProvider {
         name: &'static str,
     }
@@ -344,7 +268,6 @@ mod tests {
         }
     }
 
-    /// A mock provider that always fails.
     struct FailProvider {
         name: &'static str,
     }
@@ -457,7 +380,6 @@ mod tests {
         );
     }
 
-    /// A mock provider that fails on its first N calls, then succeeds.
     struct RecoveringProvider {
         name: &'static str,
         remaining_failures: std::sync::atomic::AtomicUsize,
@@ -494,7 +416,6 @@ mod tests {
         }
     }
 
-    /// Collects every notice a failover provider delivers, in order.
     #[derive(Default)]
     struct RecordingNotices {
         messages: std::sync::Mutex<Vec<String>>,
@@ -507,7 +428,6 @@ mod tests {
         }
     }
 
-    /// The single notice recorded so far, taken off the sink.
     fn notice_text(notices: &RecordingNotices) -> String {
         let mut messages = std::mem::take(&mut *notices.messages.lock().unwrap());
         assert_eq!(
@@ -562,15 +482,12 @@ mod tests {
         ])
         .with_notices(Arc::clone(&notices) as Arc<dyn NoticeSink>, "main model");
 
-        // First call: transition to the fallback, one notice.
         provider
             .complete(&[], &[], &CompletionOptions::default())
             .await
             .unwrap();
         notice_text(&notices);
 
-        // Second and third calls: primary still fails, fallback still
-        // serves — same active provider as before, so no repeat notice.
         for _ in 0..2 {
             provider
                 .complete(&[], &[], &CompletionOptions::default())
@@ -593,7 +510,6 @@ mod tests {
         ])
         .with_notices(Arc::clone(&notices) as Arc<dyn NoticeSink>, "main model");
 
-        // First call: primary fails once, fallback serves — fallover notice.
         provider
             .complete(&[], &[], &CompletionOptions::default())
             .await
@@ -601,8 +517,6 @@ mod tests {
         let fallover_message = notice_text(&notices);
         assert!(fallover_message.contains("unavailable"));
 
-        // Second call: primary has recovered — recovery notice, not a
-        // second fallover notice.
         let result = provider
             .complete(&[], &[], &CompletionOptions::default())
             .await
@@ -621,7 +535,6 @@ mod tests {
 
         let shared_index = Arc::new(AtomicUsize::new(0));
 
-        // First short-lived provider: primary fails, notices the fallover.
         let first = FailoverProvider::new(vec![
             Box::new(FailProvider { name: "primary" }),
             Box::new(SuccessProvider { name: "fallback" }),
@@ -637,10 +550,6 @@ mod tests {
             .unwrap();
         notice_text(&notices);
 
-        // A second, brand-new provider for the same role/tier, built as if
-        // for another spawn while the tier is still degraded — because it
-        // shares the same active-index counter (already at the fallback),
-        // it must not re-announce the fallover.
         let second = FailoverProvider::new(vec![
             Box::new(FailProvider { name: "primary" }),
             Box::new(SuccessProvider { name: "fallback" }),
@@ -661,8 +570,6 @@ mod tests {
     async fn without_notices_configured_nothing_is_published() {
         let notices = Arc::new(RecordingNotices::default());
 
-        // No `.with_notices(...)` — the default (used by every role other
-        // than main) must stay exactly as quiet as before this feature.
         let provider = FailoverProvider::new(vec![
             Box::new(FailProvider { name: "primary" }),
             Box::new(SuccessProvider { name: "fallback" }),
@@ -675,7 +582,6 @@ mod tests {
         assert_no_notice(&notices);
     }
 
-    /// A provider that streams `partial` and then either fails or completes.
     struct StreamingProvider {
         name: &'static str,
         partial: &'static str,
@@ -881,12 +787,10 @@ mod tests {
         );
     }
 
-    /// One server-sent event, framed as the Anthropic stream sends it.
     fn sse(name: &str, data: &str) -> String {
         format!("event: {name}\ndata: {data}\n\n")
     }
 
-    /// The events that open an Anthropic answer: `message_start`, then a text block.
     fn anthropic_stream_open() -> String {
         [
             sse(
@@ -901,7 +805,6 @@ mod tests {
         .concat()
     }
 
-    /// A text delta on the answer's first content block.
     fn anthropic_text_delta(text: &str) -> String {
         sse(
             "content_block_delta",
@@ -911,7 +814,6 @@ mod tests {
         )
     }
 
-    /// The events that close a complete Anthropic answer with `end_turn`.
     fn anthropic_stream_close() -> String {
         [
             sse(
@@ -1008,8 +910,6 @@ mod tests {
         );
     }
 
-    /// A chain of real Anthropic and Gemini clients, each on its own scripted
-    /// server, to follow reasoning across a failover.
     mod reasoning_across_providers {
         use super::*;
         use crate::providers::anthropic::AnthropicClient;
@@ -1226,7 +1126,6 @@ mod tests {
             let provider = chain(&anthropic, &gemini);
             let options = thinking_on();
 
-            // Anthropic starts a tool-use exchange.
             let mut messages = vec![Message::user("go")];
             let first = provider.complete(&messages, &[], &options).await.unwrap();
             let first_call = first.tool_calls.first().unwrap().id.clone();
@@ -1239,7 +1138,6 @@ mod tests {
             messages.push(assistant_turn(&second));
             messages.push(Message::tool("two", second_call));
 
-            // Anthropic is back for the exchange's last step.
             let last = provider.complete(&messages, &[], &options).await.unwrap();
             assert_eq!(last.content, "done");
 
@@ -1273,7 +1171,6 @@ mod tests {
         }
     }
 
-    /// Requests that carry images, in a chain of image-input guards.
     mod images {
         use std::sync::Mutex;
 
@@ -1284,8 +1181,6 @@ mod tests {
 
         type Requests = Arc<Mutex<Vec<Vec<Message>>>>;
 
-        /// Records each request; turns down any that carries an image when
-        /// `rejects_images`, the way Z.ai did in issue #463.
         struct Model {
             name: &'static str,
             rejects_images: bool,
@@ -1316,7 +1211,6 @@ mod tests {
                 crate::attempt::record_attempt(ProviderKind::OpenAi, self.name, result)
             }
 
-            /// Streams a first piece, then answers as `complete` does.
             async fn complete_streaming(
                 &self,
                 messages: &[Message],
@@ -1328,7 +1222,6 @@ mod tests {
                 self.complete(messages, tools, options).await
             }
 
-            /// Names the model and how many images the request reached it with.
             fn replayed_reasoning(
                 &self,
                 messages: &[Message],
@@ -1344,7 +1237,6 @@ mod tests {
             }
         }
 
-        /// A guarded hop for `name`, declared `image_input`.
         fn hop(
             name: &'static str,
             image_input: ImageInput,

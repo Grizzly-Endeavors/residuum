@@ -1,5 +1,3 @@
-//! Notification channel trait and built-in channel types.
-
 use std::path::PathBuf;
 
 use async_trait::async_trait;
@@ -7,33 +5,21 @@ use async_trait::async_trait;
 use residuum_bus::NotificationEvent;
 use residuum_workspace::inbox;
 
-/// A channel that can deliver notifications.
 #[async_trait]
 pub trait NotificationChannel: Send + Sync {
-    /// Channel name as configured.
     fn name(&self) -> &str;
 
-    /// Channel type identifier (e.g. `"ntfy"`, `"webhook"`, `"inbox"`).
     fn channel_kind(&self) -> &'static str;
 
-    /// Deliver a notification.
-    ///
-    /// Errors are logged, not propagated — a failed channel should not block
-    /// other deliveries.
     async fn deliver(&self, notification: &NotificationEvent) -> anyhow::Result<()>;
 }
 
-/// Inbox channel: creates an `InboxItem` from the notification.
-///
-/// This is always a singleton — exactly one inbox channel exists per
-/// Residuum instance, and its channel name is always `"inbox"`.
 pub struct InboxChannel {
     inbox_dir: PathBuf,
     tz: chrono_tz::Tz,
 }
 
 impl InboxChannel {
-    /// Create a new inbox channel.
     #[must_use]
     pub fn new(inbox_dir: impl Into<PathBuf>, tz: chrono_tz::Tz) -> Self {
         Self {
@@ -101,7 +87,6 @@ mod tests {
         let notif = make_notification();
         channel.deliver(&notif).await.unwrap();
 
-        // Verify a JSON file was created in the directory
         let entries: Vec<_> = std::fs::read_dir(dir.path())
             .unwrap()
             .filter_map(Result::ok)

@@ -2,7 +2,6 @@ import type { Locator, Page } from "@playwright/test";
 import { expectNoAxeViolations } from "../support/axe";
 import { expect, test } from "../support/fixtures";
 
-/** Atlas's `config.toml`, as the mock holds it. */
 async function configText(page: Page): Promise<string> {
   return await (await page.request.get("/api/agents/atlas/config/raw")).text();
 }
@@ -16,7 +15,6 @@ async function save(page: Page): Promise<void> {
   await expect(saveBar(page)).toBeHidden();
 }
 
-/** Read the files again, as the user does with the frame's Reload from disk. */
 async function reloadFromDisk(page: Page): Promise<void> {
   await modal(page).getByRole("button", { name: "Reload from disk" }).click();
 }

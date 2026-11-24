@@ -4,8 +4,6 @@ use residuum_bus::testing::bus_barrier;
 use residuum_config::WorkspaceLayout;
 use residuum_core::testing::wait;
 
-/// The workspace of an agent named `atlas` under `dir`, and its mail access
-/// with no hub directory.
 fn atlas(dir: &tempfile::TempDir) -> (WorkspaceLayout, MailAccess) {
     let layout = WorkspaceLayout::new(dir.path().join("atlas"));
     let mail = MailAccess::new(None, &layout, chrono_tz::UTC);
@@ -109,7 +107,6 @@ async fn user_inbox_add_reply_defaults_the_title_and_threads_the_item() {
     assert_eq!(item.source, "agent");
     assert_eq!(item.in_reply_to.as_deref(), Some("nova/agent/ask"));
 
-    // The reply is now part of the thread.
     let index = MailIndex::load(hub.access("atlas").view().directory.as_ref()).await;
     let reply_ref = inbox::InboxRef::new("atlas", InboxKind::User, id).unwrap();
     let thread = index.thread_containing(&reply_ref).unwrap();
@@ -239,7 +236,6 @@ async fn user_inbox_add_announces_the_saved_item_once() {
 async fn user_inbox_add_that_fails_announces_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let (layout, mail) = atlas(&dir);
-    // A regular file where the inbox directory should be, so saving fails.
     tokio::fs::create_dir_all(layout.root()).await.unwrap();
     tokio::fs::write(layout.root().join("inbox"), b"not a directory")
         .await
@@ -305,8 +301,6 @@ async fn user_inbox_add_missing_attachment_source_still_saves_the_item() {
         .await
         .unwrap();
 
-    // A file that can't be attached is reported, but never fails the
-    // whole item — the item itself is still saved.
     assert!(!result.is_error, "{}", result.output);
     assert!(
         result.output.contains("could not be copied"),
@@ -321,7 +315,6 @@ async fn user_inbox_add_missing_attachment_source_still_saves_the_item() {
     );
 }
 
-/// Every agent's mail with one thread across two agents and an archived item.
 async fn team_mail() -> MailHub {
     let hub = MailHub::new(&["atlas", "nova"]);
     hub.write(Item::agent_message(

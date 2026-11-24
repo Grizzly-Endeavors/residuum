@@ -18,33 +18,25 @@ use serde_json::{Value, json};
 
 use super::jws::{AccountSigner, sign_jws};
 
-/// Characters of a recovery code.
 pub(crate) const RECOVERY_CODE_LEN: usize = 20;
 
 const BASE32_ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 
-/// One pinned account, as the service lists it.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub(crate) struct Pin {
     pub(crate) account_uri: String,
     pub(crate) slug: String,
 }
 
-/// A reset by email that has been requested and hasn't taken effect yet.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub(crate) struct PendingReset {
-    /// The instance that asked for it.
     pub(crate) slug: String,
-    /// The certificate account that replaces every pin when it takes effect.
     pub(crate) account_uri: String,
-    /// Whether the link in the email has been confirmed, which starts the hold.
     pub(crate) confirmed: bool,
-    /// When it takes effect, in unix seconds. Known once it is confirmed.
     #[serde(default)]
     pub(crate) effective_at: Option<i64>,
 }
 
-/// What the public read of a user's pins returns.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 pub(crate) struct PinState {
     #[serde(default)]
@@ -64,37 +56,27 @@ struct EmailSent {
     email: String,
 }
 
-/// Why a pin service call didn't succeed.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum PinError {
-    /// The service answered with an error status.
     #[error("the pin service refused the request ({status}): {message}")]
     Rejected { status: u16, message: String },
-    /// The service couldn't be reached, or answered nonsense.
     #[error("couldn't reach the pin service: {0}")]
     Unavailable(String),
 }
 
-/// What an enrollment or reset presents.
 pub(crate) struct Enrollment<'a> {
     pub(crate) user: &'a str,
     pub(crate) slug: &'a str,
     pub(crate) grant: &'a str,
-    /// The new recovery code; only its hash is sent.
     pub(crate) recovery_code: &'a str,
 }
 
-/// The pin service.
 pub(crate) struct PinClient {
     http: reqwest::Client,
     base: String,
 }
 
 impl PinClient {
-    /// A client for the service at `base_url`.
-    ///
-    /// # Errors
-    /// Returns an error if the HTTP client can't be built.
     pub(crate) fn new(base_url: &str) -> anyhow::Result<Self> {
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -122,12 +104,10 @@ impl PinClient {
             .map_err(|e| PinError::Unavailable(format!("the answer wasn't a pin list: {e}")))
     }
 
-    /// The pinned accounts alone. Empty for an unknown user.
     pub(crate) async fn list(&self, user: &str) -> Result<Vec<Pin>, PinError> {
         self.read(user).await.map(|state| state.pins)
     }
 
-    /// `POST /v1/enroll`: pin `account` as the user's first account.
     pub(crate) async fn enroll(
         &self,
         account: &dyn AccountSigner,
@@ -166,9 +146,6 @@ impl PinClient {
             .await
     }
 
-    /// `POST /v1/reset/email`: ask the pin service to email the user a link
-    /// that, once confirmed and after the hold, replaces every pin with
-    /// `account`. Returns the masked address the mail went to.
     pub(crate) async fn email_reset(
         &self,
         account: &dyn AccountSigner,
@@ -190,8 +167,6 @@ impl PinClient {
             .map_err(|e| PinError::Unavailable(format!("the answer wasn't an email receipt: {e}")))
     }
 
-    /// `POST /v1/reset/cancel`: delete the pending reset, authorized by
-    /// `signer`, which must be pinned.
     pub(crate) async fn cancel_reset(
         &self,
         signer: &dyn AccountSigner,
@@ -222,8 +197,6 @@ impl PinClient {
             .await
     }
 
-    /// `POST /v1/pins/remove`: stop allowing `account_uri` to get certificates,
-    /// authorized by `signer`, which must be pinned.
     pub(crate) async fn remove(
         &self,
         signer: &dyn AccountSigner,
@@ -252,7 +225,6 @@ impl PinClient {
             .map_err(|e| PinError::Unavailable(format!("the answer wasn't a pin list: {e}")))
     }
 
-    /// Sign `payload` and post it; the body of a successful answer.
     async fn send_signed(
         &self,
         account: &dyn AccountSigner,
@@ -285,16 +257,12 @@ impl PinClient {
     }
 }
 
-/// How a signed request names the key that signed it.
 #[derive(Clone, Copy)]
 enum KeyRef {
-    /// The public key travels in the request (enroll, reset and email reset: no account need be pinned yet).
     Jwk,
-    /// The signer's pinned account URL (add, remove and cancel reset).
     Kid,
 }
 
-/// An account to pin next to the signer's own.
 pub(crate) struct NewPin<'a> {
     pub(crate) slug: &'a str,
     pub(crate) account_uri: &'a str,
@@ -328,15 +296,9 @@ fn random_token() -> anyhow::Result<String> {
     Ok(URL_SAFE_NO_PAD.encode(bytes))
 }
 
-/// A new recovery code: [`RECOVERY_CODE_LEN`] characters of `A-Z2-7`, about
-/// 100 bits.
-///
-/// # Errors
-/// Returns an error if the operating system's random source fails.
 pub(crate) fn generate_recovery_code() -> anyhow::Result<String> {
     let rng = SystemRandom::new();
     let mut code = String::with_capacity(RECOVERY_CODE_LEN);
-    // Rejection sampling keeps every character equally likely.
     while code.len() < RECOVERY_CODE_LEN {
         let mut bytes = [0_u8; 32];
         rng.fill(&mut bytes).map_err(|_unspecified| {
@@ -356,12 +318,10 @@ pub(crate) fn generate_recovery_code() -> anyhow::Result<String> {
     Ok(code)
 }
 
-/// Whether `code` has the shape of a recovery code.
 pub(crate) fn is_recovery_code(code: &str) -> bool {
     code.len() == RECOVERY_CODE_LEN && code.bytes().all(|b| BASE32_ALPHABET.contains(&b))
 }
 
-/// Lowercase hex SHA-256 of the code's ASCII, as the pin service stores it.
 pub(crate) fn recovery_code_hash(code: &str) -> String {
     hex::encode(digest(&SHA256, code.as_bytes()).as_ref())
 }

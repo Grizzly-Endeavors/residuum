@@ -17,7 +17,6 @@ interface Rgba {
   a: number;
 }
 
-/** Custom properties declared in tokens.css, by name. */
 function readTokens(): Map<string, string> {
   const css = readFileSync(new URL("./tokens.css", import.meta.url), "utf8").replace(
     /\/\*[\s\S]*?\*\//g,
@@ -39,7 +38,6 @@ function tokenValue(name: string): string {
   return value;
 }
 
-/** Resolves the color syntaxes tokens.css uses; anything else fails the test loudly. */
 function parseColor(value: string): Rgba {
   const reference = /^var\((--[\w-]+)\)$/.exec(value);
   if (reference?.[1] !== undefined) return parseColor(tokenValue(reference[1]));
@@ -72,7 +70,6 @@ function opaqueColor(token: ColorToken): Rgba {
   return color;
 }
 
-/** The color a surface renders as: a tint is composited over its stone. */
 function surfaceColor(surface: Surface): Rgba {
   if (surface.over === undefined) return opaqueColor(surface.fill);
   const tint = parseColor(tokenValue(surface.fill));

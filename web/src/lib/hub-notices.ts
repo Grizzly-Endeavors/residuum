@@ -1,10 +1,5 @@
-// How the page words a hub `notice` whose `kind` says what it reports. The
-// hub's own text stays behind the expandable detail. A notice without a kind
-// is shown as the hub wrote it.
-
 import type { HubNoticeKind } from "./generated/HubNoticeKind";
 
-/** A hub notice's toast text, and the hub's own words when the page reworded it. */
 export interface HubNoticeText {
   message: string;
   details?: string;

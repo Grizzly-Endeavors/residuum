@@ -9,24 +9,15 @@
   import type { WorkbenchList } from "./workbench-list.svelte";
   import { runningWords, type ArtifactRun } from "./workbench-model";
 
-  // One artifact on the Workbench: its title, address and last edit, how many
-  // sessions it has running, Open in a new tab, and a menu with Copy link and
-  // Delete. Selected, it opens in place to its link and its running sessions,
-  // each of which opens in the context panel.
-
   interface Props {
     item: ArtifactSummary;
     list: WorkbenchList;
-    /** Its running sessions, on any agent. */
     runs: ArtifactRun[];
-    /** The row's element id, so a link that selects it can scroll to it. */
     id: string;
     open: boolean;
-    /** Select or collapse the row. */
     ontoggle: () => void;
     oncopy: () => void;
     onremove: () => void;
-    /** The clock the relative times read. */
     now: number;
   }
 
@@ -163,7 +154,6 @@
       background: var(--color-stone-1);
     }
 
-    /* The vein seam lights while an agent writes to it. */
     &[data-changing] {
       box-shadow: inset 2px 0 0 var(--color-vein-bright);
     }
@@ -281,7 +271,6 @@
     }
   }
 
-  /* The detail lines up with the title, under the row's mark. */
   .detail {
     display: flex;
     flex-direction: column;
@@ -321,7 +310,6 @@
     font-weight: var(--font-weight-semibold);
   }
 
-  /* The runs' text lines up with the heading; their fill reaches past it. */
   .run-list {
     display: flex;
     flex-direction: column;
@@ -341,7 +329,6 @@
       background: var(--color-stone-2);
     }
 
-    /* The run open in the panel. On the tint, text is only text-2 or vein-bright. */
     &[data-current] {
       background: var(--color-vein-tint);
 
@@ -401,7 +388,6 @@
     }
   }
 
-  /* Narrow: Open and the menu go under the text, so the title and path keep the width. */
   @container (max-width: 520px) {
     .head {
       flex-wrap: wrap;

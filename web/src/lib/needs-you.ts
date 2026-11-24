@@ -1,7 +1,3 @@
-// What needs the user, worked out from the hub's agent list, the overview and
-// the newest unread inbox threads: Home's "Needs you" list and the rail's Home
-// count. Each item lasts exactly as long as the condition behind it.
-
 import type {
   AgentLastError,
   AgentOverview,
@@ -12,44 +8,36 @@ import type {
   SystemOneStatus,
 } from "./hub-types";
 
-/** The most unread inbox threads the list shows; the rest are counted under it. */
 export const INBOX_THREADS_SHOWN = 5;
 
 export type NeedsYouSeverity = "error" | "warn" | "info";
 
 interface ItemBase {
-  /** Stable across updates, for keyed lists. */
   key: string;
   severity: NeedsYouSeverity;
-  /** When the condition began, RFC 3339. Orders items within a severity. */
   at: string;
 }
 
-/** An agent couldn't start. */
 export interface FailedAgentItem extends ItemBase {
   kind: "failed";
   agent: string;
   error: AgentLastError | null;
 }
 
-/** A running agent has a task out to a remote agent it can't reach. */
 export interface OutboundProblemItem extends ItemBase {
   kind: "outbound";
   agent: string;
   problem: OutboundProblem;
 }
 
-/** An unread thread in the Inbox: an agent wrote to the user. */
 export interface InboxNeedsItem extends ItemBase {
   kind: "inbox";
   thread: MailThreadSummary;
 }
 
-/** The decision model can't answer, so Auto Mode's checks are skipped until it can. */
 export interface SystemOneNeedsItem extends ItemBase {
   kind: "system_one";
   outage: SystemOneOutage;
-  /** The configured provider's name, when one is set. */
   provider: string | null;
 }
 
@@ -60,49 +48,22 @@ export type NeedsYouItem =
   | SystemOneNeedsItem;
 
 export interface NeedsYou {
-  /** Error first, then warn, then info; newest first within each. */
   items: NeedsYouItem[];
-  /**
-   * Unread inbox threads waiting beyond the ones listed: 0 when none are, and
-   * at least 1 when the Inbox link shows. Threads, never the unread messages
-   * in them. It is the whole number only when `moreInInboxExact` is set.
-   */
   moreInInbox: number;
-  /**
-   * `moreInInbox` is the whole number of threads beyond the ones listed. When
-   * it is not, the search didn't see the whole Inbox, so the link can say that
-   * there is more but not how much.
-   */
   moreInInboxExact: boolean;
-  /**
-   * The rail's Home count: one per item, with the inbox counted up to the
-   * five the list shows, whether or not their threads have loaded.
-   */
   count: number;
 }
 
 export interface NeedsYouInput {
   agents: readonly AgentSummary[];
   overviews: Readonly<Record<string, AgentOverview>>;
-  /**
-   * Every unread inbox thread the search found, across agents, newest first.
-   * The search looks at the newest page of the Inbox, which may not reach
-   * its end.
-   */
   unreadThreads: readonly MailThreadSummary[];
-  /**
-   * `unreadThreads` holds every unread thread: the search reached the end of
-   * the inbox. Then nothing more is waiting there, whatever the per-item
-   * unread counts add up to (one thread can hold several unread items).
-   */
   unreadThreadsComplete?: boolean;
-  /** The decision model service's status; null until the hub reports it. */
   systemOne?: SystemOneStatus | null;
 }
 
 const SEVERITY_RANK: Readonly<Record<NeedsYouSeverity, number>> = { error: 0, warn: 1, info: 2 };
 
-/** An item's time for ordering; one with no readable time goes after the dated ones. */
 function timeOf(item: NeedsYouItem): number {
   const ms = Date.parse(item.at);
   return Number.isNaN(ms) ? -Infinity : ms;
@@ -127,8 +88,6 @@ export function deriveNeedsYou({
   const items: NeedsYouItem[] = [];
   let inboxUnread = 0;
 
-  // The hub reports an outage only once something has asked for a decision,
-  // so an unused, unconfigured decision model never shows here.
   if (systemOne?.outage) {
     items.push({
       kind: "system_one",
@@ -153,7 +112,6 @@ export function deriveNeedsYou({
         error: agent.last_error,
       });
     }
-    // Only a running agent watches its tasks, and only it can stop them.
     if (agent.state !== "running") continue;
     for (const problem of overview?.outbound_problems ?? []) {
       items.push({
@@ -168,7 +126,6 @@ export function deriveNeedsYou({
   }
 
   const known = new Set(agents.map((agent) => agent.name));
-  // A thread only agents that no longer exist took part in has nowhere to open.
   const unread = unreadThreads.filter(
     (thread) => thread.unread && thread.participants.some((name) => known.has(name)),
   );
@@ -185,15 +142,10 @@ export function deriveNeedsYou({
 
   items.sort(byNeed);
   const listedProblems = items.length - inbox.length;
-  // Every unread thread is known when the search reached the end of the Inbox,
-  // or when the unread messages the agents count are no more than the threads
-  // found (each unread thread holds at least one, so none can be elsewhere).
   const everyThreadSeen = unreadThreadsComplete || inboxUnread <= unread.length;
   const beyondListed = unread.length - inbox.length;
   return {
     items,
-    // Unread messages say nothing about how many threads are left, so without
-    // the whole Inbox the number is only a floor of one.
     moreInInbox: everyThreadSeen ? beyondListed : Math.max(1, beyondListed),
     moreInInboxExact: everyThreadSeen,
     count:

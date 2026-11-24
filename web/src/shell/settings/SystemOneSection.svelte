@@ -14,10 +14,6 @@
   import SettingsGroup from "./SettingsGroup.svelte";
   import SettingsSection from "./SettingsSection.svelte";
 
-  // The decision model (System 1) every agent shares: which service hosts
-  // it, the model, and how to reach it. Auto Mode asks it about each tool
-  // call. Test connection tries the values in the form, saved or not.
-
   let { scope, section }: AllSectionProps = $props();
 
   const uid = $props.id();
@@ -38,7 +34,6 @@
     other: "The model ID the service expects.",
   };
 
-  /** What the form says, for the model list and the connection test. */
   function currentForm(): SystemOneForm {
     return {
       provider,
@@ -52,7 +47,6 @@
   function chooseProvider(next: string): void {
     if (next === scope.config.system_one_provider) return;
     scope.config.system_one_provider = next;
-    // A model or address chosen for one service rarely exists on another.
     scope.config.system_one_model = "";
     if (next !== "other") scope.config.system_one_url = "";
     models = null;

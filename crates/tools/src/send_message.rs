@@ -1,5 +1,3 @@
-//! Send message tool: proactive message delivery to notification and interactive endpoints.
-
 use async_trait::async_trait;
 use serde_json::Value;
 
@@ -13,22 +11,16 @@ use residuum_inference::ToolDefinition;
 use residuum_agent::Tool;
 use residuum_inference::{ToolError, ToolResult};
 
-/// Error returned to a session that tries to reach the owner directly.
 const SESSION_OWNER_TARGET_REFUSED: &str = "sessions cannot message the owner directly; message \
     main instead so it can decide what to tell the owner";
 
-/// Tool for sending messages to notification or interactive endpoints.
 pub struct SendMessageTool {
     registry: EndpointRegistry,
     publisher: Publisher,
-    /// `true` for a session's tool registry: refuses the owner's DM on every
-    /// chat interface and the web UI. `false` for the main agent, which is
-    /// the only agent allowed to talk to the owner.
     restrict_owner_targets: bool,
 }
 
 impl SendMessageTool {
-    /// Create a new `SendMessageTool`.
     #[must_use]
     pub fn new(
         registry: EndpointRegistry,
@@ -42,10 +34,6 @@ impl SendMessageTool {
         }
     }
 
-    /// Whether `endpoint_name`/`conversation_id` (the target chosen by a
-    /// call, `None` for the no-conversation default) reaches the owner
-    /// directly: the web UI, or the owner's DM on a chat interface — either
-    /// named explicitly or reached via the default fallback.
     async fn targets_owner_directly(
         &self,
         endpoint_name: &str,
@@ -56,21 +44,14 @@ impl SendMessageTool {
         }
         let conversations = self.registry.conversations();
         if conversations.source(endpoint_name).is_none() {
-            // Not a chat interface: it has no owner DM to reach.
             return false;
         }
         match conversations.owner_dm(endpoint_name).await {
             Some(owner_dm_id) => conversation_id.is_none_or(|id| id == owner_dm_id),
-            // No owner claimed yet on this chat interface. The
-            // no-conversation default would fall back to the owner's DM, so
-            // refuse it rather than report success for a message the
-            // interface can only drop; a named conversation can't be the
-            // owner's DM.
             None => conversation_id.is_none(),
         }
     }
 
-    /// Collect names of all sendable endpoints (interactive + notify).
     fn sendable_endpoint_names(&self) -> Vec<String> {
         let mut names: Vec<String> = self
             .registry
@@ -214,7 +195,6 @@ impl Tool for SendMessageTool {
         let title = arguments.get("title").and_then(Value::as_str);
         let conversation_id = arguments.get("conversation").and_then(Value::as_str);
 
-        // Must have at least one of message or file_path
         if message.is_none() && file_path_str.is_none() {
             return Ok(ToolResult::error(
                 "at least one of 'message' or 'file_path' is required".to_string(),
@@ -249,7 +229,6 @@ impl Tool for SendMessageTool {
             .capabilities
             .contains(EndpointCapabilities::NOTIFY_ONLY);
 
-        // File attachments only supported on interactive endpoints
         let attachment = if let Some(fp) = file_path_str {
             if !is_interactive {
                 return Ok(ToolResult::error(format!(
@@ -675,10 +654,6 @@ mod tests {
         assert!(result.is_error);
     }
 
-    // ── Session owner-target guard ───────────────────────────────────────
-
-    /// A chat interface with a claimed owner and one non-owner conversation,
-    /// for exercising the session owner-target guard.
     struct ChannelWithOwner;
 
     #[async_trait]
@@ -719,7 +694,6 @@ mod tests {
 
     #[tokio::test]
     async fn session_cannot_message_a_chat_endpoint_with_no_conversation() {
-        // Omitting `conversation` falls back to the owner's DM by design.
         let registry = registry_with_owner_aware_teams();
         let _guard = registry
             .conversations()
@@ -737,7 +711,6 @@ mod tests {
         assert!(result.is_error, "the default falls back to the owner's DM");
     }
 
-    /// A chat interface whose owner hasn't claimed it yet.
     struct ChannelWithoutOwner;
 
     #[async_trait]

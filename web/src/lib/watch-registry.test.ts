@@ -5,7 +5,6 @@ import type { WorkspaceChange } from "./types";
 
 interface Setup {
   registry: WatchRegistry;
-  /** Every watch set the registry sent, in order. */
   sent: string[][];
 }
 
@@ -19,7 +18,6 @@ function setup(options: { team?: boolean } = {}): Setup {
   return { registry, sent };
 }
 
-/** A handler that records what it hears. */
 function listener(): {
   handler: WatchHandler;
   changes: string[][];
@@ -202,7 +200,6 @@ describe("WatchRegistry connection", () => {
     });
     registry.register(owner("before")).set(["wiki"]);
     registry.connected();
-    // The first connection is no reconnect, for an owner that registered before it or during it.
     registry.register(owner("during")).set(["notes"]);
     expect(heard).toEqual([]);
 
@@ -225,7 +222,6 @@ describe("WatchRegistry connection", () => {
     registry.connected();
     expect(heard).toEqual(["read first"]);
 
-    // It joins an open connection watched from the start, so that is no reconnect for it.
     registry.register(owner("joined"), { readBeforeWatching: true }).set(["inbox"]);
     expect(heard).toEqual(["read first"]);
 

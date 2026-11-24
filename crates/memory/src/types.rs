@@ -1,5 +1,3 @@
-//! Core memory data types for observations and the observation log.
-
 use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
@@ -9,53 +7,30 @@ use serde::{Deserialize, Serialize};
 
 use anyhow::Context;
 
-/// A compressed episode extracted from a conversation segment.
-///
-/// The merge writer builds one from the observer's output and writes its
-/// transcript, observations and index files; searches work with
-/// [`Observation`] instead.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Episode {
-    /// Unique identifier (e.g., `"ep-001"`).
     pub id: String,
-    /// Date of the episode.
     pub date: chrono::NaiveDate,
-    /// Concise single-sentence observations extracted from the conversation.
     pub observations: Vec<String>,
 }
 
-/// Visibility of an observation relative to the conversation context.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export)]
 pub enum Visibility {
-    /// Observation came from a user-visible conversation turn.
     #[default]
     User,
-    /// Observation came from a background system turn (pulse, actions).
     Background,
 }
 
-/// Which kind of document a memory search result came from.
-///
-/// The memory index holds three kinds of documents: distilled [`Observation`]s,
-/// raw interaction-pair [`IndexChunk`]s, and knowledge wiki pages. `DocSource`
-/// is the single internal vocabulary for that distinction — it is the value
-/// stored in the index's `source_type` field, the value filtered on, and the
-/// value shown in results. The `memory_search` tool maps its user-facing names
-/// (`"observations"`/`"episodes"`/`"wiki"`) onto these variants at its boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DocSource {
-    /// A distilled observation document.
     Observation,
-    /// A raw interaction-pair chunk document.
     Chunk,
-    /// A knowledge wiki page, one document per page.
     Wiki,
 }
 
 impl DocSource {
-    /// The stable string stored in the index and shown in search results.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -65,10 +40,6 @@ impl DocSource {
         }
     }
 
-    /// Parse the value stored in the index's `source_type` field.
-    ///
-    /// Returns `None` for any value the index should never contain — a signal
-    /// of index corruption rather than a normal input.
     #[must_use]
     pub(crate) fn from_index_value(value: &str) -> Option<Self> {
         match value {
@@ -79,13 +50,6 @@ impl DocSource {
         }
     }
 
-    /// Parse a caller's user-facing source filter name (`"observations"`,
-    /// `"episodes"`, `"wiki"`) onto this vocabulary. Shared by the
-    /// `memory_search` tool and the `/api/agents/{name}/memory/search` HTTP endpoint, the
-    /// only two boundaries where this name is user-supplied. `None` means
-    /// the value isn't one of the three names; callers distinguish that from
-    /// "no filter given" themselves, since this function only sees a value
-    /// that was actually supplied.
     #[must_use]
     pub fn from_query_str(value: &str) -> Option<Self> {
         match value {
@@ -103,10 +67,6 @@ impl fmt::Display for DocSource {
     }
 }
 
-/// Accepts both the current plain-string form and the legacy on-disk array form
-/// (`["ep-001"]` or `[]`) for `Observation::source_episodes`, normalizing either to
-/// `Option<String>`. The field never holds more than one ID; a legacy array with
-/// extras keeps the first and drops the rest.
 fn deserialize_source_episode<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -131,33 +91,22 @@ where
     })
 }
 
-/// Where a merged observation or episode came from.
-///
-/// Unset (all `None`) for the main agent's own observations. Set when a
-/// session's run was merged into global memory, so the source stays
-/// traceable through search and `memory_get`. All fields are optional on
-/// read so records written before session memory existed still load.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SourceTag {
-    /// The session's address, when this record came from a session run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_address: Option<String>,
-    /// The run id within that session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
-    /// The session's category (`"scheduled"`, `"external"`, or `"spawned"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
 }
 
 impl SourceTag {
-    /// No source tag: the main agent's own observation or episode.
     #[must_use]
     pub fn main() -> Self {
         Self::default()
     }
 
-    /// Tag identifying the session run a merged observation or episode came from.
     #[must_use]
     pub fn session(
         address: impl Into<String>,
@@ -171,43 +120,30 @@ impl SourceTag {
         }
     }
 
-    /// Whether this tag identifies a session run (as opposed to the main agent).
     #[must_use]
     pub fn is_session(&self) -> bool {
         self.session_address.is_some()
     }
 }
 
-/// A single extracted observation with full metadata.
-///
-/// Each observation is self-describing: it carries when it was created,
-/// which episode transcript it came from, and whether it originated from
-/// a user-visible or background turn.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Observation {
-    /// When this observation was created.
     #[serde(with = "residuum_core::time::minute_format")]
     pub timestamp: NaiveDateTime,
-    /// ID of the episode transcript that produced this observation.
     #[serde(
         default,
         deserialize_with = "deserialize_source_episode",
         skip_serializing_if = "Option::is_none"
     )]
     pub source_episodes: Option<String>,
-    /// Whether this observation came from a user-visible or background turn.
     pub visibility: Visibility,
-    /// The observation content as a single concise sentence.
     pub content: String,
-    /// Session/run/category this observation was merged from, if any.
     #[serde(flatten)]
     pub source: SourceTag,
 }
 
-/// Flat list of all observations across sessions.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ObservationLog {
-    /// All observations in chronological order.
     pub observations: Vec<Observation>,
 }
 
@@ -233,7 +169,6 @@ impl fmt::Display for Observation {
 }
 
 impl ObservationLog {
-    /// Create an empty observation log.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -241,9 +176,6 @@ impl ObservationLog {
         }
     }
 
-    /// Format all observations as human-readable text for the system prompt.
-    ///
-    /// Produces a key line followed by one entry per observation.
     #[must_use]
     pub fn display_formatted(&self) -> String {
         if self.observations.is_empty() {
@@ -259,61 +191,40 @@ impl ObservationLog {
     }
 }
 
-/// A single chunk from an episode's idx.jsonl file — one interaction pair or other segment.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexChunk {
-    /// Unique chunk identifier (e.g., `"ep-001-c0"`).
     pub chunk_id: String,
-    /// Parent episode identifier.
     pub episode_id: String,
-    /// Date string in `YYYY-MM-DD` format.
     pub date: String,
-    /// Line number of the first message in this chunk (in the transcript).
     pub line_start: usize,
-    /// Line number of the last message in this chunk (in the transcript).
     pub line_end: usize,
-    /// Searchable text content (user question + assistant text response).
     pub content: String,
 }
 
-/// File entry in the index manifest tracking what has been indexed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManifestFileEntry {
-    /// File modification time as ISO string.
     pub(crate) mtime: String,
-    /// Document IDs that were indexed from this file.
     pub doc_ids: Vec<String>,
-    /// Whether this file's observations/chunks have been embedded in the vector store.
     #[serde(default)]
     pub embedded: bool,
 }
 
-/// Manifest tracking which files have been indexed and their state.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct IndexManifest {
-    /// Timestamp of the last full rebuild.
     pub last_rebuild: String,
-    /// Embedding model name (for future vector search).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub embedding_model: Option<String>,
-    /// Embedding dimension (for future vector search).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub embedding_dim: Option<usize>,
-    /// Map of relative file path to its indexed state.
     pub files: HashMap<String, ManifestFileEntry>,
 }
 
 impl IndexManifest {
-    /// Create a new empty manifest.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Load the manifest from disk. Returns an empty manifest if the file is missing.
-    ///
-    /// # Errors
-    /// Returns an error if the file exists but cannot be read or parsed.
     pub async fn load(path: &Path) -> anyhow::Result<Self> {
         match tokio::fs::read_to_string(path).await {
             Ok(contents) => serde_json::from_str(&contents)
@@ -326,10 +237,6 @@ impl IndexManifest {
         }
     }
 
-    /// Save the manifest to disk atomically (temp file + rename).
-    ///
-    /// # Errors
-    /// Returns an error if the file cannot be written.
     pub async fn save(&self, path: &Path) -> anyhow::Result<()> {
         let json =
             serde_json::to_string_pretty(self).context("failed to serialize index manifest")?;
@@ -428,9 +335,6 @@ mod tests {
 
     #[test]
     fn observation_without_source_tag_loads_as_main() {
-        // A record written before session memory existed has none of
-        // session_address/run_id/category — it must still load, as an
-        // untagged (main-agent) observation.
         let json = r#"{
             "timestamp": "2024-02-19T00:00",
             "source_episodes": "ep-001",

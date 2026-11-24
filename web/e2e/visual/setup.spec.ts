@@ -2,8 +2,6 @@ import { expect, test } from "../support/fixtures";
 import { expectSetupOpen } from "../support/lazy";
 import { expectScreenshot } from "../support/screenshot";
 
-/** The setup wizard's design reference: the "Add model providers" step. */
-
 test.describe("setup wizard", { tag: "@visual" }, () => {
   test.skip(({ isMobile }) => isMobile, "The wizard is shot at the desktop size.");
 

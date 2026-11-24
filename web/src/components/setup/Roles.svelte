@@ -24,7 +24,6 @@
 
   const uid = $props.id();
 
-  /** The model select's value for "a model that isn't listed". */
   const OTHER = "__other__";
 
   const ROLES: Record<string, { name: string; description: string }> = {
@@ -54,17 +53,12 @@
     "bg-large": { name: "Large", description: "Hard jobs that need strong reasoning." },
   };
 
-  // Track model lists per role
   let modelLists = $state<Record<string, ModelEntry[]>>({});
   let modelLoading = $state<Record<string, boolean>>({});
   let modelErrors = $state<Record<string, string | null>>({});
   let otherActive = $state<Record<string, boolean>>({});
   let otherValues = $state<Record<string, string>>({});
 
-  // A role's stored provider can go stale (or start unset) when the
-  // Providers step is revisited and a provider gets deselected — fall back
-  // to the main provider rather than surfacing a picker pointed at a
-  // provider with no `providers.toml` section.
   function validProvider(candidate: string | undefined): string | undefined {
     return candidate && wizardState.selectedProviders.includes(candidate as ProviderKey)
       ? candidate
@@ -158,7 +152,6 @@
     wizardState.selectedProviders.some((p) => EMBEDDING_PROVIDERS.includes(p)),
   );
 
-  /** With the list loaded, pick the default for an unset role, or show a model typed under Other again. */
   function settleModel(role: string, models: ModelEntry[], defaultModel: string) {
     const current = getRoleModel(role);
     if (!current) {
@@ -174,10 +167,8 @@
   async function loadModels(role: string) {
     const prov = getRoleProvider(role);
 
-    // Embedding models are never returned by provider APIs — use hardcoded lists
     if (role === "embedding") {
       const models = EMBEDDING_MODEL_LISTS[prov] ?? [];
-      // Persist the implied default so the generated providers.toml includes it.
       if (wizardState.embeddingModel.provider === "" && prov !== "") {
         wizardState.embeddingModel.provider = prov;
       }
@@ -192,7 +183,6 @@
     const url = provCfg?.url ?? undefined;
 
     modelLoading[role] = true;
-    // No agent exists yet, so the hub looks the models up.
     const result = await fetchModels(null, prov, apiKey, url);
     modelLists[role] = result.models;
     modelLoading[role] = false;

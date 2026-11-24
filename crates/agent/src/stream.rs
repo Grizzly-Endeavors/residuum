@@ -1,11 +1,3 @@
-//! Streamed model output on its way to the main conversation.
-//!
-//! A provider pushes a response's text and reasoning into a [`StreamSink`] as
-//! it arrives, from inside its read loop, so the sink must never block. The
-//! turn loop forwards them to the main conversation stream, and a provider
-//! can push a token at a time, so [`DeltaCoalescer`] batches them into
-//! frames of about [`FLUSH_INTERVAL`].
-
 use std::time::Duration;
 
 use tokio::sync::mpsc;
@@ -13,15 +5,11 @@ use tokio::time::Instant;
 
 use residuum_inference::{StreamDelta, StreamSink};
 
-/// How long streamed output waits in the buffer before it is published.
 pub(crate) const FLUSH_INTERVAL: Duration = Duration::from_millis(50);
 
-/// A sink that hands every delta to the turn loop over an unbounded channel,
-/// so a provider pushing from inside its read loop never waits on the bus.
 pub(crate) struct ChannelSink(mpsc::UnboundedSender<StreamDelta>);
 
 impl ChannelSink {
-    /// A sink and the receiver the turn loop drains it from.
     pub(crate) fn channel() -> (Self, mpsc::UnboundedReceiver<StreamDelta>) {
         let (tx, rx) = mpsc::unbounded_channel();
         (Self(tx), rx)
@@ -30,27 +18,20 @@ impl ChannelSink {
 
 impl StreamSink for ChannelSink {
     fn push(&self, delta: StreamDelta) {
-        // The receiver is dropped only once the model call it served has
-        // ended, and a delta pushed after that has nobody to show it to.
         drop(self.0.send(delta));
     }
 }
 
-/// A sink for a turn whose output is not streamed anywhere.
 pub(crate) struct DiscardSink;
 
 impl StreamSink for DiscardSink {
     fn push(&self, _delta: StreamDelta) {}
 }
 
-/// One unit of streamed output ready to publish.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum StreamPiece {
-    /// Response text.
     Text(String),
-    /// Readable reasoning.
     Thinking(String),
-    /// Everything published so far for the call is void.
     Restart,
 }
 
@@ -64,7 +45,6 @@ enum PendingKind {
 struct Pending {
     kind: PendingKind,
     text: String,
-    /// When the buffer must be published even if more is still coming.
     flush_at: Instant,
 }
 
@@ -77,21 +57,12 @@ impl Pending {
     }
 }
 
-/// Batches a model call's streamed deltas into pieces worth publishing.
-///
-/// Deltas of one kind accumulate until [`FLUSH_INTERVAL`] has passed since the
-/// first of them arrived; a delta of the other kind publishes what was
-/// buffered first, so text and reasoning keep their order. The caller
-/// publishes whatever [`push`](Self::push) returns, [`take_pending`](Self::take_pending)
-/// at the interval ([`flush_at`](Self::flush_at) says when) and once more when
-/// the call ends.
 #[derive(Debug, Default)]
 pub(crate) struct DeltaCoalescer {
     pending: Option<Pending>,
 }
 
 impl DeltaCoalescer {
-    /// Take in one delta at `now`, returning the pieces to publish right away.
     pub(crate) fn push(&mut self, delta: StreamDelta, now: Instant) -> Vec<StreamPiece> {
         let mut ready = Vec::new();
         match delta {
@@ -100,7 +71,6 @@ impl DeltaCoalescer {
                 self.append(PendingKind::Thinking, text, now, &mut ready);
             }
             StreamDelta::Restart => {
-                // What was buffered belongs to the attempt being thrown away.
                 self.pending = None;
                 ready.push(StreamPiece::Restart);
             }
@@ -134,12 +104,10 @@ impl DeltaCoalescer {
         }
     }
 
-    /// When the buffered output must be published, if any is buffered.
     pub(crate) fn flush_at(&self) -> Option<Instant> {
         self.pending.as_ref().map(|p| p.flush_at)
     }
 
-    /// Take whatever is buffered.
     pub(crate) fn take_pending(&mut self) -> Option<StreamPiece> {
         self.pending.take().map(Pending::into_piece)
     }

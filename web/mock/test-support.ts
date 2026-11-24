@@ -17,17 +17,11 @@ import { createOverview } from "./overview";
 import { createState, type MockAgent, type MockHub, type MockState } from "./state";
 import { createTeamEvents } from "./team-events";
 
-/**
- * Run every timer the mock has set that falls due within `ms` of simulated
- * time, in manual time, so a test sees what the mock does over a span without
- * waiting for it. The mock stays in manual time for the rest of the test.
- */
 export async function advanceMockTime(env: MockEnv, ms: number): Promise<void> {
   if (env.timeMode() !== "manual") env.setTimeMode("manual");
   await env.advance(ms);
 }
 
-/** A hub with no sockets: agents are plain records, and hub frames go nowhere. */
 export function createStubHub(env: MockEnv = createMockEnv()): MockHub {
   const agents = new Map<string, MockAgent>();
   return {
@@ -87,13 +81,11 @@ export function createStubHub(env: MockEnv = createMockEnv()): MockHub {
   };
 }
 
-/** An artifacts listener's forwarding for a test of its pages: there is no API behind it. */
 export const NO_FORWARDING: ArtifactsForwarding = {
   api: () => Promise.resolve(false),
   sockets: null,
 };
 
-/** Point a state's broadcast at a list, so a test can read the frames the mock sent. */
 export function captureFrames(state: MockState): ServerMessage[] {
   const frames: ServerMessage[] = [];
   state.broadcast = (frame) => {
@@ -105,18 +97,11 @@ export function captureFrames(state: MockState): ServerMessage[] {
 export interface RouteHarness {
   baseUrl: string;
   hub: MockHub;
-  /** The state the harness scopes every request to. */
   state: MockState;
-  /** Frames the state broadcast, in order. */
   frames: ServerMessage[];
   close: () => Promise<void>;
 }
 
-/**
- * Serve route tables over HTTP the way the mock's middleware does: the
- * request is scoped to one agent's state, matched against the tables, and a
- * handler that throws answers 500.
- */
 export async function startRouteHarness(
   routes: readonly Route[],
   env?: MockEnv,
@@ -165,7 +150,6 @@ export async function startRouteHarness(
   };
 }
 
-/** A response status with its body parsed as JSON; the caller says what shape to expect. */
 export async function fetchJson(
   url: string,
   init?: RequestInit,
@@ -174,7 +158,6 @@ export async function fetchJson(
   return { status: res.status, body: (await res.json()) as unknown };
 }
 
-/** A response status with its body as text. */
 export async function fetchText(
   url: string,
   init?: RequestInit,
@@ -183,14 +166,10 @@ export async function fetchText(
   return { status: res.status, body: await res.text() };
 }
 
-/** A frame a socket received, its shape left for the test to assert. */
 export type Frame = Record<string, unknown>;
 
-/** A WebSocket client that keeps every frame it receives. */
 export class TestSocket {
-  /** Every frame received so far, in order. */
   readonly frames: Frame[] = [];
-  /** Settles when the connection has closed, whoever closed it. */
   readonly closed: Promise<void>;
   private cursor = 0;
   private readonly listeners = new Set<() => void>();
@@ -211,15 +190,10 @@ export class TestSocket {
     this.ws.send(JSON.stringify(frame));
   }
 
-  /** Send text that isn't a frame the mock can read. */
   sendRaw(text: string): void {
     this.ws.send(text);
   }
 
-  /**
-   * The next frame, after the ones already returned, that satisfies `match`.
-   * Frames skipped over stay in `frames`.
-   */
   next(match: (frame: Frame) => boolean = () => true, timeoutMs = 3000): Promise<Frame> {
     return new Promise((resolve, reject) => {
       const look = (): boolean => {
@@ -250,16 +224,10 @@ export class TestSocket {
     });
   }
 
-  /** The next frame of `type`. */
   nextOfType(type: string, timeoutMs?: number): Promise<Frame> {
     return this.next((frame) => frame.type === type, timeoutMs);
   }
 
-  /**
-   * Wait until the server has handled everything this socket sent so far, which
-   * a `ping` answered by a `pong` shows, and return the frames that arrived
-   * since the last call.
-   */
   async settled(): Promise<Frame[]> {
     const start = this.cursor;
     this.send({ type: "ping" });
@@ -267,17 +235,9 @@ export class TestSocket {
     return this.frames.slice(start, this.cursor);
   }
 
-  /**
-   * The frames the server sends from now until it has handled everything sent
-   * so far (and `during`, when given, has finished), without the `pong` that
-   * shows it: what a test reads to show that nothing more comes. `during`
-   * moves mock time (`advanceMockTime`) so that a timer the mock set gets to
-   * run first.
-   */
   async quietFrames(during?: () => Promise<void>): Promise<Frame[]> {
     const start = this.frames.length;
     await during?.();
-    // Start the barrier's search at this call, so a `pong` from an earlier ping can't answer it.
     this.cursor = start;
     this.send({ type: "ping" });
     await this.nextOfType("pong");
@@ -291,27 +251,18 @@ export class TestSocket {
 }
 
 export interface MockServerOptions extends EnvOptions {
-  /** Create the mock's agents: scout, atlas, drifter and brittle. On by default. */
   seed?: boolean;
-  /** The route tables to serve in place of the mock's own (`apiRoutes`). */
   routes?: readonly Route[];
 }
 
 export interface MockServerHarness {
   baseUrl: string;
   hub: MockHub;
-  /** Open a WebSocket on the server, like `/api/hub/ws`, and wait for it to connect. */
   openSocket: (path: string) => Promise<TestSocket>;
-  /** Try a WebSocket upgrade the server refuses, and report its status and JSON body. */
   refusedUpgrade: (path: string) => Promise<{ status: number; body: unknown }>;
   close: () => Promise<void>;
 }
 
-/**
- * The whole mock on a real HTTP server: the hub and its agents with their
- * sockets, and every route table behind scoped routing, the way the Vite
- * plugin wires them.
- */
 export async function startMockServer(options: MockServerOptions = {}): Promise<MockServerHarness> {
   const server = createServer();
   const hub = createHub(server, {

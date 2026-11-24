@@ -1,6 +1,3 @@
-//! [`DevicePairing`]: the pairing state behind a lock, saved after every
-//! change that matters, with the real clock.
-
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -20,17 +17,14 @@ use super::store::{self, Identity, Persisted};
 use super::types::{DeviceInfo, PendingPairingInfo};
 use crate::tunnel::TunnelStatus;
 
-/// A first-device pairing token, ready to put in a link.
 #[derive(Debug, Clone)]
 pub struct MintedPairToken {
     pub token: String,
     pub ui_origin: String,
     pub expires_in_secs: u64,
-    /// The recovery codes, when this call generated them.
     pub new_recovery_codes: Option<Vec<String>>,
 }
 
-/// A pairing request just created.
 #[derive(Debug, Clone)]
 pub struct CreatedRequest {
     pub request_id: String,
@@ -40,19 +34,12 @@ pub struct CreatedRequest {
 
 struct Inner {
     path: PathBuf,
-    /// Serializes saves, so an older snapshot never overwrites a newer one.
     write_lock: tokio::sync::Mutex<()>,
     state: Mutex<State>,
-    /// Seconds added to the clock. Zero outside tests, which move time with it.
     skew_secs: std::sync::atomic::AtomicI64,
-    /// Set once the identity comes from this install's own enrollment. From
-    /// then on what the relay announces is ignored.
     identity_is_local: std::sync::atomic::AtomicBool,
 }
 
-/// Device pairing for this install: who may reach it remotely.
-///
-/// Cheap to clone; every clone shares the state.
 #[derive(Clone)]
 pub struct DevicePairing {
     inner: Arc<Inner>,
@@ -65,8 +52,6 @@ impl std::fmt::Debug for DevicePairing {
 }
 
 impl DevicePairing {
-    /// Open the pairing state stored in `hub_dir`, starting empty when there
-    /// is none.
     #[must_use]
     pub fn open(hub_dir: &Path) -> Self {
         let path = residuum_config::HubPaths::new(hub_dir).remote_access_json();
@@ -82,8 +67,6 @@ impl DevicePairing {
         }
     }
 
-    /// Keep the stored identity in step with what Residuum Cloud announces on
-    /// each connect. Runs until the status channel closes.
     pub fn track_identity(&self, mut status: watch::Receiver<TunnelStatus>) {
         let pairing = self.clone();
         residuum_core::util::spawn_monitored("pairing-identity", async move {
@@ -123,7 +106,6 @@ impl DevicePairing {
         Utc::now() + chrono::Duration::seconds(skew)
     }
 
-    /// Move this instance's clock forward, for tests of expiry.
     #[cfg(any(test, feature = "test-support"))]
     pub fn advance_clock(&self, by: chrono::Duration) {
         self.inner
@@ -131,13 +113,6 @@ impl DevicePairing {
             .fetch_add(by.num_seconds(), std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// Pair a device without going through a link, for tests of other systems
-    /// that sit behind the gate. Returns the `Cookie` header values that
-    /// authenticate it on the UI host and on the workbench host.
-    ///
-    /// # Panics
-    /// Panics when the device can't be added or the pairing state can't be
-    /// saved, which fails the test that asked for it.
     #[cfg(any(test, feature = "test-support"))]
     #[expect(
         clippy::unwrap_used,
@@ -178,19 +153,11 @@ impl DevicePairing {
         store::save(&self.inner.path, &snapshot).await
     }
 
-    // ── Identity ─────────────────────────────────────────────────────
-
-    /// What Residuum Cloud last announced.
     #[must_use]
     pub fn identity(&self) -> Identity {
         self.lock().persisted.identity.clone()
     }
 
-    /// Record what the relay announced. A field the relay left out keeps its
-    /// stored value; one it sent that isn't well-formed is ignored.
-    ///
-    /// # Errors
-    /// Returns the storage error if the change couldn't be saved.
     pub async fn update_identity(&self, announced: Identity) -> Result<(), PairingError> {
         if self
             .inner
@@ -202,12 +169,6 @@ impl DevicePairing {
         self.apply_identity(announced).await
     }
 
-    /// Record the identity this install derived from its own enrollment. It
-    /// replaces what the relay announced, and the relay's announcements are
-    /// ignored from now on.
-    ///
-    /// # Errors
-    /// Returns the storage error if the change couldn't be saved.
     pub(crate) async fn set_local_identity(&self, identity: Identity) -> Result<(), PairingError> {
         self.inner
             .identity_is_local
@@ -238,13 +199,11 @@ impl DevicePairing {
         if changed { self.save().await } else { Ok(()) }
     }
 
-    /// The name of the device cookie on both hosts.
     #[must_use]
     pub(crate) fn cookie_name(&self) -> String {
         cookies::cookie_name(self.lock().persisted.identity.slug.as_deref())
     }
 
-    /// The origin a browser reaches `surface` at, as announced.
     #[must_use]
     pub(crate) fn origin_of(&self, surface: Surface) -> Option<String> {
         let identity = self.identity();
@@ -254,9 +213,6 @@ impl DevicePairing {
         }
     }
 
-    // ── Authentication ───────────────────────────────────────────────
-
-    /// The device whose credential `cookie_header` carries for `surface`.
     pub async fn authenticate(
         &self,
         surface: Surface,
@@ -276,26 +232,16 @@ impl DevicePairing {
         Some((hit, secret.to_string()))
     }
 
-    /// The `Set-Cookie` value that stores `secret` as this install's device cookie.
     #[must_use]
     pub fn set_cookie_for(&self, secret: &str) -> String {
         cookies::set_cookie_value(&self.cookie_name(), secret)
     }
 
-    /// The value of this install's device cookie in `cookie_header`, if any.
     #[must_use]
     pub fn cookie_in(&self, cookie_header: Option<&str>) -> Option<String> {
         cookies::find_cookie(cookie_header?, &self.cookie_name()).map(str::to_string)
     }
 
-    // ── Local bootstrap ──────────────────────────────────────────────
-
-    /// Mint the single-use token for the first device. Also creates the
-    /// recovery codes the first time, and returns them for showing once.
-    ///
-    /// # Errors
-    /// `NotReady` when Residuum Cloud has not yet announced this install's
-    /// address, or a storage or random-source error.
     pub async fn mint_pair_token(&self) -> Result<MintedPairToken, PairingError> {
         let now = self.now();
         let token = secrets::secret_256()?;
@@ -324,10 +270,6 @@ impl DevicePairing {
         })
     }
 
-    /// Replace the recovery codes with ten new ones. The old ones stop working.
-    ///
-    /// # Errors
-    /// A storage or random-source error.
     pub async fn regenerate_recovery_codes(&self) -> Result<Vec<String>, PairingError> {
         let now = self.now();
         let codes = self.lock().replace_recovery_codes(now)?;
@@ -335,18 +277,12 @@ impl DevicePairing {
         Ok(codes)
     }
 
-    // ── Pairing flows ────────────────────────────────────────────────
-
     fn limit(&self, remote: Option<&RemoteContext>) -> Result<(), PairingError> {
         let Some(remote) = remote else { return Ok(()) };
         let now = self.now();
         self.lock().check_limit(remote.peer_ip.as_deref(), now)
     }
 
-    /// Pair a device that presents a first-device token.
-    ///
-    /// # Errors
-    /// `RateLimited`, `Rejected` for a bad, spent or expired token, or storage.
     pub async fn redeem_token(
         &self,
         remote: Option<&RemoteContext>,
@@ -365,10 +301,6 @@ impl DevicePairing {
         Ok(issued)
     }
 
-    /// Pair a device that presents a recovery code.
-    ///
-    /// # Errors
-    /// `RateLimited`, `Rejected` for a wrong or used code, or storage.
     pub async fn redeem_recovery(
         &self,
         remote: Option<&RemoteContext>,
@@ -412,11 +344,6 @@ impl DevicePairing {
         })
     }
 
-    /// Check on the request whose secret id is `request_id`. An approved
-    /// request issues its credential here, once.
-    ///
-    /// # Errors
-    /// A storage or random-source error.
     pub async fn poll_request(&self, request_id: &str) -> Result<PollOutcome, PairingError> {
         let now = self.now();
         let outcome = self.lock().poll(&secrets::hash(request_id), now)?;
@@ -426,7 +353,6 @@ impl DevicePairing {
         Ok(outcome)
     }
 
-    /// The pairing requests waiting for a decision.
     #[must_use]
     pub fn pending(&self) -> Vec<PendingPairingInfo> {
         let now = self.now();
@@ -443,10 +369,6 @@ impl DevicePairing {
             .collect()
     }
 
-    /// Approve or refuse a waiting request.
-    ///
-    /// # Errors
-    /// `Rejected` when the request is gone.
     pub fn decide(&self, public_id: &str, approve: bool) -> Result<(), PairingError> {
         let now = self.now();
         self.lock().decide(public_id, approve, now)?;
@@ -454,13 +376,6 @@ impl DevicePairing {
         Ok(())
     }
 
-    // ── Workbench handoff ────────────────────────────────────────────
-
-    /// Mint the single-use token a paired UI-host browser carries to the
-    /// workbench host.
-    ///
-    /// # Errors
-    /// A random-source error.
     pub fn mint_handoff(&self, device_id: &str) -> Result<(String, u64), PairingError> {
         let now = self.now();
         let token = secrets::secret_256()?;
@@ -469,11 +384,6 @@ impl DevicePairing {
         Ok((token, u64::try_from(HANDOFF_TTL_SECS).unwrap_or(60)))
     }
 
-    /// Spend a handoff token on the workbench host, issuing (or confirming)
-    /// that browser's workbench credential.
-    ///
-    /// # Errors
-    /// `RateLimited`, `Rejected` for a bad, spent or expired token, or storage.
     pub async fn redeem_handoff(
         &self,
         remote: Option<&RemoteContext>,
@@ -491,9 +401,6 @@ impl DevicePairing {
         Ok(issued)
     }
 
-    // ── Listing and revoking ─────────────────────────────────────────
-
-    /// Every paired device, oldest first. `current` marks the asking browser's.
     #[must_use]
     pub fn devices(&self, current: Option<&str>) -> Vec<DeviceInfo> {
         self.lock()
@@ -510,16 +417,11 @@ impl DevicePairing {
             .collect()
     }
 
-    /// Unused recovery codes left.
     #[must_use]
     pub fn recovery_codes_remaining(&self) -> usize {
         self.lock().recovery_codes_remaining()
     }
 
-    /// Stop trusting a device. It is refused on its next request.
-    ///
-    /// # Errors
-    /// `Rejected` when there is no such device, or a storage error.
     pub async fn revoke(&self, device_id: &str) -> Result<(), PairingError> {
         if !self.lock().revoke(device_id) {
             return Err(PairingError::Rejected(
@@ -707,7 +609,6 @@ mod tests {
         };
         let mut refused = None;
         for _ in 0..12 {
-            // Approve each so the cap on waiting requests isn't what refuses.
             match pairing.create_request(Some(&remote), "Phone") {
                 Ok(created) => {
                     let pending = pairing.pending();
@@ -862,7 +763,6 @@ mod tests {
             instance_origin: None,
         })
         .unwrap();
-        // The identity is set in memory first and saved after, so wait for the file.
         let saved =
             residuum_core::testing::wait::until("the announced identity to be saved", || {
                 std::future::ready(DevicePairing::open(dir.path()).identity().slug)

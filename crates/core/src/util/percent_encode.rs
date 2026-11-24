@@ -1,10 +1,5 @@
-//! RFC 3986 percent-encoding.
-
 use std::fmt::Write as _;
 
-/// `bytes` with every byte outside the RFC 3986 unreserved set
-/// (`A-Z a-z 0-9 - . _ ~`) written as `%XX`, so the result is safe as one
-/// URL path segment or query value.
 #[must_use]
 pub fn percent_encode_unreserved(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len());

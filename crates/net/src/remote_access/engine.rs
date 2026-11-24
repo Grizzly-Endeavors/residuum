@@ -1,16 +1,3 @@
-//! The remote-access engine: TLS termination and HTTP serving for streams the
-//! relay hands over, with no trust placed in the relay.
-//!
-//! The relay forwards raw TCP bytes. This engine checks the TLS `ClientHello`'s
-//! SNI against the names this instance owns, completes the handshake with the
-//! instance's own certificate, and serves HTTP/1.1 and HTTP/2 on the result.
-//! Requests are routed by their `Host` (browsers coalesce connections across
-//! names that share a certificate, so the SNI only gates the handshake):
-//!
-//! - the UI host and the workbench host go to in-process axum routers, with a
-//!   [`RemoteTransport`] extension that makes the device gate apply;
-//! - the instance host goes to [`InstanceProxy`] for public A2A and Teams.
-
 use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::sync::{Arc, Mutex};
@@ -38,17 +25,11 @@ use super::types::{HostKind, Hostnames, normalize_host};
 use crate::browser_landing::{self, Landing};
 use crate::pairing::remote::RemoteTransport;
 
-/// How long the TLS handshake may take, from the first byte to completion.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
-/// How long an HTTP/1 connection may take to deliver the headers of a request.
-/// Only header reads are bounded: WebSocket connections and streaming bodies stay open.
 const H1_HEADER_READ_TIMEOUT: Duration = Duration::from_secs(30);
-/// HTTP/2 liveness pings, so a vanished peer on a long-lived connection is
-/// noticed without ever timing out a healthy idle one.
 const H2_KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(30);
 const H2_KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// ALPN protocol of an ACME TLS-ALPN-01 validation connection.
 const ACME_TLS_ALPN: &[u8] = b"acme-tls/1";
 
 /// Headers only Residuum's own components may set. A browser-supplied copy
@@ -57,32 +38,20 @@ const ACME_TLS_ALPN: &[u8] = b"acme-tls/1";
 /// names.
 const INTERNAL_HEADERS: [&str; 3] = ["x-residuum-a2a-caller", "x-real-ip", "x-forwarded-for"];
 
-/// The routers for the two web-facing hosts.
 pub(crate) struct EngineRouters {
-    /// Serves the UI host.
     pub(crate) ui: Router,
-    /// Serves the workbench host.
     pub(crate) workbench: Router,
 }
 
-/// Everything the engine needs from the rest of the process.
 pub(crate) struct EngineDeps {
-    /// Holds the instance certificate and ACME challenge certificates.
     pub(crate) resolver: Arc<CertResolver>,
-    /// The three names this instance answers for; `None` until it has an
-    /// identity, and while `None` every connection is closed.
     pub(crate) hostnames: watch::Receiver<Option<Hostnames>>,
-    /// Routers for the UI and workbench hosts.
     pub(crate) routers: EngineRouters,
-    /// The join endpoints (`/_sibling/join/...`) served on the instance host.
     pub(crate) sibling_routes: Router,
-    /// The hub's A2A listener port, when it is running.
     pub(crate) a2a_port: Option<u16>,
-    /// Each agent's Teams listener port.
     pub(crate) teams_ports: watch::Receiver<BTreeMap<String, u16>>,
 }
 
-/// Terminates TLS and serves HTTP for streams the relay delivers.
 pub(crate) struct Engine {
     resolver: Arc<CertResolver>,
     hostnames: watch::Receiver<Option<Hostnames>>,
@@ -95,7 +64,6 @@ pub(crate) struct Engine {
 }
 
 impl Engine {
-    /// An engine serving with `deps`.
     pub(crate) fn new(deps: EngineDeps) -> Arc<Self> {
         Arc::new(Self {
             resolver: deps.resolver,
@@ -109,9 +77,6 @@ impl Engine {
         })
     }
 
-    /// Terminate TLS on `io`, check the `ClientHello` SNI equals `relay_host`
-    /// (normalized) and is one of the instance's names, then serve HTTP until
-    /// the connection ends. Every refusal is logged; nothing is returned.
     pub(crate) async fn serve<S>(self: &Arc<Self>, relay_host: String, peer_ip: String, io: S)
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -120,7 +85,6 @@ impl Engine {
             return;
         };
         if tls.get_ref().1.alpn_protocol() == Some(ACME_TLS_ALPN) {
-            // A TLS-ALPN-01 validation: the handshake is the whole exchange.
             let mut tls = tls;
             if let Err(e) = tls.shutdown().await {
                 debug!(error = %e, "closing an ACME validation connection failed");
@@ -153,7 +117,6 @@ impl Engine {
         }
     }
 
-    /// Run the TLS handshake if the `ClientHello` is for one of our names.
     async fn accept_tls<S>(
         &self,
         relay_host: &str,
@@ -212,7 +175,6 @@ impl Engine {
         }
     }
 
-    /// The TLS configuration, built once and shared.
     fn server_config(&self) -> anyhow::Result<Arc<ServerConfig>> {
         let mut cached = self
             .server_config
@@ -226,8 +188,6 @@ impl Engine {
         Ok(config)
     }
 
-    /// The web app's origin on Residuum Cloud, once Cloud has assigned the
-    /// hostnames.
     fn ui_origin(&self) -> Option<String> {
         self.hostnames
             .borrow()
@@ -235,7 +195,6 @@ impl Engine {
             .map(|names| format!("https://{}", names.ui))
     }
 
-    /// Route one request by its host.
     async fn handle(&self, mut req: Request<Body>, peer_ip: &str) -> Response<Body> {
         for name in INTERNAL_HEADERS {
             req.headers_mut().remove(name);
@@ -281,16 +240,11 @@ impl Engine {
     }
 }
 
-/// Whether the path belongs to the sibling join endpoints.
 fn is_sibling_path(path: &str) -> bool {
     path == crate::remote_access::siblings::protocol::REQUEST_PATH
         || path.starts_with("/_sibling/join/")
 }
 
-/// The host a request is for. The URI authority (HTTP/2 `:authority`, or an
-/// absolute-form request line) outranks the `Host` header, and when it is
-/// present the `Host` header is rewritten to match so handlers never see a
-/// different name than the one that was routed.
 fn request_host(req: &mut Request<Body>) -> Option<String> {
     if let Some(authority) = req.uri().authority().map(|a| a.as_str().to_owned()) {
         let value = HeaderValue::from_str(&authority).ok()?;
@@ -303,7 +257,6 @@ fn request_host(req: &mut Request<Body>) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// Run `req` through `router` as remote traffic.
 async fn call_router(
     router: &Router,
     mut req: Request<Body>,
@@ -320,9 +273,6 @@ async fn call_router(
     }
 }
 
-/// The answer for a host this instance doesn't serve. A browser gets the
-/// fallback page, linking to this instance's Residuum when its address is
-/// known.
 fn misdirected(req: &Request<Body>, ui_origin: Option<&str>) -> Response<Body> {
     const MESSAGE: &str = "This address isn't served by this Residuum instance.";
     if browser_landing::is_navigation(req.method(), req.headers()) {

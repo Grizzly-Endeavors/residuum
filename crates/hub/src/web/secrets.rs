@@ -1,5 +1,3 @@
-//! Secrets management API endpoints and types.
-
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::Json;
@@ -9,42 +7,27 @@ use residuum_config::secrets::{SecretStore, is_reference};
 
 use super::HubApiState;
 
-/// Request body for `POST /api/hub/secrets`.
 #[derive(Deserialize)]
 pub(super) struct SetSecretRequest {
     pub name: String,
     pub value: String,
 }
 
-/// Response from `POST /api/hub/secrets`.
 #[derive(Serialize)]
 pub(super) struct SetSecretResponse {
     pub reference: String,
 }
 
-/// Response from `GET /api/hub/secrets`.
 #[derive(Serialize)]
 pub(super) struct ListSecretsResponse {
     pub names: Vec<String>,
 }
 
-/// Response from `DELETE /api/hub/secrets/:name`.
 #[derive(Serialize)]
 pub(super) struct DeleteSecretResponse {
     pub deleted: bool,
 }
 
-/// `POST /api/hub/secrets` — store a named secret in the encrypted store.
-///
-/// Rejects a value that is itself a reference (`secret:<name>` or
-/// `${ENV_VAR}`) rather than a literal to store — storing a reference
-/// verbatim would make the store return it unexpanded on lookup, handing
-/// callers the literal token instead of a usable credential (see
-/// config's `resolve_secret_value`, which never re-expands a
-/// stored value).
-///
-/// Acquires `secret_lock` to serialize concurrent writes and prevent
-/// lost-update races (e.g. setup wizard storing multiple secrets via `Promise.all`).
 pub(super) async fn api_secrets_set(
     State(state): State<HubApiState>,
     Json(req): Json<SetSecretRequest>,
@@ -97,7 +80,6 @@ pub(super) async fn api_secrets_set(
     })?
 }
 
-/// `GET /api/hub/secrets` — list stored secret names (not values).
 pub(super) async fn api_secrets_list(
     State(state): State<HubApiState>,
 ) -> Result<Json<ListSecretsResponse>, (StatusCode, String)> {
@@ -122,7 +104,6 @@ pub(super) async fn api_secrets_list(
     })?
 }
 
-/// `DELETE /api/hub/secrets/{name}` — remove a named secret.
 pub(super) async fn api_secrets_delete(
     State(state): State<HubApiState>,
     Path(name): Path<String>,

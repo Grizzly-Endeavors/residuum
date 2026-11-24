@@ -1,18 +1,3 @@
-//! The team wiki's search index: one shared service for the whole hub.
-//!
-//! A [`TeamWikiIndex`] owns a tantivy index (`team/.index/`) and, when an
-//! embedding provider is configured, a vector store (`team/vectors.db`), both
-//! holding only the pages of `team/wiki/`. It is constructed once and handed
-//! out as an `Arc`; every agent's [`HybridSearcher`](crate::search::HybridSearcher)
-//! holds a clone of the same handle. Wiki pages are synced into the index
-//! before each search, and those syncs are serialized inside the index, so
-//! concurrent searches from several agents never write to it at the same time.
-//!
-//! Pages are embedded with the embedding model the index was opened with. With
-//! no embedding provider (or a store that cannot be opened) the index is text
-//! only. [`TeamWikiIndex::set_embedding`] swaps the embedder inside the one
-//! shared instance, so every agent's searcher sees the change.
-
 use std::path::Path;
 use std::sync::{Arc, PoisonError, RwLock};
 
@@ -24,41 +9,20 @@ use residuum_config::SearchConfig;
 use residuum_config::paths::TeamPaths;
 use residuum_inference::EmbeddingProvider;
 
-/// A vector store and the provider that embeds pages and queries into it.
 struct TeamVectors {
     store: Arc<VectorStore>,
     embedder: Arc<dyn EmbeddingProvider>,
 }
 
-/// Shared search index over the team wiki (`team/wiki/`).
 pub struct TeamWikiIndex {
     team: TeamPaths,
     bm25: Arc<MemoryIndex>,
-    /// The current vector store and embedder. Replaced as a whole by
-    /// [`Self::set_embedding`]; readers clone the `Arc` and never hold the
-    /// lock across an await.
     vector: RwLock<Option<Arc<TeamVectors>>>,
     indexer: WikiIndexer,
-    /// Held for the whole of a sync and of an embedding swap, so a swap never
-    /// interleaves with a sync that is writing into the store being replaced.
     sync_gate: tokio::sync::Mutex<()>,
 }
 
 impl TeamWikiIndex {
-    /// Open the team wiki index under `team`, creating it if needed.
-    ///
-    /// `embedding` is the provider that embeds wiki pages and queries. `None`
-    /// leaves the index text only. An unreadable full-text index or vector
-    /// store is discarded and rebuilt from the wiki pages, which are the source
-    /// of truth. If the full-text index cannot be recreated on disk, search
-    /// degrades to an in-memory index rebuilt on each start.
-    ///
-    /// The returned handle is meant to be cloned and shared: opening a second
-    /// instance over the same directory would contend for the index's writer
-    /// lock.
-    ///
-    /// # Errors
-    /// Returns an error only if not even an in-memory index can be created.
     pub async fn open(
         team: &TeamPaths,
         embedding: Option<Arc<dyn EmbeddingProvider>>,
@@ -84,21 +48,12 @@ impl TeamWikiIndex {
             .clone()
     }
 
-    /// Whether wiki search uses vector similarity as well as full-text. Test
-    /// support only: a search reports its own use of vectors in `semantic`.
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn has_vector(&self) -> bool {
         self.vectors().is_some()
     }
 
-    /// Switch the embedder this index uses, or drop to text only with `None`.
-    ///
-    /// The vector store is reopened for the new model (a store recorded under
-    /// another model is cleared, the same as when the index is opened), and
-    /// the next search re-syncs every page so the new store is filled. Returns
-    /// whether the index is now hybrid; `false` for a `Some` embedder means
-    /// its store could not be opened and search is text only.
     pub async fn set_embedding(&self, embedding: Option<Arc<dyn EmbeddingProvider>>) -> bool {
         let _gate = self.sync_gate.lock().await;
         let vector = match embedding {
@@ -111,12 +66,6 @@ impl TeamWikiIndex {
         hybrid
     }
 
-    /// Bring the index up to date with the files on disk.
-    ///
-    /// A failed sync leaves the previous documents searchable, so it is
-    /// logged rather than failing the search; the next search retries it.
-    /// Returns the vectors the sync used, so the search that follows queries
-    /// the store that was just filled.
     async fn sync(&self) -> Option<Arc<TeamVectors>> {
         let _gate = self.sync_gate.lock().await;
         let vectors = self.vectors();
@@ -127,11 +76,6 @@ impl TeamWikiIndex {
         vectors
     }
 
-    /// Run the hybrid pipeline against the team wiki with the caller's
-    /// `[memory.search]` settings.
-    ///
-    /// # Errors
-    /// Returns an error if BM25 search or embedding generation fails.
     pub(crate) async fn search(
         &self,
         query: &str,
@@ -159,7 +103,6 @@ impl TeamWikiIndex {
     }
 }
 
-/// Open the full-text index, discarding and recreating one that cannot be read.
 fn open_bm25(index_dir: &Path) -> anyhow::Result<MemoryIndex> {
     match MemoryIndex::open_or_create(index_dir) {
         Ok(index) => Ok(index),
@@ -182,11 +125,6 @@ fn open_bm25(index_dir: &Path) -> anyhow::Result<MemoryIndex> {
     }
 }
 
-/// Open the team vector store for `embedder`'s model.
-///
-/// Vectors from a different embedding model are meaningless to this one, so a
-/// store recorded under another model is deleted and refilled by the next sync.
-/// Any failure leaves the index text only.
 async fn open_vectors(
     team: &TeamPaths,
     embedder: Arc<dyn EmbeddingProvider>,
@@ -266,8 +204,6 @@ mod tests {
             .unwrap()
     }
 
-    /// Embeds text onto two axes so "flux" and "fish" pages are separable, and
-    /// counts how many texts it embedded.
     struct AxisEmbedder {
         model: &'static str,
         embedded: AtomicUsize,
@@ -371,8 +307,6 @@ mod tests {
         let before = embedder.embedded.load(Ordering::SeqCst);
         let reopened = TeamWikiIndex::open(&team, Some(provider)).await.unwrap();
         let _ = search_wiki(&reopened, "Flux").await;
-        // Reopening probes the dimension (1) and embeds the query (1); the
-        // unchanged pages keep their stored vectors.
         assert_eq!(embedder.embedded.load(Ordering::SeqCst) - before, 2);
     }
 
@@ -393,7 +327,6 @@ mod tests {
             .await
             .unwrap();
         let _ = search_wiki(&second_index, "Flux").await;
-        // Probe + the page re-embedded under the new model + the query.
         assert_eq!(second.embedded.load(Ordering::SeqCst), 3);
     }
 
@@ -412,7 +345,6 @@ mod tests {
         let first = TeamWikiIndex::open(&team, Some(embedder)).await.unwrap();
         let second = Arc::clone(&first);
 
-        // Both handles search at once (each syncing first) while a page changes.
         let edit = team.wiki_dir().join("page-0.md");
         let later = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
         let searches = async {
@@ -468,8 +400,6 @@ mod tests {
         let provider: Arc<dyn EmbeddingProvider> = Arc::<AxisEmbedder>::clone(&first);
         assert!(index.set_embedding(Some(provider)).await);
 
-        // The handle every other agent holds sees the new embedder, and the
-        // pages that were already synced text-only were embedded.
         assert!(other_handle.has_vector());
         let outcome = search_wiki(&other_handle, "Flux").await;
         assert!(outcome.semantic);
@@ -482,12 +412,10 @@ mod tests {
             "probe plus both pages"
         );
 
-        // A different model clears the store and re-embeds under the new one.
         let second = AxisEmbedder::new("axis-b");
         let second_provider: Arc<dyn EmbeddingProvider> = Arc::<AxisEmbedder>::clone(&second);
         assert!(index.set_embedding(Some(second_provider)).await);
         let _ = search_wiki(&other_handle, "Flux").await;
-        // Probe, both pages, and the query.
         assert_eq!(second.embedded.load(Ordering::SeqCst), 4);
 
         assert!(!index.set_embedding(None).await);

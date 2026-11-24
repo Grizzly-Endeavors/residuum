@@ -1,8 +1,3 @@
-//! MCP client wrapper around `rmcp`.
-//!
-//! Manages a single connection to an MCP server process, providing
-//! tool listing and invocation backed by the rmcp SDK.
-
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsStr;
@@ -29,40 +24,13 @@ use residuum_core::util::expand_env_vars;
 use residuum_inference::ToolDefinition;
 use residuum_inference::{ToolError, ToolResult};
 
-/// A live connection to a single MCP server process.
 pub(crate) struct McpClient {
     service: RunningService<RoleClient, ClientConfig>,
     server_name: String,
-    /// Optional per-server timeout for tool calls, from `McpServerEntry::timeout_secs`.
-    ///
-    /// `None` means a call runs until it finishes or the turn is stopped —
-    /// there is no automatic cutoff. Stop now interrupts an in-flight tool
-    /// call immediately (the turn loop races every MCP call against the
-    /// stop token), so a fixed timeout no longer serves that purpose; it
-    /// only cuts off calls the user hasn't asked to stop, which is why it
-    /// defaults off and is opt-in per server.
     timeout: Option<Duration>,
 }
 
 impl McpClient {
-    /// Connect to an MCP server and complete the protocol handshake.
-    ///
-    /// Dispatches on the transport type:
-    /// - **Stdio**: spawns a child process and communicates over stdin/stdout
-    /// - **Http**: connects to a remote server via Streamable HTTP
-    ///
-    /// `tools_path`, when set, is the effective `PATH` (configured tool
-    /// directories prepended) applied to a spawned stdio server before its own
-    /// `env` — so a server that explicitly sets `PATH` still overrides it.
-    /// `workspace_root`, when set, is the directory a spawned stdio server's
-    /// process starts in (`Command::current_dir`) — the agent's workspace
-    /// root, not the process's current directory, which is shared across
-    /// every agent hosted in the same process. Ignored for the `Http`
-    /// transport, which spawns nothing.
-    ///
-    /// # Errors
-    /// Returns an error if the connection cannot be established or the MCP
-    /// handshake fails.
     #[tracing::instrument(skip_all, fields(mcp.server = %entry.name))]
     pub(crate) async fn connect(
         entry: &McpServerEntry,
@@ -86,8 +54,6 @@ impl McpClient {
         if let Some(root) = workspace_root {
             cmd.current_dir(root);
         }
-        // Prepend the configured tool dirs to PATH first, then apply the entry's
-        // own env so an explicit `PATH` in the entry wins.
         if let Some(path) = tools_path {
             cmd.env("PATH", path);
         }
@@ -135,13 +101,6 @@ impl McpClient {
         })
     }
 
-    /// List all tools advertised by this MCP server, in the order it lists
-    /// them. The registry puts them in name order.
-    ///
-    /// Handles pagination automatically via `list_all_tools()`.
-    ///
-    /// # Errors
-    /// Returns an error if the RPC call fails.
     #[tracing::instrument(skip_all, fields(mcp.server = %self.server_name))]
     pub(crate) async fn list_tools(&self) -> Result<Vec<ToolDefinition>, anyhow::Error> {
         let tools = self.service.peer().list_all_tools().await.map_err(|e| {
@@ -161,10 +120,6 @@ impl McpClient {
             .collect())
     }
 
-    /// A cheap-to-clone handle to this connection's peer, so a caller (the
-    /// registry) can drop whatever lock it holds before awaiting a
-    /// potentially slow tool call, rather than holding it for the call's
-    /// whole duration.
     #[must_use]
     pub(crate) fn handle(&self) -> McpClientHandle {
         McpClientHandle {
@@ -174,7 +129,6 @@ impl McpClient {
         }
     }
 
-    /// Gracefully shut down the MCP server connection.
     pub(crate) async fn shutdown(self) {
         if let Err(e) = self.service.cancel().await {
             tracing::warn!(
@@ -188,23 +142,14 @@ impl McpClient {
     }
 }
 
-/// A cheap-to-clone handle for calling tools on one MCP server, independent
-/// of the `McpClient` (and whatever registry lock guards it) that
-/// produced it — see `McpClient::handle`.
 #[derive(Debug, Clone)]
 pub struct McpClientHandle {
     peer: rmcp::service::Peer<RoleClient>,
     server_name: String,
-    /// Optional per-server timeout for tool calls, carried over from
-    /// [`McpClient`] (see its own field doc for why it defaults off).
     timeout: Option<Duration>,
 }
 
 impl McpClientHandle {
-    /// Call a tool on this MCP server.
-    ///
-    /// # Errors
-    /// Returns `ToolError::Execution` if the RPC call fails.
     #[tracing::instrument(skip_all, fields(mcp.tool = %name, mcp.server = %self.server_name))]
     pub async fn call_tool(&self, name: &str, args: Value) -> Result<ToolResult, ToolError> {
         tracing::debug!(tool = %name, server = %self.server_name, "dispatching mcp tool call");
@@ -215,8 +160,6 @@ impl McpClientHandle {
             params = params.with_arguments(args_map);
         }
 
-        // Type-erase the rmcp RPC future so downstream turn state machines do not
-        // inline its deep protocol-type layout (keeps rustc layout recursion bounded).
         let call: Pin<Box<dyn Future<Output = _> + Send + '_>> =
             Box::pin(self.peer.call_tool(params));
         let outcome = run_with_optional_timeout(self.timeout, call).await;
@@ -254,14 +197,6 @@ impl McpClientHandle {
     }
 }
 
-/// Await `fut` under `timeout` when one is configured, otherwise await it
-/// unconditionally.
-///
-/// `Err(d)` reports the configured duration `d` that elapsed before `fut`
-/// finished; the caller turns that into a plain-language timeout error. This
-/// is split out from [`McpClientHandle::call_tool`] so the timeout/no-timeout
-/// behavior itself is testable against a plain future, without a live MCP
-/// connection.
 async fn run_with_optional_timeout<T>(
     timeout: Option<Duration>,
     fut: impl Future<Output = T>,
@@ -284,10 +219,6 @@ fn coerce_tool_args(args: Value) -> Result<Option<serde_json::Map<String, Value>
     }
 }
 
-/// Expand env vars in header values and convert to HTTP header types.
-///
-/// # Errors
-/// Returns an error if any header name or expanded value is invalid.
 fn expand_header_env_vars(
     headers: &BTreeMap<String, String>,
 ) -> Result<HashMap<HeaderName, HeaderValue>, anyhow::Error> {
@@ -303,12 +234,6 @@ fn expand_header_env_vars(
     Ok(result)
 }
 
-/// Client metadata sent during the MCP `initialize` handshake.
-///
-/// Advertises [`ProtocolVersion::LATEST_WITH_INITIALIZE`] rather than
-/// `ProtocolVersion::LATEST` (`2026-07-28`, which replaced `initialize` with
-/// `server/discover`), so handshake servers that echo the requested version
-/// back stay on a handshake-capable protocol revision.
 fn client_config() -> ClientConfig {
     ClientConfig::new(
         ClientCapabilities::default(),
@@ -317,7 +242,6 @@ fn client_config() -> ClientConfig {
     .with_protocol_version(ProtocolVersion::LATEST_WITH_INITIALIZE)
 }
 
-/// Extract text from MCP content blocks, joining multiple blocks with newlines.
 fn extract_text_content(content: &[ContentBlock]) -> String {
     content
         .iter()
@@ -346,9 +270,6 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn with_a_configured_timeout_a_slow_call_is_cut_off() {
-        // A short "60s-equivalent" timeout standing in for a real server
-        // that never answers: with a call configured to time out, a future
-        // slower than that timeout is cut off and reports how long it ran.
         let slow = async {
             residuum_core::testing::clock::elapse(Duration::from_millis(200)).await;
             "unreachable"
@@ -363,10 +284,6 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn with_no_timeout_configured_a_slow_call_still_completes() {
-        // No `timeout_secs` set (the default): the same slow future that
-        // would have been cut off above now runs to completion, proving
-        // there is no hidden fixed cutoff standing in for the removed
-        // default 60s timeout.
         let slow = async {
             residuum_core::testing::clock::elapse(Duration::from_millis(50)).await;
             "done"
@@ -382,14 +299,6 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn connect_stdio_resolves_binary_from_tools_path() {
-        // An executable that exists only in a tools dir (not on the base PATH).
-        // It is not a real MCP server: spawning it succeeds, the handshake then
-        // fails — which lets us distinguish "PATH resolved" from "spawn failed".
-        // It is a link to the shell, not a script written here: executing a
-        // file this process just wrote fails with "Text file busy" when a test
-        // on another thread forks while the file is still open for writing,
-        // because the forked child holds a copy of the descriptor until it
-        // execs.
         let dir = std::env::temp_dir().join(format!("residuum-mcp-tools-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let link = dir.join("residuum_fake_mcp");
@@ -412,7 +321,6 @@ mod tests {
             timeout_secs: None,
         };
 
-        // Without the tools PATH the binary is not resolvable → spawn fails.
         let missing_err = McpClient::connect(&entry, None, None)
             .await
             .unwrap_err()
@@ -422,8 +330,6 @@ mod tests {
             "should fail to spawn without the tools PATH: {missing_err}"
         );
 
-        // With the tools PATH the binary spawns; the handshake then fails,
-        // proving the command resolved against the injected PATH.
         let connected = residuum_core::testing::wait::guarded(
             "the spawned fake server to fail its handshake",
             McpClient::connect(&entry, Some(path.as_os_str()), None),
@@ -468,10 +374,6 @@ mod tests {
             timeout_secs: None,
         };
 
-        // The test already waits on a real condition (the child closing its
-        // stdout once it exits); the bound is just a safety net against a
-        // hang, so give it generous headroom for a contended scheduler
-        // rather than racing real process spawn/exit timing.
         let result = residuum_core::testing::wait::guarded(
             "the spawned fake server to fail its handshake",
             McpClient::connect(&entry, None, Some(&workspace)),

@@ -1,14 +1,9 @@
-/**
- * The accessibility helper against small pages built for it, so its verdicts
- * don't depend on the app.
- */
 import { expectNoAxeViolations } from "../support/axe";
 import { expect, test } from "../support/fixtures";
 
 const CLEAN_PAGE = `<!doctype html><html lang="en"><head><title>Clean</title></head>
   <body><main><h1>Clean</h1><button type="button">Save</button></main></body></html>`;
 
-// An image with no text alternative: critical, rule `image-alt`.
 const PAGE_WITH_UNLABELED_IMAGE = `<!doctype html><html lang="en"><head><title>Broken</title></head>
   <body><main><h1>Broken</h1><img src="data:image/gif;base64,R0lGODlhAQABAAAAACw="></main></body></html>`;
 

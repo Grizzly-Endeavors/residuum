@@ -60,8 +60,6 @@ fn build_service_with_auto_error_reporting(endpoint: &str) -> Arc<TracingService
     Arc::new(TracingService::new(cfg, handle))
 }
 
-/// Captured request body: shared between the mock responder and the test
-/// assertions. Created fresh per test.
 fn capture_body() -> Arc<std::sync::Mutex<Option<Value>>> {
     Arc::new(std::sync::Mutex::new(None))
 }
@@ -138,12 +136,6 @@ async fn bug_report_happy_path_sends_wire_contract_and_returns_receipt() {
 
 #[tokio::test]
 async fn bug_report_includes_active_subagents_when_present() {
-    // The wire format itself doesn't know about the session registry —
-    // that's assembled by the bug-report tool and HTTP handler (see
-    // crates/tools/src/file_bug_report.rs and crates/hub/src/web/tracing_api.rs).
-    // This test only confirms the wire contract carries whatever the
-    // caller populates through unchanged, since the happy-path test
-    // above pins the empty case.
     let server = MockServer::start().await;
     let captured = capture_body();
     let captured_for_mock = Arc::clone(&captured);
@@ -344,7 +336,6 @@ async fn on_error_no_ops_when_auto_error_reporting_is_off() {
         .mount(&server)
         .await;
 
-    // build_service defaults auto_error_reporting to false.
     let service = build_service(&server.uri());
     service.on_error("something broke", sample_client()).await;
 }

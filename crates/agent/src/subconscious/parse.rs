@@ -1,20 +1,15 @@
-//! Response parsing for the subconscious classifier LLM output.
-
 use serde::Deserialize;
 
 use super::{EvalOutcome, Finding, FindingKind, LearnSignal, LearnSignalType, Severity};
 use residuum_inference::InferenceResponse;
 
-/// Typed response from structured output mode.
 #[derive(Deserialize)]
 struct SubconsciousJsonResponse {
     findings: Vec<FindingItem>,
-    /// Absent when the learning loop is off; defaults to empty.
     #[serde(default)]
     learnings: Vec<LearnItem>,
 }
 
-/// Single finding item within the typed response.
 #[derive(Deserialize)]
 struct FindingItem {
     kind: FindingKind,
@@ -22,25 +17,12 @@ struct FindingItem {
     instruction: String,
 }
 
-/// Single learn-signal item within the typed response.
 #[derive(Deserialize)]
 struct LearnItem {
     summary: String,
     signal_type: LearnSignalType,
 }
 
-/// Parse the model's JSON response into findings and learn signals.
-///
-/// An empty findings array is the normal "everything is fine" result, not an
-/// error. Tries typed deserialization first (structured output path), then
-/// falls back to `Value`-based parsing that skips malformed items. Learn
-/// signals are only extracted when `include_learnings` is set (end-of-turn
-/// triage with the learning loop enabled); otherwise they are dropped even if
-/// the model returned them.
-///
-/// # Errors
-/// Returns an error if the response is not parseable JSON or lacks a
-/// `findings` array.
 pub(super) fn parse_subconscious_response(
     response: &InferenceResponse,
     include_learnings: bool,
@@ -48,7 +30,6 @@ pub(super) fn parse_subconscious_response(
     let content = response.content.trim();
     let json_str = residuum_inference::strip_code_fences(content);
 
-    // Fast path: typed deserialization (structured output)
     if let Ok(typed) = serde_json::from_str::<SubconsciousJsonResponse>(json_str) {
         let findings = typed
             .findings
@@ -79,7 +60,6 @@ pub(super) fn parse_subconscious_response(
         });
     }
 
-    // Fallback: Value-based parsing for malformed responses
     tracing::debug!("subconscious structured output failed, falling back to value-based parsing");
     let value: serde_json::Value = serde_json::from_str(json_str).map_err(|e| {
         anyhow::anyhow!("failed to parse subconscious response as JSON: {e}\nresponse: {content}")
@@ -109,7 +89,6 @@ pub(super) fn parse_subconscious_response(
     })
 }
 
-/// Parse individual finding items from a JSON array, skipping malformed ones.
 fn parse_finding_items(items: &[serde_json::Value]) -> Vec<Finding> {
     let mut findings = Vec::new();
 
@@ -152,7 +131,6 @@ fn parse_finding_items(items: &[serde_json::Value]) -> Vec<Finding> {
     findings
 }
 
-/// Parse individual learn-signal items from a JSON array, skipping malformed ones.
 fn parse_learn_items(items: &[serde_json::Value]) -> Vec<LearnSignal> {
     let mut learnings = Vec::new();
 

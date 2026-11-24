@@ -1,12 +1,3 @@
-// A step's arguments, summarized per tool for its details: the command, path
-// or query first, then what qualifies it, then any long text it carries.
-// A tool without a summary shows every argument by name.
-
-/**
- * One line of a step's arguments: `code` (a command or address), `path`,
- * `query` (quoted), `label` (a name), `meta` (what qualifies the call),
- * `quote` (long text, clamped), or `pairs` (every argument by name).
- */
 export type ArgLine =
   | { kind: "code" | "path" | "query" | "label" | "meta" | "quote"; text: string }
   | { kind: "pairs"; pairs: [name: string, value: string][] };
@@ -21,7 +12,6 @@ function str(args: Args, key: string): string {
   return JSON.stringify(value);
 }
 
-/** Qualifiers joined with " · ", leaving out the ones that aren't set. */
 function meta(parts: [label: string, key: string][], args: Args): ArgLine | null {
   const text = parts
     .filter(([, key]) => str(args, key) !== "")
@@ -120,7 +110,6 @@ const SUMMARIES: Readonly<Record<string, (args: Args) => (ArgLine | null)[]>> = 
   switch_endpoint: (a) => [line("label", str(a, "endpoint"))],
 };
 
-/** `name`'s arguments as the lines its details show; none when it took none. */
 export function argumentLines(name: string, args: Args): ArgLine[] {
   const set = Object.entries(args).filter(([, value]) => value !== null && value !== "");
   if (set.length === 0) return [];

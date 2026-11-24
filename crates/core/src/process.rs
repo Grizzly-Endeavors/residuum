@@ -1,9 +1,3 @@
-//! Cross-platform process tree management and command invocation helpers.
-//!
-//! Provides utilities to spawn processes in their own process groups, kill process trees
-//! across Unix and Windows, safely handle Windows `.cmd` batch file invocations with argv,
-//! track process liveness, and run a shell command under a timeout and a stop.
-
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
@@ -19,7 +13,6 @@ use nix::sys::signal::{Signal, kill, killpg};
 #[cfg(unix)]
 use nix::unistd::Pid;
 
-/// Inspect whether an operating system process with the given PID is currently running.
 #[must_use]
 pub fn is_process_running(pid: u32) -> bool {
     #[cfg(unix)]
@@ -103,11 +96,6 @@ pub async fn kill_process_tree(pid: Option<u32>) {
     }
 }
 
-/// Synchronously kill every process in the tree rooted at `pid`.
-///
-/// Suitable for `Drop` implementations where asynchronous execution is impossible.
-///
-/// A no-op if `pid` is `None`.
 pub fn kill_process_tree_sync(pid: Option<u32>) {
     let Some(pid) = pid else {
         return;
@@ -137,19 +125,16 @@ pub fn kill_process_tree_sync(pid: Option<u32>) {
     }
 }
 
-/// RAII guard that kills a process tree if dropped while still armed.
 pub struct ProcessTreeGuard {
     pid: Option<u32>,
 }
 
 impl ProcessTreeGuard {
-    /// Create a new guard for `pid`.
     #[must_use]
     pub const fn new(pid: Option<u32>) -> Self {
         Self { pid }
     }
 
-    /// Disarm the guard when the child process has completed or exited normally.
     pub fn disarm(&mut self) {
         self.pid = None;
     }
@@ -161,7 +146,6 @@ impl Drop for ProcessTreeGuard {
     }
 }
 
-/// Configure process isolation so spawned commands run in their own process group.
 pub fn configure_process_group(cmd: &mut tokio::process::Command) {
     #[cfg(unix)]
     {
@@ -190,9 +174,6 @@ pub fn build_platform_command_spec(
     )
 }
 
-/// Create a [`tokio::process::Command`] with argv and process group configured.
-///
-/// Spawns the specified program with argv, isolated in its own process group on Unix.
 #[must_use]
 pub fn create_argv_command(program: &Path, args: &[&str]) -> tokio::process::Command {
     let (target_bin, target_args) = build_platform_command_spec(program, args, cfg!(windows));
@@ -202,18 +183,12 @@ pub fn create_argv_command(program: &Path, args: &[&str]) -> tokio::process::Com
     cmd
 }
 
-/// Build the platform shell invocation for `command`: `sh -c` on Unix,
-/// `cmd /S /C` on Windows.
 #[must_use]
 pub fn shell_command(command: &str) -> tokio::process::Command {
     #[cfg(unix)]
     {
         let mut c = tokio::process::Command::new("sh");
         c.arg("-c").arg(command);
-        // Puts the shell (pid == pgid) in its own process group instead of
-        // inheriting residuum's, so killing the group on a timeout or a
-        // stop (see `kill_process_tree`) only ever reaches this command's
-        // own tree, never residuum's process group.
         c.process_group(0);
         c
     }
@@ -229,97 +204,50 @@ pub fn shell_command(command: &str) -> tokio::process::Command {
     }
 }
 
-/// How a spawned command's run ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunOutcome {
-    /// The command exited on its own, and everything holding its output
-    /// pipes let go of them, before the timeout or a stop.
     Finished,
-    /// The timeout elapsed, either while the command ran or while a process
-    /// it left behind still held its output open; the process tree was
-    /// killed.
     TimedOut,
-    /// The caller's cancellation token fired, either while the command ran
-    /// or while a process it left behind still held its output open; the
-    /// process tree was killed.
     Cancelled,
 }
 
-/// How much of a pipe [`run_with_timeout_and_cancel`] keeps. Whatever
-/// isn't kept is still read, so the command never blocks on a full pipe.
-/// ANSI escape sequences are removed before anything is counted or kept.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Capture {
-    /// Everything.
     All,
-    /// The first `n` bytes.
     Head(usize),
-    /// The last `n` bytes, where a failing command's final error usually is.
     Tail(usize),
-    /// The first `head` bytes and the last `tail` bytes; what lies between
-    /// them is dropped and counted in [`Captured::omitted`].
     HeadAndTail { head: usize, tail: usize },
 }
 
-/// What one pipe kept of its output under its [`Capture`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Captured {
-    /// The first bytes kept.
     pub head: Vec<u8>,
-    /// The last bytes kept, after `omitted` dropped bytes that follow `head`.
     pub tail: Vec<u8>,
-    /// Bytes read between `head` and `tail` and dropped.
     pub omitted: usize,
 }
 
 impl Captured {
-    /// Every byte the pipe produced after escape sequences were removed,
-    /// kept or not.
     #[must_use]
     pub fn total_bytes(&self) -> usize {
         self.head.len() + self.omitted + self.tail.len()
     }
 }
 
-/// A finished command's exit status and what each of its pipes kept.
 #[derive(Debug)]
 pub struct CapturedOutput {
-    /// The exit status, or the status the process was reaped with when it was killed.
     pub status: ExitStatus,
     pub stdout: Captured,
     pub stderr: Captured,
 }
 
-/// How long the pipes are still read after a killed command's process
-/// tree is gone. A process that escaped the kill can hold the pipes open
-/// for as long as it lives: one that left the process group on Unix, or,
-/// on Windows, a descendant `taskkill /T` can no longer find once the shell
-/// that started it has exited. Past this, whatever was read is returned.
 const KILLED_PIPE_DRAIN_GRACE: Duration = Duration::from_secs(2);
 
-/// How the race in [`run_with_timeout_and_cancel`] resolved, before the
-/// process tree has necessarily been killed or reaped yet.
 enum Wait {
     Exited(ExitStatus),
     TimedOut,
     Cancelled,
 }
 
-/// Spawn `cmd`, race it against `timeout` and `cancel`, and return whatever
-/// output it produced along with how the run ended.
-///
-/// The timeout and `cancel` stay in force until both output pipes close,
-/// not only until the shell exits: a command that starts a background
-/// process which keeps its output open (`some-daemon & echo started`) is
-/// stopped at the timeout like any other. On a timeout or a stop,
-/// [`kill_process_tree`] kills the whole process tree rather than only the
-/// immediate shell, and whatever stdout/stderr the command had produced is
-/// still returned (after a short grace period, for a process the kill
-/// can't reach).
-///
-/// # Errors
-/// Returns an error when the command can't be spawned, its exit status
-/// can't be read, or a pipe read fails.
 pub async fn run_with_timeout_and_cancel(
     mut cmd: tokio::process::Command,
     timeout: Duration,
@@ -333,9 +261,6 @@ pub async fn run_with_timeout_and_cancel(
     let deadline = tokio::time::Instant::now() + timeout;
     let mut child = cmd.spawn()?;
     let pid = child.id();
-    // Kills the process tree if this future is dropped (not cancelled
-    // through `cancel`) before the run has fully ended, the pipe drain
-    // included — e.g. the caller's turn future being dropped mid-command.
     let mut tree_guard = ProcessTreeGuard::new(pid);
     let stdout_pipe = child
         .stdout
@@ -369,8 +294,6 @@ pub async fn run_with_timeout_and_cancel(
     let mut drained = None;
     let (outcome, status) = match wait {
         Wait::Exited(status) => {
-            // The shell is gone, but anything it started in the background
-            // may still hold the pipes; the deadline and the stop still apply.
             let stopped = tokio::select! {
                 biased;
                 () = cancel.cancelled() => Some(RunOutcome::Cancelled),
@@ -425,12 +348,10 @@ pub async fn run_with_timeout_and_cancel(
     ))
 }
 
-/// Keeps one pipe's output as its [`Capture`] asks, counting what it drops.
 struct CaptureBuffer {
     head_cap: usize,
     tail_cap: usize,
     stripper: AnsiStripper,
-    /// Scratch space for one read after escape sequences are removed.
     plain: Vec<u8>,
     captured: Captured,
 }
@@ -459,7 +380,6 @@ impl CaptureBuffer {
         let (to_head, to_tail) = self.plain.split_at(room.min(self.plain.len()));
         self.captured.head.extend_from_slice(to_head);
         self.captured.tail.extend_from_slice(to_tail);
-        // Trimmed in batches so each byte is moved O(1) times.
         if self.captured.tail.len() > self.tail_cap.saturating_mul(2) {
             self.trim_tail();
         }
@@ -479,9 +399,6 @@ impl CaptureBuffer {
     }
 }
 
-/// Spawn a task that reads a child's pipe to EOF, keeping what `capture`
-/// asks for. Once `stop` fires it still takes whatever is ready to read,
-/// then returns instead of waiting for more.
 fn spawn_pipe_reader<R>(
     mut pipe: R,
     capture: Capture,
@@ -510,8 +427,6 @@ where
     })
 }
 
-/// Await a [`spawn_pipe_reader`] task, surfacing a task panic as an I/O
-/// error the same way a read failure would be.
 async fn join_pipe_reader(
     task: tokio::task::JoinHandle<io::Result<Captured>>,
 ) -> io::Result<Captured> {
@@ -570,8 +485,6 @@ mod tests {
         let current_pid = std::process::id();
         assert!(is_process_running(current_pid));
     }
-
-    // ── capture ──────────────────────────────────────────────────────────
 
     fn captured(capture: Capture, chunks: &[&[u8]]) -> Captured {
         let mut buffer = CaptureBuffer::new(capture);
@@ -665,11 +578,6 @@ mod tests {
         );
     }
 
-    // ── a background process left holding the output ─────────────────────
-
-    /// Wait until the shell whose pid `pid_file` holds has been reaped, which
-    /// only `child.wait()` inside `run_with_timeout_and_cancel` does — so the
-    /// run has seen the shell exit and is now waiting on the pipes alone.
     #[cfg(target_os = "linux")]
     async fn shell_reaped(pid_file: &std::path::Path) {
         let pid: u32 = crate::testing::wait::until("the shell's pid", || async {
@@ -734,8 +642,6 @@ mod tests {
         background_pid_dies(&dir.path().join("bg.pid")).await;
     }
 
-    // Once the shell has been reaped, the clock is paused: with only the
-    // pipes left to wait on, tokio jumps straight to the run's deadline.
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn the_timeout_ends_a_run_whose_background_child_holds_the_output() {

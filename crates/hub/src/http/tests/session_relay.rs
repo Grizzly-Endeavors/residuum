@@ -1,11 +1,3 @@
-//! Tests for the hub socket's artifact events and session relay, against the
-//! fake directory's agents: `scout` (running), `quiet` (stopped) and the
-//! session events the harness's feed of agent changes carries.
-//!
-//! The artifact events come from the hub's own watcher over a real team
-//! change feed. Session events are relayed the way the per-agent watcher
-//! relays them: onto the harness's feed.
-
 use super::*;
 use crate::agent_watch::AgentSessionEvent;
 use crate::services::TeamChangeFeed;
@@ -15,7 +7,6 @@ use residuum_bus::{
     ToolResultEvent,
 };
 
-/// How many session events a connection can fall behind by.
 const RELAY_CAPACITY: usize = 1024;
 
 fn session_info(address: &str, label: &str) -> SessionInfo {
@@ -39,8 +30,6 @@ fn session_info(address: &str, label: &str) -> SessionInfo {
     }
 }
 
-/// Relay one event of `agent`'s session at `address`, labelled `label`, the
-/// way the agent's watcher does.
 fn relay(h: &Harness, agent: &str, label: Option<&str>, address: &str, kind: SessionEventKind) {
     h.changes.relay_session(AgentSessionEvent {
         agent: agent.to_string(),
@@ -59,7 +48,6 @@ fn turn_started(turn: &str) -> SessionEventKind {
     }
 }
 
-/// A hub socket past its `hub_boot` and `agents_snapshot`.
 async fn connect_ready(h: &Harness) -> ClientSocket {
     let mut socket = connect_hub(h.serve().await).await;
     assert_eq!(next_frame(&mut socket).await["type"], "agents_snapshot");
@@ -84,7 +72,6 @@ async fn subscribe_artifact(socket: &mut ClientSocket, artifact: &str) -> Value 
     next_frame(socket).await
 }
 
-/// What a `session_frame` carries: the agent, the frame's type and its address.
 fn described(frame: &Value) -> (String, String, String) {
     assert_eq!(frame["type"], "session_frame", "{frame}");
     let inner = &frame["frame"];
@@ -101,17 +88,12 @@ fn described(frame: &Value) -> (String, String, String) {
 
 #[tokio::test]
 async fn artifact_events_reach_the_socket_with_no_agent_running() {
-    // The hub's own watcher over a real team change feed: no agent runs
-    // anywhere in this test.
     let team = tempfile::tempdir().unwrap();
     let team_root = team.path().join("team");
     let feed = TeamChangeFeed::start(team_root.clone()).await;
     let h = Harness::over_team_bus(feed.bus.clone());
     let mut socket = connect_ready(&h).await;
 
-    // The feed arms its OS watcher on its own task, and a file written before
-    // the watch is placed is never reported. The watcher is a separate thread
-    // that a busy machine can starve, so write only once the feed says it runs.
     let mut health = feed.health.clone();
     let started = residuum_core::testing::wait::watch_until(
         "the team change feed to start its watcher",
@@ -124,11 +106,6 @@ async fn artifact_events_reach_the_socket_with_no_agent_running() {
     let workbench = team_root.join("workbench");
     std::fs::create_dir_all(&workbench).unwrap();
     std::fs::write(workbench.join("chart.html"), "<p>v1</p>").unwrap();
-    // A frame follows an OS file notification, delivered on the watcher's own
-    // thread, and the feed's debounce on the real clock, so a paused clock
-    // can't stand in for either. `next_frame`'s 5s bound is meant for frames
-    // the hub sends at once, so read the socket directly: the bound here only
-    // turns a notification that never comes into a failure instead of a hang.
     let next = async |connection: &mut ClientSocket| {
         let message = residuum_core::testing::wait::guarded("an artifact frame", connection.next())
             .await
@@ -161,7 +138,6 @@ async fn a_subscribed_session_streams_every_event_tool_frames_included() {
     let mut socket = connect_ready(&h).await;
     let label = Some("artifact:chart");
 
-    // A session that finished before the subscription is not replayed.
     relay(&h, "scout", label, "spawned-a", turn_started("t-0"));
     let ack = subscribe_session(&mut socket, "scout", "spawned-a").await;
     assert_eq!(
@@ -245,9 +221,6 @@ async fn a_subscription_is_acknowledged_before_any_frame() {
     let h = Harness::new();
     let mut socket = connect_ready(&h).await;
 
-    // An event of the session is already waiting when the subscription
-    // arrives. Whether the hub reads it before or after the subscription, no
-    // frame comes ahead of the acknowledgement.
     relay(&h, "scout", None, "spawned-a", turn_started("t-1"));
     send_client(
         &mut socket,
@@ -281,7 +254,6 @@ async fn an_artifact_subscription_follows_sessions_started_later_on_two_agents()
     let mut socket = connect_ready(&h).await;
     subscribe_artifact(&mut socket, "chart").await;
 
-    // Neither session exists yet. Each starts after the subscription.
     relay(
         &h,
         "scout",
@@ -302,8 +274,6 @@ async fn an_artifact_subscription_follows_sessions_started_later_on_two_agents()
             "artifact:chart",
         ))),
     );
-    // Sessions of another artifact, another source, and one whose label is
-    // unknown are not the artifact's.
     relay(
         &h,
         "scout",
@@ -319,7 +289,6 @@ async fn an_artifact_subscription_follows_sessions_started_later_on_two_agents()
         turn_started("t-y"),
     );
     relay(&h, "nova", None, "mystery", turn_started("t-z"));
-    // Later events of the two sessions follow, labelled as their start was.
     relay(
         &h,
         "nova",
@@ -364,8 +333,6 @@ async fn unsubscribing_stops_delivery() {
     subscribe_session(&mut socket, "scout", "spawned-a").await;
     subscribe_artifact(&mut socket, "chart").await;
 
-    // An unsubscribe has no answer, but the hub reads a connection's messages
-    // in order, so the answer to a message sent after it shows it was handled.
     send_client(
         &mut socket,
         &json!({ "type": "unsubscribe_session", "agent": "scout", "address": "spawned-a" }),
@@ -381,8 +348,6 @@ async fn unsubscribing_stops_delivery() {
         "artifact-chart-0001",
         turn_started("t-2"),
     );
-    // The artifact's frame is the first to arrive, so the session's event was
-    // dropped before it.
     let artifact_frame = next_frame(&mut socket).await;
     assert_eq!(
         artifact_frame["frame"]["turn_id"], "t-2",
@@ -406,7 +371,6 @@ async fn unsubscribing_stops_delivery() {
     let frame = next_frame(&mut socket).await;
     assert_eq!(frame["frame"]["turn_id"], "t-4", "{frame}");
 
-    // Unsubscribing what was never followed changes nothing.
     send_client(
         &mut socket,
         &json!({ "type": "unsubscribe_session", "agent": "ghost", "address": "x" }),
@@ -423,19 +387,14 @@ async fn a_connection_that_falls_behind_is_told_to_read_its_sessions_again() {
     subscribe_session(&mut following, "scout", "spawned-a").await;
     let mut idle = connect_ready(&h).await;
 
-    // Nothing runs on this thread between the sends, so neither connection
-    // reads any of them before the relay has overflowed.
     for n in 0..RELAY_CAPACITY + 50 {
         relay(&h, "scout", None, "spawned-a", turn_started(&n.to_string()));
     }
     let lagged = next_frame(&mut following).await;
     assert_eq!(lagged, json!({ "type": "session_relay_lagged" }));
-    // The events that are still held follow it.
     let frame = next_frame(&mut following).await;
     assert_eq!(frame["type"], "session_frame");
 
-    // A connection that follows nothing lost nothing, so it hears no lag
-    // notice among the answers it gets while the relay is read.
     for _ in 0..8 {
         send_client(&mut idle, &json!({ "type": "nonsense" })).await;
         assert_eq!(next_frame(&mut idle).await["type"], "notice");
@@ -452,9 +411,6 @@ async fn an_unknown_agent_gets_a_notice_and_no_acknowledgement() {
     assert_eq!(refusal["level"], "warn");
     assert!(refusal["message"].as_str().unwrap().contains("ghost"));
 
-    // Nothing for it is delivered, and no acknowledgement is pending: the
-    // next frame is the one the following subscription earns. A stopped agent
-    // is a known one.
     relay(&h, "ghost", None, "spawned-a", turn_started("t-1"));
     let ack = subscribe_session(&mut socket, "quiet", "spawned-q").await;
     assert_eq!(
@@ -464,8 +420,6 @@ async fn an_unknown_agent_gets_a_notice_and_no_acknowledgement() {
     relay(&h, "quiet", None, "spawned-q", turn_started("t-2"));
     assert_eq!(next_frame(&mut socket).await["frame"]["turn_id"], "t-2");
 
-    // A subscription message missing a field is refused like any message the
-    // hub can't read.
     send_client(
         &mut socket,
         &json!({ "type": "subscribe_session", "agent": "scout" }),
@@ -494,7 +448,6 @@ async fn subscriptions_end_with_the_connection() {
         "the closed connection's end of the relay is gone"
     );
 
-    // A connection that opens afterwards follows none of it.
     let mut second = connect_ready(&h).await;
     relay(&h, "scout", None, "spawned-a", turn_started("t-1"));
     relay(

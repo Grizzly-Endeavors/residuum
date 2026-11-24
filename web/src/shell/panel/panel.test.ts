@@ -25,7 +25,6 @@ function stubStorage(): Map<string, string> {
   return items;
 }
 
-/** A `localStorage` that refuses every call, as a private window or blocked site data does. */
 function stubBlockedStorage(): void {
   const refuse = (): never => {
     throw new DOMException("The operation is insecure.", "SecurityError");

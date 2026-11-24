@@ -1,7 +1,3 @@
-//! Test helpers for the bus: waiting on what it publishes, and a dead-end
-//! interrupt receiver for code that drains interrupts. Behind `test-support`,
-//! and compiled for this crate's own tests.
-
 use std::fmt::Display;
 
 use tokio::sync::mpsc;
@@ -10,27 +6,12 @@ use crate::interrupt::Interrupt;
 use crate::{BusHandle, Subscriber, WorkbenchEvent, topics};
 use residuum_core::testing::wait::guarded;
 
-/// Create a dead-end receiver that will never receive any messages.
-///
-/// For tests that run a turn or a session without an interrupt source of its
-/// own. Unbounded, matching the main agent's own channel shape: nothing is
-/// ever sent through it, so a session test using it in place of its own
-/// bounded channel still works, since `InterruptSource` is implemented for
-/// both channel shapes.
 #[must_use]
 pub fn dead_interrupt_rx() -> mpsc::UnboundedReceiver<Interrupt> {
     let (_tx, rx) = mpsc::unbounded_channel::<Interrupt>();
     rx
 }
 
-/// The next event a bus subscriber receives, waiting for one under the hang
-/// guard. A bus subscriber has no non-blocking receive, so it is waited on
-/// here rather than through core's `Recv`.
-///
-/// # Panics
-/// Panics, naming `what`, when the broker shuts down or the subscriber falls
-/// behind before the event arrives, or when no event arrives within the hang
-/// guard.
 #[expect(
     clippy::panic,
     reason = "test-support helper: a bus that never delivers fails the test that waits on it"
@@ -46,15 +27,6 @@ where
     }
 }
 
-/// Returns once every event `bus` was sent before this call has been handed
-/// to every subscriber. The broker takes commands in order and fans each one
-/// out before the next, so a barrier event that comes back proves the earlier
-/// publishes were fanned out too. Then `drain` on a subscriber shows exactly
-/// what it was sent.
-///
-/// # Panics
-/// Panics when the broker is not running, or when the barrier does not come
-/// back within the hang guard.
 #[expect(
     clippy::expect_used,
     reason = "test-support helper: a broker that is not running fails the test that waits on it"

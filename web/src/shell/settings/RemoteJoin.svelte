@@ -5,12 +5,6 @@
   import { Banner, Button, Disclosure, TextField } from "../../lib/ui";
   import type { RemoteAct } from "./remote-access-act";
 
-  // Joining another instance: this instance asks one that is already set up
-  // for remote access to approve it, and shows six digits to compare with the
-  // ones that instance shows. Until it is approved a new instance can't serve
-  // anything over the tunnel, so the form is open and prominent then, and a
-  // quiet disclosure otherwise.
-
   interface Props {
     status: RemoteAccessStatus;
     busy: string | null;
@@ -27,7 +21,6 @@
   const needsJoin = $derived(status.state === "needs_join");
   const join = $derived(status.join);
   const waiting = $derived(join?.state === "waiting");
-  /** The other instances this one has a certificate account for, offered as suggestions. */
   const suggestions = $derived([
     ...new Set(
       status.pins.filter((pin) => !pin.own && isInstanceSlug(pin.slug)).map((pin) => pin.slug),

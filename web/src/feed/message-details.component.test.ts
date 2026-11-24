@@ -6,16 +6,12 @@ import { toast } from "../lib/toast.svelte";
 import type { FeedItem } from "../lib/types";
 import FeedItemView from "./FeedItemView.svelte";
 
-// What a message keeps quiet until it is hovered, focused or tapped: when it
-// was sent, and Copy on an agent's reply.
-
 class NoObserver {
   observe(): void {}
   unobserve(): void {}
   disconnect(): void {}
 }
 
-/** Show `item` the way the feed holds it, and give back that reactive item. */
 function show(item: FeedItem, agent = "atlas"): FeedItem {
   const store = new FeedStore();
   store.feed.push(item);
@@ -31,7 +27,6 @@ function stubClipboard(writeText: (text: string) => Promise<void>): ReturnType<t
   return spy;
 }
 
-/** A screen where nothing hovers (`hover: none`), or one where something does. */
 function stubHover(hover: boolean): void {
   vi.stubGlobal(
     "matchMedia",
@@ -44,15 +39,10 @@ function stubHover(hover: boolean): void {
   );
 }
 
-/**
- * A user whose clicks advance the faked clock. It is made before the
- * clipboard is stubbed, since it installs a clipboard of its own.
- */
 function pointer(): ReturnType<typeof userEvent.setup> {
   return userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
 }
 
-// Friday 9 October 2026, early evening, on the reader's clock.
 const NOW = new Date(2026, 9, 9, 18, 0);
 
 beforeEach(() => {
@@ -173,7 +163,6 @@ describe("copying a reply", () => {
 
     expect(writeText).toHaveBeenCalledWith("Use **two** `ports`.\n\n- a\n- b");
     expect(screen.getByRole("button", { name: "Copied" })).toBeInTheDocument();
-    // A button that is pressed doesn't announce its new label, so a status does.
     const status = (): Element | null => document.querySelector(".reply-meta [role=status]");
     expect(status()).toHaveTextContent("Copied");
 
@@ -231,7 +220,6 @@ describe("showing the quiet details on a tap", () => {
       content: "See [the docs](https://example.com/docs).",
       timestamp: "2026-10-09T10:05:00",
     });
-    // Following the link would navigate; the tap is what matters here.
     document.addEventListener("click", (event) => {
       event.preventDefault();
     });
@@ -255,7 +243,6 @@ describe("showing the quiet details on a tap", () => {
     const text = screen.getByText("Plain words.");
     window.getSelection()?.selectAllChildren(text);
 
-    // A drag that selects text ends in a click with the selection still there.
     void fireEvent.click(text);
     expect(message()).not.toHaveAttribute("data-revealed");
     window.getSelection()?.removeAllRanges();

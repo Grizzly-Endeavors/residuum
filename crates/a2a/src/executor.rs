@@ -1,7 +1,3 @@
-//! The A2A [`a2a_server::AgentExecutor`]: turns an inbound A2A message into
-//! an `a2a` conversation session and maps that session's lifecycle back onto
-//! A2A task states. See `docs/systems-usage/a2a.md`.
-
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -34,8 +30,6 @@ use super::card::SharedCardState;
 
 type ExecutorSender = tokio::sync::mpsc::Sender<Result<StreamResponse, A2AError>>;
 
-/// Everything the executor needs to deliver a message into a session and
-/// follow that session's lifecycle back to an A2A task state.
 #[derive(Clone)]
 pub struct SessionExecutor {
     messenger: Arc<AgentMessenger>,
@@ -48,8 +42,6 @@ pub struct SessionExecutor {
 }
 
 impl SessionExecutor {
-    /// Create an executor. `agent_inbox_dir` is where non-image inbound
-    /// attachments are saved, same as every other interface.
     #[must_use]
     pub fn new(
         messenger: Arc<AgentMessenger>,
@@ -71,9 +63,6 @@ impl SessionExecutor {
         }
     }
 
-    /// The caller identity the auth layer injected for this request, or an
-    /// internal error if it's missing (it always should be present — every
-    /// request that reaches the executor already passed the auth layer).
     fn caller_of(params: &a2a_server::ServiceParams) -> Result<String, A2AError> {
         params
             .get(CALLER_HEADER)
@@ -84,18 +73,11 @@ impl SessionExecutor {
             })
     }
 
-    /// The conversation session address a `(caller, context_id)` pair maps
-    /// to. Shared with [`super::handler::ResiduumA2aHandler`] so the task
-    /// metadata it records matches exactly what the executor delivers into.
     #[must_use]
     pub fn address_for(caller: &str, context_id: &str) -> residuum_bus::SessionAddress {
         conversation_session_address(A2A_ENDPOINT, &format!("{caller}/{context_id}"))
     }
 
-    /// Skill to activate for a new session, from the message's
-    /// `metadata.skill` when it names both a card skill id and a workspace
-    /// skill. Returns the note to prepend to content when a skill was named
-    /// but didn't map to anything runnable.
     async fn resolve_skill(
         &self,
         message: &A2aMessage,
@@ -175,8 +157,6 @@ impl AgentExecutor for SessionExecutor {
     }
 }
 
-/// Build a `StatusUpdate` [`StreamResponse`] for `state`, optionally carrying
-/// an agent message with `text`.
 fn status_update(
     task_id: &str,
     context_id: &str,
@@ -201,7 +181,6 @@ fn status_update(
     })
 }
 
-/// Build an `ArtifactUpdate` [`StreamResponse`] for one artifact.
 fn artifact_update(task_id: &str, context_id: &str, artifact: Artifact) -> StreamResponse {
     StreamResponse::ArtifactUpdate(TaskArtifactUpdateEvent {
         task_id: task_id.to_string(),
@@ -213,8 +192,6 @@ fn artifact_update(task_id: &str, context_id: &str, artifact: Artifact) -> Strea
     })
 }
 
-/// Live subscriptions the executor follows for one execution, all opened
-/// before delivery so nothing the session does in response is missed.
 struct ExecutionSubscriptions {
     sessions: residuum_bus::Subscriber<SessionEvent>,
     signals: residuum_bus::Subscriber<A2aTaskSignalEvent>,
@@ -236,9 +213,6 @@ async fn subscribe_before_delivery(
     Ok(ExecutionSubscriptions { sessions, signals })
 }
 
-/// The whole lifecycle of one `execute()` call: subscribe, deliver, then
-/// follow the session's activity until it reaches a terminal (or
-/// input-required) A2A state.
 async fn run_execution(executor: SessionExecutor, ctx: ExecutorContext, tx: ExecutorSender) {
     let task_id = ctx.task_id.clone();
     let context_id = ctx.context_id.clone();
@@ -252,8 +226,6 @@ async fn run_execution(executor: SessionExecutor, ctx: ExecutorContext, tx: Exec
     };
     let address = SessionExecutor::address_for(&caller, &context_id);
 
-    // Subscribe BEFORE delivering the message, so nothing the session does
-    // in response can be published and missed before we start listening.
     let mut subs = match subscribe_before_delivery(&executor).await {
         Ok(subs) => subs,
         Err(e) => {
@@ -277,11 +249,6 @@ async fn run_execution(executor: SessionExecutor, ctx: ExecutorContext, tx: Exec
     stream_until_terminal(&executor, &address, &task_id, &context_id, &mut subs, &tx).await;
 }
 
-/// A caller's bare name for display (`laptop` for `sibling:laptop`,
-/// `research` for `key:research`), and a note distinguishing the user's own
-/// other instance from an external caller-key holder. `caller` itself keeps
-/// its fully namespaced form (`key:<name>`/`sibling:<slug>`) everywhere it's
-/// used for the session address or task ownership — this is display-only.
 fn caller_display(caller: &str) -> (String, Option<&'static str>) {
     if let Some(slug) = caller.strip_prefix("sibling:") {
         (slug.to_string(), Some("your own other Residuum instance"))
@@ -295,9 +262,6 @@ fn caller_display(caller: &str) -> (String, Option<&'static str>) {
     }
 }
 
-/// Build the session's inbound content from the A2A message and deliver it
-/// into the conversation session, per the skill-mapping and part-handling
-/// rules in `docs/systems-usage/a2a.md`.
 async fn deliver_inbound(
     executor: &SessionExecutor,
     address: &residuum_bus::SessionAddress,
@@ -350,8 +314,6 @@ async fn deliver_inbound(
     Ok(())
 }
 
-/// Identity of the task one [`stream_until_terminal`] call follows, bundled
-/// so the per-event helpers below take one argument for it instead of four.
 struct StreamCtx<'a> {
     executor: &'a SessionExecutor,
     address: &'a residuum_bus::SessionAddress,
@@ -360,11 +322,6 @@ struct StreamCtx<'a> {
     tx: &'a ExecutorSender,
 }
 
-/// Follow the session's activity on the bus until it reaches a terminal (or
-/// input-required) A2A state, translating each relevant event into a
-/// [`StreamResponse`] sent to `tx`. Returns once the stream should end —
-/// either because a terminal outcome was sent, or because a subscription (or
-/// the channel to the caller) closed.
 async fn stream_until_terminal(
     executor: &SessionExecutor,
     address: &residuum_bus::SessionAddress,
@@ -382,21 +339,9 @@ async fn stream_until_terminal(
     };
     let mut last_final_text = String::new();
     let mut sent_working = false;
-    // Turns that started while this execution was following the session.
-    // A turn already running when the execution began may be the one that
-    // signaled the previous task's outcome; its closing text belongs to that
-    // task, so only responses from turns started here are relayed.
     let mut own_turns: HashSet<String> = HashSet::new();
 
     loop {
-        // Biased, with the session branch first: a task-outcome signal is
-        // always published from inside a turn that has already published
-        // its own `TurnStarted`/`StateChanged(Running)`, so when both
-        // channels have something ready in the same poll, the session
-        // event is the earlier one causally and must be drained first —
-        // otherwise `tokio::select!`'s default random tie-break can act on
-        // the signal first and end the stream before `sent_working` was
-        // ever set, skipping the WORKING status entirely.
         tokio::select! {
             biased;
             event = subs.sessions.recv() => {
@@ -420,9 +365,6 @@ async fn stream_until_terminal(
     }
 }
 
-/// Handle one [`SessionEventKind`] for `stream.address` within
-/// [`stream_until_terminal`]'s loop. Returns `true` when the stream should
-/// end (a terminal outcome was sent, or the caller's channel closed).
 async fn handle_session_event(
     stream: &StreamCtx<'_>,
     kind: SessionEventKind,
@@ -433,13 +375,6 @@ async fn handle_session_event(
     match kind {
         SessionEventKind::TurnStarted { turn_id } => {
             own_turns.insert(turn_id);
-            // `SessionEvent` is a lossless bus route (`bus::topics::Carries`
-            // for `Sessions`), so both this and the `StateChanged(Running)`
-            // arm below are guaranteed delivery — neither can be dropped
-            // under load. Kept as two independent triggers anyway: they're
-            // idempotent (guarded by `sent_working`), `TurnStarted` is the
-            // stronger, earlier signal that the session is working, and
-            // `own_turns` already depends on this event being delivered.
             if *sent_working {
                 return false;
             }
@@ -478,17 +413,10 @@ async fn handle_session_event(
         | SessionEventKind::ToolResult(_)
         | SessionEventKind::Intermediate { .. }
         | SessionEventKind::Error { .. }
-        // A2A has no notion of token usage/elapsed time in its task
-        // protocol, and this must never reach the agent either way — see
-        // `docs/systems-usage/turn-control.md`.
         | SessionEventKind::TurnUsage { .. } => false,
     }
 }
 
-/// Map a session run's completion onto a terminal A2A state, per the "no
-/// signal" rules in `docs/systems-usage/a2a.md`. Returns `true` once a
-/// terminal outcome has been sent (the stream should end); `false` if the
-/// run completed but a live spawned child means the task stays `WORKING`.
 async fn handle_run_completed(
     stream: &StreamCtx<'_>,
     status: AgentResultStatus,
@@ -519,9 +447,6 @@ async fn handle_run_completed(
                 .into_iter()
                 .any(|s| s.spawner.as_ref() == Some(stream.address));
             if has_live_children {
-                // A spawned child is still running; its result relay resumes
-                // this session, and the resumed run reappears at the same
-                // address — keep streaming.
                 return false;
             }
             let text = (!last_final_text.is_empty()).then_some(last_final_text);
@@ -537,8 +462,6 @@ async fn handle_run_completed(
     }
 }
 
-/// Map an explicit `a2a_task_update` signal onto the terminal (or
-/// input-required) A2A stream events that end this task's execution.
 async fn emit_signal_outcome(stream: &StreamCtx<'_>, signal: A2aTaskSignalEvent) {
     for artifact in signal.artifacts {
         let update = artifact_update(stream.task_id, stream.context_id, artifact);
@@ -560,12 +483,6 @@ async fn emit_signal_outcome(stream: &StreamCtx<'_>, signal: A2aTaskSignalEvent)
     stream.tx.send(Ok(update)).await.ok();
 }
 
-/// Turn an inbound A2A message's parts into a session's `content` string and
-/// any inline images, per `docs/systems-usage/a2a.md`: text becomes content,
-/// image raw parts become `ImageData`, other raw parts are saved to the
-/// agent inbox and referenced, `http(s)` url parts are downloaded, and data
-/// parts are pretty-printed inline. A failure on any one part never drops
-/// the message — it adds the existing failed-attachment line instead.
 async fn build_inbound_content(
     parts: &[Part],
     agent_inbox_dir: &Path,
@@ -622,9 +539,6 @@ fn append_data_part(content: &mut String, value: &serde_json::Value) {
     content.push_str(&serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string()));
 }
 
-/// A raw (inline byte) part: an image within the inline size limit becomes
-/// an [`ImageData`] directly; anything else is saved to the agent inbox and
-/// referenced in `content`.
 async fn append_raw_part(
     content: &mut String,
     images: &mut Vec<ImageData>,
@@ -700,9 +614,6 @@ async fn append_raw_part(
     }
 }
 
-/// A url part naming an `http(s)` resource: downloaded and handled the same
-/// way as a raw attachment part. Any other scheme is reported as a failed
-/// attachment rather than attempted.
 async fn append_url_part(
     content: &mut String,
     images: &mut Vec<ImageData>,
@@ -767,8 +678,6 @@ async fn finalize_and_append(
     attachments.push(finalized.attachment);
 }
 
-/// Name a failed attachment in the message and log why it failed, once for
-/// every failure path (reserve, save, download, unsupported url).
 fn append_failed_attachment(content: &mut String, info: &AttachmentInfo, reason: &str) {
     tracing::warn!(
         filename = %info.filename,

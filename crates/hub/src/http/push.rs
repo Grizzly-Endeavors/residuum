@@ -24,15 +24,12 @@ use crate::push::{
     PushService, PutPushDeviceRequest, validate_subscription,
 };
 
-/// What the push routes read.
 #[derive(Clone)]
 pub(super) struct PushApiState {
     pub push: Arc<PushService>,
-    /// Read for the unread count a test notification puts on the app badge.
     pub directory: Arc<dyn AgentDirectory>,
 }
 
-/// The key, device list, registration, change, removal, and test routes.
 pub(super) fn routes(state: PushApiState) -> Router {
     Router::new()
         .route("/api/hub/push/key", get(public_key))
@@ -54,7 +51,6 @@ fn push_error_response(error: &PushError) -> Response {
     json_error(status, error.to_string())
 }
 
-/// `GET /api/hub/push/key` — the public key a browser subscribes with.
 async fn public_key(State(state): State<PushApiState>) -> Response {
     match state.push.public_key().await {
         Ok(public_key) => Json(PushKeyResponse { public_key }).into_response(),
@@ -62,7 +58,6 @@ async fn public_key(State(state): State<PushApiState>) -> Response {
     }
 }
 
-/// `GET /api/hub/push/devices`.
 async fn list_devices(State(state): State<PushApiState>) -> Response {
     match state.push.devices().await {
         Ok(devices) => Json(PushDeviceList { devices }).into_response(),
@@ -70,8 +65,6 @@ async fn list_devices(State(state): State<PushApiState>) -> Response {
     }
 }
 
-/// `PUT /api/hub/push/devices` — register a browser, or update the device
-/// already registered for the same subscription.
 async fn put_device(State(state): State<PushApiState>, body: Bytes) -> Response {
     let request: PutPushDeviceRequest = match parse_body(&body) {
         Ok(request) => request,
@@ -86,7 +79,6 @@ async fn put_device(State(state): State<PushApiState>, body: Bytes) -> Response 
     }
 }
 
-/// `PATCH /api/hub/push/devices/{id}` — change a label and/or preferences.
 async fn patch_device(
     State(state): State<PushApiState>,
     Path(id): Path<String>,
@@ -102,7 +94,6 @@ async fn patch_device(
     }
 }
 
-/// `DELETE /api/hub/push/devices/{id}`.
 async fn delete_device(State(state): State<PushApiState>, Path(id): Path<String>) -> Response {
     match state.push.delete_device(&id).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
@@ -110,8 +101,6 @@ async fn delete_device(State(state): State<PushApiState>, Path(id): Path<String>
     }
 }
 
-/// `POST /api/hub/push/devices/{id}/test` — send a test notification and
-/// answer once the push service has accepted or refused it.
 async fn test_device(State(state): State<PushApiState>, Path(id): Path<String>) -> Response {
     let badge = crate::mail::unread_total(state.directory.as_ref()).await;
     match state.push.send_test(&id, badge).await {

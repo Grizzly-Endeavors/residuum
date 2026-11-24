@@ -22,25 +22,14 @@ use super::classify::{WorkspaceRoots, classify};
 use residuum_bus::workspace_change::{WorkspaceChange, WorkspaceResyncReason};
 use residuum_bus::{Publisher, WorkspaceEvent, topics};
 
-/// Raw notifications buffered between the OS watcher's thread and the
-/// batching loop. Past this, notifications are dropped and the next batch
-/// becomes a resync.
 const RAW_EVENT_CAPACITY: usize = 4096;
 
-/// How often the polling fallback rescans the workspace.
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
-/// Repeated watcher errors and lost-event resyncs are logged at `warn` at
-/// most this often; the ones in between are counted into the next line.
 const WARN_INTERVAL: Duration = Duration::from_secs(60);
 
 type RawEvent = notify::Result<notify::Event>;
 
-/// Start a change feed over `root`. Runs until aborted.
-///
-/// With a `prefix`, `root` is a directory that appears in the workspace
-/// namespace under that prefix (the team directory as `team`): published
-/// paths carry it, and the access policy is applied to the prefixed path.
 #[must_use]
 pub fn spawn_change_feed(
     root: PathBuf,
@@ -76,7 +65,6 @@ pub fn spawn_change_feed(
                 LoopExit::PublishFailed => return,
                 LoopExit::Restart(mode) => mode,
             };
-            // Release the old watches before placing new ones.
             drop(backend);
             feed.discard_pending();
             let Some(restarted) = start_backend(&root, restart_mode, &sink).await else {
@@ -94,7 +82,6 @@ pub fn spawn_change_feed(
     })
 }
 
-/// Report that no watcher is running.
 async fn live_updates_off(publisher: &Publisher, health: &watch::Sender<WatchHealth>) {
     health.send_replace(WatchHealth::Off);
     if let Err(e) = publisher
@@ -105,17 +92,14 @@ async fn live_updates_off(publisher: &Publisher, health: &watch::Sender<WatchHea
     }
 }
 
-/// Which kind of OS watcher to use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
     Native,
     Polling,
 }
 
-/// The running OS watcher.
 struct Backend {
     mode: Mode,
-    /// Held only to keep the watch alive: dropping it stops the watch.
     _watcher: Box<dyn Watcher + Send>,
 }
 
@@ -132,8 +116,6 @@ impl Backend {
     }
 }
 
-/// Start a watcher over `root`, preferring `mode` and falling back from native
-/// to polling. `None` when no watcher could start (already logged).
 async fn start_backend(root: &Path, mode: Mode, sink: &RawSink) -> Option<Backend> {
     if mode == Mode::Native {
         let (root_owned, sink) = (root.to_path_buf(), sink.clone());
@@ -178,8 +160,6 @@ async fn start_backend(root: &Path, mode: Mode, sink: &RawSink) -> Option<Backen
 }
 
 fn start_native(root: &Path, sink: RawSink) -> notify::Result<RecommendedWatcher> {
-    // Symlinks are not followed: a link to a folder outside the workspace
-    // must not pull that folder into the feed.
     let mut watcher = RecommendedWatcher::new(sink, Config::default().with_follow_symlinks(false))?;
     watcher.watch(root, RecursiveMode::Recursive)?;
     Ok(watcher)
@@ -194,8 +174,6 @@ fn start_polling(root: &Path, sink: RawSink) -> notify::Result<PollWatcher> {
     Ok(watcher)
 }
 
-/// Hands OS notifications from the watcher's own thread to the batching
-/// loop without ever blocking that thread.
 #[derive(Clone)]
 struct RawSink {
     tx: mpsc::Sender<RawEvent>,
@@ -204,10 +182,6 @@ struct RawSink {
 }
 
 impl RawSink {
-    /// Whether `event` only touches paths the access policy hides. Residuum
-    /// writes its memory index and databases constantly; dropping those
-    /// notifications here keeps that churn from filling the buffer and
-    /// forcing resyncs on watchers that never see those paths anyway.
     fn only_hidden_paths(&self, event: &notify::Event) -> bool {
         !event.need_rescan()
             && !event.paths.is_empty()
@@ -233,17 +207,12 @@ impl notify::EventHandler for RawSink {
     }
 }
 
-/// Why [`FeedLoop::run`] returned.
 #[derive(Debug, PartialEq, Eq)]
 enum LoopExit {
-    /// Restart the OS watcher in this mode.
     Restart(Mode),
-    /// The bus is gone; the feed stops.
     PublishFailed,
 }
 
-/// The batching loop: receives raw notifications, debounces them, and
-/// publishes each batch.
 struct FeedLoop {
     roots: WorkspaceRoots,
     root: PathBuf,
@@ -275,8 +244,6 @@ impl FeedLoop {
         }
     }
 
-    /// Process notifications from a watcher running in `mode` until it has
-    /// to be restarted or the bus is gone.
     async fn run(&mut self, mode: Mode) -> LoopExit {
         loop {
             let deadline = self.batcher.deadline();
@@ -336,13 +303,11 @@ impl FeedLoop {
         exit
     }
 
-    /// Drop the pending batch; a restart's resync covers it.
     fn discard_pending(&mut self) {
         self.batcher = ChangeBatcher::default();
         self.overflowed.store(false, Ordering::Relaxed);
     }
 
-    /// Publish the pending batch, if any. `false` when the bus is gone.
     async fn flush(&mut self) -> bool {
         let Some(batch) = self.batcher.take() else {
             return true;
@@ -376,7 +341,6 @@ impl FeedLoop {
         self.publish(event).await
     }
 
-    /// `changes` with their paths under the feed's namespace prefix.
     fn namespaced(&self, mut changes: Vec<WorkspaceChange>) -> Vec<WorkspaceChange> {
         for change in &mut changes {
             change.path = self.roots.namespaced(&change.path);
@@ -384,7 +348,6 @@ impl FeedLoop {
         changes
     }
 
-    /// Publish one event. `false` when the bus is gone.
     async fn publish(&self, event: WorkspaceEvent) -> bool {
         match self.publisher.publish(topics::Workspace, event).await {
             Ok(()) => true,
@@ -396,8 +359,6 @@ impl FeedLoop {
     }
 }
 
-/// What is at `relative` inside `root` right now. Symlinks count as files:
-/// the feed reports the link, never what it points to.
 fn path_state(root: &Path, relative: &str) -> PathState {
     match std::fs::symlink_metadata(root.join(relative)) {
         Ok(metadata) if metadata.is_dir() => PathState::Directory,
@@ -406,7 +367,6 @@ fn path_state(root: &Path, relative: &str) -> PathState {
     }
 }
 
-/// Lets one `warn` through per [`WARN_INTERVAL`] and counts the rest.
 #[derive(Debug, Default)]
 struct ThrottledWarning {
     last_warned: Option<Instant>,
@@ -414,8 +374,6 @@ struct ThrottledWarning {
 }
 
 impl ThrottledWarning {
-    /// `Some(suppressed since the last warning)` when a warning may be
-    /// logged now.
     fn should_warn(&mut self, now: Instant) -> Option<u32> {
         if self
             .last_warned
@@ -452,7 +410,6 @@ mod tests {
             .unwrap()
     }
 
-    /// A feed loop fed by hand instead of an OS watcher.
     struct Harness {
         dir: tempfile::TempDir,
         raw_tx: mpsc::Sender<RawEvent>,
@@ -517,9 +474,6 @@ mod tests {
             .collect();
         assert_eq!(&*changes, expected.as_slice());
 
-        // Nothing else was published after the burst: the next batch is the one
-        // a later write produces, so any stray batch from the burst would have
-        // arrived before it.
         std::fs::write(h.dir.path().join("after.md"), "x").unwrap();
         h.notify(EventKind::Create(CreateKind::File), &["after.md"])
             .await;
@@ -681,15 +635,10 @@ mod tests {
         assert_eq!(warning.should_warn(t0 + WARN_INTERVAL), Some(2));
     }
 
-    /// Real OS notifications end to end: whichever watcher this platform
-    /// starts, a write, a rename, and hidden files come through as the
-    /// design describes.
     #[tokio::test]
     async fn os_notifications_flow_through_the_feed() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_path_buf();
-        // Created before the watcher starts, so its own (visible) directory
-        // creation isn't part of the change list this test asserts on.
         std::fs::create_dir(root.join("memory")).unwrap();
         let bus = residuum_bus::spawn_broker();
         let mut sub = bus.subscribe(topics::Workspace).await.unwrap();
@@ -727,8 +676,6 @@ mod tests {
         task.abort();
     }
 
-    /// A feed over a directory mounted under a prefix reports OS changes with
-    /// the prefix, and a watcher on that prefix receives them.
     #[tokio::test]
     async fn os_notifications_in_a_prefixed_root_carry_the_prefix() {
         let dir = tempfile::tempdir().unwrap();
@@ -762,7 +709,6 @@ mod tests {
         task.abort();
     }
 
-    /// The polling fallback feeds the same loop and reports the same changes.
     #[tokio::test]
     async fn the_polling_fallback_reports_changes() {
         let dir = tempfile::tempdir().unwrap();
@@ -789,8 +735,6 @@ mod tests {
         drop(backend);
     }
 
-    /// Collect published changes until one satisfies `done`, failing on a
-    /// resync or timeout.
     async fn collect_until(
         sub: &mut Subscriber<WorkspaceEvent>,
         done: impl Fn(&WorkspaceChange) -> bool,

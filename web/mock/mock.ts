@@ -13,21 +13,12 @@ import { createRebuiltWorkerHandler } from "./rebuilt-worker";
 import { seedAgents } from "./scenario";
 import type { MockHub } from "./state";
 
-/** The port the artifacts listener takes in deterministic mode, where a free one would differ between runs. */
 export const DETERMINISTIC_ARTIFACTS_PORT = 5180;
 
-/** How the mock runs, read from the environment by `readMockOptions`. */
 export interface MockOptions {
-  /** `VITE_MOCK_SETUP=1`: start with no agents, as a hub that hasn't been set up. */
   setup: boolean;
-  /**
-   * `MOCK_DETERMINISTIC=1`: a fixed clock, no delays and a fixed artifacts
-   * port, so two runs of the same steps give the same responses.
-   */
   deterministic: boolean;
-  /** `MOCK_DELAY_SCALE`: how long simulated work takes, `1` being the natural pace. Zero when deterministic, one otherwise. */
   delayScale: number;
-  /** `MOCK_ARTIFACTS_PORT`: the artifacts listener's port; `0` takes any free one. */
   artifactsPort: number;
 }
 
@@ -49,11 +40,6 @@ export function readMockOptions(env: NodeJS.ProcessEnv = process.env): MockOptio
   };
 }
 
-/**
- * The port `server` listens on, once it does: at once when it already listens,
- * `null` when it has no port (a pipe), or, with `failsOnError`, when it fails
- * to listen.
- */
 function portOnceListening(server: Server, failsOnError: boolean): Promise<number | null> {
   const port = (): number | null => {
     const address = server.address();
@@ -72,19 +58,8 @@ function portOnceListening(server: Server, failsOnError: boolean): Promise<numbe
   });
 }
 
-/** What the mock needs of a Vite server: the dev server and the preview server both have it. */
 export type MockHost = Pick<ViteDevServer | PreviewServer, "httpServer" | "middlewares">;
 
-/**
- * Start the mock on a Vite server: the hub with its agents and sockets, the
- * hub's Content-Security-Policy on the app's HTML (`app-shell-policy.ts`), the
- * API behind the server's middleware, and the artifacts listener, which closes
- * with the server and forwards its own `/api` to the same API and sockets. The
- * dev server and the preview server both serve the whole mock this way.
- *
- * A preview server also gives `distDir`, the build it serves, which is where
- * the mock reads the service worker it serves as a rebuilt app's.
- */
 export function startMock(
   host: MockHost,
   options: MockOptions,
@@ -97,7 +72,6 @@ export function startMock(
   }
   const hub = createHub(host.httpServer, {
     env: createMockEnv(options),
-    // With no agents the web UI shows the setup wizard, and finishing it creates the first one.
     seed: options.setup ? undefined : seedAgents,
   });
   host.middlewares.use(appShellPolicy);

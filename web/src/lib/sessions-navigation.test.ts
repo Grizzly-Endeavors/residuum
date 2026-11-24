@@ -206,7 +206,6 @@ describe("the finished list", () => {
     expect(finished?.outcome).toBe("failed");
     expect(finished?.error).toBe("the site timed out");
     expect(finished?.error_details).toBeNull();
-    // A kind not loaded yet takes it with its first page.
     expect(s.finished.spawned.runs).toEqual([]);
   });
 
@@ -239,7 +238,6 @@ describe("the finished list", () => {
     });
     expect(run("run-1")?.episode_id).toBe("ep-042");
     expect(run("run-1")?.memory_pending).toBe(false);
-    // Another run's merge is untouched by this one's frame.
     expect(run("run-2")?.episode_id).toBeNull();
     expect(run("run-2")?.memory_pending).toBe(true);
 

@@ -1,13 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-// Container queries can't read custom properties, so the Inbox writes the
-// width at which the list makes way for the thread out as a number: narrower
-// than the list's width plus the thread's floor, one shows at a time, and
-// from that sum up the list is beside the thread and Back to list is hidden.
-// Every query on the place's container, in any file of the place, must sit on
-// the same split, or Back and the list could both be gone on a narrow screen.
-
 const PLACE_DIR = new URL("./", import.meta.url);
 
 function pixels(css: string, name: string): number {

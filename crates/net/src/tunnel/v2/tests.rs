@@ -1,5 +1,3 @@
-//! End-to-end tests of the v2 client against the fake relay.
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -210,8 +208,6 @@ async fn refuse_closes_and_backs_off_instead_of_reconnecting() {
     let (_shutdown, mut shutdown_rx) = watch::channel(false);
     let (_agents, mut agents_rx) = watch::channel(Vec::new());
 
-    // One attempt, run to its decision: a refused relay is not reconnected to
-    // until the longest backoff has passed.
     let attempt = crate::tunnel::connection::Attempt {
         cfg: &cfg,
         handler: &handler,
@@ -287,9 +283,6 @@ async fn a_token_the_relay_refuses_is_reported_as_refused() {
 async fn a_relay_url_the_client_cannot_register_at_never_connects() {
     let relay = FakeRelay::start(FakeRelayConfig::default()).await;
     let (h, _outputs) = handler(None);
-    // Starts at Connecting so the Disconnected the test waits for can only be
-    // the first attempt giving up on its URL, which is the point the loop has
-    // decided not to connect.
     let (status_tx, mut status) = watch::channel(TunnelStatus::Connecting);
     let (shutdown, shutdown_rx) = watch::channel(false);
     let (_agents, agents_rx) = watch::channel(Vec::new());
@@ -576,8 +569,6 @@ async fn tls_client_exchange(
     reply
 }
 
-/// Serve one TLS connection on `io`: read `expect` bytes, answer with
-/// `reply`, close.
 async fn tls_serve(
     server: Arc<rustls::ServerConfig>,
     io: super::TunnelIo,
@@ -612,8 +603,6 @@ async fn tls_hello_world_flows_through_the_framing() {
     let incoming = next_stream(&mut outputs).await;
     assert_eq!(incoming.host, "bear.relay.test");
     assert_eq!(incoming.peer_ip, "127.0.0.1");
-    // A reply bigger than one data message and the whole window crosses the
-    // credit machinery in both directions.
     let reply: Vec<u8> = (0..600_000_u32).map(|i| (i % 251) as u8).collect();
     let server_task = tokio::spawn(tls_serve(server, incoming.io, 11, reply.clone()));
     let got = wait::guarded("the browser to read the full reply", browser)
@@ -635,7 +624,6 @@ async fn a_stalled_stream_does_not_stall_another() {
     let (server, client) = tls_material();
     let port = relay.front_door_port();
 
-    // Stream A: a browser pushes 1 MiB that nobody reads yet.
     let stalled_total = 1024 * 1024;
     let mut stalled_browser = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
     let mut payload = client_hello("bear.relay.test");
@@ -647,7 +635,6 @@ async fn a_stalled_stream_does_not_stall_another() {
     });
     let mut stalled = next_stream(&mut outputs).await;
 
-    // Stream B: a full TLS exchange completes while A is stuck.
     let browser = tokio::spawn(tls_client_exchange(
         port,
         "laptop.bear.relay.test",
@@ -665,7 +652,6 @@ async fn a_stalled_stream_does_not_stall_another() {
         .await
         .unwrap();
 
-    // A never lost anything: reading it now drains every byte.
     let mut seen = 0;
     let mut buf = vec![0; 64 * 1024];
     while seen < hello_len + stalled_total {

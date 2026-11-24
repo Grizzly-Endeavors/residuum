@@ -1,5 +1,3 @@
-//! Telegram bus subscriber — translates typed bus events to Telegram chat messages.
-
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -29,7 +27,6 @@ struct TelegramOutbound {
     state: Arc<TelegramState>,
 }
 
-/// Receives events from the bus and delivers them to Telegram chats.
 pub(super) async fn run_telegram_subscriber(
     subs: crate::BaseSubscribers,
     bot: Bot,
@@ -96,7 +93,6 @@ impl ChatOutbound for TelegramOutbound {
                 }
                 tokio::select! {
                     () = tokio::time::sleep(tokio::time::Duration::from_secs(TYPING_INTERVAL_SECS)) => {}
-                    // Resolves with an error once the sender is dropped at turn end.
                     _ = stop_rx.changed() => break,
                 }
             }
@@ -129,7 +125,6 @@ fn parse_chat_id(conversation_id: &str) -> Option<ChatId> {
     conversation_id.parse::<i64>().map(ChatId).ok()
 }
 
-/// Send `content` in chunks, stopping at the first failure.
 async fn send_chunks(bot: &Bot, chat_id: ChatId, content: &str) -> Result<(), RequestError> {
     for chunk in chunk_text(content, TELEGRAM_MAX_CHARS) {
         bot.send_message(chat_id, &chunk).await?;
@@ -152,7 +147,6 @@ async fn send_file(
     let cap = if caption.is_empty() {
         None
     } else if caption_too_long {
-        // Send the full text separately below.
         Some(caption.chars().take(MAX_CAPTION_CHARS).collect::<String>())
     } else {
         Some(caption.to_string())
@@ -183,7 +177,6 @@ async fn send_file(
         "file delivered"
     );
 
-    // If caption was truncated, send the full text separately
     if caption_too_long {
         send_chunks(bot, chat_id, caption).await?;
     }

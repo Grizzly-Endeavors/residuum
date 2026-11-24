@@ -3,7 +3,6 @@ import { fireEvent, render, screen } from "../../test/component";
 import MCP from "./MCP.svelte";
 import type { McpCatalogEntry, SetupWizardState } from "../../lib/types";
 
-// Reactive, as the wizard's own state is, so the step redraws after a change.
 function wizard(overrides: Partial<SetupWizardState> = {}): SetupWizardState {
   const state = $state({ mcpServers: [], ...overrides } as SetupWizardState);
   return state;

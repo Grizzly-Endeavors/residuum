@@ -85,7 +85,6 @@ let shell: ShellActions;
 beforeEach(() => {
   vi.stubGlobal("IntersectionObserver", NoObserver);
   vi.stubGlobal("ResizeObserver", NoObserver);
-  // A mouse, and the composer's model control is a popover, not the phone's sheet.
   stubPointer();
   stubWebSocket();
   mockFetch(() => jsonResponse({}, 404));
@@ -302,7 +301,6 @@ describe("a waiting message with files", () => {
       },
     });
     const withdraw = vi.spyOn(ws, "withdrawWaiting");
-    // Multitask is offered only while the agent's connection is up.
     ws.transport.status = "connected";
     render(ChatPlace, { agent: "atlas", actions: shell });
     await settle();
@@ -472,7 +470,6 @@ describe("sending a line", () => {
     const surface = vi.spyOn(notifications, "surface");
     mockFetch(() => jsonResponse({ error: "prompt must not be empty" }, 400));
 
-    // The first Enter picks the action from the `/` menu, the second sends the line.
     await userEvent.type(box, "/multitask{Enter}{Enter}");
     await waitFor(() => {
       expect(surface).toHaveBeenCalledWith(
@@ -511,8 +508,6 @@ describe("loading the history", () => {
   const historyPath = "/api/agents/atlas/chat/history";
 
   it("stands in for the conversation with a skeleton until it has loaded", async () => {
-    // The history request never answers, so the conversation stays loading
-    // until the test hands the feed its history.
     mockFetch((url) =>
       url === historyPath ? new Promise<Response>(() => {}) : jsonResponse({}, 404),
     );
@@ -563,7 +558,6 @@ describe("dropping files", () => {
     const header = screen.getByRole("heading", { level: 1, name: "atlas" });
     expect(screen.queryByText("Drop files to attach")).toBeNull();
 
-    // Over the header, which is nowhere near the composer.
     const taken = !(await fireEvent.dragOver(header, carrying(png("a.png"))));
     expect(taken).toBe(true);
     await settle();
@@ -579,7 +573,6 @@ describe("dropping files", () => {
 
   it("sends a message's files as their uploads, and puts them back, uploading again, when the agent refuses it", async () => {
     Element.prototype.scrollIntoView = vi.fn();
-    // The first upload answers at once; the one after the refusal waits for `finish`.
     let uploads = 0;
     let finish: (response: Response) => void = () => {};
     mockFetch((url) => {
@@ -623,7 +616,6 @@ describe("dropping files", () => {
     expect(ws.store.feed.filter((item) => item.kind === "user")).toEqual([]);
     expect(ws.store.feed.some((item) => item.kind === "turn-failure")).toBe(false);
 
-    // The hub's copy may be gone, so the file uploads again before it can go.
     expect(screen.getByRole("progressbar", { name: "Uploading report.pdf" })).toBeInTheDocument();
     await userEvent.type(box, "{Enter}");
     expect(screen.getByRole("alert")).toHaveTextContent(
@@ -659,7 +651,6 @@ describe("dropping files", () => {
       .map(([sent]) => sent)
       .find((sent) => sent.type === "send_message");
 
-    // The turn failed so fast that its error overtook the message's confirmation.
     ws.transport.onMessage?.({
       type: "error",
       reply_to: frame?.type === "send_message" ? frame.id : "",

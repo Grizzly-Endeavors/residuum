@@ -4,7 +4,6 @@ import { waitFor } from "../../test/wait";
 import Review from "./Review.svelte";
 import type { ProviderKey, SetupWizardState } from "../../lib/types";
 
-// Reactive, as the wizard's own state is, so the step redraws after a change.
 function wizard(overrides: Partial<SetupWizardState> = {}): SetupWizardState {
   const state = $state({
     userName: "",
@@ -44,7 +43,6 @@ function wizard(overrides: Partial<SetupWizardState> = {}): SetupWizardState {
   return state;
 }
 
-/** Answers the secret store and setup completion, recording what was sent. */
 function recordSave(): { secrets: { name: string; value: string }[]; mcpJson: () => string } {
   const secrets: { name: string; value: string }[] = [];
   let completed: { mcp_json?: string } | null = null;

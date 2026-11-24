@@ -20,7 +20,6 @@ use residuum::tools::skills::{SkillActivateTool, SkillDeactivateTool};
 use residuum::workspace::bootstrap::ensure_workspace;
 use residuum::workspace::team_files::TeamWriteCoordinator;
 
-/// Set up a workspace with skills directory and optional skill files.
 async fn setup_workspace() -> (tempfile::TempDir, WorkspaceLayout) {
     let dir = tempfile::tempdir().unwrap();
     let layout = WorkspaceLayout::new(dir.path().join("workspace"));
@@ -35,7 +34,6 @@ async fn setup_workspace() -> (tempfile::TempDir, WorkspaceLayout) {
     (dir, layout)
 }
 
-/// The agent and team skill layers, in discovery order.
 fn layered_dirs(layout: &WorkspaceLayout) -> Vec<SkillDir> {
     vec![
         SkillDir::agent(layout.skills_dir()),
@@ -43,7 +41,6 @@ fn layered_dirs(layout: &WorkspaceLayout) -> Vec<SkillDir> {
     ]
 }
 
-/// Create a valid skill directory with SKILL.md.
 async fn create_skill(
     base_dir: &std::path::Path,
     dir_name: &str,
@@ -59,11 +56,6 @@ async fn create_skill(
         .unwrap();
 }
 
-// ── Scanning ─────────────────────────────────────────────────────────────
-
-/// Number of bundled skills `ensure_workspace` installs: every skill
-/// folder under `assets/bundled-skills/`, counted from disk so adding a
-/// bundled skill never needs this test updated.
 fn bundled_skill_count() -> usize {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/bundled-skills");
     std::fs::read_dir(root)
@@ -108,7 +100,6 @@ async fn scan_discovers_workspace_skills() {
 async fn scan_skips_malformed_skill() {
     let (_dir, layout) = setup_workspace().await;
 
-    // Valid skill
     create_skill(
         &layout.skills_dir(),
         "good-skill",
@@ -118,14 +109,12 @@ async fn scan_skips_malformed_skill() {
     )
     .await;
 
-    // Malformed skill (invalid YAML)
     let bad_dir = layout.skills_dir().join("bad-skill");
     tokio::fs::create_dir_all(&bad_dir).await.unwrap();
     tokio::fs::write(bad_dir.join("SKILL.md"), "---\n: invalid [[\n---\n")
         .await
         .unwrap();
 
-    // Skill with invalid name
     let bad_name_dir = layout.skills_dir().join("Bad-Name");
     tokio::fs::create_dir_all(&bad_name_dir).await.unwrap();
     tokio::fs::write(
@@ -168,8 +157,6 @@ async fn index_format_for_prompt() {
     assert!(line.ends_with("): Extracts text from PDFs"), "{line}");
 }
 
-// ── Full lifecycle ───────────────────────────────────────────────────────
-
 #[tokio::test]
 async fn full_lifecycle_scan_activate_deactivate() {
     let (_dir, layout) = setup_workspace().await;
@@ -186,7 +173,6 @@ async fn full_lifecycle_scan_activate_deactivate() {
     let index = SkillIndex::scan(&dirs).await.unwrap();
     let state = SkillState::new_shared(index, dirs);
 
-    // Verify index (bundled skills + test-skill)
     {
         let s = state.lock().await;
         assert_eq!(s.index().entries().len(), bundled_skill_count() + 1);
@@ -194,7 +180,6 @@ async fn full_lifecycle_scan_activate_deactivate() {
         assert!(actual.is_empty(), "expected {actual:?} to be empty");
     }
 
-    // Activate via tool
     let activate = SkillActivateTool::new(Arc::clone(&state));
     let result = activate
         .execute(serde_json::json!({"name": "test-skill"}))
@@ -206,7 +191,6 @@ async fn full_lifecycle_scan_activate_deactivate() {
         result.output
     );
 
-    // Verify active
     {
         let s = state.lock().await;
         assert_eq!(s.active_skill_names(), vec!["test-skill"]);
@@ -215,7 +199,6 @@ async fn full_lifecycle_scan_activate_deactivate() {
         assert!(active_text.contains("Follow these instructions carefully."));
     }
 
-    // Deactivate via tool
     let deactivate = SkillDeactivateTool::new(Arc::clone(&state));
     let deactivate_result = deactivate
         .execute(serde_json::json!({"name": "test-skill"}))
@@ -227,7 +210,6 @@ async fn full_lifecycle_scan_activate_deactivate() {
         deactivate_result.output
     );
 
-    // Verify removed
     {
         let s = state.lock().await;
         let actual_2 = &s.active_skill_names();
@@ -258,7 +240,6 @@ async fn activate_already_active_errors() {
         .await
         .unwrap();
 
-    // Second activation should error
     let result = activate
         .execute(serde_json::json!({"name": "test-skill"}))
         .await

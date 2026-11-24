@@ -2,14 +2,6 @@ import type { Locator, Page } from "@playwright/test";
 import { sendFromComposer } from "../support/composer";
 import { expect, test } from "../support/fixtures";
 
-/**
- * The chat's layout: the composer floating over a full-height conversation,
- * the room kept under the newest line, a composer that resizes without moving
- * the thread, expanding and collapsing in place, toasts above the composer,
- * focus after Send, Enter on a touch screen, and the history's loading and
- * failure states.
- */
-
 const GREETING = "Hi, this is atlas. You are in my conversation, not scout's.";
 
 function conversation(page: Page): Locator {
@@ -30,7 +22,6 @@ async function top(locator: Locator): Promise<number> {
   return (await rect(locator)).y;
 }
 
-/** Type `lines` lines into the message box, the way a person writes a long message. */
 async function typeLines(page: Page, lines: number): Promise<void> {
   await box(page).click();
   await box(page).pressSequentially("line 1");
@@ -44,7 +35,6 @@ async function openChat(page: Page): Promise<Locator> {
   await page.goto("/agent/atlas");
   const feed = conversation(page);
   await expect(feed.getByText(GREETING)).toBeVisible();
-  // The feed has settled at the bottom.
   await expect
     .poll(async () => feed.evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight))
     .toBeLessThan(2);
@@ -60,12 +50,10 @@ test.describe("the composer over the conversation", () => {
     const field = await rect(page.locator("form.composer"));
     const viewport = page.viewportSize();
     if (!viewport) throw new Error("no viewport");
-    // The conversation's area reaches the foot of the main region, which the composer floats inside.
     const place = await rect(page.locator(".chat-place"));
     expect(area.y + area.h).toBeCloseTo(place.y + place.h, 0);
     expect(field.y).toBeGreaterThan(area.y);
     expect(field.y + field.h).toBeLessThanOrEqual(area.y + area.h);
-    // The content scrolls under the composer, so it takes its room.
     const padding = await feed.evaluate((el) =>
       Number.parseFloat(getComputedStyle(el.firstElementChild as Element).paddingBottom),
     );
@@ -80,12 +68,10 @@ test.describe("the composer over the conversation", () => {
     const reply = await rect(feed.getByText(GREETING));
     const field = await rect(page.locator("form.composer"));
     const clear = field.y - (reply.y + reply.h);
-    // A quarter of the view, at least 96px, beside a composer on a wide screen; a little on a phone.
     if (isMobile) expect(clear).toBeGreaterThanOrEqual(32);
     else {
       const area = await rect(feed);
       expect(clear).toBeGreaterThanOrEqual(96);
-      // The reply's quiet row (its time and Copy) is 16px of the room the last line is measured from.
       expect(clear).toBeLessThanOrEqual(area.h * 0.25 + 24 + 16);
     }
   });
@@ -98,18 +84,15 @@ test.describe("the composer over the conversation", () => {
     const reply = feed.getByText(GREETING);
     const before = await top(reply);
 
-    // Two lines more fit the room under the newest line on any screen.
     await typeLines(page, 3);
     expect(Math.abs((await top(reply)) - before)).toBeLessThan(2);
 
-    // Many more can't on a phone, where only as much as would cover the reply moves it.
     await typeLines(page, 1);
     await box(page).fill("a\nb\nc\nd\ne\nf\ng\nh");
     const field = await rect(page.locator("form.composer"));
     const after = await rect(reply);
     if (isMobile) expect(after.y + after.h).toBeLessThanOrEqual(field.y);
     else expect(Math.abs(after.y - before)).toBeLessThan(1);
-    // Growing the composer never makes the reader look scrolled away.
     await expect(page.getByRole("button", { name: /Jump to latest|New reply/ })).toHaveCount(0);
   });
 
@@ -145,7 +128,6 @@ test.describe("the composer over the conversation", () => {
 });
 
 test.describe("opening and closing in the conversation", () => {
-  /** A press at the control's own coordinates: no scrolling to it first, as a person's tap has none. */
   async function press(page: Page, isMobile: boolean, control: Locator): Promise<void> {
     const at = await rect(control);
     const x = at.x + at.w / 2;
@@ -163,7 +145,6 @@ test.describe("opening and closing in the conversation", () => {
     await mock.manualTime();
     await box(page).fill("Look at the wiki");
     await sendFromComposer(box(page));
-    // The turn's start shows once the mock has set its timers; then time runs to the turn's end.
     await expect(feed.getByText("Working")).toBeVisible();
     await mock.advance(60_000);
     await expect(feed.getByText("Looking through recent notes first.").first()).toBeVisible();
@@ -228,7 +209,6 @@ test.describe("opening and closing in the conversation", () => {
     await press(page, isMobile, summary);
     await expect(summary).toHaveAttribute("aria-expanded", "true");
 
-    // A reply landing now leaves them where they are, and says so.
     await mock.post("/api/mock/teammate-message?agent=atlas");
     await expect(page.getByRole("button", { name: "New reply, jump to latest" })).toBeVisible();
     await page.getByRole("button", { name: "New reply, jump to latest" }).click();
@@ -256,14 +236,12 @@ test.describe("toasts", () => {
         return fieldAt.y - (toastAt.y + toastAt.h);
       })
       .toBeGreaterThanOrEqual(0);
-    // Still in reach, not pushed off the page.
     expect((await rect(toast)).y).toBeGreaterThan(0);
   });
 });
 
 test.describe("the message box", () => {
   test("keeps Send inside the box when the model name doesn't fit", async ({ page }) => {
-    // The narrowest phones leave the model's name too little room.
     await page.setViewportSize({ width: 320, height: 640 });
     await openChat(page);
     const composer = page.locator("form.composer");
@@ -273,7 +251,6 @@ test.describe("the message box", () => {
       parseFloat(getComputedStyle(form).paddingRight),
     );
     const button = await rect(send);
-    // Inside the box's padding, not just its border.
     expect(button.x + button.w).toBeLessThanOrEqual(outer.x + outer.w - padding + 0.5);
   });
 
@@ -317,7 +294,6 @@ test.describe("the message box", () => {
 
 test.describe("the history", () => {
   test("shows a skeleton while it loads", async ({ page }) => {
-    // The history answer waits until the skeleton has been seen.
     let releaseHistory: () => void = () => undefined;
     const released = new Promise<void>((resolve) => {
       releaseHistory = resolve;
@@ -347,7 +323,6 @@ test.describe("the history", () => {
       feed.getByRole("heading", { name: "Couldn't load the conversation" }),
     ).toBeVisible();
     await expect(feed.getByText(/ran into a problem on its end/)).toBeVisible();
-    // The failure is in the conversation, not a toast over it.
     await expect(page.locator(".ui-toast")).toHaveCount(0);
 
     failing = false;
@@ -360,9 +335,6 @@ test.describe("the history", () => {
 });
 
 test.describe("the page", () => {
-  // Only the conversation scrolls: anything in it that its scrolling area
-  // doesn't clip (absolutely placed text for screen readers) would let the
-  // whole page scroll, and focusing something would then shift the app.
   for (const [where, path, ready] of [
     ["the chat", "/agent/atlas", GREETING],
     ["the chat beside a file", "/agent/atlas?panel=file:team/wiki/index.md", GREETING],

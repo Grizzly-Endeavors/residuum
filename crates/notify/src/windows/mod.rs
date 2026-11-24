@@ -1,5 +1,3 @@
-//! Native Windows notification channel via Toast notifications.
-
 pub mod bridge;
 pub mod throttle;
 
@@ -16,13 +14,10 @@ pub struct WindowsChannelConfig {
     pub throttle_window_secs: u64,
     pub sound: bool,
     pub app_name: String,
-    /// `WinRT` App User Model ID for Toast grouping.
     pub app_id: String,
 }
 
 impl WindowsChannelConfig {
-    /// # Errors
-    /// Returns an error if `throttle_window_secs` is zero.
     pub fn validate(&self) -> anyhow::Result<()> {
         if self.throttle_window_secs == 0 {
             anyhow::bail!("throttle_window_secs must be positive, got 0");
@@ -42,16 +37,12 @@ impl Default for WindowsChannelConfig {
     }
 }
 
-/// `deliver()` enqueues to the batch aggregator and returns immediately --
-/// actual Toast delivery happens asynchronously after the throttle window.
 pub struct WindowsNativeChannel {
     channel_name: String,
     batch_tx: mpsc::Sender<NotificationEvent>,
 }
 
 impl WindowsNativeChannel {
-    /// # Errors
-    /// Returns an error if config validation fails.
     pub fn new(
         name: impl Into<String>,
         config: &WindowsChannelConfig,
@@ -123,8 +114,6 @@ mod tests {
 
     #[test]
     fn config_validate_accepts_any_positive_value() {
-        // There is no upper cap: 301 and other large values above the old
-        // 300 ceiling are valid.
         for secs in [1, 300, 301, 10_000] {
             let cfg = WindowsChannelConfig {
                 throttle_window_secs: secs,

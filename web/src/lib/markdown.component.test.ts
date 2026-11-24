@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { IMAGE_LINK_KIND, renderMarkdown } from "./markdown";
 
-/** The rendered nodes in a container, so a test can query them. */
 function html(content: string, pathHref?: (path: string) => string): HTMLElement {
   const root = document.createElement("div");
   root.append(renderMarkdown(content, { pathHref }));
@@ -68,7 +67,6 @@ describe("renderMarkdown links", () => {
 });
 
 describe("renderMarkdown images", () => {
-  /** The rendered fragment as the sanitizer hands it over, before anything inserts it into the page. */
   function fragment(content: string): DocumentFragment {
     return renderMarkdown(content);
   }
@@ -278,7 +276,6 @@ describe("renderMarkdown code blocks", () => {
 });
 
 describe("renderMarkdown raw HTML", () => {
-  /** What a reader would see of the nodes: their text, with the whitespace between blocks tidied. */
   function words(root: HTMLElement): string {
     return root.textContent.replace(/\s+/g, " ").trim();
   }

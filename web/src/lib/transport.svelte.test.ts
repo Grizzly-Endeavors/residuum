@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { WsTransport } from "./transport.svelte";
 import type { ClientMessage } from "./types";
 
-/** A minimal fake WebSocket the test controls directly: no real network. */
 class FakeWebSocket {
   static OPEN = 1;
   static CONNECTING = 0;
@@ -22,7 +21,6 @@ class FakeWebSocket {
     this.readyState = FakeWebSocket.CLOSED;
   }
 
-  /** Test helper: simulate the socket finishing its handshake. */
   simulateOpen(): void {
     this.readyState = FakeWebSocket.OPEN;
     this.onopen?.();
@@ -33,9 +31,6 @@ describe("WsTransport queuing while disconnected", () => {
   let lastSocket: FakeWebSocket;
 
   beforeEach(() => {
-    // A constructor function that returns an explicit object bypasses the
-    // newly-created `this` entirely, so no `this`-aliasing is needed to
-    // capture the instance for the test to control.
     function FakeWebSocketConstructor(): FakeWebSocket {
       const socket = new FakeWebSocket();
       lastSocket = socket;
@@ -59,7 +54,6 @@ describe("WsTransport queuing while disconnected", () => {
       keepalive: true,
     });
     transport.connect();
-    // Socket hasn't opened yet — still "connecting", not "connected".
     const msg: ClientMessage = { type: "send_message", id: "web-1", content: "hello" };
 
     transport.send(msg);
@@ -168,7 +162,6 @@ describe("WsTransport losing and regaining the connection", () => {
     expect(sockets).toHaveLength(2);
     expect(transport.status).toBe("connecting");
 
-    // The close's own retry was cancelled: no third socket appears.
     vi.advanceTimersByTime(20_000);
     expect(sockets).toHaveLength(2);
   });

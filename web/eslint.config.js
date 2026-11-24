@@ -7,8 +7,6 @@ import svelteParser from "svelte-eslint-parser";
 import prettier from "eslint-config-prettier";
 import globals from "globals";
 
-// Shared by both end-to-end blocks below: flat config replaces a rule's
-// options instead of merging them, so each block needs the whole entry.
 const NO_WAIT_FOR_TIMEOUT = {
   property: "waitForTimeout",
   message:
@@ -16,20 +14,16 @@ const NO_WAIT_FOR_TIMEOUT = {
 };
 
 export default tseslint.config(
-  // ── Global ignores ──────────────────────────────────────────────────
   {
     ignores: ["dist/**", "node_modules/**", "*.config.js", "*.config.ts"],
   },
-  // The coverage and Playwright reports ship their own scripts.
   { ignores: ["coverage/**", "playwright-report/**", "test-results/**"] },
 
-  // ── Base presets ────────────────────────────────────────────────────
   js.configs.recommended,
   ...tseslint.configs.strictTypeChecked,
   ...svelte.configs["flat/recommended"],
   prettier,
 
-  // ── TypeScript files ────────────────────────────────────────────────
   {
     files: ["src/**/*.ts", "build/**/*.ts", "mock/**/*.ts", "scripts/**/*.ts", "e2e/**/*.ts"],
     languageOptions: {
@@ -39,7 +33,6 @@ export default tseslint.config(
       },
     },
     rules: {
-      // ── Deny: catches real bugs, prevents shortcuts ───────────────
       "no-console": "error",
       "no-debugger": "error",
       "no-alert": "error",
@@ -57,7 +50,6 @@ export default tseslint.config(
       "no-param-reassign": "error",
       "no-nested-ternary": "error",
 
-      // TypeScript deny rules
       "@typescript-eslint/no-explicit-any": "error",
       "@typescript-eslint/no-unsafe-assignment": "error",
       "@typescript-eslint/no-unsafe-call": "error",
@@ -76,7 +68,6 @@ export default tseslint.config(
       "@typescript-eslint/consistent-type-imports": ["error", { prefer: "type-imports" }],
       "@typescript-eslint/restrict-template-expressions": ["error", { allowNumber: true }],
 
-      // ── Pedantic: stricter discipline ─────────────────────────────
       "@typescript-eslint/explicit-function-return-type": ["error", { allowExpressions: true }],
       "@typescript-eslint/strict-boolean-expressions": [
         "error",
@@ -103,14 +94,10 @@ export default tseslint.config(
         },
       ],
 
-      // Allow empty catch blocks (used for graceful fallbacks)
       "no-empty": ["error", { allowEmptyCatch: true }],
     },
   },
 
-  // ── Node scripts ────────────────────────────────────────────────────
-  // CI runs these with plain Node, so they are JavaScript outside the
-  // TypeScript project and get the base rules without type information.
   {
     files: ["scripts/**/*.mjs"],
     extends: [tseslint.configs.disableTypeChecked],
@@ -122,10 +109,6 @@ export default tseslint.config(
     },
   },
 
-  // ── End-to-end specs wait on conditions ─────────────────────────────
-  // A fixed sleep passes on a quiet machine and fails on a loaded one, and on
-  // a quiet one it only slows the suite. Wait for what the next step needs
-  // with a web-first assertion (see `web/CONTRIBUTING.md`, "Testing").
   {
     files: ["e2e/**/*.ts"],
     rules: {
@@ -141,9 +124,6 @@ export default tseslint.config(
       ],
     },
   },
-  // The page's clock is the fixtures' (`e2e/support/fixtures.ts`), which keep
-  // it with the mock's time. A spec that drives it itself puts the page and
-  // the mock at different times.
   {
     files: ["e2e/**/*.ts"],
     ignores: ["e2e/support/fixtures.ts"],
@@ -160,12 +140,6 @@ export default tseslint.config(
     },
   },
 
-  // ── Unit and component tests wait on conditions ─────────────────────
-  // A wait that ends on elapsed time passes on a quiet machine and fails on a
-  // loaded one. `waitFor` (src/test/wait.ts) ends on the condition it checks,
-  // under the hang guard. Fake timers stand still until a test advances them;
-  // `shouldAdvanceTime` lets real time run them again, so it is banned too.
-  // A zero delay only flushes a macrotask, and stays allowed.
   {
     files: ["src/**/*.test.ts", "mock/**/*.test.ts", "scripts/**/*.test.ts"],
     rules: {
@@ -196,9 +170,6 @@ export default tseslint.config(
     },
   },
 
-  // ── Rune store modules (*.svelte.ts) ────────────────────────────────
-  // These also match the TypeScript block above, so they get its strict rules.
-  // This block only makes the Svelte parser read them as TypeScript.
   {
     files: ["src/**/*.svelte.ts"],
     languageOptions: {
@@ -214,10 +185,6 @@ export default tseslint.config(
     },
   },
 
-  // ── Stores do not navigate ──────────────────────────────────────────
-  // Stores and services in `src/lib/` expose data and commands, and views
-  // navigate. Only the router and the helper that opens a
-  // session from a view import it.
   {
     files: ["src/lib/**/*.ts"],
     ignores: ["src/lib/router.svelte.ts", "src/lib/session-address.ts", "src/lib/**/*.test.ts"],
@@ -237,7 +204,6 @@ export default tseslint.config(
     },
   },
 
-  // ── Svelte files ────────────────────────────────────────────────────
   {
     files: ["src/**/*.svelte"],
     languageOptions: {
@@ -251,7 +217,6 @@ export default tseslint.config(
       },
     },
     rules: {
-      // ── Deny rules (same as TS) ──────────────────────────────────
       "no-console": "error",
       "no-debugger": "error",
       "no-alert": "error",
@@ -285,7 +250,6 @@ export default tseslint.config(
       "@typescript-eslint/consistent-type-imports": ["error", { prefer: "type-imports" }],
       "@typescript-eslint/restrict-template-expressions": ["error", { allowNumber: true }],
 
-      // ── Pedantic (subset — skip rules that fight runes) ──────────
       "@typescript-eslint/switch-exhaustiveness-check": "error",
       "@typescript-eslint/prefer-nullish-coalescing": [
         "error",
@@ -301,7 +265,6 @@ export default tseslint.config(
         },
       ],
 
-      // ── Svelte-specific overrides (rules that fight runes) ───────
       "prefer-const": "off",
       "no-undef-init": "off",
       "no-unused-expressions": "off",
@@ -319,10 +282,8 @@ export default tseslint.config(
       "@typescript-eslint/no-unsafe-argument": "off",
       "@typescript-eslint/no-useless-default-assignment": "off",
 
-      // Allow empty catch blocks (used for graceful fallbacks)
       "no-empty": ["error", { allowEmptyCatch: true }],
 
-      // ── Svelte plugin rules ──────────────────────────────────────
       "svelte/no-at-html-tags": "error",
       "svelte/require-each-key": "error",
       "svelte/valid-compile": ["error", { ignoreWarnings: true }],
