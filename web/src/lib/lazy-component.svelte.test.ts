@@ -4,12 +4,10 @@ import { LazyComponent } from "./lazy-component.svelte";
 import { notifications } from "./notifications.svelte";
 import { waitFor } from "../test/wait";
 
-/** A stand-in for a component's compiled module; the test never mounts it. */
 const FAKE = (() => undefined) as unknown as Component<object>;
 
 beforeEach(() => {
   notifications.clear();
-  // The raw error goes to the console for developers; the test checks what the person sees.
   vi.spyOn(console, "error").mockImplementation(() => undefined);
 });
 

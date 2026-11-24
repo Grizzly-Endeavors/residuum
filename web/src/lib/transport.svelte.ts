@@ -1,52 +1,32 @@
-// ── WebSocket transport layer (Svelte 5 runes) ──────────────────────
-
 import type { ClientMessage, ServerMessage, ConnectionStatus } from "./types";
 import { FIRST_RECONNECT_MS } from "./reconnect";
 
 export interface TransportOptions {
-  /** The socket URL, read on every (re)connect so it can follow the bound agent. */
   url: () => string;
-  /** Send a `ping` every 30 seconds. Off for sockets that take no client frames. */
   keepalive?: boolean;
 }
 
-/**
- * Log a frame that couldn't be read, or that broke the code handling it.
- * Either way the frame is lost; the next one is handled as usual.
- */
 function reportFrameFailure(message: string, err: unknown): void {
   // eslint-disable-next-line no-console -- transport-layer failure has no user-visible channel; project rule mandates failure visibility
   console.warn(message, err);
 }
 
-/** Low-level WebSocket transport with reconnect and keepalive. */
 export class WsTransport<S = ServerMessage, C extends { type: string } = ClientMessage> {
   status = $state<ConnectionStatus>("disconnected");
-  /**
-   * The socket closed, or failed to open, and hasn't opened since. Unlike
-   * `status`, it stays set through each reconnect attempt, so a notice built
-   * on it doesn't flicker while the transport retries.
-   */
   lost = $state(false);
 
-  /** Called when a parsed ServerMessage arrives. */
   onMessage: ((msg: S) => void) | null = null;
 
-  /** Called after the socket connects (before any messages). */
   onConnected: (() => void) | null = null;
 
-  /** Called when an open socket closes, before a reconnect is scheduled. */
   onDisconnected: (() => void) | null = null;
 
-  /** Messages queued while disconnected, flushed in order once reconnected. */
   private pending = $state.raw<C[]>([]);
 
-  /** How many messages are queued waiting for reconnect (reactive). */
   get pendingCount(): number {
     return this.pending.length;
   }
 
-  /** How many queued messages are of `type` (reactive). */
   pendingOf(type: C["type"]): number {
     return this.pending.filter((msg) => msg.type === type).length;
   }
@@ -118,10 +98,6 @@ export class WsTransport<S = ServerMessage, C extends { type: string } = ClientM
     this.lost = false;
   }
 
-  /**
-   * Try to connect now instead of waiting out the reconnect delay, and start
-   * the backoff over. Does nothing while a connection is open or opening.
-   */
   reconnectNow(): void {
     if (this.status !== "disconnected") return;
     if (this.reconnectTimer) {
@@ -132,22 +108,12 @@ export class WsTransport<S = ServerMessage, C extends { type: string } = ClientM
     this.connect();
   }
 
-  /**
-   * Disconnect and drop everything queued for the old connection, for when
-   * the socket is about to point somewhere else: a queued message must never
-   * be delivered to a different agent than the one it was written for.
-   */
   reset(): void {
     this.disconnect();
     this.pending = [];
     this.reconnectDelay = FIRST_RECONNECT_MS;
   }
 
-  /**
-   * Send a message, or queue it while disconnected/reconnecting so it isn't
-   * silently dropped — flushed in order once the socket reopens. A `ping`
-   * is never worth queuing (the next real reconnect makes it moot).
-   */
   send(msg: C): void {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(msg));
@@ -155,8 +121,6 @@ export class WsTransport<S = ServerMessage, C extends { type: string } = ClientM
     }
     if (msg.type !== "ping") this.pending = [...this.pending, msg];
   }
-
-  // ── Private ──────────────────────────────────────────────────────────
 
   private flushPending(): void {
     const queued = this.pending;

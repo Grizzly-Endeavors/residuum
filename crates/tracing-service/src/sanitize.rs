@@ -1,13 +1,6 @@
-//! Content sanitization for trace exports.
-//!
-//! Redacts potentially sensitive information (user messages, agent responses,
-//! tool call arguments) from spans before they are exported to external
-//! endpoints. Controlled by the `sanitize_content` config flag.
-
 use residuum_config::agent_keys::Redactor;
 use residuum_core::util::telemetry::CompletedSpan;
 
-/// Field names whose values should be redacted in trace exports.
 const SENSITIVE_FIELDS: &[&str] = &[
     "content",
     "input",
@@ -25,14 +18,8 @@ const SENSITIVE_FIELDS: &[&str] = &[
     "system_prompt",
 ];
 
-/// Replacement value for redacted content.
 const REDACTED: &str = "[REDACTED]";
 
-/// Redact sensitive content from spans in-place before export.
-///
-/// Strips field values matching known sensitive field names and replaces
-/// event messages with `[REDACTED]`. Structural metadata (span names,
-/// targets, levels, timing, hierarchy) is preserved.
 pub(crate) fn sanitize_spans(spans: &mut [CompletedSpan]) {
     for span in spans {
         sanitize_fields(&mut span.fields);
@@ -45,12 +32,6 @@ pub(crate) fn sanitize_spans(spans: &mut [CompletedSpan]) {
     }
 }
 
-/// Replace every agent-key value in span and event fields and event
-/// messages with its `[agent-key:<name>]` marker.
-///
-/// Value-based, so it runs regardless of `sanitize_content`: the name-based
-/// pass above only covers fields it knows to be content-bearing, and a
-/// credential can surface in any field (an error string, a URL, a command).
 pub(crate) fn redact_agent_key_values(spans: &mut [CompletedSpan], redactor: &Redactor) {
     if redactor.is_empty() {
         return;
@@ -68,7 +49,6 @@ pub(crate) fn redact_agent_key_values(spans: &mut [CompletedSpan], redactor: &Re
     }
 }
 
-/// Redact values of sensitive fields.
 fn sanitize_fields(fields: &mut [(String, String)]) {
     for (key, value) in fields.iter_mut() {
         if SENSITIVE_FIELDS.iter().any(|&s| key == s) {

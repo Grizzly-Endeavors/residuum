@@ -1,7 +1,3 @@
-/**
- * Client-side validation of Teams app icon dimensions.
- * Color icon: 192x192 PNG. Outline icon: 32x32 PNG.
- */
 export async function validateIcon(
   file: File,
   expectedWidth: number,
@@ -33,7 +29,6 @@ export async function validateIcon(
             error: `Icon must be exactly ${expectedWidth}×${expectedHeight} pixels (found ${img.naturalWidth}×${img.naturalHeight}).`,
           });
         } else {
-          // Extract base64 without data:image/png;base64, prefix for API
           const commaIndex = dataUrl.indexOf(",");
           const base64 = commaIndex !== -1 ? dataUrl.slice(commaIndex + 1) : dataUrl;
           resolve({ valid: true, base64, error: null });

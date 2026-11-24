@@ -1,21 +1,4 @@
 #!/usr/bin/env bash
-# Checks the test filters given to `just test` and `just stress`. A filter whose
-# first `::` segment names a member crate, or a module inside one, gets a note
-# pointing at `just test-crate`, and for `just test` a note for each tests/it module
-# whose covers line names that crate; a run that was given filters and matched no
-# test gets a warning. Both go to stderr and neither changes the run's status:
-# the recipes call this after cargo or the stress run has finished.
-#
-# Usage:
-#   scripts/test-filters.sh note  <test|stress> [args...]
-#   scripts/test-filters.sh check <test|stress> <log>... -- [args...]
-#
-# `test` takes cargo's arguments, so only those libtest receives are filters;
-# `stress` takes leading `-p <package>` options for cargo (scripts/stress-tests.sh)
-# and passes the rest to libtest. `check` sums the `running N tests` lines of
-# each log.
-#
-# This runs under bash 3.2, so it avoids arrays and `set -u`.
 set -eo pipefail
 
 usage() {
@@ -24,10 +7,8 @@ usage() {
     exit 2
 }
 
-# cargo test options that take their value as the next argument.
 cargo_value_opts=" -p --package --test --bin --example --bench --exclude -F --features --target --target-dir --manifest-path --profile -j --jobs --color --message-format --config -Z "
 
-# Prints the libtest filters among the arguments, one per line.
 filters_of() {
     local kind="$1"
     shift
@@ -94,10 +75,6 @@ filters_of() {
     return 0
 }
 
-# Prints one "dir <name>" line for each crate directory the segment names, and one
-# "module <crate>" line for each crate holding a module file or directory of the
-# segment's name. A crate directory may be spelled with `-` where the path segment
-# has `_` (`tracing-service` is `tracing_service::…`). Names may repeat.
 crates_named_by() {
     local seg="$1" dir name
     case $seg in
@@ -117,8 +94,6 @@ crates_named_by() {
     return 0
 }
 
-# Prints one note for each tests/it module whose covers line names residuum-<name>,
-# with the command that runs that module's tests.
 it_modules_covering() { # crate name
     local name="$1" file rest module covers
     for file in tests/it/*.rs tests/it/*/mod.rs; do
@@ -182,8 +157,6 @@ note_for() {
 cmd_note() {
     local kind="$1" arg
     shift
-    # A stress run with a package option names its crate already; a filter that
-    # names a crate or module there is then a path inside that crate.
     if [ "$kind" = stress ]; then
         for arg in "$@"; do
             case $arg in

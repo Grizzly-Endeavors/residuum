@@ -1,15 +1,3 @@
-//! Device pairing routes: how a browser becomes a paired device, and how the
-//! paired devices are listed and revoked.
-//!
-//! The pairing routes (`/api/hub/pairing/...`) are the only API a remote
-//! browser can reach before it is paired; the device gate lets exactly those
-//! through (see `pairing::gate`). The management routes
-//! (`/api/hub/devices/...`) need a paired device or a local request, like the
-//! rest of the API. Minting the first device's pairing link is local only.
-//!
-//! The device cookie is set by these handlers. Responses that carry a secret
-//! are `no-store`.
-
 use axum::Json;
 use axum::Router;
 use axum::extract::{Path, State};
@@ -34,7 +22,6 @@ use residuum_net::workbench::ArtifactsOrigin;
 const NO_STORE: (HeaderName, HeaderValue) =
     (header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
 
-/// The routes, over the pairing state.
 pub(super) fn routes(pairing: DevicePairing) -> Router {
     Router::new()
         .route("/api/hub/pairing/state", get(pairing_state))
@@ -74,7 +61,6 @@ fn remote_of(parts: &Parts) -> Option<RemoteContext> {
     remote_context(&parts.extensions)
 }
 
-/// The response for a pairing operation that didn't happen.
 fn error_response(error: &PairingError) -> Response {
     let message = error.to_string();
     match error {
@@ -95,7 +81,6 @@ fn error_response(error: &PairingError) -> Response {
     }
 }
 
-/// `body` with the device cookie for `issued` set and caching off.
 fn with_credential(pairing: &DevicePairing, issued: &Issued, body: Response) -> Response {
     let mut response = body;
     if let Ok(value) = HeaderValue::from_str(&pairing.set_cookie_for(&issued.secret)) {
@@ -119,9 +104,6 @@ fn no_store(json: impl IntoResponse) -> Response {
     response
 }
 
-// ── Pre-auth: the pairing page's API ─────────────────────────────────
-
-/// `GET /api/hub/pairing/state`: whether this browser needs to pair.
 async fn pairing_state(State(pairing): State<DevicePairing>, parts: Parts) -> Response {
     let remote = remote_of(&parts).is_some();
     let paired = !remote
@@ -148,7 +130,6 @@ async fn create_request(
     }
 }
 
-/// `POST /api/hub/pairing/requests/poll`: has the request been answered?
 async fn poll_request(
     State(pairing): State<DevicePairing>,
     Json(body): Json<PollPairingBody>,
@@ -170,7 +151,6 @@ async fn poll_request(
     }
 }
 
-/// `POST /api/hub/pairing/redeem`: pair with a link's single-use token.
 async fn redeem_token(
     State(pairing): State<DevicePairing>,
     parts: Parts,
@@ -185,7 +165,6 @@ async fn redeem_token(
     }
 }
 
-/// `POST /api/hub/pairing/recovery`: pair with a recovery code.
 async fn redeem_recovery(
     State(pairing): State<DevicePairing>,
     parts: Parts,
@@ -223,9 +202,6 @@ async fn redeem_handoff(
     }
 }
 
-// ── Management: paired devices and the local UI ──────────────────────
-
-/// `GET /api/hub/devices`: paired devices and pending requests.
 async fn list_devices(State(pairing): State<DevicePairing>, parts: Parts) -> Response {
     let current = parts
         .extensions
@@ -240,7 +216,6 @@ async fn list_devices(State(pairing): State<DevicePairing>, parts: Parts) -> Res
     }))
 }
 
-/// `DELETE /api/hub/devices/{id}`: stop trusting a device.
 async fn revoke_device(State(pairing): State<DevicePairing>, Path(id): Path<String>) -> Response {
     match pairing.revoke(&id).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
@@ -249,12 +224,10 @@ async fn revoke_device(State(pairing): State<DevicePairing>, Path(id): Path<Stri
     }
 }
 
-/// `POST /api/hub/devices/pending/{id}/approve`.
 async fn approve_pending(State(pairing): State<DevicePairing>, Path(id): Path<String>) -> Response {
     answer_pending(&pairing, &id, true)
 }
 
-/// `POST /api/hub/devices/pending/{id}/deny`.
 async fn deny_pending(State(pairing): State<DevicePairing>, Path(id): Path<String>) -> Response {
     answer_pending(&pairing, &id, false)
 }
@@ -267,7 +240,6 @@ fn answer_pending(pairing: &DevicePairing, id: &str, approve: bool) -> Response 
     }
 }
 
-/// `POST /api/hub/devices/recovery-codes`: replace the recovery codes.
 async fn regenerate_recovery_codes(State(pairing): State<DevicePairing>) -> Response {
     match pairing.regenerate_recovery_codes().await {
         Ok(recovery_codes) => no_store(Json(RecoveryCodesResponse { recovery_codes })),
@@ -275,8 +247,6 @@ async fn regenerate_recovery_codes(State(pairing): State<DevicePairing>) -> Resp
     }
 }
 
-/// `POST /api/hub/devices/workbench-handoff`: mint the token a paired
-/// UI-host browser carries to the workbench host.
 async fn workbench_handoff(State(pairing): State<DevicePairing>, parts: Parts) -> Response {
     let device = parts
         .extensions
@@ -297,9 +267,6 @@ async fn workbench_handoff(State(pairing): State<DevicePairing>, parts: Parts) -
     }
 }
 
-/// `POST /api/hub/remote-access/pair-link`: mint the first device's link.
-/// Refused for a remote request: the first device is paired from the machine
-/// Residuum runs on, never over the relay.
 async fn pair_link(State(pairing): State<DevicePairing>, parts: Parts) -> Response {
     if remote_of(&parts).is_some() {
         return json_error(

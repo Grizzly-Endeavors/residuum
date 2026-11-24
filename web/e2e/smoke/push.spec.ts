@@ -43,7 +43,6 @@ async function presentDevices(page: Page): Promise<string[]> {
   return answer.devices;
 }
 
-/** Open Notifications once the worker controls the page, and turn push on as `name`. */
 async function turnOn(page: Page, name = "Test phone"): Promise<string> {
   await page.goto("/home?settings=_all/notifications");
   await page.evaluate(() => navigator.serviceWorker.ready);
@@ -93,7 +92,6 @@ test.describe("notifications on this device", { tag: "@preview" }, () => {
 
     await thisDevice(page).getByRole("button", { name: "Send a test notification" }).click();
     await expect(page.getByText("Sent a test notification.", { exact: false })).toBeVisible();
-    // The mock's clock stands still while the page's runs, so only the outcome is compared.
     await expect(thisDevice(page).getByText(/^Last notification sent/)).toBeVisible();
 
     await thisDevice(page).getByRole("button", { name: "Turn off on this device" }).click();
@@ -112,7 +110,6 @@ test.describe("notifications on this device", { tag: "@preview" }, () => {
     await page.evaluate(() => window.dispatchEvent(new FocusEvent("focus")));
     await expect.poll(() => presentDevices(page)).toEqual([id]);
 
-    // Turned off, the device is no longer present.
     await thisDevice(page).getByRole("button", { name: "Turn off on this device" }).click();
     await expect.poll(() => presentDevices(page)).toEqual([]);
   });
@@ -169,12 +166,8 @@ test.describe("the worker's notifications", { tag: "@preview" }, () => {
     });
     await expect.poll(async () => (await shownNotifications(page)).length).toBe(1);
 
-    // No browser API clicks a notification. A synthetic click runs the
-    // worker's own handler, which can't take focus or hold the event open the
-    // way a person's click can, and routes the open window the same way.
     const [worker] = context.serviceWorkers();
     await worker?.evaluate(async () => {
-      // The worker's globals, which the page's types don't have.
       const scope = self as unknown as {
         registration: ServiceWorkerRegistration;
         NotificationEvent: new (type: string, init: { notification: Notification }) => Event;
@@ -209,7 +202,6 @@ test.describe("the worker's notifications", { tag: "@preview" }, () => {
       await page.goto("/home");
       await page.evaluate(() => navigator.serviceWorker.ready);
       await page.close();
-      // What the worker's `openWindow(target)` opens: a new window at the target, through the worker.
       const opened = await context.newPage();
       await opened.goto(target);
       await expect(landed(opened)).toBeVisible();

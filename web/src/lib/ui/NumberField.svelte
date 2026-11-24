@@ -5,12 +5,10 @@
 
   interface Props extends Omit<HTMLInputAttributes, "value" | "type" | "children" | "id"> {
     label: string;
-    /** `null` while the box is empty. */
     value?: number | null;
     hint?: string;
     error?: string;
     labelHidden?: boolean;
-    /** What the number counts, shown after the box: "messages", "seconds". */
     unit?: string;
     element?: HTMLInputElement | HTMLTextAreaElement;
   }

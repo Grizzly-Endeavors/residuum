@@ -24,7 +24,6 @@ set -uo pipefail
 mode="${1:-report}"
 snapshot="${RUNNER_TEMP:-/tmp}/ci-cpu-start"
 
-# Microseconds that some task waited for CPU, from a PSI file.
 psi_total() {
     awk '$1=="some" { for (i = 2; i <= NF; i++) if ($i ~ /^total=/) { sub("total=", "", $i); print $i } }' "$1" 2>/dev/null
 }

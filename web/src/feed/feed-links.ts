@@ -1,8 +1,3 @@
-// What a feed's path links open. A feed belongs to one agent, which may not be
-// the bound one (a session run on another agent), so every link names its
-// agent: on that agent's own places the file opens in the context panel
-// beside them, and anywhere else the agent's chat opens with it.
-
 import { router } from "../lib/router.svelte";
 import { formatLocation, viewedAgentOf, type Panel } from "../lib/routes";
 
@@ -10,7 +5,6 @@ function filePanel(path: string): Panel {
   return { kind: "file", path, agent: null };
 }
 
-/** The address a path link points at, for opening it in a new tab. */
 export function pathHref(agent: string, path: string): string {
   return formatLocation({
     place: { kind: "chat", agent },
@@ -19,22 +13,15 @@ export function pathHref(agent: string, path: string): string {
   });
 }
 
-/** Open `path`, in `agent`'s workspace (where `team/…` reaches team files), in the context panel. */
 export function openPathInPanel(agent: string, path: string): void {
   if (viewedAgentOf(router.place) === agent) void router.openPanel(filePanel(path));
   else void router.openPlace({ kind: "chat", agent }, { panel: filePanel(path) });
 }
 
-/**
- * Open `path` in `agent`'s workspace as a file panel that names its agent, so
- * the place under the panel stays whatever it is: the panel reads that agent's
- * tree beside any place that can show one.
- */
 export function openAgentFileInPanel(agent: string, path: string): void {
   void router.openPanel({ kind: "file", path, agent });
 }
 
-/** The address a path in the team's folder points at, for opening it in a new tab. */
 export function teamPathHref(path: string): string {
   return formatLocation({
     place: { kind: "shared-files" },
@@ -43,7 +30,6 @@ export function teamPathHref(path: string): string {
   });
 }
 
-/** Open `path`, relative to the team's folder, in the context panel of the Shared files place. */
 export function openTeamPathInPanel(path: string): void {
   if (router.place.kind === "shared-files") void router.openPanel(filePanel(path));
   else void router.openPlace({ kind: "shared-files" }, { panel: filePanel(path) });

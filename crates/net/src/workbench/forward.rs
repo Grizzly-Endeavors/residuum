@@ -1,28 +1,3 @@
-//! API forwarding on the artifacts origin.
-//!
-//! An artifact page runs on the artifacts listener's own origin, so its calls
-//! to Residuum arrive at that listener, not at the gateway. The listener
-//! answers `/api` and `/api/...`, WebSocket upgrades included, by handing the
-//! request in-process to the same hub router the gateway serves. Nothing else
-//! is forwarded: the router's embedded web app, webhooks and relay callback
-//! are not reachable through the artifacts origin.
-//!
-//! The hand-off happens before any routing of the listener's own, so the hub
-//! router gets the request exactly as the listener received it. A route such
-//! as `/api/{*rest}` would leave `rest` on the request as a path parameter, and
-//! the hub router's own match appends to those, so every `Path` extractor in
-//! the hub would count one parameter too many. It would also leave the matched
-//! route behind, which axum's debug assertions reject when the request then
-//! enters a mounted service such as the agent routes.
-//!
-//! The listener starts before the hub router exists (the router needs the
-//! listener's port), so it holds a [`HubApi`], a handle the runtime binds once
-//! the router is built.
-//!
-//! Every forwarded request carries [`ArtifactsOrigin`], which the hub's routes
-//! read to refuse the calls an artifact can't make and to keep an artifact's
-//! agent sockets out of the activity count.
-
 use std::sync::{Arc, OnceLock};
 
 use axum::Router;
@@ -36,30 +11,20 @@ use tower::ServiceExt;
 use super::server::UiAddress;
 use crate::browser_landing::{self, AppRedirect, Landing};
 
-/// Marks a request as arriving through the artifacts origin.
-///
-/// It is a request extension, not a header: only the listener's forwarder
-/// inserts it, in-process, so nothing a client sends can set or forge it. The
-/// tunnel's loopback hop to the gateway is an ordinary HTTP request and never
-/// carries it.
 #[derive(Debug, Clone, Copy)]
 pub struct ArtifactsOrigin;
 
-/// The hub router, bound after the artifacts listener has started.
 #[derive(Clone, Default)]
 pub struct HubApi {
     router: Arc<OnceLock<Router>>,
 }
 
 impl HubApi {
-    /// An unbound handle. Forwarded requests answer `503` until [`Self::bind`].
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Bind the hub router. The first call wins; binding again is a bug in the
-    /// caller, logged and otherwise ignored.
     pub fn bind(&self, router: Router) {
         if self.router.set(router).is_err() {
             tracing::error!(
@@ -68,8 +33,6 @@ impl HubApi {
         }
     }
 
-    /// Hand `req` to the hub router as a request arriving through the
-    /// artifacts origin.
     async fn dispatch(&self, mut req: Request) -> Response {
         let Some(router) = self.router.get() else {
             tracing::warn!(
@@ -90,20 +53,6 @@ impl HubApi {
     }
 }
 
-/// Put the API in front of `artifacts`: `/api` and everything below it goes to
-/// the hub router, every other path to `artifacts`.
-///
-/// A folder artifact can't be called `api` (see `is_valid_artifact_name`), so
-/// the API never shadows an artifact's page.
-///
-/// The split is a middleware over a router that has no routes of its own, not
-/// a route, so nothing matches the request before the hub router does (see the
-/// module docs for what a match would leave behind).
-///
-/// A hub answer that hands a browser to the web app by an app-relative path
-/// (see [`AppRedirect`]) would land on this host, which isn't the app's, so it
-/// is pointed at the app's origin (`ui`), or replaced by the fallback page
-/// when that isn't known.
 pub(super) fn forwarding(artifacts: Router, api: HubApi, ui: UiAddress) -> Router {
     Router::new()
         .fallback_service(artifacts)
@@ -127,8 +76,6 @@ async fn split_api(
     }
 }
 
-/// Point an app redirect from the hub at the app's `origin`, or show its
-/// fallback when there's no origin to point it at.
 fn to_app_origin(mut response: Response, redirect: AppRedirect, origin: Option<&str>) -> Response {
     let target = response
         .headers()
@@ -145,7 +92,6 @@ fn to_app_origin(mut response: Response, redirect: AppRedirect, origin: Option<&
     browser_landing::fallback_page(StatusCode::NOT_FOUND, &Landing::from(redirect.fallback))
 }
 
-/// Whether `path` is `/api` or below it. `/apix` and `/api-tools` are not.
 fn is_api_path(path: &str) -> bool {
     path == "/api" || path.starts_with("/api/")
 }
@@ -159,15 +105,9 @@ mod tests {
 
     use super::*;
 
-    /// An extension the forwarder knows nothing about, standing in for the
-    /// ones axum, hyper and the server put on a request (`OnUpgrade`,
-    /// `ConnectInfo`).
     #[derive(Debug, Clone, Copy)]
     struct Carried(u8);
 
-    /// A hub stand-in: `/api/probe` reports whether the request carried the
-    /// marker, `/api/carried` what `Carried` held, and the routes with path
-    /// parameters answer with what their `Path` extractors saw.
     fn stand_in() -> Router {
         Router::new()
             .route(
@@ -198,9 +138,6 @@ mod tests {
             )
     }
 
-    /// The artifacts side: routes shaped like the real ones, which would
-    /// match `/api/...` if the API weren't split off first, and which answer
-    /// "artifact" to tell them from the hub's answers.
     fn artifacts_stand_in() -> Router {
         Router::new()
             .route("/{name}/{*rest}", get(|| async { "artifact" }))
@@ -211,8 +148,6 @@ mod tests {
         forwarding(artifacts_stand_in(), api.clone(), ui_on_port(7700))
     }
 
-    /// The app's address on `port` of whatever host a request names, with no
-    /// Residuum Cloud identity.
     fn ui_on_port(port: u16) -> UiAddress {
         let no_hub = std::env::temp_dir().join("residuum-forward-tests-no-hub");
         UiAddress::new(crate::pairing::DevicePairing::open(&no_hub), port)

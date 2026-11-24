@@ -20,12 +20,9 @@ import { waitFor } from "../test/wait";
 const modified = (...paths: string[]): WorkspaceChange[] =>
   paths.map((path) => ({ path, kind: "modified" as const }));
 
-/** Let every queued promise callback run. */
 async function flush(): Promise<void> {
   for (let i = 0; i < 20; i++) await Promise.resolve();
 }
-
-// ── Sources that are driven by hand ──────────────────────────────────
 
 interface FakeOwner {
   handler: WatchHandler;
@@ -37,7 +34,6 @@ interface FakeOwner {
 function fakeSources(boundAgent: string | null = null): {
   sources: ConfigSyncSources;
   owners: FakeOwner[];
-  /** The agent the watch registry applies to: owners tied to another don't hear. */
   bind: (agent: string | null) => void;
   hubFrame: (frame: HubServerMessage) => void;
   listening: () => { agent: number; hub: number };
@@ -87,7 +83,6 @@ function fakeSources(boundAgent: string | null = null): {
   };
 }
 
-/** A server whose files read as `text` until a test changes them. */
 function serverOf(text: string): { io: ConfigIo; files: Map<string, string> } {
   const files = new Map<string, string>();
   return {
@@ -274,15 +269,12 @@ describe("stopping", () => {
   });
 });
 
-// ── The app's sockets ─────────────────────────────────────────────────
-
 describe("the app's coordinator, through the real sockets", () => {
   let stop: () => void;
 
   beforeEach(() => {
     FakeWebSocket.install();
     vi.stubGlobal("location", { protocol: "http:", host: "localhost:7700" });
-    // Config files answer; everything else the agent socket loads never does.
     vi.stubGlobal(
       "fetch",
       vi.fn((input: RequestInfo | URL) => {

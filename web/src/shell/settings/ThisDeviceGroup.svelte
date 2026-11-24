@@ -8,12 +8,6 @@
   import PushDeliveryLine from "./PushDeliveryLine.svelte";
   import SettingsGroup from "./SettingsGroup.svelte";
 
-  // This browser's notifications: why it can't get them, or turning them on
-  // under a name, and once on, its name, what it is told about, a test send
-  // and how delivery is going. Every control acts at once through the hub's
-  // push routes; none of it goes through the save bar.
-
-  /** Each kind of notification: its switch's label, and when it is sent. */
   const PREFERENCES: readonly (readonly [keyof PushPreferences, string, string])[] = [
     ["inbox_item", "New inbox items", "An agent leaves something in your inbox."],
     ["agent_failed", "An agent stops working", "An agent can't start, or stops unexpectedly."],
@@ -29,7 +23,6 @@
     ],
   ];
 
-  /** Why this device can't get notifications, where nothing here can change that. */
   const UNAVAILABLE: Partial<Record<PushAvailability, string>> = {
     insecure:
       "Browsers allow notifications only over a secure connection. Open Residuum through Residuum Cloud, over HTTPS, or at localhost on the computer it runs on, to get them here.",
@@ -47,12 +40,10 @@
   let problem = $state<string | null>(null);
 
   const savedName = $derived(device?.label ?? "");
-  // The box holds a new name until it is saved; a rename from elsewhere replaces it.
   let name = $derived(savedName);
   let renaming = $state(false);
   const nameTrimmed = $derived(name.trim());
 
-  /** What each switch was just set to, shown until the hub answers. */
   let requested = $state<Partial<Record<keyof PushPreferences, boolean>>>({});
   let testing = $state(false);
 

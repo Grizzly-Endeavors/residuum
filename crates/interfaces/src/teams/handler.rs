@@ -1,5 +1,3 @@
-//! Inbound activity handling: authentication, access control, and dispatch to the agent.
-
 use std::sync::Arc;
 
 use axum::body::Bytes;
@@ -50,7 +48,6 @@ pub(super) async fn messages_endpoint(
         .and_then(|v| v.to_str().ok());
     if let Err(e) = rt.validator.validate(authorization, service_url).await {
         if let AuthError::KeyFetch(reason) = &e {
-            // Our failure, not the caller's: 503 makes the connector retry later.
             tracing::error!(error = %reason, "could not fetch Microsoft's signing keys; teams messages cannot be verified");
             return StatusCode::SERVICE_UNAVAILABLE;
         }
@@ -77,8 +74,6 @@ pub(super) async fn messages_endpoint(
     StatusCode::OK
 }
 
-/// Process one authenticated activity. Runs on the single inbound worker so
-/// messages reach the agent in the order Teams delivered them.
 pub(super) async fn process_activity(rt: &TeamsRuntime, activity: Activity) {
     match activity.kind.as_str() {
         "message" => handle_message(rt, activity).await,
@@ -88,8 +83,6 @@ pub(super) async fn process_activity(rt: &TeamsRuntime, activity: Activity) {
     }
 }
 
-/// Stable ID for a conversation: channel thread replies carry
-/// `;messageid=…` suffixes that identify the thread, not the channel.
 fn base_conversation_id(conversation_id: &str) -> &str {
     conversation_id
         .split_once(';')
@@ -98,8 +91,6 @@ fn base_conversation_id(conversation_id: &str) -> &str {
 
 fn conversation_ref(activity: &Activity) -> Option<ConversationRef> {
     let kind = activity.conversation_kind();
-    // A DM is labelled with the person in it so the agent can tell DMs apart
-    // in list_conversations.
     let person = activity.from.as_ref().and_then(|f| f.name.as_deref());
     let label = match (kind, person) {
         (ConversationKind::Personal, Some(person)) => direct_message_label(person),
@@ -120,7 +111,6 @@ fn is_bot(activity: &Activity, account: &ChannelAccount) -> bool {
         .is_some_and(|bot| bot.id == account.id)
 }
 
-/// Keep the store's reference for a conversation current, keyed by its base ID.
 async fn remember_conversation(rt: &TeamsRuntime, reference: &ConversationRef) {
     let base_id = base_conversation_id(&reference.conversation_id);
     let stored = ConversationRef {
@@ -173,7 +163,6 @@ async fn handle_installation(rt: &TeamsRuntime, activity: &Activity) {
     }
 }
 
-/// A message the bot has decided to act on.
 struct Incoming {
     activity: Activity,
     from: ChannelAccount,
@@ -203,8 +192,6 @@ async fn handle_message(rt: &TeamsRuntime, activity: Activity) {
         reference,
     };
 
-    // In shared conversations the bot only acts on @mentions; everything
-    // else is held as context for the next one.
     if incoming.reference.kind != ConversationKind::Personal && !incoming.activity.mentions_bot() {
         buffer_for_context(rt, &incoming);
         return;
@@ -250,8 +237,6 @@ fn buffer_for_context(rt: &TeamsRuntime, incoming: &Incoming) {
     );
 }
 
-/// The sender's standing if they may use the bot; otherwise tells them why
-/// not and returns `None`.
 async fn permitted_standing(rt: &TeamsRuntime, incoming: &Incoming) -> Option<Standing> {
     match rt
         .store
@@ -417,7 +402,6 @@ async fn claim_owner_if_unset(
     }
 }
 
-/// `[shared file: a.pdf, b.png]` for files posted without mentioning the bot.
 fn shared_file_names(attachments: &[Attachment]) -> String {
     let names: Vec<&str> = attachments
         .iter()
@@ -431,8 +415,6 @@ fn shared_file_names(attachments: &[Attachment]) -> String {
     }
 }
 
-/// Download files into the inbox, appending a line per attachment to `content`,
-/// and return what each saved file adds to the message.
 async fn collect_attachments(
     rt: &TeamsRuntime,
     attachments: &[Attachment],
@@ -457,7 +439,6 @@ async fn collect_attachments(
             };
             (url, attachment.name.as_deref().unwrap_or("image.png"), true)
         } else {
-            // Cards and the HTML rendering of the message body carry no file.
             continue;
         };
 
@@ -562,8 +543,6 @@ mod tests {
         assert_eq!(shared_file_names(&attachments), "[shared file: plan.pdf]");
         assert_eq!(shared_file_names(&[]), "");
     }
-
-    // ── Endpoint + worker, end to end (no network) ───────────────────────
 
     use residuum_bus::{MessageEvent, Subscriber, topics};
     use residuum_core::testing::wait;
@@ -709,7 +688,6 @@ mod tests {
         .await
     }
 
-    /// Post with a valid token, then run the worker step for what was queued.
     async fn deliver(h: &mut Harness, activity: &serde_json::Value) {
         let token = valid_token(APP_ID, SERVICE_URL);
         assert_eq!(post(h, activity, Some(&token)).await, StatusCode::OK);
@@ -801,7 +779,6 @@ mod tests {
             &group("3", ("Bear", "aad-bear"), "<at>Residuum</at> can you look?"),
         )
         .await;
-        // Events arrive in publish order, so a published chatter would come before the mention.
         let event = next_user_message(&mut h, "mention published").await;
         assert_eq!(
             event.content, "can you look?",

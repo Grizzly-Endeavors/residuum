@@ -1,9 +1,3 @@
-//! The web routes the hub serves: the config API state and its workspace
-//! scope, the hub-level state, the routes that repair an agent whether or not
-//! it is running, the team's workspace file API, and the process-level config,
-//! secret, cloud, update, tracing and checkpoint routes. The embedded web app
-//! is served by `assets`.
-
 mod a2a;
 mod agent_files;
 mod agent_keys;
@@ -42,68 +36,36 @@ use tokio::sync::watch;
 pub use agent_files::{AgentFilesState, CheckpointAccess, agent_files_api_router};
 pub(crate) use usage::{UsageState, agent_usage_api_router};
 
-/// Shared state for the config API.
 #[derive(Clone)]
 pub struct ConfigApiState {
-    /// Path to the hub directory (`~/.residuum/hub`): secrets, key stores,
-    /// hub `config.toml`.
     pub hub_dir: PathBuf,
-    /// Path to the agent's own `config/` directory (`config.toml`,
-    /// `providers.toml`, `mcp.json`, `channels.toml`, ...).
     pub config_dir: PathBuf,
-    /// This agent's name.
     pub agent_name: String,
-    /// Path to the workspace root directory (for resolving `mcp.json`, `channels.toml`, etc.).
     pub workspace_dir: PathBuf,
-    /// Path to the workspace memory directory (None in setup mode).
     pub memory_dir: Option<PathBuf>,
-    /// Signal the running agent to reload (None when there is no live agent
-    /// to signal, as on a stopped agent's repair routes).
     pub reload_tx: Option<residuum_bus::control::ReloadSender>,
-    /// Workspace and config checkpoint repositories.
     pub checkpoints: Arc<residuum_checkpoints::CheckpointEngine>,
-    /// The `team/` namespace and write coordination for the workspace file
-    /// API, with writes attributed to the user. `None` where `team/` is an
-    /// ordinary name.
     pub team: Option<residuum_workspace::team_files::TeamFiles>,
-    /// Which namespace the workspace file routes address.
     pub scope: WorkspaceScope,
 }
 
-/// The namespace a workspace file API addresses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkspaceScope {
-    /// An agent's directory, with the team directory reachable as `team/...`.
     Agent,
-    /// The team directory alone: every path is relative to `team/`.
     Team,
 }
 
-/// Shared state for the hub-level API: everything that exists once per
-/// process rather than once per agent.
 #[derive(Clone)]
 pub(crate) struct HubApiState {
-    /// Path to the hub directory (`~/.residuum/hub`): secrets, key stores,
-    /// hub `config.toml`.
     pub hub_dir: PathBuf,
-    /// Signals the hub to reload after a hub-owned file changes.
     pub reload_tx: residuum_bus::control::ReloadSender,
-    /// Signalled once onboarding has written the first agent (None once the
-    /// hub has agents and setup can no longer run).
     pub setup_done: Option<Arc<watch::Sender<bool>>>,
-    /// Serializes secret store writes to prevent lost-update races.
     pub secret_lock: Arc<tokio::sync::Mutex<()>>,
-    /// Checkpoint repositories; the hub API addresses the hub and team ones.
     pub checkpoints: Arc<residuum_checkpoints::CheckpointEngine>,
-    /// Coordinates writes under the team directory, which onboarding
-    /// bootstraps.
     pub team: residuum_workspace::team_files::TeamWriteCoordinator,
-    /// The embedded web app the static routes serve, and the MCP catalog reads.
     pub assets: WebAssetSource,
 }
 
-/// The hub directory, for routes that only need to resolve `secret:` values
-/// and so serve under both the hub and an agent.
 #[derive(Clone)]
 pub(crate) struct HubDir(pub PathBuf);
 
@@ -120,8 +82,6 @@ impl axum::extract::FromRef<ConfigApiState> for HubDir {
 }
 
 impl HubApiState {
-    /// A state over `hub_dir` with throwaway checkpoint repositories, no one
-    /// listening for reloads or setup completion, and `assets` as the web app.
     #[cfg(test)]
     pub(crate) fn for_test(hub_dir: &std::path::Path, assets: WebAssetSource) -> Self {
         let (reload_tx, _reload_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -138,8 +98,6 @@ impl HubApiState {
         }
     }
 
-    /// Bootstrap `layout`'s workspace and the team directory under the hub's
-    /// team write coordinator.
     async fn bootstrap_workspace(
         &self,
         layout: &residuum_config::WorkspaceLayout,
@@ -157,16 +115,10 @@ impl HubApiState {
         .await
     }
 
-    /// Checkpoint the hub config repository (hub `config.toml` and the
-    /// encrypted key stores) before a write to one of them. Never fails or
-    /// blocks the write — see `residuum_checkpoints`.
     async fn checkpoint_config_before_write(&self, summary: impl Into<String>) {
         let _checkpoint_id = self.checkpoint_config_id_before_write(summary).await;
     }
 
-    /// [`Self::checkpoint_config_before_write`], returning the id of the
-    /// checkpoint that holds the pre-write tree. `None` when that checkpoint
-    /// could not be recorded; the write still proceeds.
     #[must_use]
     async fn checkpoint_config_id_before_write(
         &self,
@@ -182,9 +134,6 @@ impl HubApiState {
 }
 
 impl ConfigApiState {
-    /// The team directory when it appears inside this state's namespace as
-    /// the `team/` folder. `None` in the team scope, where the namespace is
-    /// the team directory itself, and where `team/` is an ordinary name.
     fn team_mount(&self) -> Option<PathBuf> {
         match self.scope {
             WorkspaceScope::Agent => self.team.as_ref().map(|t| t.team_root().to_path_buf()),
@@ -192,9 +141,6 @@ impl ConfigApiState {
         }
     }
 
-    /// The paths the strictly-parsed-file diagnostics resolve against. The
-    /// team scope has no agent config to recognize, so both point at the hub
-    /// directory, where no team file lives.
     fn diagnostics_paths(&self) -> residuum_a2a::diagnostics_dispatch::DiagnosticsPaths {
         match self.scope {
             WorkspaceScope::Agent => residuum_a2a::diagnostics_dispatch::DiagnosticsPaths {
@@ -210,10 +156,6 @@ impl ConfigApiState {
         }
     }
 
-    /// Place a client-supplied path in the logical tree. In the agent scope
-    /// `team/...` is the team directory and anything else is relative to the
-    /// workspace; in the team scope every path is relative to the team
-    /// directory.
     fn locate(&self, relative: &str) -> workspace::Located {
         if self.scope == WorkspaceScope::Team
             && let Some(team) = &self.team
@@ -248,30 +190,14 @@ impl ConfigApiState {
         }
     }
 
-    /// The current hub config, reloaded fresh from `hub_dir` (these are
-    /// validation/diagnostic paths, not hot paths, so a fresh load is
-    /// simpler than threading the running gateway's cached `HubConfig`
-    /// through the config API).
-    ///
-    /// # Errors
-    /// Returns `FatalError::Config` if the hub config can't currently be
-    /// loaded (e.g. an invalid `hub/config.toml`) — diagnosing the agent's
-    /// own config needs the hub's resolved values (timezone, gateway, ...)
-    /// to run the same resolution loading does.
     fn hub_config(&self) -> Result<residuum_config::HubConfig, residuum_core::util::FatalError> {
         residuum_config::HubConfig::load_at(&self.hub_dir)
     }
 
-    /// Checkpoint the agent's own config repository (`config.toml` and
-    /// `providers.toml` in the agent's `config/` directory) before a write
-    /// to either. Never fails or blocks the write.
     async fn checkpoint_agent_config_before_write(&self, summary: impl Into<String>) {
         let _checkpoint_id = self.checkpoint_agent_config_id_before_write(summary).await;
     }
 
-    /// [`Self::checkpoint_agent_config_before_write`], returning the id of
-    /// the checkpoint that holds the pre-write tree. `None` when that
-    /// checkpoint could not be recorded; the write still proceeds.
     #[must_use]
     async fn checkpoint_agent_config_id_before_write(
         &self,
@@ -288,11 +214,6 @@ impl ConfigApiState {
             .await
     }
 
-    /// Diagnostics for `contents` as this agent's `config.toml`. A hub
-    /// config that currently fails to load surfaces as a single error
-    /// diagnostic rather than panicking — semantic validation needs the
-    /// hub's resolved values (timezone, gateway, ...) the same way loading
-    /// does.
     fn diagnose_agent_config(&self, contents: &str) -> Vec<residuum_core::diagnostics::Diagnostic> {
         match self.hub_config() {
             Ok(hub) => residuum_config::Config::diagnose_agent_toml(
@@ -307,7 +228,6 @@ impl ConfigApiState {
         }
     }
 
-    /// [`Self::diagnose_agent_config`] for `providers.toml`.
     fn diagnose_agent_providers(
         &self,
         contents: &str,
@@ -325,11 +245,6 @@ impl ConfigApiState {
         }
     }
 
-    /// Validate `contents` as this agent's `config.toml`, without saving it.
-    ///
-    /// # Errors
-    /// Returns a human-readable error string if validation fails, including
-    /// when the hub config can't currently be loaded.
     fn validate_agent_config(&self, contents: &str) -> Result<(), String> {
         let hub = self.hub_config().map_err(|e| {
             format!("hub config couldn't be loaded, so this can't be validated: {e}")
@@ -342,10 +257,6 @@ impl ConfigApiState {
         )
     }
 
-    /// [`Self::validate_agent_config`] for `providers.toml`.
-    ///
-    /// # Errors
-    /// Same as [`Self::validate_agent_config`].
     fn validate_agent_providers(&self, contents: &str) -> Result<(), String> {
         let hub = self.hub_config().map_err(|e| {
             format!("hub config couldn't be loaded, so this can't be validated: {e}")
@@ -358,18 +269,10 @@ impl ConfigApiState {
         )
     }
 
-    /// Checkpoint the workspace repository before a destructive workspace
-    /// API action (delete, overwrite, move/rename with overwrite) or a raw
-    /// write to a workspace-owned strictly-parsed file (`mcp.json`,
-    /// `config/a2a.json`). Never fails or blocks the action — see
-    /// `residuum_checkpoints`.
     async fn checkpoint_workspace_before_write(&self, summary: impl Into<String>) {
         let _checkpoint_id = self.checkpoint_workspace_id_before_write(summary).await;
     }
 
-    /// [`Self::checkpoint_workspace_before_write`], returning the id of the
-    /// checkpoint that holds the pre-action tree. `None` when that checkpoint
-    /// could not be recorded; the action still proceeds.
     #[must_use]
     async fn checkpoint_workspace_id_before_write(
         &self,
@@ -383,10 +286,6 @@ impl ConfigApiState {
             .await
     }
 
-    /// [`Self::checkpoint_workspace_id_before_write`] for the shared team
-    /// repository: the checkpoint for a destructive action on a `team/...`
-    /// path, which the workspace repository does not contain. `None` when it
-    /// could not be recorded; the action still proceeds.
     #[must_use]
     async fn checkpoint_team_id_before_write(&self, summary: impl Into<String>) -> Option<String> {
         self.checkpoints
@@ -398,12 +297,6 @@ impl ConfigApiState {
     }
 }
 
-/// The routes that repair an agent, which work whether or not it is running:
-/// its config, providers, MCP, and workspace-file routes, and its workspace
-/// and agent-config checkpoints.
-///
-/// With `reload_tx` set in the state, writes signal the live agent to
-/// reload; without it they only touch disk.
 pub fn agent_repair_api_router(state: ConfigApiState) -> axum::Router {
     let checkpoints = checkpoints::checkpoints_api_router(
         checkpoints::CheckpointApiState {
@@ -440,14 +333,7 @@ pub fn agent_repair_api_router(state: ConfigApiState) -> axum::Router {
         .merge(checkpoints)
 }
 
-/// The workspace file routes under `prefix`, addressing whichever namespace
-/// the state's [`WorkspaceScope`] selects. Used under an agent and, scoped to
-/// the team directory, under `/api/team`.
 fn workspace_api_router(prefix: &str) -> axum::Router<ConfigApiState> {
-    // Scoped to just this route via `route_layer` (which wraps every route
-    // already registered on *this* router value): axum's default 2 MiB body
-    // limit stays in place for every other endpoint, while text writes get
-    // the 8 MiB the workspace file API promises.
     let workspace_file_router = axum::Router::new()
         .route(
             "/workspace/file",
@@ -477,14 +363,10 @@ fn workspace_api_router(prefix: &str) -> axum::Router<ConfigApiState> {
     axum::Router::new().nest(prefix, routes)
 }
 
-/// The team's workspace file API: the workspace routes with every path
-/// relative to `team/`, served under `/api/team`.
 pub(crate) fn team_workspace_api_router(state: ConfigApiState) -> axum::Router {
     workspace_api_router("/api/team").with_state(state)
 }
 
-/// The hub-level config, secret, and key routes, plus onboarding. These exist
-/// once per process and need no running agent.
 pub(crate) fn hub_api_router(state: HubApiState) -> axum::Router {
     axum::Router::new()
         .route("/api/hub/config/raw", get(config::api_hub_config_raw_get))
@@ -652,7 +534,6 @@ mod tests {
         let episodes_dir = memory_dir.join("episodes");
         tokio::fs::create_dir_all(&episodes_dir).await.unwrap();
 
-        // Write two episodes on disk so the cursor should point at ep-002.
         for (id, date) in [
             (
                 "ep-001",
@@ -675,7 +556,6 @@ mod tests {
             )
             .await
             .unwrap();
-            // Sanity check the file lands where we expect.
             assert!(episode_jsonl_path(&episodes_dir, &episode).exists());
         }
 
@@ -861,11 +741,6 @@ mod tests {
 
     #[tokio::test]
     async fn chat_history_propagates_parse_errors_instead_of_silently_returning_empty() {
-        // Regression test: a malformed recent_messages.json used to be swallowed
-        // at debug! level and surfaced as an empty Recent segment, hiding real
-        // file corruption and making the chat feed look empty when it wasn't.
-        // The handler must now return a 5xx so the frontend can surface the
-        // failure to the user instead of silently dropping the history.
         use axum::extract::{Query, State};
         use axum::http::StatusCode;
 
@@ -873,8 +748,6 @@ mod tests {
         let memory_dir = tmp.path().join("memory");
         tokio::fs::create_dir_all(&memory_dir).await.unwrap();
 
-        // Timestamp uses ISO seconds-precision, which minute_format rejects.
-        // A single bad row here fails the whole file parse.
         let malformed = r#"[{"role":"user","content":"hi","timestamp":"2026-04-12T15:00:30","visibility":"user"}]"#;
         tokio::fs::write(memory_dir.join("recent_messages.json"), malformed)
             .await
@@ -905,7 +778,6 @@ mod tests {
         std::fs::create_dir_all(&hub_dir).unwrap();
         let state = HubApiState::for_test(&hub_dir, crate::testing::fixture_assets);
 
-        // Set a secret
         let set_result = secrets::api_secrets_set(
             State(state.clone()),
             Json(secrets::SetSecretRequest {
@@ -917,20 +789,17 @@ mod tests {
         .unwrap();
         assert_eq!(set_result.0.reference, "secret:test_key");
 
-        // List secrets
         let list_result = secrets::api_secrets_list(State(state.clone()))
             .await
             .unwrap();
         assert_eq!(list_result.0.names, vec!["test_key"]);
 
-        // Delete the secret
         let delete_result =
             secrets::api_secrets_delete(State(state.clone()), Path("test_key".to_string()))
                 .await
                 .unwrap();
         assert!(delete_result.0.deleted);
 
-        // Verify it's gone
         let after_delete = secrets::api_secrets_list(State(state)).await.unwrap();
         let actual = &after_delete.0.names;
         assert!(actual.is_empty(), "expected {actual:?} to be empty");

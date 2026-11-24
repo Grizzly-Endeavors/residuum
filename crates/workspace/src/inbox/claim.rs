@@ -1,10 +1,3 @@
-//! Claiming inbox item ids on disk.
-//!
-//! [`ClaimedItem`] is the one way a new inbox item is created. Every writer of a
-//! new item (the inbox tools, the notification inbox channel, the chat adapters'
-//! attachment items, the A2A paths) claims an id first, so two writers can never
-//! be handed the same id.
-
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -14,46 +7,15 @@ use residuum_config::WorkspaceLayout;
 
 use super::{InboxItem, generate_filename, save_item};
 
-/// An inbox item id claimed on disk, which its holder then saves as an item or releases.
-///
-/// Claiming creates `attachments/<id>/` in the inbox with a create-new operation,
-/// so two claims racing for the same id cannot both win: the loser moves on to
-/// the next suffix (`_2`, `_3`, ...). An id is taken when its item JSON or its
-/// `attachments/<id>/` directory exists in the inbox or in the archive that pairs
-/// with it (an archived item keeps its id). Claiming creates the inbox directory
-/// when it is missing.
-///
-/// The holder owns the claimed directory from then on: files go into
-/// [`Self::attachments_dir`], and [`Self::save`] writes the item's JSON, which
-/// completes the claim. A claim that is dropped without being saved or released
-/// (a cancelled task, a failed save) removes its directory, so nothing is left
-/// behind. [`Self::release`] removes it explicitly, and [`Self::keep`] leaves it.
-/// A saved item without attachments has no directory, only its JSON, so the JSON
-/// is checked again after the directory is created.
-///
-/// To give one item the same id in several inboxes (a send to several
-/// recipients), claim all of them at once with [`Self::claim_in_all`]: if the id
-/// is taken in any one inbox, it releases what it claimed and retries the next
-/// suffix, so the returned claims share one id.
 #[derive(Debug)]
 pub struct ClaimedItem {
     inbox_dir: PathBuf,
-    /// Filename stem of the item, which also names its attachment directory.
     id: String,
     attachments_dir: PathBuf,
-    /// Whether dropping the claim removes its attachments directory.
     armed: bool,
 }
 
 impl ClaimedItem {
-    /// Claim an id for an item titled `title` at `now` in `inbox_dir`.
-    ///
-    /// The id is the title's [`generate_filename`] stem, with `_2`, `_3`, ...
-    /// appended while it is taken.
-    ///
-    /// # Errors
-    /// Returns an error if the attachments directory cannot be created, or if
-    /// claiming a directory fails for any reason other than it already existing.
     pub async fn claim(inbox_dir: &Path, title: &str, now: NaiveDateTime) -> Result<Self, String> {
         let mut claimed = Self::claim_in_all(&[inbox_dir], title, now).await?;
         claimed.pop().ok_or_else(|| {
@@ -64,17 +26,6 @@ impl ClaimedItem {
         })
     }
 
-    /// Claim one id that is free in every inbox of `inbox_dirs`, returning one
-    /// claim per inbox in the same order, all with the same id.
-    ///
-    /// When the id is taken in any one inbox, the claims made so far are
-    /// released and the next suffix is tried, so the ids always agree.
-    ///
-    /// # Errors
-    /// Returns an error if `inbox_dirs` is empty or names the same directory
-    /// twice, if an attachments directory cannot be created, or if claiming a
-    /// directory fails for any reason other than it already existing. Nothing is
-    /// left claimed on error.
     pub async fn claim_in_all<P: AsRef<Path>>(
         inbox_dirs: &[P],
         title: &str,
@@ -83,8 +34,6 @@ impl ClaimedItem {
         Self::claim_in_all_with(inbox_dirs, title, now, Self::try_claim).await
     }
 
-    /// [`Self::claim_in_all`] with the per-inbox claim step supplied, so a test
-    /// can fail one inbox's claim without filesystem permissions.
     async fn claim_in_all_with<P, F>(
         inbox_dirs: &[P],
         title: &str,
@@ -110,9 +59,6 @@ impl ClaimedItem {
                     )
                 })?;
         }
-        // Compare the inboxes as the filesystem resolves them, so one inbox spelled
-        // two ways (relative, `..`, a symlink) is still rejected: its second claim
-        // would always find the first one's directory and never succeed.
         let mut resolved: HashSet<PathBuf> = HashSet::with_capacity(dirs.len());
         let mut archives: Vec<Option<PathBuf>> = Vec::with_capacity(dirs.len());
         for dir in &dirs {
@@ -163,7 +109,6 @@ impl ClaimedItem {
         }
     }
 
-    /// Claim `id` in `inbox_dir`, or `None` when it is taken.
     async fn try_claim(
         inbox_dir: &Path,
         archive_dir: Option<&Path>,
@@ -175,14 +120,6 @@ impl ClaimedItem {
         Self::claim_dir(inbox_dir, archive_dir, id).await
     }
 
-    /// Create `id`'s attachments directory in `inbox_dir`, or `None` when the id
-    /// is taken once the directory is in place.
-    ///
-    /// [`ClaimedItem::save`] writes the item's JSON before it removes an empty
-    /// directory, so a writer that saved between the check in [`Self::try_claim`]
-    /// and the create above leaves the id held by its JSON alone. That JSON is
-    /// checked again here, and the directory this claim just created is removed
-    /// rather than overwriting the saved item.
     async fn claim_dir(
         inbox_dir: &Path,
         archive_dir: Option<&Path>,
@@ -217,54 +154,32 @@ impl ClaimedItem {
         }))
     }
 
-    /// The claimed id: the item's filename without `.json`.
     #[must_use]
     pub fn id(&self) -> &str {
         &self.id
     }
 
-    /// The item's JSON filename, `<id>.json`.
     #[must_use]
     pub fn filename(&self) -> String {
         format!("{}.json", self.id)
     }
 
-    /// The inbox directory the id is claimed in.
     #[must_use]
     pub fn inbox_dir(&self) -> &Path {
         &self.inbox_dir
     }
 
-    /// The directory the item's files go into: `attachments/<id>/` in the inbox.
     #[must_use]
     pub fn attachments_dir(&self) -> &Path {
         &self.attachments_dir
     }
 
-    /// The path to record in [`InboxItem::attachments`] for a file called
-    /// `file_name` in [`Self::attachments_dir`]: relative to the workspace root,
-    /// under the user or agent inbox the claim is in.
-    ///
-    /// The path is always `/`-separated, whatever the platform: the item JSON
-    /// stores it, so a Windows item must read the same as one written anywhere
-    /// else. Reads go through `Path`, which accepts either separator.
-    ///
-    /// An inbox outside the workspace layout has no workspace root to be
-    /// relative to, so its paths are relative to the inbox directory.
     #[must_use]
     pub fn recorded_attachment_path(&self, file_name: &str) -> PathBuf {
         let attachments = workspace_relative_attachments_dir(&self.inbox_dir);
         PathBuf::from(format!("{attachments}/{}/{file_name}", self.id))
     }
 
-    /// Write the item's JSON atomically under the claimed id, which completes
-    /// the claim, and remove the attachments directory when nothing was put in it.
-    ///
-    /// A failed write leaves the claim unsaved, so dropping it (or
-    /// [`Self::release`]) removes the directory.
-    ///
-    /// # Errors
-    /// Returns an error if the item cannot be serialized or written.
     pub async fn save(&mut self, item: &InboxItem) -> anyhow::Result<()> {
         save_item(&self.inbox_dir, &self.filename(), item).await?;
         self.armed = false;
@@ -272,17 +187,11 @@ impl ClaimedItem {
         Ok(())
     }
 
-    /// Remove the claimed directory and anything in it, for an item that will
-    /// not be saved. A failed removal is logged, not returned: the failure that
-    /// led here is already reported to the user.
     pub async fn release(mut self) {
         remove_claimed_dir(&self.attachments_dir).await;
         self.armed = false;
     }
 
-    /// Leave the claimed directory and its files on disk, and keep the id taken
-    /// without an item JSON. For a holder whose files are the only copy and
-    /// whose item could not be saved.
     pub fn keep(mut self) {
         self.armed = false;
     }
@@ -319,8 +228,6 @@ impl Drop for ClaimedItem {
         if !self.armed {
             return;
         }
-        // Synchronous because a drop cannot await: this is the cleanup for a
-        // cancelled task or a failed save, and the directory is small.
         match std::fs::remove_dir_all(&self.attachments_dir) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -355,10 +262,6 @@ async fn remove_claimed_dir(dir: &Path) {
     }
 }
 
-/// The archive directory that pairs with a workspace inbox directory:
-/// `<root>/inbox/<kind>` archives to `<root>/archive/inbox/<kind>`, the layout
-/// `WorkspaceLayout` defines. `None` for a directory that isn't laid out that
-/// way, which then has no archive to check.
 fn archive_sibling(inbox_dir: &Path) -> Option<PathBuf> {
     let kind = inbox_dir.file_name()?;
     let inbox = inbox_dir.parent()?;
@@ -368,10 +271,6 @@ fn archive_sibling(inbox_dir: &Path) -> Option<PathBuf> {
     Some(inbox.parent()?.join("archive").join("inbox").join(kind))
 }
 
-/// The user or agent inbox's attachments directory relative to the workspace
-/// root (`inbox/<kind>/attachments`), taken from the layout rooted at the empty
-/// path, joined with `/`. For an inbox directory outside the layout, plain
-/// `attachments`.
 fn workspace_relative_attachments_dir(inbox_dir: &Path) -> String {
     let layout = WorkspaceLayout::new(PathBuf::new());
     [
@@ -395,11 +294,6 @@ fn workspace_relative_attachments_dir(inbox_dir: &Path) -> String {
     )
 }
 
-/// Whether `id` is taken in the inbox or, when there is one, its archive.
-///
-/// An id is taken by its item JSON, and by its `attachments/<id>/` directory in
-/// either place: a claim creates that directory before its JSON is saved, so the
-/// directory alone already belongs to the id.
 async fn id_in_use(inbox_dir: &Path, archive_dir: Option<&Path>, id: &str) -> bool {
     if holds_id(inbox_dir, id).await {
         return true;
@@ -414,7 +308,6 @@ async fn holds_id(dir: &Path, id: &str) -> bool {
     json_in_use(dir, None, id).await || path_exists(&dir.join("attachments").join(id)).await
 }
 
-/// Whether an item JSON named `id` exists in the inbox or, when there is one, its archive.
 async fn json_in_use(inbox_dir: &Path, archive_dir: Option<&Path>, id: &str) -> bool {
     let json = format!("{id}.json");
     if path_exists(&inbox_dir.join(&json)).await {
@@ -657,7 +550,6 @@ mod tests {
             claimed_tx
                 .send(claim.attachments_dir().to_path_buf())
                 .unwrap();
-            // Held until the task is aborted at this await.
             std::future::pending::<()>().await;
             drop(claim);
         });
@@ -682,7 +574,6 @@ mod tests {
             .await
             .unwrap();
         let attachments_dir = claim.attachments_dir().to_path_buf();
-        // A directory where the JSON belongs makes the atomic rename fail.
         tokio::fs::create_dir(inbox.join(claim.filename()))
             .await
             .unwrap();
@@ -793,8 +684,6 @@ mod tests {
         let layout = WorkspaceLayout::new(dir.path());
         let user = layout.user_inbox_dir();
         let agent = layout.agent_inbox_dir();
-        // The base id is free in the user inbox, which is claimed first, but taken
-        // in the agent inbox: the user inbox's claim is released and both move on.
         tokio::fs::create_dir_all(agent.join("attachments/20260225_hello"))
             .await
             .unwrap();
@@ -845,11 +734,9 @@ mod tests {
     async fn claim_dir_releases_its_directory_when_a_save_took_the_id() {
         let dir = tempfile::tempdir().unwrap();
         let inbox = workspace_inbox(dir.path()).await;
-        // `claim_in_all` creates the attachments root before `claim_dir` runs.
         tokio::fs::create_dir_all(inbox.join("attachments"))
             .await
             .unwrap();
-        // A saved item without attachments: its JSON is the only trace of the id.
         save_item(&inbox, "20260225_raced.json", &item("raced"))
             .await
             .unwrap();
@@ -882,8 +769,6 @@ mod tests {
         tokio::fs::create_dir_all(&user).await.unwrap();
         tokio::fs::create_dir_all(&agent).await.unwrap();
 
-        // The user inbox is claimed first, so its claim must be released when the
-        // agent inbox's claim fails with an I/O error.
         let result = ClaimedItem::claim_in_all_with(
             &[&user, &agent],
             "failing",

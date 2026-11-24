@@ -1,11 +1,8 @@
-//! Tests for `GET /api/hub/events` and the hub socket's `team_event` frames.
-
 use super::*;
 use crate::team_events::{
     NewTeamEvent, TeamEvent, TeamEventKind, TeamEventLevel, TeamEventPlace, TeamEventTarget,
 };
 
-/// Record an entry about `scout`, the way the hub's recorder does.
 fn record(h: &Harness, summary: &str, level: TeamEventLevel) -> TeamEvent {
     h.team_events.record(NewTeamEvent {
         at: Utc::now(),
@@ -26,7 +23,6 @@ fn record_many(h: &Harness, count: u32) {
     }
 }
 
-/// The ids of a page's events, in order.
 fn ids(page: &Value) -> Vec<u64> {
     page["events"]
         .as_array()
@@ -110,8 +106,6 @@ async fn after_returns_the_entries_a_client_has_not_seen() {
         .await;
     assert_eq!(ids(&none), Vec::<u64>::new());
 
-    // More newer entries than fit: the newest come first, and before walks
-    // back to the client's position.
     let capped = h
         .get_expect("/api/hub/events?after=2&limit=3", StatusCode::OK)
         .await;
@@ -161,7 +155,6 @@ async fn a_query_that_cannot_be_read_is_a_json_error() {
     );
 }
 
-/// The next frame of `socket`, which must be a `team_event`.
 async fn next_team_event(socket: &mut ClientSocket) -> Value {
     let frame = next_frame(socket).await;
     assert_eq!(frame["type"], "team_event", "{frame}");
@@ -179,8 +172,6 @@ async fn each_new_entry_reaches_the_hub_socket_as_a_team_event_frame() {
     let first = record(&h, "first", TeamEventLevel::Info);
     let second = record(&h, "second", TeamEventLevel::Error);
 
-    // A page reads what came before it connected from the events route, so
-    // the first frame is the first entry recorded after it connected.
     let first_frame = next_team_event(&mut socket).await;
     assert_eq!(first_frame["boot_id"], TEST_BOOT_ID);
     assert_eq!(first_frame["event"], serde_json::to_value(&first).unwrap());
@@ -216,8 +207,6 @@ async fn a_warning_sent_to_one_connection_is_not_a_team_event() {
     let mut socket = connect_hub(addr).await;
     assert_eq!(next_frame(&mut socket).await["type"], "agents_snapshot");
 
-    // A watch request the hub refuses is answered with a warning to this
-    // connection alone.
     send_client(
         &mut socket,
         &json!({ "type": "watch_team", "prefixes": ["wiki"] }),
@@ -229,7 +218,6 @@ async fn a_warning_sent_to_one_connection_is_not_a_team_event() {
 
     let page = h.get_expect("/api/hub/events", StatusCode::OK).await;
     assert_eq!(ids(&page), Vec::<u64>::new(), "nothing was logged");
-    // The next frame is the probe entry's, so no frame came for the warning.
     let probe = record(&h, "probe", TeamEventLevel::Info);
     let frame = next_team_event(&mut socket).await;
     assert_eq!(frame["event"]["id"], probe.id);
@@ -242,8 +230,6 @@ async fn a_socket_that_falls_behind_the_log_gets_a_snapshot_then_the_entries_sti
     let mut socket = connect_hub(addr).await;
     assert_eq!(next_frame(&mut socket).await["type"], "agents_snapshot");
 
-    // Recorded without yielding, so the connection can't read any of them
-    // until the burst is over and its receiver has overflowed.
     record_many(&h, 300);
 
     let resnapshot = next_frame(&mut socket).await;
@@ -256,7 +242,6 @@ async fn a_socket_that_falls_behind_the_log_gets_a_snapshot_then_the_entries_sti
             .as_u64()
             .unwrap();
     }
-    // The client reads what it missed from the route.
     let page = h
         .get_expect("/api/hub/events?after=0&limit=200", StatusCode::OK)
         .await;

@@ -1,17 +1,10 @@
 import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "../support/fixtures";
 
-/**
- * What an agent has running, said once: the Chat header's pill, the rail's
- * Activity row and Activity's Running now heading show the same number, and
- * the pill goes with the agent.
- */
-
 function pill(page: Page): Locator {
   return page.getByRole("button", { name: /^\d+ running, open Activity$/ });
 }
 
-/** The rail's Activity row for atlas, with the rail opened in its drawer on a phone. */
 async function railActivity(page: Page, isMobile: boolean): Promise<Locator> {
   if (isMobile) {
     await page
@@ -26,7 +19,6 @@ async function railActivity(page: Page, isMobile: boolean): Promise<Locator> {
   return rail.getByRole("link", { name: /^Activity/ }).first();
 }
 
-/** The number in a name like "5 running" or "Activity, 5 running". */
 function runningIn(name: string | null): number {
   const count = /(\d+) running/.exec(name ?? "")?.[1];
   if (count === undefined) throw new Error(`no running count in "${name ?? ""}"`);

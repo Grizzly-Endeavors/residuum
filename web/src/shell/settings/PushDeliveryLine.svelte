@@ -4,10 +4,6 @@
   import { deliveryOf } from "../../lib/push-devices";
   import { relativeTime } from "../../lib/time";
 
-  // How delivery to a device is going: when a notification last reached its
-  // push service, or the failure that came after, in the push service's words
-  // as the hub put them.
-
   let { device }: { device: PushDevice } = $props();
 
   const delivery = $derived(deliveryOf(device));

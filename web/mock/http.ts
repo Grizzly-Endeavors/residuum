@@ -1,7 +1,6 @@
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { isValidArtifactName } from "./artifact-name";
 
-/** A parsed JSON request body: an object whose fields still have to be checked. */
 export type JsonObject = Record<string, unknown>;
 
 export function readBody(req: IncomingMessage): Promise<string> {
@@ -16,11 +15,6 @@ export function readBody(req: IncomingMessage): Promise<string> {
   });
 }
 
-/**
- * A request body's bytes, or `null` when it is longer than `limit`. A body
- * over the limit is read to its end and dropped as it arrives, so the client
- * can finish sending and read the answer.
- */
 export function readBodyBytes(req: IncomingMessage, limit: number): Promise<Buffer | null> {
   return new Promise<Buffer | null>((resolve) => {
     const chunks: Buffer[] = [];
@@ -35,7 +29,6 @@ export function readBodyBytes(req: IncomingMessage, limit: number): Promise<Buff
   });
 }
 
-/** Parse a request body that must be a JSON object; anything else throws. */
 export function parseJsonObject(raw: string): JsonObject {
   const value: unknown = JSON.parse(raw);
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -48,7 +41,6 @@ export async function readJsonObject(req: IncomingMessage): Promise<JsonObject> 
   return parseJsonObject(await readBody(req));
 }
 
-/** The field's value when it is a string, `undefined` otherwise. */
 export function stringField(body: JsonObject, key: string): string | undefined {
   const value = body[key];
   return typeof value === "string" ? value : undefined;
@@ -64,12 +56,10 @@ export function text(res: ServerResponse, status: number, body: string): void {
   res.end(body);
 }
 
-/** Whether the request carries an `X-Residuum-Artifact` header, valid or not. */
 export function hasArtifactHeader(req: IncomingMessage): boolean {
   return req.headers["x-residuum-artifact"] !== undefined;
 }
 
-/** The `X-Residuum-Artifact` header, or `null` when it's absent or isn't an artifact's name. */
 export function artifactIdentity(req: IncomingMessage): string | null {
   const raw = req.headers["x-residuum-artifact"];
   const value = Array.isArray(raw) ? raw[0] : raw;

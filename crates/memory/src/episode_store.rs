@@ -1,8 +1,3 @@
-//! Episode transcript file persistence.
-//!
-//! Writes episode transcripts as JSONL files to `memory/episodes/YYYY-MM/DD/<id>.jsonl`.
-//! Line 1 is a JSON meta object; subsequent lines are serialized [`Message`] values.
-
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -12,38 +7,16 @@ use anyhow::Context;
 use crate::types::{Episode, SourceTag};
 use residuum_inference::{Message, Role};
 
-/// Metadata from the first line of an episode JSONL file.
 #[derive(Debug, Deserialize)]
 pub struct EpisodeMeta {
-    /// Episode identifier (e.g., `"ep-001"`).
     pub id: String,
-    /// Date of the episode.
     pub date: chrono::NaiveDate,
-    /// Session/run/category this episode was merged from, if any. Optional
-    /// on read so episode files written before session memory existed still
-    /// load.
     #[serde(flatten)]
     pub source: SourceTag,
-    /// Narrative summary captured at merge time, if any.
     #[serde(default)]
     pub narrative: Option<String>,
 }
 
-/// Write an episode transcript file to the episodes directory.
-///
-/// Creates `{episodes_dir}/{YYYY-MM}/{DD}/{episode.id}.jsonl` as a JSONL file.
-/// Line 1 is a meta JSON object; subsequent lines are serialized [`Message`] values.
-/// Creates the date subdirectory if it doesn't exist. Tags the meta line with
-/// [`SourceTag::main`] and no narrative — use
-/// [`write_episode_transcript_tagged`] to record a session's source or a
-/// captured narrative.
-///
-/// # Errors
-/// Returns an error if the file cannot be written.
-///
-/// Test-only: production code always has a [`SourceTag`] and calls
-/// [`write_episode_transcript_tagged`] directly (the merge writer is the
-/// only production caller).
 #[cfg(any(test, feature = "test-support"))]
 pub async fn write_episode_transcript(
     episodes_dir: &Path,
@@ -53,13 +26,6 @@ pub async fn write_episode_transcript(
     write_episode_transcript_tagged(episodes_dir, episode, messages, &SourceTag::main(), None).await
 }
 
-/// Write an episode transcript file, tagging its meta line with the source
-/// that produced it and, when present, the narrative captured at merge time.
-///
-/// Otherwise identical to [`write_episode_transcript`].
-///
-/// # Errors
-/// Returns an error if the file cannot be written.
 pub async fn write_episode_transcript_tagged(
     episodes_dir: &Path,
     episode: &Episode,
@@ -98,8 +64,6 @@ pub async fn write_episode_transcript_tagged(
     lines.push(serde_json::to_string(&meta).context("failed to serialize episode meta")?);
 
     for msg in messages {
-        // An archived conversation is never replayed to a provider, so its
-        // reasoning is kept as readable text without the replay data.
         let archived = (!msg.thinking.is_empty()).then(|| msg.without_replay_data());
         lines.push(
             serde_json::to_string(archived.as_ref().unwrap_or(msg))
@@ -114,7 +78,6 @@ pub async fn write_episode_transcript_tagged(
         .with_context(|| format!("failed to write episode transcript at {}", path.display()))
 }
 
-/// Get the path where an episode JSONL transcript would be written.
 #[must_use]
 pub fn episode_jsonl_path(episodes_dir: &Path, episode: &Episode) -> PathBuf {
     episodes_dir
@@ -122,7 +85,6 @@ pub fn episode_jsonl_path(episodes_dir: &Path, episode: &Episode) -> PathBuf {
         .join(format!("{}.jsonl", episode.id))
 }
 
-/// Get the path for the per-episode observations archive file.
 #[must_use]
 pub(crate) fn episode_obs_path(episodes_dir: &Path, episode: &Episode) -> PathBuf {
     episodes_dir
@@ -130,7 +92,6 @@ pub(crate) fn episode_obs_path(episodes_dir: &Path, episode: &Episode) -> PathBu
         .join(format!("{}.obs.json", episode.id))
 }
 
-/// Get the path for the per-episode interaction-pair index file.
 #[must_use]
 pub(crate) fn episode_idx_path(episodes_dir: &Path, episode: &Episode) -> PathBuf {
     episodes_dir
@@ -138,15 +99,8 @@ pub(crate) fn episode_idx_path(episodes_dir: &Path, episode: &Episode) -> PathBu
         .join(format!("{}.idx.jsonl", episode.id))
 }
 
-/// Filename extension for the per-episode completion marker.
-///
-/// The marker is written as the final step of episode persistence, so its
-/// presence certifies that every prior artifact (transcript, observation
-/// archive, global log, and search-chunk index) landed on disk. Its absence
-/// beside a transcript is what lets reconciliation detect an interrupted write.
 const COMPLETION_MARKER_EXT: &str = "done";
 
-/// Get the path for the per-episode completion marker file.
 #[must_use]
 pub(crate) fn episode_marker_path(episodes_dir: &Path, episode: &Episode) -> PathBuf {
     episodes_dir
@@ -154,20 +108,6 @@ pub(crate) fn episode_marker_path(episodes_dir: &Path, episode: &Episode) -> Pat
         .join(format!("{}.{COMPLETION_MARKER_EXT}", episode.id))
 }
 
-/// Write the per-episode completion marker.
-///
-/// This MUST be the final step of episode persistence: its presence certifies
-/// that the transcript, per-episode observation archive, global observation
-/// log, and search-chunk index were all written durably. Because every prior
-/// step is chained with `?`, a failure anywhere upstream returns before this
-/// line and leaves the marker absent — the signal reconciliation uses to detect
-/// an interrupted write.
-///
-/// Only the file's existence is load-bearing; its contents are a human-readable
-/// timestamp kept purely for post-mortem debugging.
-///
-/// # Errors
-/// Returns an error if the marker file cannot be written.
 pub(crate) async fn write_completion_marker(
     episodes_dir: &Path,
     episode: &Episode,
@@ -184,23 +124,6 @@ pub(crate) async fn write_completion_marker(
         })
 }
 
-/// Return the paths of episode transcripts whose persistence was interrupted.
-///
-/// A fully persisted episode has a [`COMPLETION_MARKER_EXT`] marker written
-/// beside its `.jsonl` transcript as the final step. A transcript with neither
-/// a marker nor a legacy `.obs.json` archive means the write was cut short
-/// after the transcript landed but before its observations and search chunks
-/// were durably written — leaving the episode permanently invisible to search.
-/// Each such transcript is logged at `warn`; the returned paths let the caller
-/// report or act on them.
-///
-/// The `.obs.json` fallback exists purely for backward compatibility: episodes
-/// written before completion markers existed are complete but have no marker,
-/// and their `.obs.json` archive proves persistence reached at least the
-/// observations step, so they are not reported as interrupted.
-///
-/// # Errors
-/// Returns an error if the episodes directory cannot be traversed.
 pub(crate) fn find_interrupted_episodes(episodes_dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
     if !episodes_dir.exists() {
         return Ok(Vec::new());
@@ -232,7 +155,6 @@ pub(crate) fn find_interrupted_episodes(episodes_dir: &Path) -> anyhow::Result<V
     Ok(interrupted)
 }
 
-/// Recursively collect episode transcript (`ep-NNN.jsonl`) file paths.
 fn collect_transcripts(dir: &Path, out: &mut Vec<PathBuf>) -> anyhow::Result<()> {
     let entries = std::fs::read_dir(dir)
         .with_context(|| format!("failed to read episodes directory {}", dir.display()))?;
@@ -249,9 +171,6 @@ fn collect_transcripts(dir: &Path, out: &mut Vec<PathBuf>) -> anyhow::Result<()>
     Ok(())
 }
 
-/// Whether `path` names an episode transcript (`ep-NNN.jsonl`).
-///
-/// Excludes `ep-NNN.idx.jsonl`, whose stem `ep-NNN.idx` is not a bare episode id.
 fn is_episode_transcript(path: &Path) -> bool {
     path.extension().is_some_and(|ext| ext == "jsonl")
         && path
@@ -261,11 +180,6 @@ fn is_episode_transcript(path: &Path) -> bool {
             .is_some_and(|s| s.parse::<u32>().is_ok())
 }
 
-/// The paths of every episode transcript under `episodes_dir`, newest episode
-/// first. Empty when the directory doesn't exist.
-///
-/// # Errors
-/// Returns an error if a directory cannot be read.
 pub fn transcripts_newest_first(episodes_dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
     if !episodes_dir.exists() {
         return Ok(Vec::new());
@@ -276,7 +190,6 @@ pub fn transcripts_newest_first(episodes_dir: &Path) -> anyhow::Result<Vec<PathB
     Ok(transcripts)
 }
 
-/// The `NNN` of a transcript named `ep-NNN.jsonl`, `0` for any other name.
 fn episode_number(transcript: &Path) -> u32 {
     transcript
         .file_stem()
@@ -286,13 +199,6 @@ fn episode_number(transcript: &Path) -> u32 {
         .unwrap_or(0)
 }
 
-/// Read and parse a JSONL episode transcript file.
-///
-/// Returns the episode metadata and the list of messages. The first line is
-/// parsed as [`EpisodeMeta`]; subsequent non-empty lines are parsed as [`Message`] values.
-///
-/// # Errors
-/// Returns an error if the file cannot be read or any line fails to parse.
 pub async fn read_episode_jsonl(path: &Path) -> anyhow::Result<(EpisodeMeta, Vec<Message>)> {
     let file_content = tokio::fs::read_to_string(path)
         .await
@@ -320,22 +226,12 @@ pub async fn read_episode_jsonl(path: &Path) -> anyhow::Result<(EpisodeMeta, Vec
     Ok((meta, messages))
 }
 
-/// Default number of message lines returned when no limit is specified.
 pub const DEFAULT_LINES: usize = 50;
 
-/// Hard maximum on the number of message lines per request.
 pub const MAX_LINES: usize = 200;
 
-/// Maximum characters shown for tool result content before truncation.
 const MAX_TOOL_RESULT_CHARS: usize = 500;
 
-/// Find an episode JSONL file by ID, searching the episodes directory recursively.
-///
-/// Returns `Ok(Some(path))` when found, `Ok(None)` when the directory is missing
-/// or the file doesn't exist, and `Err` only on I/O failures reading directories.
-///
-/// # Errors
-/// Returns an error if a directory cannot be read.
 pub fn find_episode_path(episodes_dir: &Path, episode_id: &str) -> anyhow::Result<Option<PathBuf>> {
     if !episodes_dir.exists() {
         return Ok(None);
@@ -362,18 +258,6 @@ fn walk_for_file(dir: &Path, target: &str) -> anyhow::Result<Option<PathBuf>> {
     Ok(None)
 }
 
-/// Read a bounded range of lines from an episode JSONL file, formatted for LLM consumption.
-///
-/// Line numbering is 1-indexed: line 1 is the meta header, line 2+ are messages.
-/// Always includes the meta header. When `from_line` is provided, only message
-/// lines from that offset onward are included.
-///
-/// `expand_line`, when given, overrides `from_line`/`request_limit`: it returns
-/// just that one line's message in full, uncut by `MAX_TOOL_RESULT_CHARS` — the
-/// way to retrieve a tool result that a windowed read reported as truncated.
-///
-/// # Errors
-/// Returns an error if the file cannot be read or the meta line cannot be parsed.
 pub async fn read_episode_lines(
     path: &Path,
     from_line: Option<usize>,
@@ -387,7 +271,6 @@ pub async fn read_episode_lines(
     let all_lines: Vec<&str> = file_content.lines().collect();
     let total = all_lines.len();
 
-    // Parse meta from line 1
     let meta_line = all_lines
         .first()
         .ok_or_else(|| anyhow::anyhow!("episode file is empty at {}", path.display()))?;
@@ -396,12 +279,10 @@ pub async fn read_episode_lines(
 
     let mut parts: Vec<String> = Vec::new();
 
-    // Header
     parts.push(format!("Episode: {} | {}", meta.id, meta.date));
     parts.push(String::new());
 
     if let Some(target) = expand_line {
-        // Line 1 is the meta header (index 0); messages start at line 2 (index 1).
         let idx = target.saturating_sub(1);
         match all_lines.get(idx).filter(|_| target >= 2) {
             None => {
@@ -426,19 +307,15 @@ pub async fn read_episode_lines(
 
     let limit = request_limit.map_or(DEFAULT_LINES, |l| l.clamp(1, MAX_LINES));
 
-    // from_line is 1-indexed; message lines start at index 1 (line 2)
-    // If from_line <= 1 or None, start from the first message line (index 1)
     let start_idx = from_line.map_or(1, |f| f.max(1));
 
     let end_idx = total.min(start_idx + limit);
 
-    // Message lines
     for idx in start_idx..end_idx {
         if let Some(raw) = all_lines.get(idx) {
             if raw.trim().is_empty() {
                 continue;
             }
-            // 1-indexed line number
             let line_num = idx + 1;
             match serde_json::from_str::<Message>(raw) {
                 Ok(msg) => format_message_line(&mut parts, line_num, &msg, false),
@@ -450,7 +327,6 @@ pub async fn read_episode_lines(
         }
     }
 
-    // Footer when showing a subset
     if start_idx > 1 || end_idx < total {
         parts.push(format!(
             "--- showing lines {}-{} of {total} total ---",
@@ -462,14 +338,6 @@ pub async fn read_episode_lines(
     Ok(parts.join("\n"))
 }
 
-/// Generate the next episode ID by scanning the episodes directory for existing JSONL files.
-///
-/// Walks `episodes_dir` recursively for files named `ep-NNN.jsonl`, takes the max `NNN`,
-/// and returns `ep-(max+1)` zero-padded to 3 digits. Returns `"ep-001"` if none exist.
-/// JSONL transcripts persist even after reflection, making this a stable counter.
-///
-/// # Errors
-/// Returns an error if the directory cannot be read.
 pub async fn next_episode_id(episodes_dir: &Path) -> anyhow::Result<String> {
     let max_num = max_episode_num(episodes_dir)?;
     let id = format!("ep-{:03}", max_num + 1);
@@ -477,13 +345,6 @@ pub async fn next_episode_id(episodes_dir: &Path) -> anyhow::Result<String> {
     Ok(id)
 }
 
-/// Return the ID of the most recent episode on disk, or `None` if none exist.
-///
-/// Walks `episodes_dir` recursively for files named `ep-NNN.jsonl` and returns
-/// the highest `NNN` as a zero-padded `ep-NNN` string.
-///
-/// # Errors
-/// Returns an error if the directory cannot be read.
 #[cfg(any(test, feature = "test-support"))]
 pub fn latest_episode_id(episodes_dir: &Path) -> anyhow::Result<Option<String>> {
     let max_num = max_episode_num(episodes_dir)?;
@@ -494,20 +355,6 @@ pub fn latest_episode_id(episodes_dir: &Path) -> anyhow::Result<Option<String>> 
     }
 }
 
-/// Return the ID of the newest main-conversation episode older than `before`,
-/// or the newest one on disk when `before` is `None`.
-///
-/// Session runs (pulses, scheduled actions, spawned and external sessions)
-/// are merged into the same episodes directory, tagged with their session;
-/// those are skipped, so paging back through the main chat never lands on a
-/// session's transcript. Gaps in the numbering (hand-deleted files) are
-/// skipped the same way. A transcript whose meta line can't be read is
-/// logged and skipped, so one damaged file doesn't end the history before
-/// it. Returns `None` when no older main episode exists or `before` isn't an
-/// `ep-NNN` id.
-///
-/// # Errors
-/// Returns an error if the directory cannot be traversed.
 pub async fn older_main_episode_id(
     episodes_dir: &Path,
     before: Option<&str>,
@@ -543,7 +390,6 @@ pub async fn older_main_episode_id(
     Ok(None)
 }
 
-/// Read only the meta line (line 1) of an episode transcript.
 async fn read_episode_meta(path: &Path) -> anyhow::Result<EpisodeMeta> {
     use tokio::io::AsyncBufReadExt;
 
@@ -559,9 +405,6 @@ async fn read_episode_meta(path: &Path) -> anyhow::Result<EpisodeMeta> {
         .with_context(|| format!("failed to parse episode meta at {}", path.display()))
 }
 
-/// Recursively walk `dir` for `ep-NNN.jsonl` files and return the maximum `NNN` found.
-///
-/// Returns `0` if the directory does not exist or contains no matching files.
 fn max_episode_num(dir: &Path) -> anyhow::Result<u32> {
     if !dir.exists() {
         return Ok(0);
@@ -595,12 +438,6 @@ fn walk_for_max(dir: &Path, max: &mut u32) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Format one message as a line-numbered entry for LLM-facing transcript output.
-///
-/// `full`, when true, returns a tool result line's content uncut regardless
-/// of `MAX_TOOL_RESULT_CHARS` — used for a single-line `expand_line` request.
-/// When false and the content is over the limit, the truncated line reports
-/// the original length and how to retrieve it in full.
 pub fn format_message_line(parts: &mut Vec<String>, line_num: usize, msg: &Message, full: bool) {
     match msg.role {
         Role::Assistant if msg.tool_calls.is_some() => {
@@ -716,9 +553,6 @@ mod tests {
 
     #[tokio::test]
     async fn episode_meta_without_source_tag_loads_as_main() {
-        // A transcript written before session memory existed has a meta
-        // line with only "type"/"id"/"date" — no session_address/run_id/
-        // category/narrative keys at all.
         let dir = tempfile::tempdir().unwrap();
         let episode = sample_episode();
         let day_dir = dir.path().join(episode.date.format("%Y-%m/%d").to_string());
@@ -742,8 +576,6 @@ mod tests {
         assert!(meta.narrative.is_none());
         assert!(messages.is_empty());
     }
-
-    // --- find_episode_path tests ---
 
     #[tokio::test]
     async fn find_episode_path_basic() {
@@ -815,8 +647,6 @@ mod tests {
         assert!(found.is_none(), "should not match .obs.json files");
     }
 
-    // --- read_episode_lines tests ---
-
     async fn write_sample_transcript(dir: &Path) -> PathBuf {
         let episode = sample_episode();
         let messages = vec![
@@ -849,7 +679,6 @@ mod tests {
             output.contains("[line 4] User: thanks"),
             "should show last message"
         );
-        // All lines shown, no footer
         assert!(
             !output.contains("showing lines"),
             "should not have footer when showing all"
@@ -861,7 +690,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = write_sample_transcript(dir.path()).await;
 
-        // from_line=2 means start at message index 2 (line 3 in 1-indexed)
         let output = read_episode_lines(&path, Some(2), Some(1), None)
             .await
             .unwrap();
@@ -880,7 +708,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = write_sample_transcript(dir.path()).await;
 
-        // Request 999 lines, should clamp to MAX_LINES but still work
         let output = read_episode_lines(&path, None, Some(999), None)
             .await
             .unwrap();
@@ -893,7 +720,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = write_sample_transcript(dir.path()).await;
 
-        // Start beyond the file
         let output = read_episode_lines(&path, Some(100), None, None)
             .await
             .unwrap();
@@ -969,7 +795,6 @@ mod tests {
             "truncation notice should point at expand_line for this line: {output}"
         );
 
-        // expand_line retrieves the full content, uncut.
         let full = read_episode_lines(&path, None, None, Some(3))
             .await
             .unwrap();
@@ -1011,7 +836,6 @@ mod tests {
     async fn next_episode_id_missing_dir() {
         let dir = tempfile::tempdir().unwrap();
         let episodes_dir = dir.path().join("episodes");
-        // Dir does not exist — should still return ep-001
         let id = next_episode_id(&episodes_dir).await.unwrap();
         assert_eq!(id, "ep-001", "missing dir should return ep-001");
     }
@@ -1023,7 +847,6 @@ mod tests {
         let month_dir = episodes_dir.join("2026-02/19");
         tokio::fs::create_dir_all(&month_dir).await.unwrap();
 
-        // Write some dummy .jsonl files
         tokio::fs::write(month_dir.join("ep-001.jsonl"), "")
             .await
             .unwrap();
@@ -1106,7 +929,6 @@ mod tests {
     async fn older_main_episode_id_skips_session_runs_and_gaps() {
         let dir = tempfile::tempdir().unwrap();
         write_tagged(dir.path(), "ep-001", &SourceTag::main()).await;
-        // ep-002 is missing, ep-003 and ep-004 are session runs.
         write_tagged(dir.path(), "ep-003", &pulse_tag()).await;
         write_tagged(
             dir.path(),
@@ -1186,8 +1008,6 @@ mod tests {
         assert_eq!(newest.as_deref(), Some("ep-001"));
     }
 
-    // --- completion marker & reconciliation tests ---
-
     #[tokio::test]
     async fn completion_marker_written_and_recognized() {
         let dir = tempfile::tempdir().unwrap();
@@ -1211,8 +1031,6 @@ mod tests {
     async fn interrupted_episode_detected_when_only_transcript_exists() {
         let dir = tempfile::tempdir().unwrap();
         let episode = sample_episode();
-        // Simulate a crash after the transcript landed but before any later
-        // artifact (obs archive, chunks, marker) was written.
         write_episode_transcript(dir.path(), &episode, &[Message::user("hi")])
             .await
             .unwrap();
@@ -1238,8 +1056,6 @@ mod tests {
         write_episode_transcript(dir.path(), &episode, &[Message::user("hi")])
             .await
             .unwrap();
-        // An episode written before completion markers existed has an obs
-        // archive but no marker; it must not be reported as interrupted.
         let obs_path = episode_obs_path(dir.path(), &episode);
         tokio::fs::write(&obs_path, "[]").await.unwrap();
 
@@ -1254,14 +1070,12 @@ mod tests {
     async fn reconciliation_isolates_interrupted_from_healthy() {
         let dir = tempfile::tempdir().unwrap();
 
-        // Healthy, fully-persisted episode.
         let healthy = sample_episode();
         write_episode_transcript(dir.path(), &healthy, &[Message::user("a")])
             .await
             .unwrap();
         write_completion_marker(dir.path(), &healthy).await.unwrap();
 
-        // Interrupted episode: transcript only.
         let mut interrupted_ep = sample_episode();
         interrupted_ep.id = "ep-002".to_string();
         write_episode_transcript(dir.path(), &interrupted_ep, &[Message::user("b")])
@@ -1297,7 +1111,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let sub = dir.path().join("2026-02/19");
         std::fs::create_dir_all(&sub).unwrap();
-        // A stray chunk index with no transcript must not be scanned as one.
         std::fs::write(sub.join("ep-001.idx.jsonl"), "{}\n").unwrap();
 
         let interrupted = find_interrupted_episodes(dir.path()).unwrap();

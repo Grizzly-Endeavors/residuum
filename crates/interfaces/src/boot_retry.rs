@@ -1,33 +1,14 @@
-//! Retry a chat adapter's boot-time connect step (verifying a bot token,
-//! building a client) with exponential backoff instead of leaving the
-//! adapter dead until the next config reload, the way a transient failure
-//! (network not up yet, a momentary token/API error) used to.
-
 use std::time::Duration;
 
 use residuum_bus::Publisher;
 use residuum_bus::notice::publish_notice;
 
-/// Backoff between connect retries, doubling from this on each attempt.
 const BASE_BACKOFF: Duration = Duration::from_secs(2);
 
-/// Cap on the backoff between connect retries.
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
-/// Consecutive failures after which a connect retry loop gives up and
-/// leaves the adapter down until the next config reload or restart.
 const MAX_ATTEMPTS: u32 = 10;
 
-/// Retry `connect` with exponential backoff until it succeeds or fails
-/// [`MAX_ATTEMPTS`] times in a row.
-///
-/// Logs and publishes a notice at most once per health transition — when
-/// retries start, when they recover, and if they give up — never on every
-/// attempt, per the project's no-log-spam rule.
-///
-/// Returns `None` once `connect` has failed [`MAX_ATTEMPTS`] consecutive
-/// times; the caller decides what that means (typically: return an error
-/// and leave the adapter down, same as before this retry loop existed).
 pub(crate) async fn retry_connect<F, Fut, T, E>(
     publisher: &Publisher,
     adapter: &str,

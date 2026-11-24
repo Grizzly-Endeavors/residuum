@@ -1,16 +1,3 @@
-//! Keeps the team wiki's pages in the team search index.
-//!
-//! Each concept page under `team/wiki/` is one search document, keyed by its
-//! path from the residuum root (`team/wiki/homelab/cluster.md`) so a hit is a
-//! path the agent can open directly. `index.md` and `log.md` are reserved OKF
-//! names at every folder level and are not indexed.
-//!
-//! Pages change whenever an agent or the user edits them, so instead of a
-//! startup-only sync the team index calls `WikiIndexer::sync` before every
-//! search: a walk of modification times finds changed, new, and deleted pages,
-//! and only those are reindexed. Embeddings are reused across restarts when a
-//! page's text is unchanged.
-
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -23,37 +10,24 @@ use crate::vector_store::{VectorStore, WikiVector};
 use residuum_config::paths::{TEAM_DIR_NAME, TeamPaths};
 use residuum_inference::EmbeddingProvider;
 
-/// OKF reserved file names; they are catalogs and history, not concepts.
 const RESERVED_FILE_NAMES: [&str; 2] = ["index.md", "log.md"];
 
-/// Pages embedded per provider call.
 const EMBED_BATCH_SIZE: usize = 64;
 
-/// A wiki page prepared for indexing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WikiPage {
-    /// Path from the residuum root with `/` separators, e.g. `team/wiki/homelab/cluster.md`.
     pub id: String,
-    /// Date of the page's last modification (YYYY-MM-DD).
     pub date: String,
-    /// Title, description, and body — the text that is indexed and embedded.
     pub content: String,
 }
 
-/// Incrementally syncs `team/wiki/` pages into the BM25 index and vector store.
-///
-/// Syncs are serialized by an internal lock, so every handle to one indexer
-/// sees whole syncs, never interleaved ones.
 pub(crate) struct WikiIndexer {
     team_root: PathBuf,
     wiki_dir: PathBuf,
-    /// Modification time of each page as of the last successful sync, keyed by
-    /// page ID. `None` until the first sync, which replaces every wiki document.
     synced: tokio::sync::Mutex<Option<HashMap<String, SystemTime>>>,
 }
 
 impl WikiIndexer {
-    /// Create an indexer for the wiki of the team layer at `team`.
     #[must_use]
     pub fn new(team: &TeamPaths) -> Self {
         Self {
@@ -63,21 +37,10 @@ impl WikiIndexer {
         }
     }
 
-    /// Forget which pages are synced, so the next sync reindexes every page.
-    /// Used when the vector store is replaced and must be refilled.
     pub(crate) async fn forget_synced_state(&self) {
         *self.synced.lock().await = None;
     }
 
-    /// Reindex pages that changed since the last sync and drop deleted ones.
-    ///
-    /// The recorded state only advances when the BM25 index and (if configured)
-    /// the vector store were both updated, so a failed sync is retried in full
-    /// on the next call.
-    ///
-    /// # Errors
-    /// Returns an error if the wiki cannot be scanned, a page cannot be read,
-    /// or the index, embedding provider, or vector store fails.
     pub(crate) async fn sync(
         &self,
         bm25: &Arc<MemoryIndex>,
@@ -149,8 +112,6 @@ impl WikiIndexer {
     }
 }
 
-/// Embed pages whose text differs from what the vector store holds, and delete
-/// vectors for pages that no longer exist.
 async fn sync_vectors(
     store: &Arc<VectorStore>,
     embedder: &dyn EmbeddingProvider,
@@ -187,8 +148,6 @@ async fn sync_vectors(
         new_vectors.extend(batch.iter().copied().zip(response.embeddings));
     }
 
-    // Vectors for deleted pages, plus any stored for pages that disappeared
-    // while no sync state was held (e.g. across a restart).
     let stale: Vec<String> = stored
         .keys()
         .filter(|id| !scanned.contains_key(*id))
@@ -220,7 +179,6 @@ async fn sync_vectors(
     .context("wiki vector write task failed")?
 }
 
-/// Walk `wiki_dir` for concept pages, returning each page's path and mtime by ID.
 fn scan_pages(
     team_root: &Path,
     wiki_dir: &Path,
@@ -262,8 +220,6 @@ fn scan_pages(
     Ok(pages)
 }
 
-/// Page ID: the page's path under the residuum root (`team/wiki/...`), with
-/// `/` separators on every platform, ready for `read_file`.
 fn page_id(team_root: &Path, path: &Path) -> String {
     let rel = path.strip_prefix(team_root).unwrap_or(path);
     std::iter::once(TEAM_DIR_NAME.into())
@@ -272,7 +228,6 @@ fn page_id(team_root: &Path, path: &Path) -> String {
         .join("/")
 }
 
-/// Read a page from disk and build its indexed text.
 fn read_page(id: &str, path: &Path) -> anyhow::Result<WikiPage> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read wiki page {}", path.display()))?;
@@ -289,11 +244,6 @@ fn read_page(id: &str, path: &Path) -> anyhow::Result<WikiPage> {
     })
 }
 
-/// The text a page is indexed by: title, description, then the body.
-///
-/// Frontmatter keys other than `title` and `description` (sources, dates,
-/// status) are bookkeeping and would only add noise to matching. A page with
-/// missing or unparseable frontmatter is indexed by its full text.
 fn page_search_text(id: &str, raw: &str) -> String {
     let Some((frontmatter, body)) = split_frontmatter(raw) else {
         return raw.trim().to_string();
@@ -320,7 +270,6 @@ fn page_search_text(id: &str, raw: &str) -> String {
         .join("\n\n")
 }
 
-/// Split a leading `---`-delimited YAML block from the body.
 fn split_frontmatter(raw: &str) -> Option<(&str, &str)> {
     let rest = raw
         .strip_prefix("---\n")
@@ -362,8 +311,6 @@ mod tests {
         }
     }
 
-    /// Bump a file's mtime so the mtime comparison sees it as changed even
-    /// when the rewrite lands within the filesystem's timestamp resolution.
     fn touch_later(path: &Path) {
         let later = SystemTime::now() + std::time::Duration::from_secs(5);
         std::fs::File::options()
@@ -441,7 +388,6 @@ mod tests {
             "index.md should not be indexed"
         );
 
-        // Edit one page, delete the other.
         let page = root.join("team").join("wiki").join("grizzly-platform.md");
         std::fs::write(&page, PAGE.replace("Flux", "ArgoCD")).unwrap();
         touch_later(&page);
@@ -474,7 +420,6 @@ mod tests {
             .unwrap();
         std::fs::remove_file(root.join("team").join("wiki").join("gone.md")).unwrap();
 
-        // A fresh indexer (as after a restart) holds no state about "gone.md".
         WikiIndexer::new(&team(root))
             .sync(&bm25, None)
             .await
@@ -486,7 +431,6 @@ mod tests {
         );
     }
 
-    /// Embedder that counts how many texts it has embedded.
     struct CountingEmbedder(std::sync::atomic::AtomicUsize);
 
     #[async_trait::async_trait]
@@ -532,7 +476,6 @@ mod tests {
             .unwrap();
         assert_eq!(embed_count(), 2, "first sync embeds every page");
 
-        // A fresh indexer, as after a restart: unchanged pages keep their vectors.
         let indexer = WikiIndexer::new(&team(root));
         indexer
             .sync(&bm25, Some((&store, &embedder)))

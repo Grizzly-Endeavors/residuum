@@ -5,7 +5,6 @@ const VIEWPORT = { width: 1000, height: 800 };
 const MENU = { width: 200, height: 300 };
 const BELOW: PlaceOptions = { side: "bottom", align: "start", gap: 6, margin: 8 };
 
-/** A 32px button at (x, y). */
 function button(x: number, y: number): Rect {
   return { left: x, top: y, width: 32, height: 32 };
 }
@@ -43,7 +42,6 @@ describe("placeFloat", () => {
   it("shifts along its side to stay inside the viewport", () => {
     expect(placeFloat(button(960, 100), MENU, VIEWPORT, BELOW).left).toBe(1000 - 8 - 200);
     expect(placeFloat(button(0, 100), MENU, VIEWPORT, { ...BELOW, align: "end" }).left).toBe(8);
-    // Wider than the viewport allows: it starts at the margin.
     const wide = placeFloat(button(100, 100), { width: 1200, height: 100 }, VIEWPORT, BELOW);
     expect(wide.left).toBe(8);
   });

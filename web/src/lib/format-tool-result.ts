@@ -1,47 +1,20 @@
-// ── Tool result formatting ────────────────────────────────────────────
-//
-// Tool output reaches the feed as one string (see `appendResult`). This
-// module turns that string into something the tool row can render: JSON
-// indented, a numbered file dump split into a gutter, a list broken into
-// items, and a failure drawn differently from ordinary output.
-//
-// Anything that isn't clearly one of those shapes is returned unchanged.
-// A parse that doesn't fit falls back to the original text, so a result
-// is never dropped or replaced with an error of our own.
-
 import { TOOL_RESULT_MARKER } from "./feed-items";
 
-/** Lines kept visible before a result offers to expand. */
 export const TOOL_RESULT_PREVIEW_LINES = 16;
 
-/**
- * Character count that collapses a result made of few but very long lines.
- * Line count alone would leave a single minified payload fully open.
- */
 export const TOOL_RESULT_PREVIEW_CHARS = 1_200;
 
 export interface ToolResultCollapse {
-  /** Whether the result should start collapsed. */
   long: boolean;
-  /**
-   * Lines or list items omitted from the collapsed view.
-   * Zero when the result is collapsed for length rather than line count.
-   */
   hiddenLines: number;
 }
 
-/** One row of a numbered file dump (`read_file`, or an `edit_file` preview). */
 export type FileRow =
   | { kind: "code"; number: string; text: string }
   | { kind: "gap"; text: string };
 
 interface ToolResultBase {
-  /** The call failed, or the text itself reads as a failure. */
   error: boolean;
-  /**
-   * Prose kept visible above the body while the body is collapsed:
-   * a file header, a list intro, or a fetch preamble ahead of JSON.
-   */
   label: string;
   collapse: ToolResultCollapse;
 }
@@ -71,18 +44,9 @@ export interface TextToolResult extends ToolResultBase {
 export type FormattedToolResult = JsonToolResult | FileToolResult | ListToolResult | TextToolResult;
 
 export interface FormatToolResultOptions {
-  /**
-   * The call was reported as a failure. History does not keep that flag,
-   * so a reloaded transcript also checks the text itself.
-   */
   isError?: boolean;
 }
 
-/**
- * Leading phrases built-in tools use when a call fails. Matched only at
- * the start of the result so a later mention of "error" in ordinary
- * output (a file, a log) stays ordinary output.
- */
 const ERROR_START =
   /^(?:error:|error$|failed to\b|command exited with code \d+\b|command timed out\b|HTTP [45]\d{2}\b|search failed:)/i;
 
@@ -91,7 +55,6 @@ const NUMBERED_LINE = /^(\s*)(\d+)\t(.*)$/;
 const GAP_LINE = /^\s*…/;
 const ITEM_START = /^(?:[-*•]|\d+[.)])\s+\S/;
 
-/** Label for the expand control under a long result. */
 export function toolResultToggleLabel(hiddenLines: number, expanded: boolean): string {
   if (expanded) return "Show less";
   if (hiddenLines === 1) return "Show all (1 more line)";
@@ -99,13 +62,6 @@ export function toolResultToggleLabel(hiddenLines: number, expanded: boolean): s
   return "Show all";
 }
 
-/**
- * Format one stored tool result for display.
- *
- * `raw` may include the feed's `TOOL_RESULT_MARKER` prefixes. Those are
- * storage, not output, and are removed. Several chunks are formatted on
- * their own and then shown as one block.
- */
 export function formatToolResult(
   raw: string,
   options?: FormatToolResultOptions,
@@ -264,10 +220,6 @@ function tryStructuredJson(text: string): object | null {
   }
 }
 
-/**
- * An object that is itself the failure, not a payload that happens to
- * mention an error field next to other data.
- */
 function jsonLooksLikeError(value: object): boolean {
   if (Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;

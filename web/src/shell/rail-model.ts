@@ -1,6 +1,3 @@
-// What the rail shows about each agent, worked out from the hub's agent list:
-// its row's mark, word and badge, and the places listed under it.
-
 import { displayState } from "../lib/agent-display-state";
 import type { AgentActivity, AgentSummary } from "../lib/hub-types";
 import type { IconName } from "../lib/icons";
@@ -24,17 +21,14 @@ export function agentPlaceEntry<Kind extends AgentPlaceKind>(kind: Kind): AgentP
   return { kind, ...PLACE_ENTRIES[kind] };
 }
 
-/** An agent's places, in order: Chat, then the ones the rail lists under the agent. */
 export const AGENT_PLACES: readonly AgentPlaceEntry[] = (
   ["chat", ...AGENT_PANEL_KINDS] as const
 ).map((kind) => agentPlaceEntry(kind));
 
-/** The places listed under an agent in the rail, each of which also opens beside its Chat. */
 export const AGENT_PANEL_PLACES: readonly AgentPlaceEntry<AgentPanelKind>[] = AGENT_PANEL_KINDS.map(
   (kind) => agentPlaceEntry(kind),
 );
 
-/** What follows an agent's name in its row: its chat-unread count, a word for its state, or nothing. */
 export type AgentRowTail =
   | { kind: "unread"; count: number }
   | { kind: "word"; word: string; tone: "danger" | "accent" | "quiet" }
@@ -42,20 +36,15 @@ export type AgentRowTail =
 
 export interface AgentRowStatus {
   dot: StatusDotState;
-  /** Busy with a main turn: the dot pulses and the agent's places carry a moving vein. */
   working: boolean;
   tail: AgentRowTail;
-  /** The state in words, for assistive technology: "running, working, 3 unread". */
   spoken: string;
 }
 
 export interface AgentRowContext {
   activity: AgentActivity;
-  /** The hub has begun stopping it. */
   stopping: boolean;
-  /** It is the viewed agent. Its working word is left out: the user is already looking. */
   viewed: boolean;
-  /** Its chat is the place shown, so new replies are already in view. */
   onItsChat: boolean;
 }
 
@@ -67,15 +56,10 @@ const STATE_WORDS: Readonly<Record<StatusDotState, string>> = {
   failed: "Failed",
 };
 
-/** A state as one capitalized word: "Running", "Stopping". */
 export function stateWord(state: StatusDotState): string {
   return STATE_WORDS[state];
 }
 
-/**
- * One agent row. Unread replies win the space after the name, then a state
- * that isn't running, then "Working" for a busy agent the user isn't viewing.
- */
 export function agentRowStatus(agent: AgentSummary, context: AgentRowContext): AgentRowStatus {
   const dot = displayState(agent.state, context.stopping);
   const working = dot === "running" && context.activity.busy;

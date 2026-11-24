@@ -2,42 +2,4 @@
 import type { ScheduledCurrentRun } from "./ScheduledCurrentRun";
 import type { ScheduledRunOutcome } from "./ScheduledRunOutcome";
 
-/**
- * One pulse, as listed by `GET /api/agents/{name}/scheduled/pulses`.
- */
-export type PulseInfo = { name: string, 
-/**
- * `false` for a pulse that failed to load at all (see `problems`) —
- * there is no real `enabled` value to report for it.
- */
-enabled: boolean, 
-/**
- * How often the pulse runs, as written. `None` for a pulse that runs
- * only on `days`, and for one that failed to load.
- */
-schedule: string | null, 
-/**
- * The weekdays the pulse runs on, as written (`sun`, `Monday`, ...). `None`
- * for a pulse that doesn't pin a day.
- */
-days: Array<string> | null, active_hours: string | null, agent: string | null, 
-/**
- * The pulse's `model_tier` as written: a tier or an explicit
- * `provider/model` id. `None` runs the `small` tier.
- */
-model_tier: string | null, 
-/**
- * When the pulse next fires, from `pulse::next_run`: its anchor in
- * `pulse_state.json` spaced by its schedule or days, moved into
- * `active_hours`. `None` for a
- * disabled pulse, one whose schedule or active hours can't be read or
- * never open, and every pulse when the agent's `[pulse]` is off or its
- * `config.toml` can't be read.
- */
-next_fire_at: string | null, last_outcome: ScheduledRunOutcome | null, current_run: ScheduledCurrentRun | null, 
-/**
- * Loading problems naming this pulse (a removed option, a duplicate
- * name, a bad `schedule`/`active_hours` string, or a per-entry
- * deserialize failure). Plain-language messages, ready to show as-is.
- */
-problems: Array<string>, };
+export type PulseInfo = { name: string, enabled: boolean, schedule: string | null, days: Array<string> | null, active_hours: string | null, agent: string | null, model_tier: string | null, next_fire_at: string | null, last_outcome: ScheduledRunOutcome | null, current_run: ScheduledCurrentRun | null, problems: Array<string>, };

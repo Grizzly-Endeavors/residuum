@@ -1,7 +1,3 @@
-//! Workspace checkpoints: a hidden git history of the workspace and the
-//! root config files, used for recovery — not a user-facing version
-//! control system. See `docs/systems-usage/checkpoints.md`.
-
 mod backend;
 mod engine;
 mod exclude;
@@ -16,10 +12,6 @@ pub use types::{
     CheckpointSummary, CheckpointTrigger, RepoKind, RepoStats, RestoreOutcome, UndoOutcome,
 };
 
-/// Whether `path` names something inside a checkpointed root: only plain
-/// relative components, so it can't escape the root it's joined onto. A
-/// rooted path like `/etc/passwd` isn't `is_absolute()` on Windows (no
-/// drive), so each component is checked rather than the whole path.
 #[must_use]
 pub fn is_root_relative(path: &str) -> bool {
     !path.is_empty()

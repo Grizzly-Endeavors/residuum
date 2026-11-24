@@ -261,7 +261,6 @@ describe("workbench routes over the whole mock", () => {
       (await fetchJson(`${mock.baseUrl}/api/team/workbench/artifacts`)).body as ArtifactSummary[]
     ).map((artifact) => artifact.name);
 
-  /** What Undo does: restore each path the delete removed, from the checkpoint it returned. */
   async function undo(deleted: { removed: string[]; checkpoint_id: string }): Promise<void> {
     for (const entry of deleted.removed) {
       const restored = await post(`/api/hub/checkpoints/${deleted.checkpoint_id}/restore`, {
@@ -327,7 +326,6 @@ describe("workbench routes over the whole mock", () => {
     const afterUndo = team().checkpoints.team?.length;
     expect(afterUndo).toBe((afterFirst ?? 0) + 1);
 
-    // The undo left the newest checkpoint holding exactly the tree now on disk.
     const second = (await remove("tip-splitter")).body as { checkpoint_id: string };
     expect(second.checkpoint_id).toBe(team().checkpoints.team?.at(-1)?.summary.id);
     expect(team().checkpoints.team).toHaveLength(afterUndo ?? 0);

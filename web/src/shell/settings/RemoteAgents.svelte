@@ -16,16 +16,9 @@
   } from "../../lib/ui";
   import RunningOnly from "./RunningOnly.svelte";
 
-  // The agents this one can hand work to. While it runs, the running agent's
-  // list: each with whether it can be reached and what its card says, and
-  // the user's other installs' agents found through the relay. Otherwise the
-  // list in `config/a2a.json`. The file's editor works either way and saves
-  // at once.
-
   let { agent }: { agent: string } = $props();
 
   type Row = Pick<A2aRemoteAgent, "name" | "url" | "source" | "error" | "card"> & {
-    /** Null when read from the file, which can't say. */
     status: A2aAgentStatus | null;
   };
 
@@ -39,7 +32,6 @@
 
   let rows = $state.raw<Row[] | null>(null);
   let loadError = $state<string | null>(null);
-  /** The file doesn't read as JSON, so its list can't be shown. */
   let unreadable = $state(false);
 
   let editing = $state(false);
@@ -48,7 +40,6 @@
   let problems = $state.raw<string[]>([]);
   let editor = $state<HTMLInputElement | HTMLTextAreaElement>();
 
-  /** The agents `config/a2a.json` lists, or null when it doesn't read as JSON. */
   function listedInFile(raw: string): Row[] | null {
     if (raw.trim() === "") return [];
     try {

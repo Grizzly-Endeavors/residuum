@@ -2,21 +2,14 @@ import { isValidArtifactName } from "./artifact-name";
 import type { MockState } from "./state";
 import { byteLength, entryOf, fileVersion } from "./workspace-tree";
 
-/** The team's workbench folder, in the workspace tree the hub's state holds. */
 export const WORKBENCH_DIR = "team/workbench";
 
-/** An artifact found in the workbench folder, as the backend's `discover_artifacts` finds it. */
 export interface DiscoveredArtifact {
   name: string;
-  /** `<name>.html`, or `<name>/` with an `index.html`. */
   kind: "page" | "folder";
-  /** The tree path of the page the artifact opens with. */
   entryPage: string;
-  /** Newest modification time among the artifact's files, in milliseconds. */
   modified: number;
-  /** Total size of the artifact's files. */
   size: number;
-  /** Changes whenever the artifact's files or their content do, which is what a reload hangs on. */
   stamp: string;
 }
 
@@ -41,12 +34,6 @@ function describe(
   };
 }
 
-/**
- * Every artifact in the team workbench folder, by name: a page, or a folder
- * with an `index.html`. Only those count, so saved data beside an artifact
- * (`<name>.state.json`) is not part of one. When a page and a folder share a
- * name, the folder wins.
- */
 export function discoverArtifacts(state: MockState): Map<string, DiscoveredArtifact> {
   const contents = state.workspaceFileContents;
   const found = new Map<string, DiscoveredArtifact>();
@@ -67,11 +54,6 @@ export function discoverArtifacts(state: MockState): Map<string, DiscoveredArtif
   return found;
 }
 
-/**
- * The file `rest` names in an artifact, as `{ path, content }`, or `null` when
- * it names none. `""` and a trailing `/` mean an `index.html`. A page has no
- * files besides itself, and `.`, `..` and backslash segments name nothing.
- */
 export function readArtifactFile(
   state: MockState,
   artifact: DiscoveredArtifact,

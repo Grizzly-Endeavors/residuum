@@ -13,7 +13,6 @@ const discordToken = (page: Page): Locator =>
   page.getByRole("region", { name: "Discord" }).getByLabel("Bot token", { exact: true });
 const saveBar = (page: Page): Locator => page.getByRole("region", { name: "Unsaved changes" });
 
-/** Move to another section in the page, so nothing staged is lost; on a phone through the list. */
 async function goToSection(page: Page, isMobile: boolean, name: string): Promise<void> {
   if (isMobile) await page.getByRole("button", { name: "Back to all settings" }).click();
   await sections(page)
@@ -119,7 +118,6 @@ test.describe("History", () => {
 
     await goToSection(page, isMobile, "History");
     await page.getByRole("radio", { name: "Config files" }).click();
-    // The save before last left config.toml as it is before this one: 120.
     await page
       .getByRole("button", { name: /^config patch.*1 file/ })
       .first()

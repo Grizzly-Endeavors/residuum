@@ -24,8 +24,6 @@
     onchange,
   }: Props = $props();
 
-  // One tab stop for the group: the chosen option, or the first one that can
-  // be chosen when none is.
   const tabStop = $derived(
     options.find((option) => option.value === value && !option.disabled)?.value ??
       options.find((option) => !option.disabled)?.value,
@@ -46,8 +44,6 @@
     End: "last",
   };
 
-  // Arrow keys move through the enabled options, wrapping at the ends, and
-  // choose the one they land on, as a radio group does.
   function onkeydown(event: KeyboardEvent & { currentTarget: HTMLElement }): void {
     const step = STEPS[event.key];
     if (step === undefined || disabled) return;
@@ -112,7 +108,6 @@
     background: var(--color-stone-3);
   }
 
-  /* On a stone-3 card (a dialog, a sheet), the track takes the hover fill so it still shows. */
   :global(.ui-modal-layer:not([data-frame="left"]) .ui-modal) .ui-segmented {
     background: var(--color-stone-4);
   }

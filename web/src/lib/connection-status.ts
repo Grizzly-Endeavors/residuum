@@ -1,6 +1,3 @@
-// The facts "Show connection status" puts in its dialog: whether Residuum is
-// reachable, which agent is bound, and whether that agent's connection is up.
-
 import type { AgentDisplayState } from "./agent-display-state";
 import type { ConnectionStatus } from "./types";
 
@@ -16,7 +13,6 @@ export interface StatusRow {
   value: string;
 }
 
-/** Residuum, the agent, and its connection. The model is a separate row. */
 export function connectionStatusRows(facts: ConnectionFacts): StatusRow[] {
   const rows: StatusRow[] = [
     {
@@ -44,7 +40,6 @@ export function connectionStatusRows(facts: ConnectionFacts): StatusRow[] {
   return rows;
 }
 
-/** The rows as plain text, one per line, for the clipboard. */
 export function connectionStatusText(rows: readonly StatusRow[]): string {
   return rows.map((row) => `${row.label}: ${row.value}`).join("\n");
 }

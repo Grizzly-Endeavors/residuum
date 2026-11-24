@@ -1,15 +1,3 @@
-//! What a person's browser gets when it lands on a Residuum address that isn't
-//! a page of the web app: a file link that expired, an artifact that was
-//! renamed, a webhook address pasted into the address bar.
-//!
-//! Wherever the web app can show the outcome, a browser navigation is
-//! redirected into it ([`app_redirect`]) with a notice code the app turns into
-//! a plain-language message (`web/src/lib/landing-notices.ts`). Where there is
-//! no app to hand off to (a host that doesn't know the app's address), the
-//! navigation gets [`fallback_page`], one page styled from the app's own
-//! design tokens. Requests that aren't navigations (a script's `fetch`, an
-//! image or script load) keep machine-shaped answers.
-
 use std::sync::LazyLock;
 
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
@@ -31,28 +19,17 @@ pub fn is_top_level_navigation(method: &Method, headers: &HeaderMap) -> bool {
             .is_none_or(|dest| dest.eq_ignore_ascii_case("document"))
 }
 
-/// A notice the web app shows after a redirect, named by its code in the
-/// `notice` query parameter. The app holds the words, so a link can't put
-/// text of its own in front of the user.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppNotice {
-    /// No artifact by that name (named in the `artifact` parameter when the
-    /// name is well formed).
     ArtifactMissing,
-    /// The artifact exists, but not the file the address asked for.
     ArtifactFileMissing,
-    /// A token file link outlived its registration.
     FileLinkExpired,
-    /// The link needs the agent running, and it isn't.
     AgentStopped,
-    /// An inbox item's attachment is gone.
     InboxAttachmentMissing,
-    /// A webhook address opened in a browser.
     WebhookAddress,
 }
 
 impl AppNotice {
-    /// The code the app reads from the `notice` query parameter.
     #[must_use]
     pub fn code(self) -> &'static str {
         match self {
@@ -66,7 +43,6 @@ impl AppNotice {
     }
 }
 
-/// An address in the web app: a path and its query parameters, encoded.
 #[must_use]
 pub fn app_path(path: &str, params: &[(&str, &str)]) -> String {
     if params.is_empty() {
@@ -79,8 +55,6 @@ pub fn app_path(path: &str, params: &[(&str, &str)]) -> String {
     format!("{path}?{}", query.finish())
 }
 
-/// What to show instead of a redirect into the app when the address the
-/// redirect would need isn't known (see [`AppRedirect`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Fallback {
     pub title: &'static str,
@@ -96,8 +70,6 @@ pub struct AppRedirect {
     pub(crate) fallback: Fallback,
 }
 
-/// Redirect a navigation to `target`, an address in the web app (from
-/// [`app_path`]) on this same host.
 pub fn app_redirect(target: &str, fallback: Fallback) -> Response {
     let mut response = Redirect::to(target).into_response();
     response
@@ -107,8 +79,6 @@ pub fn app_redirect(target: &str, fallback: Fallback) -> Response {
     response
 }
 
-/// Redirect a navigation to `target`, an absolute address in the web app on
-/// another host.
 pub(crate) fn redirect_to_app_origin(origin: &str, target: &str) -> Response {
     let mut response = Redirect::to(&format!("{origin}{target}")).into_response();
     response
@@ -117,14 +87,12 @@ pub(crate) fn redirect_to_app_origin(origin: &str, target: &str) -> Response {
     response
 }
 
-/// A link on the fallback page.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PageLink {
     pub(crate) href: String,
     pub(crate) label: &'static str,
 }
 
-/// What the fallback page says.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Landing {
     pub(crate) title: String,
@@ -134,7 +102,6 @@ pub struct Landing {
 }
 
 impl Landing {
-    /// A page with `title` and `message`, and no detail or link.
     pub fn new(title: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
             title: title.into(),
@@ -144,7 +111,6 @@ impl Landing {
         }
     }
 
-    /// Add a link to the app at `origin` (when known), labelled `label`.
     #[must_use]
     pub(crate) fn with_app_link(mut self, origin: Option<&str>, label: &'static str) -> Self {
         self.link = origin.map(|href| PageLink {
@@ -154,7 +120,6 @@ impl Landing {
         self
     }
 
-    /// Add a second paragraph under the message.
     #[must_use]
     pub(crate) fn with_detail(mut self, detail: impl Into<String>) -> Self {
         self.detail = Some(detail.into());
@@ -168,7 +133,6 @@ impl From<Fallback> for Landing {
     }
 }
 
-/// The fallback page for a browser navigation, with `status`.
 pub fn fallback_page(status: StatusCode, landing: &Landing) -> Response {
     let link = landing.link.as_ref().map_or_else(String::new, |link| {
         format!(
@@ -189,8 +153,6 @@ pub fn fallback_page(status: StatusCode, landing: &Landing) -> Response {
     html_response(status, &landing.title, &body, None)
 }
 
-/// A machine-shaped answer for a request that isn't a navigation: the same
-/// words as plain text, so a script or a log shows why.
 pub(crate) fn text_answer(status: StatusCode, message: &str) -> Response {
     let mut response = (status, format!("{message}\n")).into_response();
     response.headers_mut().insert(
@@ -200,7 +162,6 @@ pub(crate) fn text_answer(status: StatusCode, message: &str) -> Response {
     response
 }
 
-/// The fallback page for a navigation, plain text for anything else.
 pub(crate) fn page_or_text(
     method: &Method,
     headers: &HeaderMap,
@@ -214,8 +175,6 @@ pub(crate) fn page_or_text(
     }
 }
 
-/// A page in the fallback's frame: `title` in the tab, `body` (already
-/// escaped HTML) in its column, and `script` run at the end when given.
 pub(crate) fn html_response(
     status: StatusCode,
     title: &str,
@@ -252,7 +211,6 @@ pub(crate) fn html_response(
     response
 }
 
-/// Escape text for HTML content and attribute values.
 pub(crate) fn escape(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
@@ -268,14 +226,10 @@ pub(crate) fn escape(text: &str) -> String {
     out
 }
 
-/// The app's `mark` icon (`web/src/lib/icons/icons.ts`), drawn as `Icon` draws it.
 const MARK_SVG: &str = r#"<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2.5 21.5 12 12 21.5 2.5 12z"/><path d="M8.6 12 12 8.6"/></svg>"#;
 
-/// The app's design tokens. The page reads its values from here, so it
-/// always matches the app.
 const TOKENS_CSS: &str = include_str!("../../../web/src/styles/tokens.css");
 
-/// The tokens the page's rules use.
 const PAGE_TOKENS: [&str; 26] = [
     "--color-stone-0",
     "--color-line-soft",
@@ -305,10 +259,6 @@ const PAGE_TOKENS: [&str; 26] = [
     "--layout-touch-target",
 ];
 
-/// The page's rules, after the token declarations they read. Laid out like
-/// the pairing page, the app's other page without the shell: the wordmark in
-/// a header bar, then a 480px column with the title, the words, and the one
-/// action as a primary button.
 const PAGE_RULES: &str = "\
 *{box-sizing:border-box}\
 html{color-scheme:dark}\
@@ -348,7 +298,6 @@ static PAGE_CSS: LazyLock<String> = LazyLock::new(|| {
     css
 });
 
-/// The value `tokens` declares for the custom property `name`.
 fn token_value<'a>(tokens: &'a str, name: &str) -> Option<&'a str> {
     tokens.lines().find_map(|line| {
         let rest = line

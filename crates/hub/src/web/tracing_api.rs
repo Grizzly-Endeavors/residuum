@@ -1,5 +1,3 @@
-//! Tracing and observability API endpoints.
-
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -16,37 +14,25 @@ use residuum_tracing_service::{
     TracingService, TracingStatus,
 };
 
-/// Shared state for the tracing API routes.
 #[derive(Clone)]
 pub(crate) struct TracingApiState {
     pub service: Arc<TracingService>,
-    /// The running build, attached to each feedback submission's client context.
     pub build: BuildInfo,
-    /// Snapshot of the static runtime client context (version, model, OS,
-    /// etc.), gathered at gateway startup (or reload). Bug-report handlers
-    /// attach this to every submission, overlaying a fresh
-    /// `active_subagents` read from `session_registry` so the user-facing
-    /// forms only carry user-typed fields.
     pub client_context: Arc<ClientContext>,
-    /// Live subagent sessions across the hub, read fresh on each bug report
-    /// to populate `active_subagents` (closes #99).
     pub active_subagents: Arc<dyn Fn() -> Vec<residuum_tracing_service::Subagent> + Send + Sync>,
 }
 
-/// `GET /api/hub/tracing/status`
 pub(crate) async fn api_tracing_status(
     State(state): State<TracingApiState>,
 ) -> Json<TracingStatus> {
     Json(state.service.status().await)
 }
 
-/// Request body for toggling a boolean setting.
 #[derive(Deserialize)]
 pub(crate) struct ToggleRequest {
     enabled: bool,
 }
 
-/// `POST /api/hub/tracing/error-reporting`
 pub(crate) async fn api_tracing_error_reporting(
     State(state): State<TracingApiState>,
     Json(body): Json<ToggleRequest>,
@@ -55,7 +41,6 @@ pub(crate) async fn api_tracing_error_reporting(
     StatusCode::OK
 }
 
-/// `POST /api/hub/tracing/sanitize`
 pub(crate) async fn api_tracing_sanitize(
     State(state): State<TracingApiState>,
     Json(body): Json<ToggleRequest>,
@@ -64,7 +49,6 @@ pub(crate) async fn api_tracing_sanitize(
     StatusCode::OK
 }
 
-/// Request body for adding an OTEL endpoint.
 #[derive(Deserialize)]
 pub(crate) struct AddEndpointRequest {
     url: String,
@@ -72,7 +56,6 @@ pub(crate) struct AddEndpointRequest {
     headers: Option<HashMap<String, String>>,
 }
 
-/// `GET /api/hub/tracing/otel/endpoints`
 pub(crate) async fn api_tracing_otel_list(
     State(state): State<TracingApiState>,
 ) -> Json<Vec<residuum_tracing_service::OtelEndpointStatus>> {
@@ -88,7 +71,6 @@ pub(crate) async fn api_tracing_otel_list(
     )
 }
 
-/// `POST /api/hub/tracing/otel/endpoints`
 pub(crate) async fn api_tracing_otel_add(
     State(state): State<TracingApiState>,
     Json(body): Json<AddEndpointRequest>,
@@ -106,13 +88,11 @@ pub(crate) async fn api_tracing_otel_add(
     Ok(StatusCode::CREATED)
 }
 
-/// Request body for removing an OTEL endpoint.
 #[derive(Deserialize)]
 pub(crate) struct RemoveEndpointRequest {
     url: String,
 }
 
-/// `DELETE /api/hub/tracing/otel/endpoints`
 pub(crate) async fn api_tracing_otel_remove(
     State(state): State<TracingApiState>,
     Json(body): Json<RemoveEndpointRequest>,
@@ -125,13 +105,11 @@ pub(crate) async fn api_tracing_otel_remove(
     Ok(StatusCode::OK)
 }
 
-/// Request body for testing OTEL connectivity.
 #[derive(Deserialize)]
 pub(crate) struct TestConnectivityRequest {
     url: String,
 }
 
-/// `POST /api/hub/tracing/otel/test`
 pub(crate) async fn api_tracing_otel_test(
     State(state): State<TracingApiState>,
     Json(body): Json<TestConnectivityRequest>,
@@ -144,7 +122,6 @@ pub(crate) async fn api_tracing_otel_test(
     Ok(StatusCode::OK)
 }
 
-/// `POST /api/hub/tracing/dump`
 pub(crate) async fn api_tracing_dump(
     State(state): State<TracingApiState>,
 ) -> Result<Json<ExportResult>, (StatusCode, String)> {
@@ -156,7 +133,6 @@ pub(crate) async fn api_tracing_dump(
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("{e}")))
 }
 
-/// `POST /api/hub/tracing/stream/start`
 pub(crate) async fn api_tracing_stream_start(
     State(state): State<TracingApiState>,
 ) -> Result<StatusCode, (StatusCode, String)> {
@@ -168,7 +144,6 @@ pub(crate) async fn api_tracing_stream_start(
     Ok(StatusCode::OK)
 }
 
-/// `POST /api/hub/tracing/stream/stop`
 pub(crate) async fn api_tracing_stream_stop(
     State(state): State<TracingApiState>,
 ) -> Result<StatusCode, (StatusCode, String)> {
@@ -180,9 +155,6 @@ pub(crate) async fn api_tracing_stream_stop(
     Ok(StatusCode::OK)
 }
 
-/// Request body for the bug-report endpoint. Mirrors the user-supplied
-/// fields of the upstream wire contract; runtime metadata (`client`)
-/// is attached server-side from the snapshot on `TracingApiState`.
 #[derive(Deserialize)]
 pub(crate) struct BugReportRequest {
     what_happened: String,
@@ -191,7 +163,6 @@ pub(crate) struct BugReportRequest {
     severity: Severity,
 }
 
-/// `POST /api/hub/tracing/bug-report`
 pub(crate) async fn api_tracing_bug_report(
     State(state): State<TracingApiState>,
     Json(body): Json<BugReportRequest>,
@@ -213,7 +184,6 @@ pub(crate) async fn api_tracing_bug_report(
         .map_err(|e| (StatusCode::BAD_GATEWAY, format!("{e}")))
 }
 
-/// Request body for the feedback endpoint.
 #[derive(Deserialize)]
 pub(crate) struct FeedbackRequest {
     message: String,
@@ -221,7 +191,6 @@ pub(crate) struct FeedbackRequest {
     category: Option<String>,
 }
 
-/// `POST /api/hub/tracing/feedback`
 pub(crate) async fn api_tracing_feedback(
     State(state): State<TracingApiState>,
     Json(body): Json<FeedbackRequest>,

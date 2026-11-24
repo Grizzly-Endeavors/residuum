@@ -1,5 +1,3 @@
-//! ACME account, certificate orders (TLS-ALPN-01), renewal information and the on-disk state.
-
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -24,31 +22,21 @@ use super::tls::{CertBundle, CertResolver, leaf_validity};
 use super::types::normalize_host;
 use residuum_core::util::fs::atomic_write_owner_only;
 
-/// How long one order may take from creation to an issued certificate.
 const ORDER_POLL_TIMEOUT: Duration = Duration::from_secs(180);
 
-/// Where the ACME server lives and where this instance keeps its state.
 #[derive(Debug, Clone)]
 pub(crate) struct AcmeSettings {
-    /// ACME directory URL of the CA.
     pub directory_url: String,
-    /// Root certificate that signs the CA's own TLS certificate, for private CAs and
-    /// test CAs. When set it replaces the built-in web roots for talking to the CA.
     pub root_ca_pem: Option<PathBuf>,
-    /// Directory for the account credentials and the certificate; files are mode 0600.
     pub state_dir: PathBuf,
 }
 
-/// Short stable file-name fragment for a directory URL, so that switching CA
-/// never mixes accounts or certificates.
 fn directory_fingerprint(directory_url: &str) -> String {
     let digest = ring::digest::digest(&ring::digest::SHA256, directory_url.as_bytes());
     let bytes = digest.as_ref();
     hex::encode(bytes.get(..8).unwrap_or(bytes))
 }
 
-/// The account's P-256 signing key: the one ACME requests are signed with, also
-/// used to sign requests to the pin service.
 struct AccountKey {
     pair: EcdsaKeyPair,
     rng: SystemRandom,
@@ -63,7 +51,6 @@ impl AccountKey {
     }
 
     fn jwk(&self) -> serde_json::Value {
-        // Uncompressed SEC1 point: 0x04, then 32 bytes each of x and y.
         let point = self.pair.public_key().as_ref();
         let x = point.get(1..33).unwrap_or_default();
         let y = point.get(33..65).unwrap_or_default();
@@ -85,7 +72,6 @@ impl AccountKey {
     }
 }
 
-/// An ACME account and its signing key.
 pub(crate) struct AcmeAccount {
     account: Account,
     key: AccountKey,
@@ -100,13 +86,6 @@ impl fmt::Debug for AcmeAccount {
 }
 
 impl AcmeAccount {
-    /// Restore the account stored for `settings.directory_url`, or register a
-    /// new one (agreeing to the terms of service, no contact) and store it.
-    ///
-    /// # Errors
-    /// Returns an error if stored credentials are unreadable (they are never
-    /// replaced silently, because CAA records may pin the account), the CA
-    /// is unreachable, or registration or storing fails.
     pub(crate) async fn load_or_create(settings: &AcmeSettings) -> anyhow::Result<Self> {
         let path = settings.state_dir.join(format!(
             "acme-account-{}.json",
@@ -206,26 +185,13 @@ impl AccountSigner for AcmeAccount {
     }
 }
 
-/// One order for a certificate covering `names`, answered with TLS-ALPN-01.
 pub(crate) struct CertificateOrder<'a> {
-    /// Account placing the order.
     pub account: &'a AcmeAccount,
-    /// Resolver whose challenge slots answer the CA's validation handshakes.
     pub resolver: &'a Arc<CertResolver>,
-    /// DNS names to certify.
     pub names: &'a [String],
 }
 
 impl CertificateOrder<'_> {
-    /// Place the order, answer the challenges, finalize and fetch the certificate.
-    ///
-    /// The caller must already hold the relay-side challenge claim for the names
-    /// (so the CA's validation connections reach this instance) and releases it
-    /// afterwards. Challenge slots on the resolver are always cleared again.
-    ///
-    /// # Errors
-    /// Returns an error if the CA offers no TLS-ALPN-01 challenge, rejects an
-    /// authorization, or the order does not complete in time.
     pub(crate) async fn run(&self) -> anyhow::Result<CertBundle> {
         let names: Vec<String> = self.names.iter().map(|n| normalize_host(n)).collect();
         anyhow::ensure!(!names.is_empty(), "certificate order has no names");
@@ -320,7 +286,6 @@ impl CertificateOrder<'_> {
     }
 }
 
-/// What the CA said about each failed challenge, as a ready-to-append suffix (empty when unknown).
 async fn rejected_challenges(order: &mut instant_acme::Order) -> String {
     let mut reasons = Vec::new();
     let mut authorizations = order.authorizations();
@@ -339,9 +304,6 @@ async fn rejected_challenges(order: &mut instant_acme::Order) -> String {
     }
 }
 
-/// When the CA suggests renewing `bundle` (ARI, RFC 9773): the start of the
-/// suggested window. `None` when the CA does not support ARI or the lookup
-/// fails; the caller then renews by [`CertBundle::renew_at`].
 pub(crate) async fn renewal_window(
     account: &AcmeAccount,
     bundle: &CertBundle,
@@ -380,13 +342,11 @@ pub(crate) async fn renewal_window(
     }
 }
 
-/// The issued certificate, kept on disk so a restart does not order again.
 pub(crate) struct CertStore {
     path: PathBuf,
 }
 
 impl CertStore {
-    /// Store for the certificate issued by `directory_url`, inside `state_dir`.
     pub(crate) fn new(state_dir: &Path, directory_url: &str) -> Self {
         Self {
             path: state_dir.join(format!(
@@ -396,8 +356,6 @@ impl CertStore {
         }
     }
 
-    /// The stored bundle, or `None` when nothing usable is stored. A file that
-    /// exists but cannot be read is logged at warn and treated as absent.
     pub(crate) fn load(&self) -> Option<CertBundle> {
         let bytes = match std::fs::read(&self.path) {
             Ok(bytes) => bytes,
@@ -416,10 +374,6 @@ impl CertStore {
         }
     }
 
-    /// Replace the stored bundle (mode 0600).
-    ///
-    /// # Errors
-    /// Returns an error if the directory cannot be created or the file written.
     pub(crate) async fn save(&self, bundle: &CertBundle) -> anyhow::Result<()> {
         if let Some(dir) = self.path.parent() {
             tokio::fs::create_dir_all(dir)
@@ -546,8 +500,6 @@ mod tests {
         assert!(store.load().is_none());
     }
 
-    // Pebble integration tests: `cargo test --quiet -p residuum-net --lib pebble -- --ignored` (needs Docker).
-
     use crate::remote_access::challenge::san_dns_names;
     use crate::remote_access::pebble_support::PebbleHarness;
 
@@ -616,13 +568,11 @@ mod tests {
         );
         assert_eq!(first.not_after - first.renew_at(), lifetime / 3);
 
-        // The issued bundle is usable by the resolver and survives the store.
         resolver.set_certificate(&first).unwrap();
         let store = CertStore::new(&state, &pebble.directory_url());
         store.save(&first).await.unwrap();
         assert_eq!(store.load().unwrap().chain_pem, first.chain_pem);
 
-        // ARI is optional for a CA: either answer is acceptable, neither is an error.
         let window = renewal_window(&account, &first).await;
         info!(?window, "renewal window");
         if let Some(start) = window {
@@ -678,7 +628,6 @@ mod tests {
         let pebble = PebbleHarness::start().await.unwrap();
         register_names(&pebble).await;
         let resolver = CertResolver::new();
-        // No listener answers on the validation port, so the CA cannot validate.
         let state = pebble.scratch_dir().join("state");
         let account = AcmeAccount::load_or_create(&pebble.acme_settings(&state))
             .await

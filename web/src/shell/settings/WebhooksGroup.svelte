@@ -9,10 +9,6 @@
   import { fieldError } from "./sections";
   import SettingsGroup from "./SettingsGroup.svelte";
 
-  // The agent's incoming webhooks: addresses other services post to. Each has
-  // its own secret, destination and message format. Removing one is staged
-  // like every other edit.
-
   let { scope }: { scope: AgentScopeModel } = $props();
 
   const uid = $props.id();
@@ -28,7 +24,6 @@
     return name === "" ? "New webhook" : `/webhook/${scope.agent}/${name}`;
   }
 
-  /** The secret this webhook has on disk: kept under its name, or the reference it carries while it is renamed. */
   function savedSecret(hook: WebhookFormEntry): string {
     const name = hook.name.trim();
     const onDisk = scope.configFile.baseline.webhooks.find((entry) => entry.name.trim() === name);
@@ -36,7 +31,6 @@
     return isStoredReference(hook.secret) ? hook.secret : "";
   }
 
-  /** The save's problems with a webhook, or with one of its fields. */
   function problem(
     hook: WebhookFormEntry,
     field?: Exclude<keyof WebhookFormEntry, "name">,

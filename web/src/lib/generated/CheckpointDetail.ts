@@ -2,15 +2,4 @@
 import type { ChangedPath } from "./ChangedPath";
 import type { CheckpointSummary } from "./CheckpointSummary";
 
-/**
- * A checkpoint plus the paths it changed.
- */
-export type CheckpointDetail = { 
-/**
- * The checkpoint itself.
- */
-summary: CheckpointSummary, 
-/**
- * Paths it changed, relative to the checkpoint before it.
- */
-changed_paths: Array<ChangedPath>, };
+export type CheckpointDetail = { summary: CheckpointSummary, changed_paths: Array<ChangedPath>, };

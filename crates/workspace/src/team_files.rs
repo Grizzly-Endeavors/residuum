@@ -1,21 +1,3 @@
-//! The `team/` namespace and the team write coordinator.
-//!
-//! Every agent sees one logical tree: its own directory, plus a `team/`
-//! prefix that maps onto the shared team directory. [`TeamFiles`] is one
-//! writer's view of that tree — path resolution, plus the coordinator that
-//! keeps concurrent writers to a team file from silently overwriting each
-//! other.
-//!
-//! [`TeamWriteCoordinator`] is a hub-level service: constructed once, then
-//! cloned (it is a handle around shared state) into every agent's tools and
-//! into the web file API. It keeps a per-path async lock and, for each path,
-//! a write generation plus the identity of the last writer that went through
-//! it. A file tool records a [`FileStamp`] when it reads a team file; a later
-//! write or edit takes the path's lock, compares the file's current stamp
-//! with the recorded one, and writes only when they match. A mismatch names
-//! who changed the file, or an unknown writer when the change did not go
-//! through Residuum.
-
 use std::collections::HashMap;
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
@@ -26,27 +8,19 @@ use tokio::sync::OwnedMutexGuard;
 use super::version::version_token;
 use residuum_config::paths::TeamPaths;
 
-/// The name of the directory prefix that addresses the shared team layer.
 pub const TEAM_PREFIX: &str = "team";
 
-/// More markers than this are dropped wholesale; see
-/// [`TeamPathGuard::record_tree_removed`].
 const TREE_MARKER_LIMIT: usize = 256;
 
-/// Path locks are pruned once the table grows past this many entries.
 const LOCK_TABLE_PRUNE_THRESHOLD: usize = 1024;
 
-/// Who wrote a team file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TeamWriter {
-    /// An agent, by name.
     Agent(String),
-    /// The user, through the web file API.
     User,
 }
 
 impl TeamWriter {
-    /// Stable label for logs: `agent:<name>` or `user`.
     #[must_use]
     pub fn label(&self) -> String {
         match self {
@@ -62,26 +36,15 @@ impl fmt::Display for TeamWriter {
     }
 }
 
-/// A file's state as seen at one moment: its mtime-based version token
-/// (`None` when the file does not exist) plus how many writes have gone
-/// through the coordinator for its path.
-///
-/// The generation catches back-to-back writes that land on the same mtime
-/// tick and size, which the version token alone cannot tell apart.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileStamp {
-    /// [`version_token`] of the file, `None` when it does not exist.
     pub version: Option<String>,
-    /// Writes recorded by the coordinator for this path so far.
     pub generation: u64,
 }
 
-/// What the coordinator knows about the last write to one path.
 #[derive(Debug, Default)]
 struct PathRecord {
     generation: u64,
-    /// The last write that went through the coordinator: who wrote it, and
-    /// the version the file had right after (`None` for a removal).
     last: Option<(TeamWriter, Option<String>)>,
 }
 
@@ -90,22 +53,15 @@ struct Inner {
     root: PathBuf,
     locks: Mutex<HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>,
     records: Mutex<HashMap<PathBuf, PathRecord>>,
-    /// Directories removed or moved away by a writer, so a later write into
-    /// the gone subtree can still name who removed it.
     removed_trees: Mutex<HashMap<PathBuf, TeamWriter>>,
 }
 
-/// Hub-level service that serializes and checks writes under the team
-/// directory. Cloning yields another handle to the same shared state.
 #[derive(Clone)]
 pub struct TeamWriteCoordinator {
     inner: Arc<Inner>,
 }
 
 impl TeamWriteCoordinator {
-    /// A coordinator for the team directory `team` names. Callers take
-    /// `team` from their [`residuum_config::WorkspaceLayout`], so the
-    /// directory is located the same way everywhere.
     #[must_use]
     pub fn new(team: &TeamPaths) -> Self {
         Self {
@@ -116,14 +72,11 @@ impl TeamWriteCoordinator {
         }
     }
 
-    /// The team directory this coordinator guards.
     #[must_use]
     pub fn root(&self) -> &Path {
         &self.inner.root
     }
 
-    /// The view of the team namespace for the agent named `agent_name`, whose
-    /// own directory is `agent_dir`. Its writes are attributed to that agent.
     #[must_use]
     pub fn view_for_agent(&self, agent_name: &str, agent_dir: impl Into<PathBuf>) -> TeamFiles {
         TeamFiles {
@@ -133,8 +86,6 @@ impl TeamWriteCoordinator {
         }
     }
 
-    /// The view used by the web file API, whose writes are attributed to the
-    /// user.
     #[must_use]
     pub fn view_for_user(&self, agent_dir: impl Into<PathBuf>) -> TeamFiles {
         TeamFiles {
@@ -144,22 +95,13 @@ impl TeamWriteCoordinator {
         }
     }
 
-    /// Whether `path` is the team directory or lies under it.
     #[must_use]
     pub fn contains(&self, path: &Path) -> bool {
         canonical_key(path).starts_with(canonical_key(&self.inner.root))
     }
 
-    /// The current stamp of `path`, for a reader to record before it reads.
-    ///
-    /// # Errors
-    /// Returns an error if the file can't be examined for a reason other than
-    /// not existing.
     pub async fn stamp(&self, path: &Path) -> std::io::Result<FileStamp> {
         let key = canonical_key(path);
-        // Generation first, then the file: a write that lands in between
-        // leaves the recorded stamp older than the content read next, which
-        // can only produce a spurious conflict, never a missed one.
         let generation = lock(&self.inner.records)
             .get(&key)
             .map_or(0, |record| record.generation);
@@ -170,8 +112,6 @@ impl TeamWriteCoordinator {
         })
     }
 
-    /// Take the write lock for `path`, waiting for any writer already
-    /// holding it.
     pub async fn lock(&self, path: &Path) -> TeamPathGuard {
         let key = canonical_key(path);
         let mutex = {
@@ -190,20 +130,13 @@ impl TeamWriteCoordinator {
         }
     }
 
-    /// How many callers hold or are waiting for `path`'s write lock: a writer
-    /// stuck behind another shows up here as a count above one.
     #[must_use]
     pub fn lock_contenders(&self, path: &Path) -> usize {
         lock(&self.inner.locks)
             .get(&canonical_key(path))
-            // The table keeps one reference; every holder and waiter keeps one more.
             .map_or(0, |held| Arc::strong_count(held).saturating_sub(1))
     }
 
-    /// Take the write locks for every path in `paths` at once. Locks are
-    /// taken in a fixed order, so two callers locking overlapping sets can't
-    /// deadlock, and a path listed twice is locked once. The guards come
-    /// back in that same fixed order.
     pub async fn lock_all(&self, paths: &[PathBuf]) -> Vec<TeamPathGuard> {
         let mut ordered: Vec<&PathBuf> = paths.iter().collect();
         ordered.sort_by_key(|path| canonical_key(path));
@@ -216,7 +149,6 @@ impl TeamWriteCoordinator {
     }
 }
 
-/// Exclusive access to one team path. Dropping it releases the lock.
 pub struct TeamPathGuard {
     coordinator: TeamWriteCoordinator,
     path: PathBuf,
@@ -224,39 +156,22 @@ pub struct TeamPathGuard {
     _held: OwnedMutexGuard<()>,
 }
 
-/// Who a conflicting change is attributed to, as far as Residuum knows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TeamConflict {
-    /// The writer of the change the caller has not seen, `None` when the file
-    /// changed outside Residuum.
     pub changed_by: Option<TeamWriter>,
-    /// Whether the file no longer exists.
     pub missing: bool,
 }
 
 impl TeamPathGuard {
-    /// The path this guard holds.
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
     }
 
-    /// The path's current stamp, read under the lock.
-    ///
-    /// # Errors
-    /// Returns an error if the file can't be examined for a reason other than
-    /// not existing.
     pub async fn stamp(&self) -> std::io::Result<FileStamp> {
         self.coordinator.stamp(&self.path).await
     }
 
-    /// Compare the path's current stamp with `expected`, the stamp the caller
-    /// recorded when it read the file (`None` if it never read one, which
-    /// only permits creating a file that does not exist).
-    ///
-    /// # Errors
-    /// Returns a [`TeamConflict`] naming the last known writer when the file
-    /// is not in the state the caller last saw.
     pub async fn check(&self, expected: Option<&FileStamp>) -> Result<(), CheckError> {
         let current = self.stamp().await.map_err(CheckError::Io)?;
         let unchanged = match expected {
@@ -272,7 +187,6 @@ impl TeamPathGuard {
         }))
     }
 
-    /// The last writer known to have produced `current`'s state.
     fn last_writer(&self, current: &FileStamp) -> Option<TeamWriter> {
         let recorded = lock(&self.coordinator.inner.records)
             .get(&self.key)
@@ -288,12 +202,6 @@ impl TeamPathGuard {
             .map(|(_, writer)| writer.clone())
     }
 
-    /// Write `bytes` to the path atomically, creating missing parent
-    /// directories, and record `writer` as the path's last writer. Returns
-    /// the stamp of the file as written.
-    ///
-    /// # Errors
-    /// Returns an error if the parent can't be created or the write fails.
     pub async fn commit(&self, writer: &TeamWriter, bytes: &[u8]) -> anyhow::Result<FileStamp> {
         use anyhow::Context as _;
         if let Some(parent) = self.path.parent() {
@@ -308,27 +216,15 @@ impl TeamPathGuard {
         Ok(self.record(writer, version))
     }
 
-    /// Record that `writer` removed or moved away the file at the path, after
-    /// the caller did so.
     pub fn record_removed(&self, writer: &TeamWriter) {
         self.record(writer, None);
     }
 
-    /// Record that `writer` created or replaced the file at the path by some
-    /// means other than [`Self::commit`] (a move landing on it), after the
-    /// caller did so. Returns the resulting stamp.
-    ///
-    /// # Errors
-    /// Returns an error if the file can't be examined.
     pub async fn record_written(&self, writer: &TeamWriter) -> std::io::Result<FileStamp> {
         let version = current_version(&self.path).await?;
         Ok(self.record(writer, version))
     }
 
-    /// Record that `writer` removed the directory at the path, so a later
-    /// write into it can name who removed it. Markers past a bounded count
-    /// are dropped all at once; attribution then falls back to an unknown
-    /// writer, never to a wrong one.
     pub fn record_tree_removed(&self, writer: &TeamWriter) {
         let mut trees = lock(&self.coordinator.inner.removed_trees);
         if trees.len() >= TREE_MARKER_LIMIT {
@@ -349,16 +245,12 @@ impl TeamPathGuard {
     }
 }
 
-/// Why [`TeamPathGuard::check`] did not let a write proceed.
 #[derive(Debug)]
 pub enum CheckError {
-    /// The file changed since the caller read it.
     Conflict(TeamConflict),
-    /// The file could not be examined.
     Io(std::io::Error),
 }
 
-/// Why a path could not be placed in the namespace.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TeamPathError(pub String);
 
@@ -370,8 +262,6 @@ impl fmt::Display for TeamPathError {
 
 impl std::error::Error for TeamPathError {}
 
-/// One writer's view of the logical tree: the agent's directory plus the
-/// `team/` prefix.
 #[derive(Clone)]
 pub struct TeamFiles {
     coordinator: TeamWriteCoordinator,
@@ -380,44 +270,32 @@ pub struct TeamFiles {
 }
 
 impl TeamFiles {
-    /// The coordinator shared by every view of this team.
     #[must_use]
     pub fn coordinator(&self) -> &TeamWriteCoordinator {
         &self.coordinator
     }
 
-    /// The identity this view's writes are recorded under.
     #[must_use]
     pub fn writer(&self) -> &TeamWriter {
         &self.writer
     }
 
-    /// The team directory.
     #[must_use]
     pub fn team_root(&self) -> &Path {
         self.coordinator.root()
     }
 
-    /// The agent directory relative paths outside `team/` resolve against.
     #[must_use]
     pub fn agent_dir(&self) -> &Path {
         &self.agent_dir
     }
 
-    /// Resolve a path as given to a file tool. A relative path starting with
-    /// `team/` (or exactly `team`) addresses the team directory; any other
-    /// relative path resolves against the agent directory; an absolute path
-    /// is used as is.
     #[must_use]
     pub fn resolve(&self, path: &str) -> PathBuf {
         let (base, rest) = self.locate(path);
         base.join(rest)
     }
 
-    /// Split a path as given to a file tool into the directory it is relative
-    /// to (the team directory for `team/...`, otherwise the agent directory)
-    /// and the remainder. An absolute path comes back whole, and joins onto
-    /// either base as itself.
     #[must_use]
     pub fn locate(&self, path: &str) -> (&Path, PathBuf) {
         match team_relative_path(path) {
@@ -426,14 +304,11 @@ impl TeamFiles {
         }
     }
 
-    /// Whether `path` lies in the team directory.
     #[must_use]
     pub fn is_team_path(&self, path: &Path) -> bool {
         self.coordinator.contains(path)
     }
 
-    /// `path` as the agent addresses it: `team/...` for team files, otherwise
-    /// the path unchanged.
     #[must_use]
     pub fn display(&self, path: &Path) -> String {
         let key = canonical_key(path);
@@ -450,12 +325,6 @@ impl TeamFiles {
         }
     }
 
-    /// Refuse a path that names, or lies inside, a `team` entry of the agent
-    /// directory. That name is the prefix for the shared team directory, so
-    /// the agent directory may not hold one of its own.
-    ///
-    /// # Errors
-    /// Returns a [`TeamPathError`] explaining the reservation.
     pub fn check_no_agent_team_entry(&self, path: &Path) -> Result<(), TeamPathError> {
         let reserved = canonical_key(&self.agent_dir.join(TEAM_PREFIX));
         if canonical_key(path).starts_with(&reserved) {
@@ -470,13 +339,6 @@ impl TeamFiles {
         Ok(())
     }
 
-    /// Take the path's write lock and verify the file is still as the caller
-    /// last saw it. On a conflict the message is ready to hand to the agent
-    /// and the conflict has been logged.
-    ///
-    /// # Errors
-    /// Returns the tool-facing message when the file changed since it was
-    /// read, or could not be examined.
     pub async fn lock_unchanged(
         &self,
         path: &Path,
@@ -526,8 +388,6 @@ impl TeamFiles {
     }
 }
 
-/// The remainder of `path` after a leading `team` component, when `path` is a
-/// relative path addressing the team directory.
 #[must_use]
 pub fn team_relative_path(path: &str) -> Option<PathBuf> {
     let path = Path::new(path);
@@ -545,9 +405,6 @@ pub fn team_relative_path(path: &str) -> Option<PathBuf> {
     }
 }
 
-/// Lexically normalize `path` (drop `.`, apply `..`), then canonicalize its
-/// nearest existing ancestor, so the result is stable whether or not the file
-/// exists and whichever symlinked spelling reached it.
 #[must_use]
 pub fn canonical_key(path: &Path) -> PathBuf {
     let mut normalized = PathBuf::new();
@@ -579,7 +436,6 @@ pub fn canonical_key(path: &Path) -> PathBuf {
     key
 }
 
-/// The version token of the file at `path`, `None` when it does not exist.
 async fn current_version(path: &Path) -> std::io::Result<Option<String>> {
     match tokio::fs::metadata(path).await {
         Ok(metadata) => Ok(Some(version_token(&metadata))),
@@ -588,8 +444,6 @@ async fn current_version(path: &Path) -> std::io::Result<Option<String>> {
     }
 }
 
-/// Lock a std mutex, recovering the data if a panicking holder poisoned it:
-/// every critical section here leaves the maps consistent.
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
@@ -614,7 +468,6 @@ mod tests {
         )
     }
 
-    /// Write `bytes` to `path` through the coordinator as `writer`.
     async fn commit_as(
         coordinator: &TeamWriteCoordinator,
         path: &Path,

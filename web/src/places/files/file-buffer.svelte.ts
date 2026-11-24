@@ -1,7 +1,3 @@
-// One open file: its text on disk and in the editor, saving, the save
-// conflict, and keeping up with changes made elsewhere. The file panel shows
-// one, and the tree tells it when the file it shows is renamed or deleted.
-
 import {
   ApiError,
   fetchWorkspaceFile,
@@ -23,14 +19,12 @@ import { configFileAt, fileName, sameSource, type FileSource } from "./file-sour
 
 export type FileStatus = "loading" | "ready" | "missing" | "error";
 
-/** What the user chose when a save found the file changed: theirs, the disk's, or neither for now. */
 export type ConflictAnswer = ConfigChoice | "cancel";
 
 function isNotFound(err: unknown): boolean {
   return err instanceof ApiError && err.status === 404;
 }
 
-/** A raw config save's verdict as diagnostics: the server's, or its one error. */
 function verdictDiagnostics(result: ValidateResponse): Diagnostic[] {
   if (result.diagnostics !== undefined && result.diagnostics.length > 0) return result.diagnostics;
   return result.error === undefined ? [] : [{ severity: "error", message: result.error }];
@@ -39,45 +33,32 @@ function verdictDiagnostics(result: ValidateResponse): Diagnostic[] {
 export class FileBuffer {
   path = $state("");
   status = $state<FileStatus>("loading");
-  /** The file's text as last read or saved. */
   saved = $state("");
-  /** The text in the editor. */
   text = $state("");
   diagnostics = $state<Diagnostic[]>([]);
-  /** Why the file couldn't be read (while `error`), or checked again (while `ready`), in plain words. */
   error = $state("");
   saving = $state(false);
-  /** The file changed, or went away, on disk while it had unsaved edits. */
   changedOnDisk = $state<"changed" | "removed" | null>(null);
-  /** A save found the file changed since it was read, and waits for the user's answer. */
   conflict = $state<((answer: ConflictAnswer) => void) | null>(null);
-  /** The editor is open, rather than a Markdown file's rendered view. Kept here, so a redrawn panel keeps it. */
   editing = $state(false);
 
   readonly dirty = $derived(this.status === "ready" && this.text !== this.saved);
   readonly name = $derived(fileName(this.path));
 
-  /** The version the file was read or saved at, sent back as `If-Match`. */
   private version: string | null = null;
-  /** Counts reads, so one that a later read overtook is dropped. */
   private reads = 0;
-  /** Marks the coordinator writes this buffer made, so it doesn't hear its own. */
   readonly writer = Symbol("file editor");
 
-  /** It holds no file until `open`. */
   constructor(readonly source: FileSource) {}
 
-  /** The config file this is, which saves through the config write coordinator, or null. */
   get configFile(): ConfigFile | null {
     return configFileAt(this.source, this.path);
   }
 
-  /** Whether this buffer holds `path` in `source`. */
   shows(source: FileSource, path: string): boolean {
     return sameSource(source, this.source) && path === this.path;
   }
 
-  /** Show `path`, read from disk, dropping the edits to the file shown. */
   async open(path: string): Promise<void> {
     if (path !== this.path) this.editing = false;
     this.path = path;
@@ -101,12 +82,6 @@ export class FileBuffer {
     }
   }
 
-  /**
-   * Catch up with the disk after a change made elsewhere: take the new text
-   * when there are no edits, and otherwise keep the edits and say the file
-   * changed under them. A change that leaves the text as saved (this
-   * buffer's own write coming back) only moves the version on.
-   */
   async refresh(): Promise<void> {
     if (this.status === "loading" || this.saving) return;
     const read = ++this.reads;
@@ -124,7 +99,6 @@ export class FileBuffer {
     } catch (err) {
       if (read !== this.reads) return;
       if (!isNotFound(err)) {
-        // The file shown stays as it was, with a note that it may be out of date.
         this.error = userErrorMessage(err, {
           action: `Couldn't check ${this.name} for changes made elsewhere.`,
         });
@@ -135,12 +109,10 @@ export class FileBuffer {
     }
   }
 
-  /** The file was renamed or moved to `path`; the edits stay. */
   moved(path: string): void {
     this.path = path;
   }
 
-  /** The file was deleted from the tree: there's nothing left to edit. */
   removed(): void {
     this.reads++;
     this.status = "missing";
@@ -152,7 +124,6 @@ export class FileBuffer {
     this.changedOnDisk = null;
   }
 
-  /** Diagnostics for the text in the editor, as if it were saved. */
   async validate(): Promise<void> {
     const { path, text } = this;
     const found = await validateWorkspaceFile(this.source.agent, path, text, this.source.scope);
@@ -174,7 +145,6 @@ export class FileBuffer {
     }
   }
 
-  /** The user's answer to the save conflict. */
   answer(answer: ConflictAnswer): void {
     this.conflict?.(answer);
   }
@@ -201,7 +171,6 @@ export class FileBuffer {
     });
   }
 
-  /** Write with `If-Match`, so a change made since the file was read is never overwritten unasked. */
   private async saveFile(text: string, version: string | null): Promise<void> {
     try {
       const { source } = this;
@@ -212,7 +181,6 @@ export class FileBuffer {
       if (conflict === null) throw err;
       const answer = await this.ask();
       if (answer === "use-disk") await this.open(this.path);
-      // Overwriting goes through `If-Match` again, so a further change asks again.
       else if (answer === "keep-mine") await this.saveFile(text, conflict.currentVersion);
     }
   }
@@ -253,8 +221,4 @@ export class FileBuffer {
   }
 }
 
-/**
- * The file the context panel shows, if any. The tree tells it when that file
- * is renamed, moved, deleted or restored, so its edits follow the file.
- */
 export const panelFile: { shown: FileBuffer | null } = { shown: null };

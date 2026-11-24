@@ -1,5 +1,3 @@
-//! Skill management tools: activate and deactivate skills.
-
 use async_trait::async_trait;
 use serde_json::Value;
 
@@ -11,16 +9,12 @@ use super::publish_notice;
 use residuum_agent::Tool;
 use residuum_inference::{ToolError, ToolResult};
 
-// ─── skill_activate ──────────────────────────────────────────────────────────
-
-/// Tool for activating a skill's instructions into the system prompt.
 pub struct SkillActivateTool {
     state: SharedSkillState,
     publisher: Option<Publisher>,
 }
 
 impl SkillActivateTool {
-    /// Create a new `SkillActivateTool`.
     #[must_use]
     pub fn new(state: SharedSkillState) -> Self {
         Self {
@@ -29,8 +23,6 @@ impl SkillActivateTool {
         }
     }
 
-    /// Publish the notices each rescan produces, such as a skill that was
-    /// skipped for invalid frontmatter.
     #[must_use]
     pub fn with_publisher(mut self, publisher: Publisher) -> Self {
         self.publisher = Some(publisher);
@@ -66,9 +58,6 @@ impl Tool for SkillActivateTool {
     async fn execute(&self, arguments: Value) -> Result<ToolResult, ToolError> {
         let name = super::require_str(&arguments, "name")?;
 
-        // Rescan before activating, so a skill authored since startup can be
-        // activated and an active skill whose files were removed is dropped,
-        // without a config reload. The lock is released before publishing.
         let (activation, report) = {
             let mut state = self.state.lock().await;
             let report = match state.rescan().await {
@@ -81,16 +70,10 @@ impl Tool for SkillActivateTool {
             (activation, report)
         };
 
-        // A dropped skill is new by construction: the rescan removes it from
-        // the active list. A notice is published only when the rescan reports
-        // it as new, so one that persists is not repeated on every activation.
         for message in report.dropped.iter().chain(&report.new_notices) {
             publish_notice(self.publisher.as_ref(), message.clone()).await;
         }
 
-        // The agent is the one relying on a dropped skill, so the result names
-        // it. A failed activation also names the new notices, so an agent that
-        // just wrote a skill learns why it is not loadable.
         let (is_error, mut output) = match activation {
             Ok(skill_name) => (false, format!("Activated skill '{skill_name}'.")),
             Err(e) => (true, e.to_string()),
@@ -113,15 +96,11 @@ impl Tool for SkillActivateTool {
     }
 }
 
-// ─── skill_deactivate ────────────────────────────────────────────────────────
-
-/// Tool for deactivating a skill's instructions from the system prompt.
 pub struct SkillDeactivateTool {
     state: SharedSkillState,
 }
 
 impl SkillDeactivateTool {
-    /// Create a new `SkillDeactivateTool`.
     #[must_use]
     pub fn new(state: SharedSkillState) -> Self {
         Self { state }
@@ -251,7 +230,6 @@ mod tests {
             "output should mention skill name"
         );
 
-        // After activation, the skill body ("Body.") should be accessible
         let active_content = state.lock().await.format_active_for_prompt().unwrap();
         assert!(
             active_content.contains("Body."),
@@ -374,9 +352,6 @@ mod tests {
         );
     }
 
-    /// Publish a sentinel and return the notices received before it. The bus
-    /// delivers one channel's messages in the order they were sent, so these
-    /// are the notices published since the previous call.
     async fn notices_since_last_call(
         publisher: &residuum_bus::Publisher,
         notices: &mut residuum_bus::Subscriber<residuum_bus::NoticeEvent>,
@@ -424,7 +399,6 @@ mod tests {
         let publisher = bus.publisher();
         let tool = SkillActivateTool::new(Arc::clone(&state)).with_publisher(bus.publisher());
 
-        // The first rescan finds the broken skill for the first time.
         let activated = tool
             .execute(serde_json::json!({"name": "first-skill"}))
             .await
@@ -441,7 +415,6 @@ mod tests {
             "the notice should name the broken skill: {first:?}"
         );
 
-        // A later rescan reports the same broken skill, which is not repeated.
         let second_activation = tool
             .execute(serde_json::json!({"name": "second-skill"}))
             .await
@@ -453,7 +426,6 @@ mod tests {
             "a notice that persists is not published again: {second:?}"
         );
 
-        // A skill that breaks after startup is new, so it is published once.
         write_skill(dir.path(), "worse-skill", "---\n: broken [[\n---\n").await;
         let third_activation = tool
             .execute(serde_json::json!({"name": "third-skill"}))

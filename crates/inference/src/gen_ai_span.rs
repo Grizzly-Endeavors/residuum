@@ -1,18 +1,9 @@
-//! OpenTelemetry `GenAI` usage attributes on model-call spans.
-//!
-//! Each provider's request span declares the `gen_ai.usage.*` fields empty;
-//! [`record_usage`] fills the ones the response reported, so an exported trace
-//! carries what the call spent under the names trace tools read.
-
 use residuum_config::ProviderKind;
 
 use crate::types::Usage;
 
-/// The `gen_ai.operation.name` of every model call: a chat completion.
 pub(crate) const CHAT_OPERATION: &str = "chat";
 
-/// The `gen_ai.provider.name` a provider kind is traced under: the
-/// registry's well-known value where it has one, otherwise the kind's own name.
 pub(crate) fn provider_name(kind: ProviderKind) -> &'static str {
     match kind {
         ProviderKind::Anthropic => "anthropic",
@@ -23,8 +14,6 @@ pub(crate) fn provider_name(kind: ProviderKind) -> &'static str {
     }
 }
 
-/// Record `usage` on the current span. A count the provider didn't report
-/// stays unset rather than becoming zero.
 pub(crate) fn record_usage(usage: Option<&Usage>) {
     let Some(usage) = usage else {
         return;
@@ -53,7 +42,6 @@ pub(crate) fn record_usage(usage: Option<&Usage>) {
     }
 }
 
-/// Record the model that answered on the current span.
 pub(crate) fn record_response_model(model: &str) {
     if !model.is_empty() {
         tracing::Span::current().record("gen_ai.response.model", model);

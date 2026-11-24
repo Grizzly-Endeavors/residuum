@@ -1,12 +1,3 @@
-//! A2A web API endpoints the hub serves: caller-key management
-//! (`/api/hub/a2a/keys`) and the `config/a2a.json` editor
-//! (`GET`/`PUT /api/agents/{name}/a2a/agents/raw`), a file route that
-//! answers whether or not the agent is running.
-//!
-//! Each request opens its own handle on the key store; writes are serialized
-//! across handles and processes by the store's file lock, so the web UI,
-//! the CLI, and the running A2A listener never lose each other's updates.
-
 use axum::body::Body;
 use axum::extract::{Path, State};
 use axum::http::{StatusCode, header};
@@ -18,7 +9,6 @@ use residuum_a2a::{A2aKeyError, A2aKeyInfo, A2aKeys};
 use super::config::ValidateResponse;
 use super::{AgentFilesState, HubApiState};
 
-/// Request body for `POST /api/hub/a2a/keys`.
 #[derive(Deserialize)]
 pub(super) struct CreateA2aKeyRequest {
     pub name: String,
@@ -34,19 +24,14 @@ pub(super) struct CreateA2aKeyResponse {
     pub token: String,
 }
 
-/// Response from `GET /api/hub/a2a/keys`.
 #[derive(Serialize)]
 pub(super) struct ListA2aKeysResponse {
     pub keys: Vec<A2aKeyInfo>,
 }
 
-/// Response from `DELETE /api/hub/a2a/keys/{name}`.
 #[derive(Serialize)]
 pub(super) struct RevokeA2aKeyResponse {
     pub revoked: bool,
-    /// Checkpoint holding the caller-key store as it was before this revoke.
-    /// `None` when that checkpoint could not be recorded; the revoke still
-    /// succeeded, and the UI should not offer Undo.
     pub checkpoint_id: Option<String>,
 }
 
@@ -63,7 +48,6 @@ fn error_response(e: &A2aKeyError) -> (StatusCode, String) {
     (status, e.to_string())
 }
 
-/// `GET /api/hub/a2a/keys` — list caller keys (metadata only, never tokens).
 pub(super) async fn api_a2a_keys_list(
     State(state): State<HubApiState>,
 ) -> Result<Json<ListA2aKeysResponse>, (StatusCode, String)> {
@@ -76,7 +60,6 @@ pub(super) async fn api_a2a_keys_list(
     }))
 }
 
-/// `POST /api/hub/a2a/keys` — mint a caller key, returning the token once.
 pub(super) async fn api_a2a_keys_create(
     State(state): State<HubApiState>,
     Json(req): Json<CreateA2aKeyRequest>,
@@ -94,7 +77,6 @@ pub(super) async fn api_a2a_keys_create(
     }))
 }
 
-/// `DELETE /api/hub/a2a/keys/{name}` — revoke a caller key.
 pub(super) async fn api_a2a_keys_revoke(
     State(state): State<HubApiState>,
     Path(name): Path<String>,
@@ -112,10 +94,8 @@ pub(super) async fn api_a2a_keys_revoke(
     }))
 }
 
-/// Default `config/a2a.json` content when the file doesn't exist yet.
 const DEFAULT_A2A_AGENTS_JSON: &str = r#"{"agents":{}}"#;
 
-/// `GET /api/agents/{name}/a2a/agents/raw` — return raw `config/a2a.json` contents.
 pub(super) async fn api_a2a_agents_raw_get(
     State(state): State<AgentFilesState>,
 ) -> Result<Response, (StatusCode, String)> {
@@ -141,15 +121,6 @@ pub(super) async fn api_a2a_agents_raw_get(
         })
 }
 
-/// `PUT /api/agents/{name}/a2a/agents/raw` — write `config/a2a.json` atomically, save
-/// unconditionally, trigger a workspace reload, and report diagnostics.
-///
-/// The save always succeeds, even when `body` fails validation: the loader
-/// skips an unusable agent entry with a warning and keeps every other agent
-/// running (see `residuum_a2a::client::config::load_a2a_agents_map`), so an
-/// invalid save is safe to accept and report rather than reject outright —
-/// consistent with `write_file`/`edit_file`, `config.toml`/`providers.toml`,
-/// and the workspace file editor.
 pub(super) async fn api_a2a_agents_raw_put(
     State(state): State<AgentFilesState>,
     body: String,
@@ -392,8 +363,6 @@ mod tests {
         );
     }
 
-    /// A state whose checkpoint repositories can't be opened, counting the
-    /// attempts.
     fn unopenable_checkpoints(
         dir: &std::path::Path,
     ) -> (AgentFilesState, Arc<std::sync::atomic::AtomicUsize>) {

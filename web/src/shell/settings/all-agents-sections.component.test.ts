@@ -27,15 +27,10 @@ import PricingSection from "./PricingSection.svelte";
 import UpdatesSection from "./UpdatesSection.svelte";
 import { waitFor } from "../../test/wait";
 
-// The All agents sections that turn the hub's `config.toml` into forms
-// (General, Session limits, Diagnostics), and the two that act at once
-// through their own endpoints (Updates, Residuum Cloud).
-
 let server: FakeAgentConfig;
 let scope: AllScopeModel;
 let count = 0;
 
-/** The hub's config over the fake server, and `extra` answering first. */
 function serve(hub: string, extra: FetchHandler = () => new Response("", { status: 599 })): void {
   server = fakeAgentConfig(`all-sections-${String(++count)}`, { hub });
   mockFetch((url, init) => {
@@ -274,8 +269,6 @@ describe("Diagnostics", () => {
   });
 });
 
-// ── Updates ────────────────────────────────────────────────────────────
-
 const RESTART_POLL_MS = 1500;
 const RESTART_TIMEOUT_MS = 90_000;
 
@@ -472,8 +465,6 @@ describe("Updates", () => {
   });
 });
 
-// ── Residuum Cloud ─────────────────────────────────────────────────────
-
 function cloudStatus(overrides: Partial<CloudStatusResponse> = {}): CloudStatusResponse {
   return {
     status: "disconnected",
@@ -494,7 +485,6 @@ describe("Residuum Cloud", () => {
   let signIns: { relay_url: string; port: string }[] = [];
   let signInAnswer: Response | null = null;
 
-  /** The relay address the hub answers the nth sign-in with. */
   const signInPage = (port: string, n: number): string =>
     `https://relay.test/connect?port=${port}&state=state-${n}`;
 
@@ -541,7 +531,6 @@ describe("Residuum Cloud", () => {
     await open();
   });
 
-  /** The section, once it has read the status. The answers arrive over more than one tick, so a test waits for what it expects. */
   async function view(): Promise<void> {
     render(CloudSection, { scope, section: "cloud" });
     await waitFor(() => {
@@ -551,7 +540,6 @@ describe("Residuum Cloud", () => {
 
   const button = (name: string): Promise<HTMLElement> => screen.findByRole("button", { name });
 
-  /** A tab the section opened: what it was opened at, where it was sent, whether it was closed, and its opener. */
   interface OpenedTab {
     openedAt: unknown[];
     opener: unknown;
@@ -584,7 +572,6 @@ describe("Residuum Cloud", () => {
     return { tabs };
   }
 
-  /** The nth tab, once it has been sent to the relay's sign-in page. */
   async function signedInTab(tabs: OpenedTab[], n: number): Promise<OpenedTab> {
     await waitFor(() => {
       expect(tabs[n - 1]?.sentTo).toEqual([signInPage("7701", n)]);
@@ -786,7 +773,6 @@ describe("Residuum Cloud", () => {
 
   describe("after the sign-in callback hands a tab over", () => {
     beforeEach(() => {
-      // Nothing left over from a page another test opened.
       takeCloudHandoff();
     });
 

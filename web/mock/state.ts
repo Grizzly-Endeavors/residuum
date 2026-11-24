@@ -32,20 +32,17 @@ import { emptyPairing, type MockPairing } from "./pairing";
 import { defaultRemoteAccess, type MockRemoteAccess } from "./remote-access";
 import type { MockUpdateStatus } from "./update";
 
-/** An agent key as the mock stores it, value included. */
 export interface MockAgentKey {
   value: string;
   description: string;
   created_by: "user" | "agent";
 }
 
-/** An A2A caller key as the mock stores it. */
 export interface MockA2aKey {
   description: string;
   created_at: string;
 }
 
-/** A file attached to an item an agent sent the user. `url` is filled in when the item is listed. */
 export interface UserInboxAttachment {
   filename: string;
   mime_type: string;
@@ -53,7 +50,6 @@ export interface UserInboxAttachment {
   url: string;
 }
 
-/** An item an agent sent the user, as the mock keeps it in `inboxItems` or `inboxArchive`. */
 export interface UserInboxItem {
   id: string;
   title: string;
@@ -62,33 +58,21 @@ export interface UserInboxItem {
   timestamp: string;
   read: boolean;
   attachments: UserInboxAttachment[];
-  /** The ref (`<agent>/<user|agent>/<id>`) of the message this one answers; absent for a message that starts a thread. */
   in_reply_to?: string;
 }
 
-/**
- * An item in an agent's own inbox. A workbench artifact adds items with
- * `source` `artifact:<name>`; a message the user sends is a copy with source
- * `web` or `cli`, and the fields after `timestamp` are the ones such a
- * message uses.
- */
 export interface MockAgentInboxItem {
   id: string;
   title: string;
   body: string;
   source: string;
   timestamp: string;
-  /** The ref (`<agent>/<user|agent>/<id>`) of the message this one answers. */
   in_reply_to?: string;
-  /** The files sent with it, which the agent's attachment route serves. */
   attachments?: UserInboxAttachment[];
-  /** Whether the agent has read it; unread when absent. */
   read?: boolean;
-  /** Whether the agent has archived it. */
   archived?: boolean;
 }
 
-/** A file a client staged with `POST /api/hub/uploads`, waiting for the message that names it. */
 export interface MockUpload {
   id: string;
   filename: string;
@@ -96,9 +80,7 @@ export interface MockUpload {
 }
 
 export interface MockState {
-  /** The agent this state belongs to, or `hub` for the hub- and team-level state. */
   agentName: string;
-  /** The clock, delays and timers the mock shares; the hub and every agent hold the same one. */
   env: MockEnv;
   mode: "setup" | "running";
   secrets: Map<string, string>;
@@ -108,116 +90,54 @@ export interface MockState {
   configToml: string;
   hubConfigToml: string;
   providersToml: string;
-  /** Directory path to its listing. Changed only through `workspace-tree.ts`, which keeps it agreeing with the contents. */
   workspaceFiles: Record<string, WorkspaceEntry[]>;
-  /** File path to its content. `config/mcp.json` (`MCP_JSON`) is the agent's MCP servers. */
   workspaceFileContents: Record<string, string>;
   inboxItems: UserInboxItem[];
-  /** The items the user archived, which `restore` brings back to `inboxItems`. */
   inboxArchive: UserInboxItem[];
-  /** What a workbench artifact added to the agent's own inbox (`POST /api/agent-inbox`), and the messages the user sent it, oldest first. */
   agentInbox: MockAgentInboxItem[];
-  /** The bytes of attachments that are not text, by workspace path (`inbox/<user|agent>/attachments/<id>/<file>`). Text attachments are workspace files. */
   attachmentBytes: Map<string, Buffer>;
-  /** The files staged for a message, by upload id. Only the hub's state holds any. */
   uploads: Map<string, MockUpload>;
-  /** The pulses and scheduled actions the Scheduled view lists. */
   scheduled: MockScheduled;
-  /** What the hub knows about updates, for the update routes. */
   update: MockUpdateStatus;
-  /** What a test holds about the Residuum Cloud tunnel, for the cloud routes. Only the hub's state is read. */
   cloud: MockCloud;
-  /** The devices registered for Web Push, oldest first. Only the hub's state holds any. */
   pushDevices: MockPushDevice[];
-  /** The browsers paired for remote access, and the requests waiting. Only the hub's state holds any. */
   pairing: MockPairing;
-  /** The secure tunnel's status. Only the hub's state holds it. */
   remoteAccess: MockRemoteAccess;
-  /** The checkpoint histories this state holds: an agent's own, or the hub's. */
   checkpoints: MockCheckpoints;
-  /**
-   * Whether the agent has a conversation: the sample history and episodes
-   * sit behind `extraRecent`. An agent has one once it has run.
-   */
   hasConversation: boolean;
   sessions: MockSessions;
-  /** Port of the mock artifacts listener, once it is listening. */
   workbenchPort: number | null;
-  /** Main-agent messages recorded after the sample history (see `/api/mock/missed-relay`). */
   extraRecent: RecentMessage[];
-  /** The main conversation's token totals, which `GET /api/usage` reports and each turn adds to. */
   usage: SessionUsageTotals;
-  /** Close every WebSocket, as if the connection dropped. Set by the agent socket. */
   dropSockets: () => void;
-  /**
-   * Send a frame to every connected WebSocket client, the way a session
-   * frame reaches the sidebar. Set by the agent socket; the REST handlers
-   * for the artifact session endpoints use it to announce sessions they
-   * start, stop, or message the same way the WebSocket command handlers do.
-   * A change feed frame (`workspace_changed` and the like) goes only to the
-   * clients whose `watch_workspace` prefixes it touches.
-   */
   broadcast: (frame: ServerMessage) => void;
-  /**
-   * Note a frame of the main conversation that no page receives, because the
-   * connection is down, so a page that asks for the turn in flight once it is
-   * back still gets it. Set by the agent socket.
-   */
   journalOnly: (frame: ServerMessage) => void;
-  /**
-   * Hand the main conversation a message one of the agent's own sessions
-   * sent it (`content` with the header the backend writes, `sender` naming
-   * the session and its run): it joins the turn in flight, or starts one. Set
-   * by the agent socket.
-   */
   messageMain: (content: string, sender: AgentSender) => void;
-  /**
-   * Open tasks sent to remote agents, for the sessions sidebar. `laptop`'s
-   * task is unreachable, so stopping it answers `502 unreachable` and the
-   * row offers "Stop watching".
-   */
   outboundTasks: OutboundA2aTaskSummary[];
-  /**
-   * Set once a "drop compress" chat message has simulated the observer
-   * compressing history into `ep-004`: how many `extraRecent` entries went
-   * into that episode.
-   */
   compressedAt: number | null;
-  /** Current Teams setup job for this agent, if any. */
   teamsSetupJob?: TeamsSetupJob | null;
-  /** Custom prerequisite overrides for Teams setup, if set. */
   teamsSetupPrereqs?: TeamsSetupPrereqs;
-  /** All cumulative log lines for the Teams setup job. */
   teamsSetupAllLogs?: LogLine[];
 }
 
 export interface MockAgent {
   name: string;
-  /** The name people see. The same as `name` when no separate name was set. */
   displayName: string;
   runState: AgentState;
   lastError: AgentLastError | null;
   autostart: boolean;
   role: string | null;
   visibility: A2aVisibility;
-  /** When the current main turn began, or `null` while none is running. */
   busySince: string | null;
-  /** The agent's stop has begun and isn't finished: its state is still `running`. */
   stopping: boolean;
-  /** Main-conversation messages the web UI hasn't shown. */
   unread: number;
   state: MockState;
-  /** How many web clients have this agent's WebSocket open. Set by the agent socket. */
   connectedClients: () => number;
-  /** The workspace prefixes the agent's open sockets watch, merged and sorted. Set by the agent socket. */
   watchedPrefixes: () => string[];
-  /** Have the main conversation take a message another channel brought, as a turn from that channel. Set by the agent socket. */
   receiveMessage: (content: string, source: { endpoint: string; sender?: MessageSender }) => void;
-  /** Close the agent's WebSocket route and its connections. Set by the agent socket. */
   dispose: () => void;
 }
 
-/** An agent removed by `DELETE`, kept whole so a restore brings back its conversation and settings. */
 export interface MockDeletedAgent {
   agent: MockAgent;
   deletedAt: string;
@@ -227,17 +147,9 @@ export interface MockDeletedAgent {
 export interface MockHub {
   env: MockEnv;
   agents: Map<string, MockAgent>;
-  /** Deleted agents that can be restored, by name. */
   deleted: Map<string, MockDeletedAgent>;
-  /**
-   * How many times a test rebuilt the app (`POST /api/mock/rebuild`). A
-   * preview server then serves a service worker of another version, as a
-   * rebuilt app would. A reset puts it back to zero.
-   */
   appRebuilds: number;
-  /** Hub-level and team-level state: secrets, hub config, team files, the workbench. */
   hubState: MockState;
-  /** Register an agent and open its WebSocket route. */
   createAgent: (
     name: string,
     options?: {
@@ -248,55 +160,24 @@ export interface MockHub {
     },
   ) => MockAgent;
   summary: (agent: MockAgent) => AgentSummary;
-  /** Every agent by name with its activity and stopping set: `GET /api/hub/agents` and the hub snapshot. */
   listing: () => AgentListResponse;
-  /** Send a frame to every hub WebSocket client. */
   broadcast: (frame: HubServerMessage) => void;
-  /**
-   * Send an event of one of an agent's sessions to the hub WebSocket clients
-   * that follow it, as the hub's session relay does. The agent's socket calls
-   * this for every session frame it broadcasts.
-   */
   relaySession: (agent: MockAgent, frame: SessionEventFrame) => void;
-  /**
-   * Tell the hub WebSocket clients that follow sessions that they lost
-   * frames, as a connection that fell behind the relay is told. Returns how
-   * many clients were told.
-   */
   lagSessionRelay: () => number;
-  /**
-   * The push devices whose page is connected to the hub socket and reported
-   * `presence` active within the last minute: the ones the hub sends no push.
-   */
   presentPushDevices: () => string[];
-  /** What has happened across the team since the hub started: `GET /api/hub/events` and the `team_event` frames. */
   teamEvents: MockTeamEvents;
   /** What Home shows about each agent: `GET /api/hub/overview` and the `agent_overview` frames. */
   overview: MockOverview;
   setBusy: (agent: MockAgent, busy: boolean) => void;
-  /** Tell hub clients the agent's stop has begun. Its state changes when `transition` moves it on. */
   markStopping: (agent: MockAgent) => void;
-  /**
-   * Reload the hub config from the state's `hubConfigToml` the way the hub
-   * does after the file changes, and tell hub clients how it went.
-   */
   reloadHubConfig: () => void;
   addUnread: (agent: MockAgent) => void;
   clearUnread: (agent: MockAgent) => void;
-  /** Move an agent to a run state and tell hub clients. */
   transition: (agent: MockAgent, runState: AgentState) => void;
-  /** Take the hub WebSocket down or bring it back (see `HubSocket.setOnline`). A reset brings it back. */
   setHubSocketOnline: (online: boolean) => void;
-  /**
-   * Put the mock back as it started: the clock, the timers and delays, the
-   * hub's own state, and the agents the scenario creates. Every socket is
-   * closed, so pages reconnect to the new state. With `setup`, it starts with
-   * no agents instead, as a hub that hasn't been set up.
-   */
   reset: (options?: { setup?: boolean }) => void;
 }
 
-/** The remote agents an agent that has run has listed in its A2A client settings. */
 const SAMPLE_A2A_AGENTS_JSON =
   JSON.stringify(
     { agents: { "research-buddy": { url: "https://example.com/a2a/research-buddy" } } },
@@ -304,17 +185,10 @@ const SAMPLE_A2A_AGENTS_JSON =
     2,
   ) + "\n";
 
-/** The A2A client settings of an agent with no remote agents listed. */
 const EMPTY_A2A_AGENTS_JSON = '{"agents":{}}';
 
-/** Where an agent's MCP servers live in its workspace, which the MCP routes read and write. */
 export const MCP_JSON = "config/mcp.json";
 
-/**
- * Give an agent the data it has once it has run: a conversation, the sample
- * inbox and archive, and its A2A client settings. An agent that has never run
- * has none of it, and its file-only routes answer with empty data.
- */
 export function seedAgentData(state: MockState): void {
   const { clock } = state.env;
   state.hasConversation = true;
@@ -333,10 +207,6 @@ export function seedAgentData(state: MockState): void {
   state.scheduled = createScheduled(clock);
 }
 
-/**
- * A fresh state with the sample data of an agent that has run, or with none
- * of it when `hasRun` is false.
- */
 export function createState(
   agentName: string,
   hasRun = true,

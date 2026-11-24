@@ -1,6 +1,5 @@
 import { deflateSync } from "node:zlib";
 
-/** The CRC-32 of `bytes`, which a PNG chunk ends with. */
 function crc32(bytes: Buffer): number {
   let crc = 0xffffffff;
   for (const byte of bytes) {
@@ -19,12 +18,10 @@ function chunk(type: string, data: Buffer): Buffer {
   return Buffer.concat([head, body, tail]);
 }
 
-/** A PNG of one colour, `width` by `height` pixels, for a spec that needs a picture of a known size. */
 export function solidPng(width: number, height: number, [red, green, blue]: number[]): Buffer {
   const header = Buffer.alloc(13);
   header.writeUInt32BE(width, 0);
   header.writeUInt32BE(height, 4);
-  // 8 bits a channel, RGB, no interlacing.
   header.set([8, 2, 0, 0, 0], 8);
   const row = Buffer.alloc(1 + width * 3);
   for (let x = 0; x < width; x += 1) row.set([red ?? 0, green ?? 0, blue ?? 0], 1 + x * 3);

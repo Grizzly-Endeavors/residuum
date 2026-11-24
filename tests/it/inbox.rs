@@ -54,8 +54,6 @@ fn make_item_at(title: &str, hour: u32, read: bool) -> InboxItem {
     }
 }
 
-// ── Full lifecycle ───────────────────────────────────────────────────────
-
 #[tokio::test]
 async fn full_lifecycle_add_list_read_archive() {
     let dir = tempdir().unwrap();
@@ -63,41 +61,33 @@ async fn full_lifecycle_add_list_read_archive() {
     let archive_dir = dir.path().join("archive/inbox");
     tokio::fs::create_dir_all(&inbox_dir).await.unwrap();
 
-    // Add
     let filename = "20260225_lifecycle_test.json";
     save_item_for_tests(&inbox_dir, filename, &make_item("lifecycle test", false))
         .await
         .unwrap();
 
-    // List
     let items = list_items(&inbox_dir).await.unwrap();
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].0, "20260225_lifecycle_test");
     assert!(!items[0].1.read);
 
-    // Read (marks as read)
     let read_item = mark_read(&inbox_dir, "20260225_lifecycle_test")
         .await
         .unwrap();
     assert!(read_item.read);
 
-    // Verify persisted read state
     let reloaded = load_item(&inbox_dir.join(filename)).await.unwrap();
     assert!(reloaded.read);
 
-    // Archive
     archive_item(&inbox_dir, &archive_dir, "20260225_lifecycle_test")
         .await
         .unwrap();
     assert!(!inbox_dir.join(filename).exists(), "source should be gone");
     assert!(archive_dir.join(filename).exists(), "should be in archive");
 
-    // List should be empty now
     let remaining = list_items(&inbox_dir).await.unwrap();
     assert!(remaining.is_empty(), "inbox should be empty after archive");
 }
-
-// ── list_items ignores archive and non-JSON ──────────────────────────────
 
 #[tokio::test]
 async fn list_items_ignores_archive_and_non_json() {
@@ -105,12 +95,10 @@ async fn list_items_ignores_archive_and_non_json() {
     let inbox_dir = dir.path().join("inbox");
     tokio::fs::create_dir_all(&inbox_dir).await.unwrap();
 
-    // Valid inbox item
     save_item_for_tests(&inbox_dir, "valid.json", &make_item("valid", false))
         .await
         .unwrap();
 
-    // Non-JSON files
     tokio::fs::write(inbox_dir.join("photo.png"), b"fake image")
         .await
         .unwrap();
@@ -118,7 +106,6 @@ async fn list_items_ignores_archive_and_non_json() {
         .await
         .unwrap();
 
-    // Archive subdirectory with JSON
     let archive = inbox_dir.join("archive");
     tokio::fs::create_dir_all(&archive).await.unwrap();
     save_item_for_tests(&archive, "archived.json", &make_item("archived", false))
@@ -129,8 +116,6 @@ async fn list_items_ignores_archive_and_non_json() {
     assert_eq!(items.len(), 1, "should only include top-level .json files");
     assert_eq!(items[0].1.title, "valid");
 }
-
-// ── Attachments round-trip ───────────────────────────────────────────────
 
 #[tokio::test]
 async fn attachments_roundtrip_empty() {
@@ -167,8 +152,6 @@ async fn attachments_roundtrip_populated() {
     assert_eq!(loaded.attachments[1], PathBuf::from("inbox/doc.pdf"));
 }
 
-// ── Filename generation ──────────────────────────────────────────────────
-
 #[test]
 fn generate_filename_same_title_same_day() {
     let now = NaiveDate::from_ymd_opt(2026, 2, 25)
@@ -197,8 +180,6 @@ fn generate_filename_sanitization() {
     );
 }
 
-// ── Same title, same day collisions ──────────────────────────────────────
-
 #[tokio::test]
 async fn quick_add_same_title_same_day_keeps_both_items_and_both_stay_usable() {
     let dir = tempdir().unwrap();
@@ -220,8 +201,6 @@ async fn quick_add_same_title_same_day_keeps_both_items_and_both_stay_usable() {
     let items = list_items(&inbox_dir).await.unwrap();
     assert_eq!(items.len(), 2, "neither item should have been overwritten");
 
-    // Both ids keep working through the rest of the pipeline: mark-read,
-    // archive, and restore all still accept them.
     let first_id = first.trim_end_matches(".json");
     let second_id = second.trim_end_matches(".json");
     mark_read(&inbox_dir, first_id).await.unwrap();
@@ -232,8 +211,6 @@ async fn quick_add_same_title_same_day_keeps_both_items_and_both_stay_usable() {
     assert!(inbox_dir.join(&first).exists());
     assert!(archive_dir.join(&second).exists());
 }
-
-// ── Multiple items sorted correctly ──────────────────────────────────────
 
 #[tokio::test]
 async fn list_items_sorted_newest_first() {
@@ -257,8 +234,6 @@ async fn list_items_sorted_newest_first() {
     assert_eq!(items[2].1.title, "early", "oldest last");
 }
 
-// ── Archive errors on nonexistent ────────────────────────────────────────
-
 #[tokio::test]
 async fn archive_nonexistent_errors() {
     let dir = tempdir().unwrap();
@@ -275,14 +250,11 @@ async fn archive_nonexistent_errors() {
     );
 }
 
-// ── Companion inbox item structure ───────────────────────────────────────
-
 #[tokio::test]
 async fn companion_inbox_item_structure() {
     let dir = tempdir().unwrap();
     let inbox_dir = dir.path();
 
-    // Simulate what the Discord handler does
     let companion = inbox::InboxItem {
         title: "Discord attachment: photo.jpg".to_string(),
         body: "From: testuser\nSize: 4096 bytes\nContent-Type: image/jpeg".to_string(),

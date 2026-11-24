@@ -1,6 +1,3 @@
-//! The team overview against real agents: what a running agent does reaches
-//! its overview and the hub socket's `agent_overview` frames, and a stopped
-//! agent is answered from its files.
 #![expect(
     clippy::tests_outside_test_module,
     reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
@@ -17,7 +14,6 @@ use residuum::hub::overview::{AgentOverview, LastMessageRole};
 use residuum::memory::recent_messages::RecentMessage;
 use residuum::memory::types::Visibility;
 
-/// The next frame of `agent`'s overview that satisfies `wanted`.
 async fn overview_frame(
     frames: &mut broadcast::Receiver<AgentOverview>,
     agent: &str,
@@ -38,7 +34,6 @@ async fn overview_frame(
     .await
 }
 
-/// What `GET /api/hub/overview` says about `agent`.
 async fn overview_of(hub: &Fixture, agent: &str) -> Value {
     let (status, body) = hub.get("/api/hub/overview").await;
     assert_eq!(status, 200, "{body}");
@@ -50,14 +45,11 @@ async fn overview_of(hub: &Fixture, agent: &str) -> Value {
         .clone()
 }
 
-/// Let the model behind `agent` answer every request with `text`.
 async fn answer_with(hub: &Fixture, agent: &str, text: &str) {
     hub.mock(agent).reset().await;
     mount_reply(hub.mock(agent), text).await;
 }
 
-/// Save an item in `agent`'s user inbox and announce it, as its
-/// `user_inbox_add` tool does.
 async fn file_inbox_item(hub: &Fixture, agent: &str, id: &str) {
     hub.add_inbox_item(agent, id);
     super::agent_watch::agent_bus(hub, agent)
@@ -95,7 +87,6 @@ async fn a_turn_the_user_was_part_of_is_the_last_message_and_a_background_turn_i
         "Sunny today"
     );
 
-    // A teammate's message starts a background turn that still replies.
     answer_with(&hub, "scout", "pulse chatter").await;
     let mut turns = hub.host.agent_changes().subscribe();
     let link = TeamLink::new("guest", Arc::clone(&hub.services.team_router));
@@ -115,8 +106,6 @@ async fn a_turn_the_user_was_part_of_is_the_last_message_and_a_background_turn_i
         }
     }
 
-    // An inbox item is filed after the background turn's end, so the frame
-    // that shows it is built from a tracker that has seen the turn.
     hub.wait_for_file_watcher("scout").await;
     file_inbox_item(&hub, "scout", "pelican").await;
     let sentinel = overview_frame(

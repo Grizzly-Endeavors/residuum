@@ -1,10 +1,3 @@
-//! The usage record routes: one agent's model calls, read from its usage
-//! records and priced at the hub's current prices.
-//!
-//! The hub builds this router with each request's file router (see
-//! `AgentHost::file_router_for`), so the prices are the ones in the hub config
-//! as it is now, and a running agent's router never needs them.
-
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -18,23 +11,16 @@ use residuum_inference::{AttemptOutcome, PriceTable, UsageComponent, UsageRecord
 
 use super::agent_files::FileRouteError;
 
-/// The window read when a request names no `from`: the last seven days.
 const DEFAULT_WINDOW_DAYS: i64 = 7;
-/// How many records `/usage/records` returns when it isn't given a `limit`.
 const DEFAULT_LIMIT: usize = 500;
-/// The most records one `/usage/records` answer holds; a larger `limit` is
-/// clamped to this.
 const MAX_LIMIT: usize = 5000;
 
-/// What the usage routes read: one agent's usage records and the prices they
-/// are estimated at.
 #[derive(Clone)]
 pub(crate) struct UsageState {
     pub(crate) recorder: UsageRecorder,
     pub(crate) prices: Arc<PriceTable>,
 }
 
-/// The usage record routes, over one agent's state.
 pub(crate) fn agent_usage_api_router(state: UsageState) -> axum::Router {
     axum::Router::new()
         .route("/api/usage/records", get(api_usage_records))
@@ -42,7 +28,6 @@ pub(crate) fn agent_usage_api_router(state: UsageState) -> axum::Router {
         .with_state(state)
 }
 
-/// Query parameters for `GET /api/agents/{name}/usage/records`.
 #[derive(Debug, Deserialize)]
 pub(super) struct RecordsQuery {
     from: Option<String>,
@@ -51,7 +36,6 @@ pub(super) struct RecordsQuery {
     limit: Option<String>,
 }
 
-/// Query parameters for `GET /api/agents/{name}/usage/summary`.
 #[derive(Debug, Deserialize)]
 pub(super) struct SummaryQuery {
     from: Option<String>,
@@ -59,9 +43,6 @@ pub(super) struct SummaryQuery {
     group_by: Option<String>,
 }
 
-/// One usage record as the routes answer it: the record's fields, and what
-/// its usage is estimated to have cost, `null` when it has no usage or no
-/// price for its model.
 #[derive(Debug, Serialize)]
 pub(super) struct RecordView {
     #[serde(flatten)]
@@ -76,8 +57,6 @@ pub(super) struct RecordsResponse {
     records: Vec<RecordView>,
 }
 
-/// One group of a usage summary: token totals, cache hit rate and cost
-/// across the attempts that fall in it.
 #[derive(Debug, Serialize, PartialEq)]
 pub(super) struct UsageGroup {
     key: String,
@@ -86,20 +65,14 @@ pub(super) struct UsageGroup {
     uncached_input_tokens: u64,
     cache_read_tokens: u64,
     cache_write_tokens: u64,
-    /// The part of `cache_write_tokens` written with a 1-hour TTL.
     cache_write_long_tokens: u64,
     output_tokens: u64,
     reasoning_tokens: u64,
-    /// Cache reads as a share of all input tokens, `null` when the attempts
-    /// reported no input.
     cache_hit_rate: Option<f64>,
-    /// The cost of the priced attempts; `null` when none of them was priced.
     estimated_cost_usd: Option<f64>,
-    /// Attempts that reported usage but have no price for their model.
     unpriced_attempts: u64,
 }
 
-/// What a summary groups its calls by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum GroupBy {
     Component,
@@ -128,7 +101,6 @@ impl GroupBy {
     }
 }
 
-/// `GET /api/agents/{name}/usage/summary` answer.
 #[derive(Debug, Serialize)]
 pub(super) struct SummaryResponse {
     from: String,
@@ -137,7 +109,6 @@ pub(super) struct SummaryResponse {
     total: UsageGroup,
 }
 
-/// The summed counts of the calls in one group.
 #[derive(Debug, Default)]
 struct Tally {
     attempts: u64,
@@ -153,7 +124,6 @@ struct Tally {
 }
 
 impl Tally {
-    /// Count one call, priced at `cost` when it has a price.
     fn add(&mut self, record: &UsageRecord, cost: Option<f64>) {
         self.attempts += 1;
         if record.outcome == AttemptOutcome::Failed {
@@ -177,7 +147,6 @@ impl Tally {
     }
 
     fn into_group(self, key: String) -> UsageGroup {
-        // The cache writes already include the long-TTL part, so it is not added again.
         let input = self.uncached_input_tokens + self.cache_read_tokens + self.cache_write_tokens;
         UsageGroup {
             key,
@@ -196,12 +165,6 @@ impl Tally {
     }
 }
 
-/// `part` as a fraction of `whole`, to six decimal places, or `None` when
-/// `whole` is zero. `part` must not exceed `whole`.
-///
-/// The division is done in integers, so no count passes through a lossy
-/// float cast: the quotient in millionths is at most 1,000,000, which an
-/// `f64` holds exactly.
 fn share(part: u64, whole: u64) -> Option<f64> {
     if whole == 0 {
         return None;
@@ -212,17 +175,12 @@ fn share(part: u64, whole: u64) -> Option<f64> {
         .map(|millionths| f64::from(millionths) / 1_000_000.0)
 }
 
-/// The groups of a summary, by key, and the total of every call.
 #[derive(Debug, PartialEq)]
 pub(super) struct Summary {
     groups: Vec<UsageGroup>,
     total: UsageGroup,
 }
 
-/// Group `records` by `group_by` and total each group. `cost` gives a call's
-/// estimated cost, `None` when the call is unpriced.
-///
-/// Groups come out sorted by key. The total's key is `total`.
 pub(super) fn summarize(
     records: &[UsageRecord],
     group_by: GroupBy,
@@ -247,8 +205,6 @@ pub(super) fn summarize(
     }
 }
 
-/// The estimated cost of one record, `None` when it has no usage or its
-/// model has no price.
 fn estimated_cost_usd(prices: &PriceTable, record: &UsageRecord) -> Option<f64> {
     let usage = record.usage.as_ref()?;
     prices
@@ -256,15 +212,12 @@ fn estimated_cost_usd(prices: &PriceTable, record: &UsageRecord) -> Option<f64> 
         .map(|estimate| estimate.usd)
 }
 
-/// A time window, from `from` up to but not including `to`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Range {
     from: DateTime<Utc>,
     to: DateTime<Utc>,
 }
 
-/// The window a request names. `to` defaults to `now` and `from` to a week
-/// before `to`.
 fn resolve_range(
     from: Option<&str>,
     to: Option<&str>,
@@ -294,7 +247,6 @@ fn parse_instant(name: &str, text: &str) -> Result<DateTime<Utc>, String> {
         })
 }
 
-/// The `limit` a request names: at least one, at most [`MAX_LIMIT`].
 fn parse_limit(text: Option<&str>) -> Result<usize, String> {
     match text {
         None => Ok(DEFAULT_LIMIT),
@@ -318,8 +270,6 @@ fn parse_component(text: Option<&str>) -> Result<Option<&str>, String> {
     }
 }
 
-/// The records in `range`, or a `500` naming the failure. A read error is
-/// never an empty answer.
 async fn load_records(
     recorder: &UsageRecorder,
     range: Range,
@@ -336,8 +286,6 @@ async fn load_records(
         })
 }
 
-/// Sort newest first. Records written in the same instant keep the order
-/// they were written in, latest first.
 fn newest_first(records: &mut [UsageRecord]) {
     records.reverse();
     records.sort_by_key(|record| std::cmp::Reverse(record.recorded_at));
@@ -347,8 +295,6 @@ fn rfc3339(instant: DateTime<Utc>) -> String {
     instant.to_rfc3339_opts(SecondsFormat::Secs, true)
 }
 
-/// `GET /api/agents/{name}/usage/records` — the agent's usage records in the
-/// window, newest first, up to `limit`.
 pub(super) async fn api_usage_records(
     State(state): State<UsageState>,
     Query(query): Query<RecordsQuery>,
@@ -372,8 +318,6 @@ pub(super) async fn api_usage_records(
     Ok(Json(RecordsResponse { records }))
 }
 
-/// `GET /api/agents/{name}/usage/summary` — the agent's calls in the window,
-/// totalled by component, model or UTC day.
 pub(super) async fn api_usage_summary(
     State(state): State<UsageState>,
     Query(query): Query<SummaryQuery>,
@@ -813,7 +757,6 @@ mod tests {
 
     #[test]
     fn newest_first_keeps_same_instant_records_latest_written_first() {
-        // File order: oldest first, and the two records of 09:00 in the order written.
         let mut records = vec![
             record(
                 UsageComponent::Main,

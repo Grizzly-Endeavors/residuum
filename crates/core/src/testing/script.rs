@@ -11,11 +11,6 @@
 
 use std::path::Path;
 
-/// Write an executable script at `path` with `content`, creating its parent
-/// directory, ready to exec on return.
-///
-/// # Panics
-/// Panics when the script can't be written, failing the test that asked for it.
 #[expect(
     clippy::unwrap_used,
     reason = "test-support helper: a fake tool that can't be written fails the test that needs it"
@@ -28,8 +23,6 @@ pub fn write_executable(path: &Path, content: &str) {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).unwrap();
     }
-    // A child shell writes the script, so the only write descriptor to it
-    // lives in that child and is closed once it exits.
     let mut writer = std::process::Command::new("sh")
         .arg("-c")
         .arg(r#"cat > "$1" && chmod 755 "$1""#)

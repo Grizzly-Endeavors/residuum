@@ -1,15 +1,8 @@
-//! Core types for the pub/sub bus.
-
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-/// Well-known notification channel name for system-level notices and errors.
 pub const SYSTEM_CHANNEL: &str = "system";
-
-// ---------------------------------------------------------------------------
-// Newtype wrappers for TopicId parameters
-// ---------------------------------------------------------------------------
 
 macro_rules! newtype_string {
     ($name:ident, $doc:expr) => {
@@ -53,37 +46,18 @@ newtype_string!(
     "Stable address identifying an agent session (see `crate::session`)."
 );
 
-// ---------------------------------------------------------------------------
-// TopicId
-// ---------------------------------------------------------------------------
-
-/// Identifies a pub/sub topic on the bus.
-///
-/// Each topic is a routing domain that can carry multiple event types.
-/// Subscribers register interest in a specific `(TopicId, TypeId)` pair.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TopicId {
-    /// What is delivered to a named endpoint (a chat interface's turns, the web UI's posts).
     Endpoint(EndpointName),
-    /// The main agent's whole conversation, one ordered stream for every turn.
     MainConversation,
-    /// Background task orchestration (spawn requests and task results).
     Background,
-    /// Agent session lifecycle and session-tagged turn events.
     Sessions,
-    /// Inbound user messages for the main agent loop.
     UserMessage,
-    /// Push notifications for a named channel (including the well-known "system" channel).
     Notification(NotifyName),
-    /// The user inbox for incoming notifications.
     Inbox,
-    /// Items agents add to the user inbox.
     UserInbox,
-    /// Workbench artifact file changes.
     Workbench,
-    /// Debounced workspace file changes (the change feed).
     Workspace,
-    /// Explicit A2A task-outcome signals from `a2a_task_update`.
     A2aTaskSignal,
 }
 
@@ -105,29 +79,16 @@ impl fmt::Display for TopicId {
     }
 }
 
-// ---------------------------------------------------------------------------
-// BusError
-// ---------------------------------------------------------------------------
-
-/// Errors returned by bus operations.
 #[derive(Debug, thiserror::Error)]
 pub enum BusError {
-    /// The broker task has shut down.
     #[error("bus broker is shut down")]
     BrokerShutdown,
-    /// Received an event that could not be downcast to the expected type.
     #[error("type mismatch: expected {expected} on topic {topic}")]
     TypeMismatch {
-        /// Name of the expected type.
         expected: &'static str,
-        /// Topic where the mismatch occurred.
         topic: String,
     },
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

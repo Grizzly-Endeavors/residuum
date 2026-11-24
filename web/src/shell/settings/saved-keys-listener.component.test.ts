@@ -21,18 +21,12 @@ import ListenerSection from "./ListenerSection.svelte";
 import SecretsGroup from "./SecretsGroup.svelte";
 import { waitFor } from "../../test/wait";
 
-// The All agents sections that list what the hub keeps encrypted (Saved
-// keys), and the install's agent-to-agent listener with its caller keys. The
-// keys act at once through their own endpoints; the listener's switch, port
-// and address are staged.
-
 interface Call {
   method: string;
   url: string;
   body: unknown;
 }
 
-/** The hub's three key stores over a fake fetch, with every call it saw. */
 function keysApi(): {
   handler: FetchHandler;
   calls: Call[];
@@ -140,12 +134,10 @@ function keysApi(): {
 
 let api: ReturnType<typeof keysApi>;
 let server: FakeAgentConfig;
-/** Answers a request before the fake hub does, or lets it through with `undefined`. */
 let override: ((url: string, init: RequestInit | undefined) => Response | undefined) | null = null;
 let scope: AllScopeModel;
 let count = 0;
 
-/** The hub's config, and the key endpoints answering first. */
 async function open(hub = 'timezone = "UTC"\n'): Promise<void> {
   api = keysApi();
   override = null;
@@ -167,14 +159,12 @@ afterEach(() => {
 
 const messages = (): string[] => [...toast.toasts.values()].map((shown) => shown.message);
 
-/** Press the action of the toast that carries one, as its button does. */
 function pressToastAction(): void {
   const [id] = [...toast.toasts.entries()].find(([, shown]) => shown.action !== undefined) ?? [];
   if (id === undefined) throw new Error("no toast has an action");
   toast.runAction(id);
 }
 
-/** Wait for every list on screen to finish loading. */
 async function loaded(): Promise<void> {
   await settle();
   await waitFor(() => {

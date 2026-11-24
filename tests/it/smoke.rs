@@ -23,7 +23,6 @@ fn binary_starts_without_panic() {
         .spawn()
         .expect("failed to spawn binary");
 
-    // Let the process run long enough to initialize and potentially panic
     std::thread::sleep(Duration::from_secs(2));
 
     child.kill().expect("failed to kill child process");

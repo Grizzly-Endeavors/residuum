@@ -2,20 +2,13 @@
   import { currentMoment } from "../lib/current-day.svelte";
   import { dayLabel } from "../lib/day-label";
 
-  // A day's start, or above a loaded episode the day it ends on and, quietly,
-  // its id. Days are named from today ("Today", "Yesterday", "Oct 6") and
-  // renamed as the days pass.
-
   let {
     label,
     date,
     episode,
   }: {
-    /** The text of a divider that stands for no day, such as "New run". */
     label: string;
-    /** The day the divider stands for, when it does. */
     date?: string;
-    /** The episode the divider introduces. */
     episode?: string;
   } = $props();
 
@@ -48,7 +41,6 @@
     }
   }
 
-  /* An id, so in the code face and set a little apart from the date. */
   .feed-divider-episode {
     margin-left: calc(-1 * var(--space-4));
     font-family: var(--font-code);

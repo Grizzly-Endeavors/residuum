@@ -1,20 +1,3 @@
-//! Discord interface adapter.
-//!
-//! Implements the serenity `EventHandler` trait to receive messages and
-//! publish them onto the bus for agent processing.
-//!
-//! - Direct messages always reach the agent; in server channels only
-//!   messages that @mention the bot do.
-//! - The owner is whoever first DMs the bot; others are refused unless
-//!   `[discord] respond_to_others` is on.
-//! - Replies go back to the channel a message came from; proactive output
-//!   goes to the owner's DM unless `send_message` names a conversation.
-//!   Notices and errors only ever go to the owner.
-//!
-//! Supports:
-//! - Slash commands from the shared command registry (owner only)
-//! - Attachment downloading to the workspace inbox
-
 mod channels;
 mod handler;
 pub(crate) mod subscriber;
@@ -36,32 +19,21 @@ use residuum_config::DiscordConfig;
 
 use self::handler::DiscordHandler;
 
-/// Endpoint and interface name for Discord on the bus.
 const ENDPOINT: &str = "discord";
 
-/// State shared by the event handler and the outbound subscriber.
 pub(super) struct DiscordState {
     respond_to_others: bool,
-    /// Whether intermediate (pre-tool-call) text is posted to the chat.
     deliver_intermediate: bool,
-    /// The owner and every conversation the bot has seen, keyed by channel ID.
     store: ChatStateStore<ChatRef>,
-    /// Channel each in-flight turn should answer in, by correlation ID.
     reply_targets: ReplyTargets<ChannelId>,
-    /// The bot's own user, learned when the gateway connection is ready.
     bot_id: OnceLock<UserId>,
-    /// Server channel labels already looked up, e.g. `"#builds (Eng Team)"`.
     channel_labels: Mutex<HashMap<ChannelId, String>>,
-    /// Unmentioned server messages held for the next @mention, by channel.
     context_buffer: ContextBuffer,
-    /// For notifying main when a conversation session's output can't be
-    /// delivered (see `subscriber::deliver_session_response`).
     publisher: Publisher,
 }
 
 impl DiscordState {
     fn labels(&self) -> MutexGuard<'_, HashMap<ChannelId, String>> {
-        // Plain map of owned strings; a panic mid-insert cannot corrupt it.
         self.channel_labels
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -75,8 +47,6 @@ impl DiscordState {
         self.labels().insert(channel_id, label);
     }
 
-    /// Where output for `correlation_id` goes: the channel that started the
-    /// turn, or the owner's DM for proactive output.
     async fn target_for(&self, correlation_id: &str) -> Option<ChannelId> {
         match self.reply_targets.get(correlation_id) {
             Some(channel) => Some(channel),
@@ -99,7 +69,6 @@ impl DiscordState {
     }
 }
 
-/// Discord interface adapter that routes DMs and server mentions to the agent.
 pub struct DiscordInterface {
     cfg: DiscordConfig,
     senders: AdapterSenders,
@@ -109,7 +78,6 @@ pub struct DiscordInterface {
 }
 
 impl DiscordInterface {
-    /// Create a new Discord interface adapter.
     #[must_use]
     pub fn new(
         cfg: DiscordConfig,
@@ -127,21 +95,6 @@ impl DiscordInterface {
         }
     }
 
-    /// Start the Discord gateway connection.
-    ///
-    /// This blocks until the connection is closed, a shutdown signal is
-    /// received, or an error occurs. A corrupt saved Discord state file is
-    /// moved aside and started fresh rather than treated as an error (see
-    /// `ChatStateStore::load`). Building the client retries with backoff
-    /// on a transient failure (network not up yet, a momentary API error)
-    /// instead of failing immediately — see
-    /// `boot_retry`.
-    ///
-    /// # Errors
-    /// Returns an error if the saved Discord state cannot be read (a
-    /// permissions problem, not corrupt content), the bus subscription
-    /// fails, the serenity client still can't be built after retrying, or
-    /// the connection fails.
     pub async fn start(self) -> anyhow::Result<()> {
         let intents = GatewayIntents::DIRECT_MESSAGES
             | GatewayIntents::GUILDS
@@ -181,10 +134,6 @@ impl DiscordInterface {
             tz: self.tz,
         };
 
-        // Building the client talks to the Discord API to validate the
-        // token. A network blip or a momentary API error here used to
-        // leave the adapter dead until a config reload; retry with backoff
-        // instead, and let a shutdown signal cut retries short.
         let mut connect_shutdown_rx = self.shutdown_rx.clone();
         let mut client = tokio::select! {
             result = crate::boot_retry::retry_connect(&self.senders.publisher, "Discord", || {
@@ -216,7 +165,6 @@ impl DiscordInterface {
             state,
         ));
 
-        // Monitor shutdown signal and cleanly disconnect shards
         let shard_manager = Arc::clone(&client.shard_manager);
         let mut shutdown_rx = self.shutdown_rx;
         residuum_core::util::spawn_in_span(async move {

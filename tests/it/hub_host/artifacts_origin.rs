@@ -1,5 +1,3 @@
-//! The artifacts listener in front of a real hub: API calls and sockets
-//! through its port, and what a socket opened there does not count as.
 #![expect(
     clippy::tests_outside_test_module,
     reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
@@ -21,11 +19,8 @@ use residuum_net::workbench::HubApi;
 type PageSocket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
-/// The web app's port the artifacts listener under test is told about.
 const GATEWAY_PORT: u16 = 7700;
 
-/// Serve the artifacts listener over a hub router built on `hub`, and return
-/// its address.
 async fn artifacts_port(hub: &Fixture) -> String {
     let (reload_tx, _reload_rx) = tokio::sync::mpsc::unbounded_channel();
     let app = build_app(
@@ -72,7 +67,6 @@ async fn send_frame(socket: &mut PageSocket, frame: &Value) {
         .unwrap();
 }
 
-/// Read frames until one of type `kind` arrives, and return it.
 async fn next_frame_of(socket: &mut PageSocket, kind: &str) -> Value {
     wait::guarded(format_args!("a {kind} frame"), async {
         while let Some(frame) = socket.next().await {
@@ -89,7 +83,6 @@ async fn next_frame_of(socket: &mut PageSocket, kind: &str) -> Value {
     .await
 }
 
-/// The next main turn the feed reports as ended.
 async fn next_turn(changes: &mut AgentChangeReceiver) -> MainTurnEnded {
     wait::guarded("a turn to end", async {
         loop {
@@ -110,7 +103,6 @@ async fn the_api_and_the_hub_socket_answer_on_the_artifacts_port() {
     let http = reqwest::Client::new();
     let url = |path: &str| format!("http://{artifacts}{path}");
 
-    // The hub's routes and one agent's, resolved per request.
     let agents = http.get(url("/api/hub/agents")).send().await.unwrap();
     assert_eq!(agents.status().as_u16(), 200);
     let listing: Value = agents.json().await.unwrap();
@@ -125,12 +117,10 @@ async fn the_api_and_the_hub_socket_answer_on_the_artifacts_port() {
         .unwrap();
     assert_eq!(status.status().as_u16(), 200);
 
-    // The hub socket.
     let mut socket = connect(&artifacts, "/api/hub/ws").await;
     let boot = next_frame_of(&mut socket, "hub_boot").await;
     assert!(boot.get("boot_id").is_some(), "{boot}");
 
-    // A route artifacts can't use is refused and does nothing.
     let refused = http.post(url("/api/hub/stop-all")).send().await.unwrap();
     assert_eq!(refused.status().as_u16(), 403);
     let refusal: Value = refused.json().await.unwrap();
@@ -144,7 +134,6 @@ async fn only_the_api_is_served_from_the_hub_router_on_the_artifacts_port() {
     let artifacts = artifacts_port(&hub).await;
     let http = reqwest::Client::new();
 
-    // An unknown API path is the hub's 404, never the embedded web app.
     let missing = http
         .get(format!("http://{artifacts}/api/no-such-route"))
         .send()
@@ -153,7 +142,6 @@ async fn only_the_api_is_served_from_the_hub_router_on_the_artifacts_port() {
     assert_eq!(missing.status().as_u16(), 404);
     assert!(!missing.text().await.unwrap().contains("<html"));
 
-    // The root is the listener's own page, not the web UI.
     let root = http
         .get(format!("http://{artifacts}/"))
         .send()
@@ -197,8 +185,6 @@ async fn another_sites_requests_are_refused_on_the_artifacts_port() {
 #[tokio::test]
 async fn an_agent_socket_through_the_artifacts_port_does_not_reset_unread() {
     let hub = Fixture::new(&["scout"], "").await;
-    // The model holds its reply until the client has left, so the reply is
-    // published while no client is connected.
     hub.gate("scout").close();
     hub.host.start("scout").await.unwrap();
     let artifacts = artifacts_port(&hub).await;
@@ -223,7 +209,6 @@ async fn an_agent_socket_through_the_artifacts_port_does_not_reset_unread() {
     })
     .await;
 
-    // The pong proves the connection is past the point where a client is counted.
     let mut page = connect(&artifacts, "/api/agents/scout/ws").await;
     send_frame(&mut page, &json!({ "type": "ping" })).await;
     next_frame_of(&mut page, "pong").await;
@@ -233,7 +218,6 @@ async fn an_agent_socket_through_the_artifacts_port_does_not_reset_unread() {
         "a workbench page's socket isn't the user reading the chat"
     );
 
-    // A client of the web UI still does.
     let _ui = connect(&hub.addr, "/api/agents/scout/ws").await;
     wait::until("the unread count to reset", || async {
         (hub.activity_of("scout").unread == 0).then_some(())
@@ -248,7 +232,6 @@ async fn an_agent_socket_through_the_artifacts_port_is_not_a_connected_client() 
     let artifacts = artifacts_port(&hub).await;
     let mut changes = hub.host.agent_changes().subscribe();
 
-    // A turn with only a workbench page's socket open has no client.
     let mut page = connect(&artifacts, "/api/agents/scout/ws").await;
     send_frame(
         &mut page,
@@ -259,7 +242,6 @@ async fn an_agent_socket_through_the_artifacts_port_is_not_a_connected_client() 
     let page_turn = next_turn(&mut changes).await;
     assert!(!page_turn.client_connected);
 
-    // With the web UI's socket open too, it does.
     let mut ui = connect(&hub.addr, "/api/agents/scout/ws").await;
     send_frame(
         &mut ui,
@@ -271,7 +253,6 @@ async fn an_agent_socket_through_the_artifacts_port_is_not_a_connected_client() 
     assert!(ui_turn.client_connected);
 }
 
-/// Write a user-inbox item with one attached file into the agent's workspace.
 fn add_inbox_item_with_attachment(hub: &Fixture, name: &str, id: &str, file: &str, content: &str) {
     let inbox = hub.root.path().join(name).join("inbox/user");
     let attachments = inbox.join("attachments").join(id);
@@ -302,7 +283,6 @@ async fn hub_routes_with_path_parameters_answer_on_the_artifacts_port() {
     let http = reqwest::Client::new();
     let url = |path: &str| format!("http://{artifacts}{path}");
 
-    // One parameter holding a percent-encoded ref.
     let read = http
         .post(url(
             "/api/hub/mail/threads/scout%2Fuser%2F20260930_pelican/read",
@@ -355,7 +335,6 @@ async fn hub_routes_with_path_parameters_answer_on_the_artifacts_port() {
         .unwrap();
     assert_eq!(restored.status().as_u16(), 204);
 
-    // One parameter: the agent, on routes that change its state.
     for (action, state) in [
         ("stop", AgentState::Stopped),
         ("start", AgentState::Running),
@@ -385,7 +364,6 @@ async fn agent_routes_with_path_parameters_answer_on_the_artifacts_port() {
     let http = reqwest::Client::new();
     let url = |path: &str| format!("http://{artifacts}{path}");
 
-    // The item and the attachment's position.
     let attachment = http
         .get(url("/api/agents/scout/inbox/20260930_heron/attachments/0"))
         .send()
@@ -394,9 +372,6 @@ async fn agent_routes_with_path_parameters_answer_on_the_artifacts_port() {
     assert_eq!(attachment.status().as_u16(), 200);
     assert_eq!(attachment.text().await.unwrap(), "hello");
 
-    // The session's address, which is how an artifact's `session.send()` and
-    // `session.stop()` reach it. No session lives at the address, so each
-    // route answers with its own reason for refusing.
     for (action, code) in [("messages", "unknown_address"), ("stop", "not_live")] {
         let response = http
             .post(url(&format!(
@@ -411,7 +386,6 @@ async fn agent_routes_with_path_parameters_answer_on_the_artifacts_port() {
         assert_eq!(str_at(&body, "code"), code, "{action}: {body}");
     }
 
-    // A socket still upgrades on the same listener afterwards.
     let mut hub_socket = connect(&artifacts, "/api/hub/ws").await;
     next_frame_of(&mut hub_socket, "hub_boot").await;
     let mut agent_socket = connect(&artifacts, "/api/agents/scout/ws").await;

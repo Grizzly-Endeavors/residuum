@@ -1,5 +1,3 @@
-//! Agent abilities, skills, tools, and retry settings.
-
 use std::path::{Path, PathBuf};
 
 use crate::RetryConfig;
@@ -13,10 +11,6 @@ use super::super::types::{
     AgentAbilitiesConfig, AutoModeConfig, SkillDir, SkillsConfig, ToolsConfig,
 };
 
-/// Resolve skills configuration from TOML section.
-///
-/// Layers in priority order: the agent's own `skills/`, the shared
-/// `team/skills/`, then the directories from `[skills].dirs` (expanded).
 pub(super) fn resolve_skills_config(
     section: Option<&SkillsConfigFile>,
     workspace_dir: &Path,
@@ -37,12 +31,6 @@ pub(super) fn resolve_skills_config(
     SkillsConfig { dirs }
 }
 
-/// Resolve runtime tool PATH configuration from TOML section.
-///
-/// Directories are ordered highest precedence first: configured `[tools].path`
-/// entries (expanded, in listed order) followed by the default persistent
-/// `<hub_dir>/bin` (`~/.residuum/hub/bin`). All are prepended to the inherited
-/// `PATH` of spawned children at spawn time.
 pub(super) fn resolve_tools_config(
     section: Option<&ToolsConfigFile>,
     hub_dir: &Path,
@@ -56,13 +44,11 @@ pub(super) fn resolve_tools_config(
         }
     }
 
-    // Default persistent dir, lowest precedence of the tool dirs.
     dirs.push(super::super::HubPaths::new(hub_dir).bin_dir());
 
     ToolsConfig { dirs }
 }
 
-/// Resolve retry configuration from TOML section with defaults.
 pub(super) fn resolve_retry_config(file: Option<&AgentConfigFile>) -> RetryConfig {
     let r = file.and_then(|f| f.retry.as_ref());
     let mut cfg = RetryConfig::default();
@@ -81,7 +67,6 @@ pub(super) fn resolve_retry_config(file: Option<&AgentConfigFile>) -> RetryConfi
     cfg
 }
 
-/// Resolve the agent file's `[auto_mode]` section.
 pub(super) fn resolve_auto_mode_config(
     file: Option<&AgentConfigFile>,
     notices: &mut Vec<String>,
@@ -89,8 +74,6 @@ pub(super) fn resolve_auto_mode_config(
     resolve_auto_mode_section(file.and_then(|f| f.auto_mode.as_ref()), notices)
 }
 
-/// Resolve `[auto_mode]`. Blank rules are dropped; an out-of-range
-/// threshold falls back to the default with a notice.
 fn resolve_auto_mode_section(
     section: Option<&AutoModeConfigFile>,
     notices: &mut Vec<String>,
@@ -130,12 +113,6 @@ fn resolve_auto_mode_section(
     cfg
 }
 
-/// Resolve agent ability gates and turn limits from the TOML section.
-///
-/// # Errors
-/// Returns `FatalError::Config` if `max_tool_iterations` is set to `0` — a
-/// turn that stops before ever calling a tool isn't a usable limit, so this
-/// is rejected rather than silently accepted.
 pub(super) fn resolve_agent_config(
     section: Option<&AgentAbilitiesConfigFile>,
 ) -> Result<AgentAbilitiesConfig, FatalError> {

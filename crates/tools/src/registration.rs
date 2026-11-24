@@ -1,6 +1,3 @@
-//! Registering the tools into a [`ToolRegistry`]: one function per group of
-//! tools, which the main agent's and each session's registry builders call.
-
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -25,31 +22,14 @@ use super::{
     read, send_message, skills, submit_feedback, web_fetch, workspace_checkpoints, write,
 };
 
-/// Shared handles some tools take at registration, beyond their own
-/// arguments. Each is optional, so a registry built without one still works:
-/// the tools that would use it do without.
 #[derive(Default)]
 pub struct RegistryInjections {
-    /// Effective `PATH` handle injected into the `exec` tool.
     pub tools_path: Option<SharedToolsPath>,
-    /// Checkpoint engine injected into `exec` (for `store_output_as`).
-    /// `None` means minting a key through `exec` isn't checkpointed first.
     pub checkpoints: Option<Arc<residuum_checkpoints::CheckpointEngine>>,
-    /// Bus publisher injected into `exec`, `agent_key_delete` and
-    /// `user_inbox_add`, so they can surface a notice when they overwrite or
-    /// delete a key the user created, and announce each user inbox item they
-    /// save. `None` means those go unpublished (the action still happens).
     pub publisher: Option<Publisher>,
-    /// Every agent's mailbox, for the mail-aware inbox tools (`inbox_read`,
-    /// `user_inbox_add`, `user_inbox_list`). `None` means those tools reach
-    /// only this agent's own inboxes. `inbox_list` reads this agent's own
-    /// inbox either way.
     pub mailboxes: Option<Arc<dyn MailboxDirectory>>,
 }
 
-/// Attach the store the turn loop saves oversized tool results to: this
-/// agent's directory under `hub/tool-results/`, outside its workspace so no
-/// checkpoint repository tracks it.
 pub fn attach_result_store(tools: &mut ToolRegistry, hub_dir: &Path, layout: &WorkspaceLayout) {
     tools.set_result_store(ToolResultStore::new(
         residuum_config::HubPaths::new(hub_dir).tool_results_dir(),
@@ -57,11 +37,6 @@ pub fn attach_result_store(tools: &mut ToolRegistry, hub_dir: &Path, layout: &Wo
     ));
 }
 
-/// Re-register every tool that captured the user's timezone at
-/// construction (`schedule_action`, `list_actions`, and the inbox tools
-/// `inbox_list`, `inbox_read`, `user_inbox_add` and `user_inbox_list`) with a
-/// new one, so a timezone edit reaches them without a restart. Each replaces
-/// the registered tool in place, so the definitions keep their order.
 pub fn reload_timezone_tools(
     tools: &mut ToolRegistry,
     injections: &RegistryInjections,
@@ -81,13 +56,6 @@ pub fn reload_timezone_tools(
     register_mail_inbox_tools(tools, injections, layout, tz);
 }
 
-/// Bring `ollama_web_search` in line with the standalone web search backend
-/// after a config reload: registered when `backend` names `"ollama"` (with
-/// the current API key and base URL), removed otherwise.
-///
-/// Mirrors `main_tools::init_tool_registry`'s startup-time gating. A reload
-/// that leaves the tool configured replaces it in place, so the definitions
-/// stay byte-identical.
 pub fn reload_ollama_web_search_tool(
     tools: &mut ToolRegistry,
     backend: Option<&residuum_config::StandaloneBackendConfig>,
@@ -109,11 +77,6 @@ pub fn reload_ollama_web_search_tool(
     }
 }
 
-/// Register the inbox tools that read items in `tz` (`inbox_list`,
-/// `inbox_read`, `user_inbox_add`, `user_inbox_list`) for the agent whose
-/// workspace is `layout`, reaching every agent through the injections'
-/// mailboxes when there are some. `user_inbox_add` announces each item it
-/// saves on the injections' publisher when there is one.
 fn register_mail_inbox_tools(
     tools: &mut ToolRegistry,
     injections: &RegistryInjections,
@@ -132,22 +95,6 @@ fn register_mail_inbox_tools(
     tools.register(Box::new(add));
 }
 
-/// Register the default set of tools (read, write, edit, exec).
-///
-/// `diagnostics_paths` lets `write_file`/`edit_file` recognize the
-/// strictly-parsed files this instance validates (`config.toml`,
-/// `providers.toml`, `config/channels.toml`, `config/mcp.json`,
-/// `config/a2a.json`, `HEARTBEAT.yml`, skill `SKILL.md`) and append
-/// diagnostics to the tool result after a write. `config_watch` is
-/// `Some` only for main's own registry — see `ConfigWriteWatch`'s doc
-/// comment for why a session's registry never gets one — and lets
-/// `write_file`/`edit_file` recognize a write to
-/// `config.toml`/`providers.toml`/`mcp.json`/`channels.toml`/`a2a.json`/
-/// `HEARTBEAT.yml` so the reload it triggers can report back to the
-/// agent.
-///
-/// `exec` takes the registry's agent key store, so attach it with
-/// [`ToolRegistry::set_agent_keys`] first.
 pub fn register_defaults(
     tools: &mut ToolRegistry,
     injections: &RegistryInjections,
@@ -156,10 +103,6 @@ pub fn register_defaults(
     diagnostics_paths: residuum_a2a::diagnostics_dispatch::DiagnosticsPaths,
     config_watch: Option<super::config_reload_tracker::ConfigWriteWatch>,
 ) {
-    // Every file/shell tool resolves a relative path (or spawns a child
-    // process) against this workspace root rather than the process's
-    // current directory, which is shared across every agent hosted in
-    // the same process.
     let workspace_root = diagnostics_paths.workspace_dir.clone();
     tools.register(Box::new(
         read::ReadTool::new(Arc::clone(&tracker), workspace_root.clone())
@@ -189,10 +132,6 @@ pub fn register_defaults(
     tools.register(Box::new(exec_tool));
 }
 
-/// Register agent key tools (`agent_keys_list`, `agent_key_delete`).
-///
-/// `checkpoints` is checkpointed before a delete — including one on a
-/// key the user created — so it's always undoable.
 pub fn register_agent_key_tools(
     tools: &mut ToolRegistry,
     injections: &RegistryInjections,
@@ -209,9 +148,6 @@ pub fn register_agent_key_tools(
     tools.register(Box::new(delete_tool));
 }
 
-/// Register the memory tools: `memory_search` over a shared hybrid
-/// searcher, and `memory_get` for episode and session-run transcript
-/// retrieval.
 pub fn register_memory_tools(
     tools: &mut ToolRegistry,
     searcher: Arc<HybridSearcher>,
@@ -225,10 +161,6 @@ pub fn register_memory_tools(
     )));
 }
 
-/// Register skill management tools (`skill_activate`, `skill_deactivate`).
-///
-/// `skill_activate` publishes the notices its rescan produces on the
-/// injections' publisher when there is one.
 pub fn register_skill_tools(
     tools: &mut ToolRegistry,
     injections: &RegistryInjections,
@@ -242,13 +174,6 @@ pub fn register_skill_tools(
     tools.register(Box::new(skills::SkillDeactivateTool::new(state)));
 }
 
-/// Register the inbox tools of the agent whose workspace is `layout`
-/// (`inbox_list`, `inbox_read`, `inbox_archive`, `inbox_restore`,
-/// `user_inbox_add`, `user_inbox_list`).
-///
-/// `inbox_read`, `user_inbox_add` and `user_inbox_list` reach every agent
-/// through the injections' mailboxes, and `user_inbox_add` announces the
-/// items it saves on the injections' publisher.
 pub fn register_inbox_tools(
     tools: &mut ToolRegistry,
     injections: &RegistryInjections,
@@ -268,8 +193,6 @@ pub fn register_inbox_tools(
     register_mail_inbox_tools(tools, injections, layout, tz);
 }
 
-/// Register `list_endpoints` and `list_conversations` for discovering
-/// where messages can go.
 pub fn register_list_endpoints_tool(tools: &mut ToolRegistry, registry: EndpointRegistry) {
     tools.register(Box::new(
         super::list_conversations::ListConversationsTool::new(registry.clone()),
@@ -279,7 +202,6 @@ pub fn register_list_endpoints_tool(tools: &mut ToolRegistry, registry: Endpoint
     )));
 }
 
-/// Register the `switch_endpoint` tool for changing the active output endpoint.
 pub fn register_switch_endpoint_tool(
     tools: &mut ToolRegistry,
     registry: EndpointRegistry,
@@ -293,11 +215,6 @@ pub fn register_switch_endpoint_tool(
     )));
 }
 
-/// Register the `send_message` tool for proactive message delivery.
-///
-/// `restrict_owner_targets` is `true` for a session's registry: a session
-/// refuses the owner's DM on every chat interface and the web UI (only
-/// the main agent talks to the owner). Pass `false` for the main agent.
 pub fn register_send_message_tool(
     tools: &mut ToolRegistry,
     registry: EndpointRegistry,
@@ -311,10 +228,6 @@ pub fn register_send_message_tool(
     )));
 }
 
-/// Register session management tools (`stop_agent`, `list_agents`),
-/// identifying this registry's owner as `self_address` for the remote
-/// A2A task lookups both tools do (a caller's own open tasks). `team`
-/// is the roster `list_agents` shows.
 pub fn register_background_tools(
     tools: &mut ToolRegistry,
     registry: Arc<SessionRegistry>,
@@ -338,8 +251,6 @@ pub fn register_background_tools(
     )));
 }
 
-/// Register the `message_agent` tool, identifying this registry's owner
-/// as `self_address` (category `self_category`) to whoever it messages.
 pub fn register_message_agent_tool(
     tools: &mut ToolRegistry,
     self_address: SessionAddress,
@@ -359,8 +270,6 @@ pub fn register_message_agent_tool(
     )));
 }
 
-/// Register `agent_create` and `agent_delete`, acting as the agent
-/// `lifecycle` names.
 pub fn register_agent_lifecycle_tools(
     tools: &mut ToolRegistry,
     lifecycle: super::LifecycleAccess,
@@ -375,15 +284,10 @@ pub fn register_agent_lifecycle_tools(
     )));
 }
 
-/// Register the `subagent_spawn` tool for on-demand sub-agent delegation
-/// (see [`background::SpawnToolDeps`]).
 pub(crate) fn register_spawn_tool(tools: &mut ToolRegistry, deps: background::SpawnToolDeps) {
     tools.register(Box::new(background::SubagentSpawnTool::new(deps)));
 }
 
-/// Register `a2a_task_update` when `conversation_target` names the
-/// `a2a` endpoint — session-only (see `SESSION_ONLY_TOOLS` in
-/// `main_tools`).
 pub(crate) fn register_a2a_task_update_tool(
     tools: &mut ToolRegistry,
     conversation_target: Option<&ConversationTarget>,
@@ -402,9 +306,6 @@ pub(crate) fn register_a2a_task_update_tool(
     }
 }
 
-/// Register `ollama_web_search`, gated the same way as main's (see
-/// `main_tools::init_tool_registry`): only when
-/// `backend` names the `"ollama"` standalone web search backend.
 pub(crate) fn register_ollama_web_search_tool_if_configured(
     tools: &mut ToolRegistry,
     backend: Option<&residuum_config::StandaloneBackendConfig>,
@@ -421,13 +322,10 @@ pub(crate) fn register_ollama_web_search_tool_if_configured(
     tracing::info!("registered ollama_web_search tool for session");
 }
 
-/// Register the `web_fetch` tool for fetching web page content.
 pub fn register_web_fetch_tool(tools: &mut ToolRegistry) {
     tools.register(Box::new(web_fetch::WebFetchTool::new()));
 }
 
-/// Register the `workspace_history` and `workspace_restore` tools, covering
-/// the workspace and team checkpoint repositories.
 pub fn register_workspace_checkpoint_tools(
     tools: &mut ToolRegistry,
     checkpoints: Arc<residuum_checkpoints::CheckpointEngine>,
@@ -442,12 +340,6 @@ pub fn register_workspace_checkpoint_tools(
     )));
 }
 
-/// Register the `file_bug_report` and `submit_feedback` tools.
-///
-/// Both go through the shared `TracingService`. The bug-report tool
-/// also captures a snapshot of the runtime client context so each
-/// submission carries version/model/OS metadata, plus the live session
-/// registry so `active_subagents` reflects what's running right now.
 pub fn register_feedback_tools(
     tools: &mut ToolRegistry,
     build: residuum_core::build_info::BuildInfo,
@@ -465,7 +357,6 @@ pub fn register_feedback_tools(
     )));
 }
 
-/// Register the `ollama_web_search` tool for Ollama Cloud web search.
 pub fn register_ollama_web_search_tool(
     tools: &mut ToolRegistry,
     api_key: String,
@@ -476,9 +367,6 @@ pub fn register_ollama_web_search_tool(
     )));
 }
 
-/// Register action scheduling tools (`schedule_action`, `list_actions`,
-/// `cancel_action`). `models` is the live catalog `schedule_action` checks
-/// an explicit model against.
 pub fn register_action_tools(
     tools: &mut ToolRegistry,
     store: Arc<Mutex<ActionStore>>,
@@ -548,8 +436,6 @@ mod tests {
         }
     }
 
-    /// Adds an item through the registry's `user_inbox_add` and returns
-    /// whether the registry's bus announced it.
     async fn adds_and_announces(registry: &ToolRegistry, bus: &residuum_bus::BusHandle) -> bool {
         let mut added = bus
             .subscribe::<_, residuum_bus::UserInboxAddedEvent>(residuum_bus::topics::UserInbox)
@@ -580,7 +466,6 @@ mod tests {
         register_inbox_tools(&mut registry, &injections, &layout, chrono_tz::UTC);
         assert!(adds_and_announces(&registry, &bus).await, "at registration");
 
-        // A timezone change re-registers the tool, which must keep announcing.
         reload_timezone_tools(
             &mut registry,
             &injections,
@@ -595,8 +480,6 @@ mod tests {
         assert!(adds_and_announces(&registry, &bus).await, "after a reload");
     }
 
-    /// Registers the default tools with no injections, the way a session's
-    /// registry does, with `workspace_dir` as the directory `exec` starts in.
     fn register_defaults_in(registry: &mut ToolRegistry, workspace_dir: PathBuf) {
         register_defaults(
             registry,
@@ -722,8 +605,6 @@ mod tests {
         );
     }
 
-    /// The definitions as the model receives them: the bytes a prompt-cache
-    /// hit depends on.
     fn definitions_json(registry: &ToolRegistry) -> String {
         serde_json::to_string(&registry.definitions()).unwrap()
     }
@@ -815,8 +696,6 @@ mod tests {
         let mut registry = ToolRegistry::new();
         register_defaults_in(&mut registry, dir.path().to_path_buf());
         reload_ollama_web_search_tool(&mut registry, Some(&ollama_backend()));
-        // A tool registered after ollama_web_search: a reload that re-appended
-        // it would move it behind this one.
         register_web_fetch_tool(&mut registry);
         let before = definitions_json(&registry);
         let names_before = registry.tool_names();
@@ -855,7 +734,6 @@ mod tests {
             )
             .await
             .unwrap();
-        // exec received the registry's key store, so the child saw the value.
         assert!(!result.is_error, "{}", result.output);
         assert!(
             result
@@ -864,8 +742,6 @@ mod tests {
             "{}",
             result.output
         );
-        // The registry's redactor, which the turn loop applies to tool output,
-        // covers the value exec exposed.
         let redacted = registry
             .redactor()
             .await

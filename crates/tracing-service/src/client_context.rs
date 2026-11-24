@@ -1,11 +1,3 @@
-//! Builds the `client` context block attached to every bug-report and
-//! feedback submission.
-//!
-//! This module is the only place that decides what runtime metadata the
-//! agent shares with the developer endpoint. Everything excluded here —
-//! chat history, memory, file contents, API keys, file paths, URLs, names — is
-//! intentionally out of scope.
-
 use std::collections::BTreeMap;
 
 use residuum_config::{Config, ThinkingConfig, ThinkingLevel};
@@ -13,15 +5,6 @@ use residuum_core::build_info::BuildInfo;
 
 use crate::{ClientContext, FeedbackClient};
 
-/// Gather the static part of the client context for a bug report.
-///
-/// Takes version/commit from `build`, OS/arch from `std::env::consts`, and the
-/// active model from the resolved config.
-///
-/// `active_subagents` starts empty here: it's a live read of the session
-/// registry, overlaid onto this snapshot by the bug-report tool and HTTP
-/// handler at submission time, not something this startup-time snapshot can
-/// know.
 #[must_use]
 pub fn gather_for_bug_report(build: BuildInfo, config: &Config) -> ClientContext {
     let (model_provider, model_name) = config.main.first().map_or((None, None), |spec| {
@@ -44,9 +27,6 @@ pub fn gather_for_bug_report(build: BuildInfo, config: &Config) -> ClientContext
     }
 }
 
-/// The client context for a failure of the agent `agent`, from its resolved
-/// `config` when one loaded. Without one (the failure was in loading it) the
-/// model and flags are left out.
 #[must_use]
 pub fn gather_for_agent(build: BuildInfo, agent: &str, config: Option<&Config>) -> ClientContext {
     config.map_or_else(
@@ -58,8 +38,6 @@ pub fn gather_for_agent(build: BuildInfo, agent: &str, config: Option<&Config>) 
     )
 }
 
-/// The client context for a failure that belongs to the hub rather than to
-/// any agent: version and platform only.
 #[must_use]
 pub fn gather_for_hub(build: BuildInfo) -> ClientContext {
     ClientContext {
@@ -75,11 +53,6 @@ pub fn gather_for_hub(build: BuildInfo) -> ClientContext {
     }
 }
 
-/// The allowlisted configuration values attached to a bug report.
-///
-/// Only booleans, counts, and fixed enums are listed, so nothing the user
-/// typed can reach the report: no API keys, file paths, URLs, model or
-/// channel names, or other free text. A new entry must keep to those kinds.
 fn config_flags(config: &Config) -> BTreeMap<String, String> {
     let thinking = match &config.thinking {
         None => "unset".to_string(),
@@ -169,8 +142,6 @@ mod tests {
         "private-workspace-dir",
     ];
 
-    /// Load an agent named after a "private" workspace directory, so the
-    /// leak checks below also cover the agent directory path.
     fn load_config(hub_toml: &str, agent_toml: &str) -> Config {
         let root = tempfile::tempdir().unwrap();
         let hub_dir = root.path().join("hub");

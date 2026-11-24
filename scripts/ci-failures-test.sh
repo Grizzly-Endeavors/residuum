@@ -1,14 +1,4 @@
 #!/usr/bin/env bash
-# Runs the log parser over each .log fixture in scripts/ci-failures-fixtures and
-# checks the records it prints against the fixture's .records file. Fields are shown
-# separated by tabs, and messages within a record by "|". A .job-timeout file beside
-# a log holds the check-run annotation of a job that ran past its timeout-minutes,
-# passed to the parser as job_timeout.
-#
-# Each .json fixture is a runs listing of the repository's merge_group runs, and
-# its .records file is the merge queue batch that scripts/ci-failures-queue.jq
-# selects for PR 7, whose head commit is from 2023-11-14 22:13:20 UTC. The rows
-# are the run id, the workflow name and the conclusion ("-" while running).
 set -euo pipefail
 
 dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -19,8 +9,6 @@ trap 'rm -f "$actual"' EXIT
 status=0
 for log in "$dir"/ci-failures-fixtures/*.log; do
     expected="${log%.log}.records"
-    # A job that ran past its timeout-minutes: ci-failures.sh passes the annotation
-    # that says so, which the fixture keeps beside the log.
     job_timeout=""
     if [[ -f "${log%.log}.job-timeout" ]]; then
         job_timeout="$(cat "${log%.log}.job-timeout")"
@@ -43,8 +31,6 @@ for runs in "$dir"/ci-failures-fixtures/*.json; do
     fi
 done
 
-# module_files maps a failing test's name to the repo files it touches. The
-# function is read out of the script, so the check runs the code that ships.
 check_module_files() {
     local fn name expected actual
     local -A repo_files=()
@@ -80,8 +66,6 @@ CASES
 }
 check_module_files
 
-# ci-failures.sh and the pre-push hook read RUST_PATHS_RE from ci.yml with this
-# sed expression; it must find the line, and the regex must still match a Rust path.
 ci_regex="$(sed -n "s/^ *RUST_PATHS_RE: '\(.*\)'\$/\1/p" "$dir/../.github/workflows/ci.yml")"
 if [[ -z "$ci_regex" ]] || ! grep -qE "$ci_regex" <<<"crates/core/src/lib.rs"; then
     echo "RUST_PATHS_RE can't be read from .github/workflows/ci.yml, or no longer matches crates/" >&2
@@ -95,9 +79,6 @@ for copy in .githooks/pre-push scripts/ci-failures.sh; do
     fi
 done
 
-# package_of maps a changed path to the package its covers check compares. Only a
-# Rust path maps to a package: a member's path to its crate, any other Rust path
-# to the root.
 check_package_of() {
     local fn name expected actual
     fn="$(awk '/^package_of\(\) \{/,/^\}/' "$dir/ci-failures.sh")"
@@ -125,8 +106,6 @@ CASES
 }
 check_package_of
 
-# module_covers reads the covers line of a tests/it file at the commit under test.
-# The git stub serves the fixture files of a scratch directory.
 check_module_covers() {
     local fn covers_root name expected actual
     # shellcheck disable=SC2034 # read by module_covers, which is evaluated from ci-failures.sh
@@ -165,7 +144,6 @@ CASES
 }
 check_module_covers
 
-# it_module_file maps an integration test to the file whose covers line is read.
 check_it_module_file() {
     local fn name expected actual
     local -A repo_files=()
@@ -191,9 +169,6 @@ CASES
 }
 check_it_module_file
 
-# reported_jobs picks the jobs of a run to report. For an earlier run of a workflow
-# on the commit, a job a later run ran again is left out, a job the later run
-# skipped keeps its failure, and a cancelled job is listed only when it timed out.
 check_reported_jobs() {
     local fn jobs_file actual expected
     # shellcheck disable=SC2034 # read by reported_jobs and remember_ran_jobs, which are evaluated from ci-failures.sh
@@ -205,12 +180,10 @@ check_reported_jobs() {
     fn="$(awk '/^remember_ran_jobs\(\) \{/,/^\}/' "$dir/ci-failures.sh")"
     eval "$fn"
     jobs_file="$(mktemp)"
-    # The later run: Rerun ran again and passed, Skipped was skipped.
     printf '%s\n' \
         '{"id":11,"name":"Rerun","conclusion":"success","steps":[]}' \
         '{"id":12,"name":"Skipped","conclusion":"skipped","steps":[]}' >"$jobs_file"
     remember_ran_jobs "$jobs_file" Checks
-    # The earlier run.
     printf '%s\n' \
         '{"id":1,"name":"Rerun","conclusion":"failure","steps":[{"name":"Test","conclusion":"failure"}]}' \
         '{"id":2,"name":"Skipped","conclusion":"failure","steps":[{"name":"Build","conclusion":"failure"},{"name":"Lint","conclusion":"failure"}]}' \
@@ -230,7 +203,6 @@ check_reported_jobs() {
         echo "ci-failures reported_jobs: the latest run gave '$actual', expected '$expected'" >&2
         status=1
     fi
-    # The later run was of another workflow, so it reruns none of these jobs.
     actual="$(reported_jobs "$jobs_file" Other true)"
     expected=$'1\tRerun\tfailure\tTest\n2\tSkipped\tfailure\tBuild + Lint\n5\tOut of time\tcancelled\tSleep'
     if [[ "$actual" != "$expected" ]]; then
@@ -241,8 +213,6 @@ check_reported_jobs() {
 }
 check_reported_jobs
 
-# skip_earlier_run leaves out an earlier run only once it has finished with nothing to
-# report. An earlier run still in progress is kept, so its failures so far are shown.
 check_skip_earlier_run() {
     local fn
     fn="$(awk '/^skip_earlier_run\(\) \{/,/^\}/' "$dir/ci-failures.sh")"

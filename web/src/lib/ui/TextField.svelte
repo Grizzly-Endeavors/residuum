@@ -12,7 +12,6 @@
     type?: "text" | "email" | "url" | "search" | "password";
     multiline?: boolean;
     rows?: number;
-    /** Code, paths and ids: JetBrains Mono. */
     code?: boolean;
     element?: HTMLInputElement | HTMLTextAreaElement;
   }

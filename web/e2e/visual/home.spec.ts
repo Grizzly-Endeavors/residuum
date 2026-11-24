@@ -1,8 +1,6 @@
 import { expect, test } from "../support/fixtures";
 import { expectScreenshot } from "../support/screenshot";
 
-/** Home's design reference: the board (cards on a phone), what needs the reader, the team's activity and what is coming up. */
-
 test.describe("home", { tag: "@visual" }, () => {
   test("the board, what needs you, the team's activity and what is coming up", async ({ page }) => {
     await page.goto("/home");
@@ -15,7 +13,6 @@ test.describe("home", { tag: "@visual" }, () => {
     await expect(
       page.getByRole("region", { name: "Coming up" }).getByRole("listitem"),
     ).not.toHaveCount(0);
-    // The block that holds the board and the team's column, which scrolls inside the page: shot whole, not as far as the window shows.
     const content = page.getByRole("main").locator("[data-home-overview]");
     await expectScreenshot(content, "home");
   });

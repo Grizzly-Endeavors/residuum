@@ -3,13 +3,8 @@
   import type { ObservedTurn } from "../lib/observed-turns.svelte";
   import { Button, StatusDot } from "../lib/ui";
 
-  // The head of a running turn, below the newest thing it has made: working,
-  // for how long, and Stop. It goes when the turn ends.
-
   interface Props {
-    /** What the page saw of the turn while it ran, if it watched it. */
     observed?: ObservedTurn;
-    /** Stops the turn; without it the head offers no Stop. */
     onStop?: () => void;
   }
 

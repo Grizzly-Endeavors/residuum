@@ -21,7 +21,6 @@ const CHART: UserInboxAttachment = {
   url: "",
 };
 
-/** The sample item `mock_1`, which the tests attach files to. */
 function sampleItem(state: MockState): UserInboxItem {
   const item = state.inboxItems.find((candidate) => candidate.id === "mock_1");
   if (item === undefined) throw new Error("the sample inbox has no mock_1");

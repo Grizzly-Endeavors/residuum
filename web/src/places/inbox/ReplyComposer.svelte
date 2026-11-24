@@ -9,10 +9,6 @@
   import { joinNames } from "../../lib/words";
   import { deliveryHint, sendOnModEnter } from "./thread-model";
 
-  // The reply at the foot of an open thread, to everyone in it. The text and
-  // files live in the store's draft for the thread, so they survive moving
-  // around the Inbox; a send waits for uploads still running.
-
   interface Props {
     draft: ReplyDraft;
     recipients: string[];
@@ -61,7 +57,6 @@
 </form>
 
 <style>
-  /* A card of its own, like a message, so the reply reads as part of the thread. */
   .reply {
     display: flex;
     flex-direction: column;

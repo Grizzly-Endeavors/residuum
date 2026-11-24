@@ -7,11 +7,6 @@
   import { openPathInPanel, pathHref } from "./feed-links";
   import StepDetail from "./StepDetail.svelte";
 
-  // One step of a turn's activity line: what it did and to what, and while
-  // the turn is watched, how it is going. Pressing the row opens its details.
-  // A path target links into the context panel and a session target opens
-  // the session, so those sit beside the row's button, not inside it.
-
   let { step, agent }: { step: ActivityStep; agent: string } = $props();
 
   const uid = $props.id();
@@ -97,7 +92,6 @@
     min-width: 0;
   }
 
-  /* The row's button stretches over the whole row; a target link sits above it. */
   .step-row {
     position: relative;
     display: flex;
@@ -208,7 +202,6 @@
     }
   }
 
-  /* Under the label, past the row's padding, icon and gap. */
   .step-detail {
     margin: var(--space-2) 0 var(--space-6) calc(var(--space-6) + var(--space-16) + var(--space-8));
   }

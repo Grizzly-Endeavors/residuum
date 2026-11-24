@@ -26,23 +26,15 @@
     runStarted,
   } from "./schedule-model";
 
-  // An agent's pulses and scheduled actions: when each runs next and how it
-  // last went, what a run in flight is doing with Stop for it, a switch to
-  // pause a pulse, and Cancel for an action. The agent sets these up itself,
-  // so changing one means asking it in chat. Only a running agent answers for
-  // its schedule, so a stopped one offers Start.
-
   let { agent, inPanel = false }: { agent: string; inPanel?: boolean } = $props();
   const label = $derived(hub.shownName(agent));
 
   const uid = $props.id();
   const summary = $derived(hub.agent(agent));
-  /** `null` until the hub's agent list names this agent. */
   const agentState = $derived(hub.displayStateOf(agent));
   const live = $derived(agentState === "running" || agentState === "stopping");
   const chat = $derived<Place>({ kind: "chat", agent });
 
-  /** A run's session in the context panel, over the place now showing. */
   function sessionLocation(runId: string): AppLocation {
     return {
       place: router.place,
@@ -66,7 +58,6 @@
     scheduled.stopWatching();
   });
 
-  // Load on arriving at a running agent, and again when a stopped one starts.
   $effect(() => {
     if (live) untrack(() => void scheduled.load());
   });

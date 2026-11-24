@@ -9,13 +9,11 @@ use serde::{Deserialize, Serialize};
 use crate::chat_state::{ChatStateStore, ConversationRecord};
 use residuum_bus::origin::ConversationKind;
 
-/// Everything needed to post into a conversation later.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ConversationRef {
     pub(super) conversation_id: String,
     pub(super) service_url: String,
     pub(super) kind: ConversationKind,
-    /// Human-readable location, e.g. `"#builds (Eng Team)"`.
     pub(super) label: String,
 }
 
@@ -29,5 +27,4 @@ impl ConversationRecord for ConversationRef {
     }
 }
 
-/// The Teams owner and every conversation reference, saved in `teams_state.json`.
 pub(super) type TeamsStore = ChatStateStore<ConversationRef>;

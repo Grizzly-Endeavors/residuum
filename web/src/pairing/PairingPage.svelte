@@ -4,12 +4,6 @@
   import { PairingFlow } from "../lib/pairing-flow.svelte";
   import { Banner, Button, Disclosure, Spinner, TextField, VisuallyHidden } from "../lib/ui";
 
-  // The page an unpaired browser lands on when it reaches Residuum through
-  // Residuum Cloud. It is a page of its own, not part of the app: nothing else
-  // loads until the browser is paired. A pairing link settles it in one step.
-  // Otherwise the person asks a paired device (or Settings on the machine
-  // running Residuum) to approve the code shown here, or types a recovery code.
-
   interface Props {
     flow?: PairingFlow;
   }

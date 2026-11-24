@@ -1,5 +1,3 @@
-//! Gateway bind, timezone, and cloud tunnel settings (hub-level).
-
 use residuum_core::util::FatalError;
 
 use super::super::constants::DEFAULT_CLOUD_RELAY_URL;
@@ -10,13 +8,6 @@ use super::super::types::{
     RemoteAccessSettings,
 };
 
-/// Resolve the timezone from env var or hub config file.
-///
-/// # Errors
-/// Returns `FatalError::Config` if no timezone is set or the value is not a
-/// valid IANA timezone name. A missing timezone is [`is_missing_timezone`];
-/// onboarding uses that to start without one (see
-/// [`super::hub::from_file_and_env_for_onboarding`]).
 pub(super) fn resolve_timezone(file: Option<&HubConfigFile>) -> Result<chrono_tz::Tz, FatalError> {
     let Some(tz_name) = std::env::var("RESIDUUM_TIMEZONE")
         .ok()
@@ -39,16 +30,10 @@ pub(super) fn resolve_timezone(file: Option<&HubConfigFile>) -> Result<chrono_tz
     })
 }
 
-/// Whether `err` is a missing timezone rather than an invalid name or any
-/// other config problem.
 pub(super) fn is_missing_timezone(err: &FatalError) -> bool {
     matches!(err, FatalError::Config(msg) if msg.starts_with("timezone is required:"))
 }
 
-/// The machine's IANA timezone, or UTC when it can't be read or parsed.
-///
-/// Onboarding uses this only as a stand-in so the hub can run before the
-/// setup wizard has written a timezone. It is not saved to `config.toml`.
 pub(super) fn machine_timezone() -> chrono_tz::Tz {
     iana_time_zone::get_timezone()
         .ok()
@@ -56,11 +41,9 @@ pub(super) fn machine_timezone() -> chrono_tz::Tz {
         .unwrap_or(chrono_tz::UTC)
 }
 
-/// Resolve gateway configuration from TOML section and environment variables.
 pub(super) fn resolve_gateway_config(section: Option<&GatewayConfigFile>) -> GatewayConfig {
     let mut cfg = GatewayConfig::default();
 
-    // Env > file > default for bind
     if let Ok(val) = std::env::var("RESIDUUM_GATEWAY_BIND") {
         tracing::debug!(env = "RESIDUUM_GATEWAY_BIND", value = %val, "gateway bind overridden by env var");
         cfg.bind = val;
@@ -68,7 +51,6 @@ pub(super) fn resolve_gateway_config(section: Option<&GatewayConfigFile>) -> Gat
         cfg.bind = val;
     }
 
-    // Env > file > default for port
     match std::env::var("RESIDUUM_GATEWAY_PORT") {
         Ok(val) => match val.parse::<u16>() {
             Ok(p) => {
@@ -93,18 +75,12 @@ pub(super) fn resolve_gateway_config(section: Option<&GatewayConfigFile>) -> Gat
     cfg
 }
 
-/// Resolve cloud tunnel configuration from TOML section and environment.
-///
-/// Token resolution: `RESIDUUM_CLOUD_TOKEN` env > `token` field in TOML (with
-/// `${ENV_VAR}` / `secret:name` expansion) > `None` if section is absent, disabled,
-/// or no token found.
 pub(super) fn resolve_cloud_config(
     section: Option<&CloudConfigFile>,
     secrets: &SecretStore,
 ) -> Option<CloudConfig> {
     let section = section?;
 
-    // If explicitly disabled, return None.
     if section.enabled == Some(false) {
         return None;
     }
@@ -133,8 +109,6 @@ pub(super) fn resolve_cloud_config(
     }
 }
 
-/// Say so when the `[cloud]` section carries a key that no longer does
-/// anything, so a config that still has it isn't read as being obeyed.
 fn warn_ignored_keys(section: &CloudConfigFile) {
     if section.remote_access == Some(false) {
         tracing::warn!(
@@ -148,9 +122,6 @@ fn warn_ignored_keys(section: &CloudConfigFile) {
     }
 }
 
-/// Resolve the remote-access settings of the `[cloud]` section. A value that
-/// can't be used is logged and replaced by its default, so a typo never takes
-/// the tunnel down.
 fn resolve_remote_settings(section: &CloudConfigFile) -> RemoteAccessSettings {
     let mut settings = RemoteAccessSettings::default();
     if let Some(base) = section.base_domain.as_deref().map(str::trim) {
@@ -194,7 +165,6 @@ fn resolve_remote_settings(section: &CloudConfigFile) -> RemoteAccessSettings {
     settings
 }
 
-/// Whether `domain` is a plain DNS name of at least two labels.
 fn is_valid_base_domain(domain: &str) -> bool {
     domain.split('.').count() >= 2
         && domain.split('.').all(|label| {

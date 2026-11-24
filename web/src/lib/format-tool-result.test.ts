@@ -15,7 +15,6 @@ function expectShape<S extends FormattedToolResult["shape"]>(
   if (result.shape !== shape) {
     throw new Error(`expected shape ${shape}, got ${result.shape}`);
   }
-  // The shape check narrows at runtime; the generic comparison does not narrow the union.
   return result as Extract<FormattedToolResult, { shape: S }>;
 }
 

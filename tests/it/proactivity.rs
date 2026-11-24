@@ -35,8 +35,6 @@ fn sample_pulse() -> PulseDef {
     }
 }
 
-// ── build_pulse_execution tests ────────────────────────────────────────
-
 #[test]
 fn build_pulse_execution_no_agent_has_no_skill() {
     let pulse = sample_pulse();
@@ -125,8 +123,6 @@ fn pulse_with_include_identity_fails_validation() {
     assert!(err.contains("include_identity"));
 }
 
-// ── Scheduler tests ──────────────────────────────────────────────────────
-
 #[test]
 fn scheduler_defers_first_run_by_one_schedule_duration() {
     let dir = tempdir().unwrap();
@@ -190,8 +186,6 @@ fn scheduler_does_not_refire_immediately() {
     );
     assert!(second.is_empty(), "same-time call should not refire");
 }
-
-// ── Action store tests ────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn action_store_round_trip() {

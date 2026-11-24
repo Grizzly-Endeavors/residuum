@@ -1,6 +1,3 @@
-//! Spawn context: parameters needed to construct providers and `SubAgentResources`
-//! for a new session run (pulse, action, webhook, or on-demand spawn).
-
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -35,15 +32,6 @@ use super::session_tools::SessionToolFactory;
 use super::subagent::{SubAgentResources, build_subagent_resources};
 use super::types::SubAgentBuildConfig;
 
-/// Shared failover-transition counters for the background model tiers.
-///
-/// A background tier's provider chain is rebuilt fresh for every session
-/// spawn (see `build_spawn_resources`), unlike the main model's or the
-/// subconscious's, which are built once and live until the next config
-/// reload. Sharing one counter per tier here — held on `SpawnContext` for
-/// that tier's whole lifetime, across every spawn that uses it — means a
-/// transition notices exactly once when the tier actually fails over or
-/// recovers, rather than once per spawn made while it's already degraded.
 #[derive(Clone, Default)]
 pub struct BackgroundTierActiveIndex {
     small: Arc<AtomicUsize>,
@@ -52,7 +40,6 @@ pub struct BackgroundTierActiveIndex {
 }
 
 impl BackgroundTierActiveIndex {
-    /// This tier's shared counter, cloned (the `Arc`, not the count).
     fn for_tier(&self, tier: BackgroundModelTier) -> Arc<AtomicUsize> {
         match tier {
             BackgroundModelTier::Small => Arc::clone(&self.small),
@@ -62,106 +49,50 @@ impl BackgroundTierActiveIndex {
     }
 }
 
-/// Everything needed to fork a new session run from the gateway event loop.
 pub struct SpawnContext {
     pub background_config: BackgroundConfig,
     pub main_provider_specs: Vec<ProviderSpec>,
-    /// The live catalog an explicit model id resolves against at spawn time,
-    /// shared with the tools that validate one, so a provider added to
-    /// `providers.toml` works without a restart.
     pub model_catalog: SharedModelCatalog,
     pub http_client: SharedHttpClient,
     pub max_tokens: u32,
     pub retry_config: RetryConfig,
     pub options: CompletionOptions,
-    /// Maximum tool-call iterations for a session turn before it stops
-    /// itself gracefully, mirroring `cfg.agent.max_tool_iterations`. `None`
-    /// means unlimited.
     pub max_tool_iterations: Option<usize>,
-    /// Guards against a model repeating the exact same tool call, mirroring
-    /// `cfg.agent.repeat_call_guard`.
     pub repeat_call_guard: residuum_config::RepeatCallGuardConfig,
-    /// What the chat interfaces post, for every session's `HARNESS` section,
-    /// from the interfaces' `deliver_intermediate` settings.
     pub intermediate_delivery: residuum_agent::context::IntermediateDelivery,
     pub layout: WorkspaceLayout,
     pub role_overrides: std::collections::HashMap<String, residuum_config::RoleOverrides>,
-    /// Builds every fork's tool registry, scoped to that session; it holds
-    /// the shared handles only the session's tools read.
     pub session_tools: Arc<dyn SessionToolFactory>,
     pub session_runtime: Arc<SessionRuntime>,
     pub session_registry: Arc<SessionRegistry>,
     pub publisher: Publisher,
-    /// Main agent skill state — cloned per fork into isolated session state.
     pub skill_state: SharedSkillState,
-    /// Shared MCP registry (ref-counted across sessions).
     pub mcp_registry: SharedMcpRegistry,
-    /// A session's own observer instance, built from the same `[observer]`
-    /// config the main agent uses, for per-run threshold checks and
-    /// extraction. Independent from the main agent's `Observer` instance so
-    /// a session fork never contends with a main config-reload swap.
     pub observer: Arc<Observer>,
-    /// The single serialized writer for global memory, shared with the main
-    /// agent so episode numbering and log appends never race between a
-    /// session's completion pipeline and the main agent's own observations.
     pub merge_writer: Arc<MemoryMergeWriter>,
-    /// Shared agent-messaging service, whose team link gives every fork's
-    /// identity its team roster.
     pub messenger: Arc<AgentMessenger>,
-    /// Shared failover-transition counters for the background model tiers —
-    /// see [`BackgroundTierActiveIndex`].
     pub bg_tier_active_index: BackgroundTierActiveIndex,
-    /// Told how a scheduled action's fork turned out, so the action's store
-    /// can keep it alive across the fork: dropped once it started, restored
-    /// for a retry when the fork failed. `None` where there is no scheduled
-    /// action store (tests, other embedders). See [`ActionOutcomeSink`].
     pub action_outcome: Option<ActionOutcomeSink>,
 }
 
-/// How a scheduled action's fork attempt turned out, as the spawn listener
-/// reports it back to the action's store.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActionSpawnOutcome {
-    /// The fork started, or was deliberately stopped before it could: the
-    /// action ran its course and can be dropped.
     Started,
-    /// The fork failed: the action must survive, restored to the pending set
-    /// so the next tick retries it.
     Failed,
 }
 
-/// Reports a scheduled action's fork outcome. `source_label` is the spawn
-/// request's `action:<name>` label. Returns a boxed future because the store
-/// side persists the outcome; the listener awaits it so a store save isn't
-/// racing the next tick.
 pub type ActionOutcomeSink =
     Arc<dyn Fn(&str, ActionSpawnOutcome) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
-/// Identity and origin of the session [`build_spawn_resources`] is forking,
-/// grouped into one struct to keep that function's argument count down.
 pub(crate) struct NewSessionContext {
-    /// This new session's own address, threaded into its `subagent_spawn`
-    /// tool so any session it spawns in turn records the right spawner.
     pub(crate) own_address: SessionAddress,
-    /// This new session's own depth from the main agent (main = 0).
     pub(crate) own_depth: u32,
-    /// This session's category, carried into its tools' scope so its
-    /// `message_agent` tool can report it.
     pub(crate) category: SessionCategory,
-    /// Hop count of this session's first turn (see
-    /// [`super::types::SubAgentConfig::hop_count`]).
     pub(crate) hop_count: u32,
-    /// What triggered this session, carried into its tools' scope.
     pub(crate) trigger: residuum_bus::EventTrigger,
-    /// The conversation this session replies to, for a conversation-triggered
-    /// session, carried into its tools' scope. `None` for every other
-    /// trigger.
     pub(crate) conversation_target: Option<residuum_bus::ConversationTarget>,
 }
 
-/// Log a warning for each fallback provider dropped from a background
-/// tier's chain — visible in diagnostics without stopping the spawn, since
-/// the tier's primary (or another fallback) still built successfully.
 fn log_dropped_fallbacks(model: &ModelSelector, dropped: &[residuum_inference::DroppedFallback]) {
     for fallback in dropped {
         tracing::warn!(
@@ -173,19 +104,14 @@ fn log_dropped_fallbacks(model: &ModelSelector, dropped: &[residuum_inference::D
     }
 }
 
-/// A session's provider chain, resolved from its [`ModelSelector`].
 struct SessionModelChain {
     specs: Vec<ProviderSpec>,
-    /// Names the chain in failover notices.
     label: String,
-    /// The chain's failover-transition counter.
     active_index: Arc<AtomicUsize>,
-    /// The `role_overrides` key whose temperature/thinking apply, if any.
     overrides_key: Option<&'static str>,
 }
 
 impl SessionModelChain {
-    /// `provider/model` id of the chain's first model, the one a run starts on.
     fn first_model_id(&self) -> String {
         self.specs
             .first()
@@ -194,16 +120,6 @@ impl SessionModelChain {
     }
 }
 
-/// Resolve `model` to the provider chain a session runs on.
-///
-/// A tier resolves through `tiers` (falling back to the next tier up, then
-/// `main`) and keeps its shared failover counter and its `bg_<tier>`
-/// overrides. An explicit model resolves against `catalog` to that one model:
-/// no failover chain, and no `role_overrides` entry, so the global
-/// temperature/thinking apply.
-///
-/// # Errors
-/// Returns an error naming the model if an explicit id doesn't resolve.
 fn resolve_model_chain(
     tiers: &residuum_config::BackgroundModelsConfig,
     main: &[ProviderSpec],
@@ -236,23 +152,11 @@ fn resolve_model_chain(
     }
 }
 
-/// A forked session's resources, plus the model it starts on.
 pub(crate) struct SpawnResources {
     pub(crate) resources: SubAgentResources,
-    /// `provider/model` id of the first model in the session's chain.
     pub(crate) resolved_model: String,
 }
 
-/// Load identity fresh per fork and snapshot memory at fork time.
-///
-/// Identity (the agent's SOUL.md, the team's AGENTS.md/USER.md/wiki index) is
-/// loaded fresh per fork so sessions see the current files; a read failure here fails the spawn — the caller
-/// logs it loudly. The observation log and recent-context narrative are
-/// snapshotted at fork time per the design's "Fork contents": a session
-/// never sees merges that happen after it forked. A read failure snapshotting
-/// either degrades gracefully (the run starts with no memory context) rather
-/// than failing the spawn: an agent missing background is better than no
-/// background work at all.
 async fn load_fork_identity_and_memory(
     layout: &WorkspaceLayout,
     team: &crate::team::TeamLink,
@@ -280,30 +184,6 @@ async fn load_fork_identity_and_memory(
     Ok((identity, observations, recent_context))
 }
 
-/// Build isolated `SubAgentResources` for a new session run on `model`.
-///
-/// Resolves the model (see [`resolve_model_chain`]), constructs the provider,
-/// and builds fresh isolated state. When `skill` is set, that skill is activated
-/// on the session's own skill state so its body becomes the session's role
-/// instructions. Also snapshots the global observation log and recent-context
-/// narrative at fork time, per the design's "Fork contents": a session never
-/// sees merges that happen after it forked.
-///
-/// `session.own_address` and `session.own_depth` are this new session's own
-/// address and depth, threaded into its `subagent_spawn` tool so any session
-/// it spawns in turn records the right spawner and depth (see "Nesting" in
-/// the design). `session.own_address` and `session.category` are also
-/// carried into the session's tool scope so the fork's `message_agent` tool
-/// can name itself as the sender of any message it sends. `session.trigger`
-/// and `session.conversation_target` are carried the same way, so a tool
-/// running in this session can tell what started it and, for a
-/// conversation-triggered session, which endpoint and conversation it
-/// replies to.
-///
-/// # Errors
-/// Returns an error if an explicit model doesn't resolve, provider
-/// construction fails (e.g. missing API key), the identity files cannot be
-/// read, or `skill` names a skill that does not resolve.
 #[tracing::instrument(skip_all, fields(model = %model, skill = skill.unwrap_or("none")))]
 pub(crate) async fn build_spawn_resources(
     ctx: &SpawnContext,
@@ -342,7 +222,6 @@ pub(crate) async fn build_spawn_resources(
     })?;
     log_dropped_fallbacks(model, &dropped);
 
-    // Apply the tier's overrides over global options
     let ov = chain
         .overrides_key
         .and_then(|key| ctx.role_overrides.get(key));
@@ -406,14 +285,9 @@ mod tests {
         let medium = counters.for_tier(BackgroundModelTier::Medium);
         let large = counters.for_tier(BackgroundModelTier::Large);
 
-        // Same tier, two lookups: the same underlying counter (an `Arc`
-        // clone), so a store through one is visible through the other —
-        // this is what lets many short-lived spawns for one tier share
-        // transition state.
         small_a.store(1, std::sync::atomic::Ordering::SeqCst);
         assert_eq!(small_b.load(std::sync::atomic::Ordering::SeqCst), 1);
 
-        // Different tiers never share a counter.
         assert_eq!(medium.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert_eq!(large.load(std::sync::atomic::Ordering::SeqCst), 0);
     }

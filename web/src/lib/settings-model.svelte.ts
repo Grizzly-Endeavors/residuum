@@ -1,31 +1,3 @@
-// ── The settings model (Svelte 5 runes) ──────────────────────────────
-//
-// What the settings modal edits, as logic with no UI. One scope
-// holds the files one page of settings edits: an agent's `config.toml`,
-// `providers.toml` and `mcp.json`, or the hub's `config.toml` for All agents.
-// A scope never writes another scope's files.
-//
-// Each file has a baseline, its text as this model last loaded or saved it,
-// and a form: a copy of the baseline parsed into the shapes the sections bind
-// to. What the user has changed is the difference between the two, which
-// `settings-toml.ts` turns into the PATCH diff the server takes. Those are the
-// staged changes. They stay in the scope while the modal is closed or another
-// scope is open, and Save and Discard act on the whole scope.
-//
-// Everything is written through the config write coordinator
-// (`config-coordinator.ts`). Immediate actions (secrets, agent keys, Cloud,
-// updates, raw saves, History) have their own endpoints and no state here.
-//
-// A section reads and edits a scope's forms in place:
-//
-//     const scope = settingsModel.agent("scout");   // in a script, not a template
-//     await scope.load();
-//     <input bind:value={scope.config.timeout_secs} />
-//     scope.providers.push({ ... });                // staged; Discard takes it back
-//
-// Read the form through the scope each time: a reload, or an external change to
-// a file with no staged changes, gives the scope new form objects.
-
 import { parse as parseToml } from "smol-toml";
 import { SvelteMap } from "svelte/reactivity";
 import { storeSecret as storeSecretViaApi } from "./api";
@@ -75,12 +47,8 @@ import type {
   ValidateResponse,
 } from "./types";
 
-// ── What the model asks of the outside ───────────────────────────────
-
-/** The services a scope uses. Tests replace them. */
 export interface SettingsDeps {
   coordinator: ConfigCoordinator;
-  /** Store a typed secret and return the `secret:<name>` reference that goes in the file. */
   storeSecret: (name: string, value: string) => Promise<{ reference: string }>;
 }
 
@@ -89,12 +57,8 @@ const APP_DEPS: SettingsDeps = {
   storeSecret: storeSecretViaApi,
 };
 
-// ── Forms ─────────────────────────────────────────────────────────────
-
-/** How one file's text becomes a form and a form's changes become a patch. */
 interface FormCodec<T> {
   parse: (raw: string) => T;
-  /** What changed from `baseline` to `current`, as a PATCH diff. Empty when nothing did. */
   diff: (baseline: T, current: T) => Record<string, unknown>;
 }
 
@@ -116,17 +80,11 @@ const PROVIDERS_FORM: FormCodec<ProvidersFormState> = {
 
 const MCP_FORM: FormCodec<McpServerEntry[]> = { parse: parseMcpJson, diff: diffMcpServers };
 
-/**
- * A deep copy of form state that shares nothing with it. `$state.snapshot`
- * unwraps the proxy; a runtime that doesn't proxy returns its argument, so the
- * copy is made here.
- */
 function clone<T>(value: T): T {
   const plain: unknown = $state.snapshot(value);
   return structuredClone(plain) as T;
 }
 
-/** Whether a file's text parses. A form shows an empty file for one that doesn't. */
 function parses(file: ConfigFile, raw: string): boolean {
   if (raw.trim() === "") return true;
   try {
@@ -149,11 +107,6 @@ function isNamedList(value: unknown): value is { name: string }[] {
   );
 }
 
-/**
- * Three-way merge of form values. What the user changed between `base` and
- * `mine` stays; everything else takes `theirs`, the file as it is now.
- * Collections of named entries merge entry by entry.
- */
 function rebase(base: unknown, mine: unknown, theirs: unknown): unknown {
   if (jsonEqual(base, mine)) return theirs;
   if (isNamedList(base) && isNamedList(mine) && isNamedList(theirs)) {
@@ -173,57 +126,31 @@ function rebase(base: unknown, mine: unknown, theirs: unknown): unknown {
   return mine;
 }
 
-// ── One file ──────────────────────────────────────────────────────────
-
-/** Which editor a file's staged state keeps read-only: the raw editor while the form has changes, the form while the raw editor does. */
 export type FileLock = "form" | "raw";
 
-/** What a scope uses of a file, whatever its form. */
 export interface StagedFile {
   readonly name: FieldFile;
   readonly file: ConfigFile;
-  /** The file's text as last loaded or saved here. Null until the first load. */
   readonly raw: string | null;
-  /** The form holds changes the file doesn't. */
   readonly dirty: boolean;
-  /** What a save would send: the form's changes as a PATCH diff. */
   readonly patch: Record<string, unknown>;
-  /** The file changed on disk while the form held changes, so a save may meet a conflict. */
   readonly changedOnDisk: boolean;
-  /** The file's text doesn't parse, so the form shows it empty. The raw editor is where to fix it. */
   readonly unreadable: boolean;
-  /** Why the last read of the file failed, in plain language. */
   readonly loadError: string | null;
-  /** What is in the raw editor when it differs from `raw`. */
   readonly rawDraft: string | null;
-  /** The file's text when the raw draft began: what a save of the draft checks the file against. */
   readonly rawDraftBase: string | null;
-  /** Which editor is read-only because of the other. */
   readonly lockedBy: FileLock | null;
-  /** The raw editor holds `text`. Null, or the file's own text, clears the draft. */
   setRawDraft: (text: string | null) => void;
-  /** Drop the form's changes. */
   discard: () => void;
-  /** The file reads as `raw` now: the baseline and form become it. */
   refresh: (raw: string) => void;
-  /** The file changed on disk while the form holds changes. */
   markChangedOnDisk: () => void;
-  /** A read of the file failed. */
   fail: (message: string) => void;
-  /**
-   * A save is about to write the form as it is now. `done` takes the file's
-   * text afterwards: it becomes the baseline, and anything edited since this
-   * call stays staged.
-   */
   beginSave: () => { patch: Record<string, unknown>; done: (raw: string) => void };
 }
 
-/** One config file: its baseline, its form, and what is staged between them. */
 export class FileState<T extends object> implements StagedFile {
   raw = $state<string | null>(null);
-  /** The file parsed as of `raw`. */
   baseline = $state.raw() as T;
-  /** What the sections bind to. */
   form = $state() as T;
   rawDraft = $state<string | null>(null);
   rawDraftBase = $state<string | null>(null);
@@ -255,8 +182,6 @@ export class FileState<T extends object> implements StagedFile {
 
   setRawDraft(text: string | null): void {
     const draft = text === this.raw ? null : text;
-    // A file can change on disk while a draft is open; the draft's base stays
-    // what the user started from, so the save's re-read finds that change.
     if (draft === null) this.rawDraftBase = null;
     else if (this.rawDraft === null) this.rawDraftBase = this.raw;
     this.rawDraft = draft;
@@ -290,7 +215,6 @@ export class FileState<T extends object> implements StagedFile {
     };
   }
 
-  /** Take `raw` as the baseline, with `parsed` its parse, and `form` as the form (the baseline's copy when null). */
   private adopt(raw: string, parsed: T, form: T | null): void {
     this.raw = raw;
     this.baseline = parsed;
@@ -302,84 +226,48 @@ export class FileState<T extends object> implements StagedFile {
   }
 }
 
-// ── Results ───────────────────────────────────────────────────────────
-
-/** What a save did to one file. */
-export type FileSaveStatus =
-  | "saved"
-  /** The form's changes came to nothing for this file: a typed secret that stored under the name already in the file. */
-  | "unchanged"
-  | "failed"
-  /** Not tried, because a file it depends on didn't save. */
-  | "skipped"
-  /** The file changed on disk under the form's changes, and the user chose what was on disk. */
-  | "used-disk";
+export type FileSaveStatus = "saved" | "unchanged" | "failed" | "skipped" | "used-disk";
 
 export interface FileSaveResult {
   file: FieldFile;
-  /** The file's name for a message: `providers.toml`. */
   label: string;
   status: FileSaveStatus;
-  /** A plain-language sentence for `failed` and `skipped`. */
   message: string | null;
-  /** The checkpoint taken just before the write, for Undo. */
   checkpointId: string | null;
 }
 
-/** The checkpoint a save took of a file just before writing it, which Undo restores the file from. */
 export interface SavedCheckpoint {
   file: FieldFile;
   repo: RepoKind;
-  /** The file's path in `repo`. */
   path: string;
   id: string;
-  /** The file's text as the save left it. Undo skips a file that reads otherwise now. */
   text: string;
 }
 
 export interface SaveResult {
-  /** `partial` when some files saved and others didn't. `nothing` when nothing was staged. */
   outcome: "saved" | "partial" | "failed" | "nothing";
-  /** Each file the save tried, in the order it wrote them. */
   files: FileSaveResult[];
-  /** The checkpoints the save took, in the order it took them. */
   checkpoints: SavedCheckpoint[];
-  /** Names of the secrets stored from typed values. */
   storedSecrets: string[];
-  /** What happened, in plain language, for the save bar. */
   message: string;
 }
 
-/** What Undo did to one checkpoint's file. */
 export interface UndoFileResult {
   file: FieldFile;
   label: string;
-  /** Paths put back as they were. */
   reverted: string[];
-  /** Paths left alone because they changed again since. */
   skipped: string[];
-  /** Why the file couldn't be restored, in plain language. Null when it was. */
   error: string | null;
 }
 
 export interface UndoResult {
-  /** Each file, in the order restored: the reverse of the save. */
   files: UndoFileResult[];
-  /** Files that couldn't be restored. Undo is still offered for them. */
   failed: FieldFile[];
   message: string;
 }
 
-/**
- * What a chooser throws when the user closes the question about a file that
- * changed on disk without answering it. That file isn't saved and keeps its
- * staged changes.
- */
 export class ConflictUnanswered extends Error {}
 
-// ── Messages ──────────────────────────────────────────────────────────
-
-/** A file's name in a message. */
 function fileLabel(file: ConfigFile): string {
   return file.kind === "hub" ? "the install-wide config.toml" : configFileName(file);
 }
@@ -421,28 +309,22 @@ function summarizeUndo(files: readonly UndoFileResult[]): string {
   return parts.length > 0 ? parts.join(" ") : "Nothing needed undoing.";
 }
 
-/** A save's or check's problems; a refusal that lists none is one problem, its error. */
 export function diagnosticsOf(result: ValidateResponse): Diagnostic[] {
   const found = result.diagnostics ?? [];
   if (found.length > 0 || result.valid || result.error === undefined) return found;
   return [{ severity: "error", message: result.error }];
 }
 
-// ── Typed secrets ─────────────────────────────────────────────────────
-
-/** A credential the user typed, which is stored as a secret and replaced by its reference before the file is written. */
 interface TypedSecret {
   name: string;
   value: string;
   apply: (reference: string) => void;
 }
 
-/** Whether `value` is a literal the user entered, rather than empty, unchanged or already a reference. */
 function isTyped(value: string, before: string | undefined): boolean {
   return value !== "" && value !== before && !isStoredReference(value);
 }
 
-/** The config fields that hold a credential, and the name each is stored under. */
 const SECRET_FIELDS = [
   { field: "discord_token", name: "discord" },
   { field: "telegram_token", name: "telegram" },
@@ -454,7 +336,6 @@ const SECRET_FIELDS = [
   { field: "ws_ollama_api_key", name: "ws_ollama" },
 ] as const;
 
-/** The typed credentials among the config fields of `owner`'s file. */
 function typedConfigSecrets(file: FileState<ConfigFields>, owner: "hub" | "agent"): TypedSecret[] {
   const { form, baseline } = file;
   const typed: TypedSecret[] = [];
@@ -487,8 +368,6 @@ function typedConfigSecrets(file: FileState<ConfigFields>, owner: "hub" | "agent
   return typed;
 }
 
-// ── A scope ───────────────────────────────────────────────────────────
-
 const NOTHING_STAGED: SaveResult = {
   outcome: "nothing",
   files: [],
@@ -497,52 +376,39 @@ const NOTHING_STAGED: SaveResult = {
   message: "There is nothing to save.",
 };
 
-/** One page of settings: the files it edits, what is staged in them, and how they save. */
 export abstract class ScopeModel {
   abstract readonly kind: ScopeKind;
-  /** The agent whose files these are. Null for All agents. */
   abstract readonly agent: string | null;
-  /** The files this scope edits, in the order a save writes them. */
   abstract readonly files: readonly StagedFile[];
 
-  /** A save is writing. */
   saving = $state(false);
   loading = $state(false);
-  /** What the last save did, for the save bar and its Undo. */
   lastResult = $state.raw<SaveResult | null>(null);
-  /** Problems the last saves found, in the files they were found in, placed on fields where they name a key. */
   diagnostics = $state.raw<readonly PlacedDiagnostic[]>([]);
-  /** A field the section that holds it should focus when it next shows, such as the one Fix settings found. */
   focusRequest = $state.raw<FieldRef | null>(null);
 
-  /** Any file holds staged changes. */
   get dirty(): boolean {
     return this.files.some((state) => state.dirty);
   }
 
-  /** Work a page reload would lose: staged changes, or a raw editor's unsaved edits. */
   get unsaved(): boolean {
     return this.dirty || this.files.some((state) => state.rawDraft !== null);
   }
 
-  /** The last save took checkpoints that haven't been undone. */
   get undoable(): boolean {
     return (this.lastResult?.checkpoints.length ?? 0) > 0;
   }
 
-  /** Why a file couldn't be read, if one couldn't. */
   get loadError(): string | null {
     return this.files.find((state) => state.loadError !== null)?.loadError ?? null;
   }
 
-  /** Every file has been read, or failed to be. Until then the forms are empty, so nothing should show or edit them. */
   get loaded(): boolean {
     return this.files.every((state) => state.raw !== null || state.loadError !== null);
   }
 
   private running: Promise<SaveResult> | null = null;
   private stops: (() => void)[] = [];
-  /** Names this scope's writes in the coordinator's notifications, so it skips the ones it made. */
   private readonly source = Symbol("settings-scope");
 
   protected constructor(
@@ -550,26 +416,16 @@ export abstract class ScopeModel {
     protected readonly deps: SettingsDeps,
   ) {}
 
-  /** The credentials typed into the forms, to store as secrets before a save. */
   protected abstract typedSecrets(): TypedSecret[];
 
-  /** Anything besides the files that loads with the scope. */
   protected loadOther(): Promise<void> {
     return Promise.resolve();
   }
 
-  /** The files whose changes this scope follows, with what to do about each. */
   protected watches(): { file: ConfigFile; changed: () => Promise<void> }[] {
     return this.files.map((state) => ({ file: state.file, changed: () => this.read(state) }));
   }
 
-  // ── Loading ─────────────────────────────────────────────────────────
-
-  /**
-   * Make the files current: read each from disk. A file with staged changes
-   * keeps them, and its baseline, so the coordinator's re-read before a save
-   * finds what changed. Also starts following changes made elsewhere.
-   */
   async load(): Promise<void> {
     this.loading = true;
     try {
@@ -580,14 +436,12 @@ export abstract class ScopeModel {
     }
   }
 
-  /** Drop the staged changes and the raw editors' edits, and read every file from disk again. */
   async reload(): Promise<void> {
     this.discard();
     for (const state of this.files) state.setRawDraft(null);
     await this.load();
   }
 
-  /** Read a file. It becomes the baseline when nothing is staged in it; otherwise it is marked as changed on disk. */
   private async read(state: StagedFile): Promise<void> {
     try {
       const raw = await this.deps.coordinator.read(state.file);
@@ -610,28 +464,20 @@ export abstract class ScopeModel {
     }
   }
 
-  /** Stop following the files. */
   dispose(): void {
     for (const stop of this.stops) stop();
     this.stops = [];
   }
 
-  // ── Staging ─────────────────────────────────────────────────────────
-
-  /** Drop every staged change in the scope, and the problems the last save found. */
   discard(): void {
     for (const state of this.files) state.discard();
     this.diagnostics = [];
   }
 
-  /** The file called `name`, if this scope edits one. */
   file(name: FieldFile): StagedFile | undefined {
     return this.files.find((state) => state.name === name);
   }
 
-  // ── Diagnostics ─────────────────────────────────────────────────────
-
-  /** The problems that name this field's key. An entry's own problems are on the ref with no `field`. */
   fieldDiagnostics(ref: FieldRef): Diagnostic[] {
     const key = fieldRefKey(ref);
     return this.diagnostics
@@ -639,7 +485,6 @@ export abstract class ScopeModel {
       .map((placed) => placed.diagnostic);
   }
 
-  /** The problems for the top of a section: those whose key it edits but no field holds, and those with no key path. */
   sectionDiagnostics(section: SectionId): Diagnostic[] {
     return this.diagnostics
       .filter(
@@ -649,24 +494,15 @@ export abstract class ScopeModel {
       .map((placed) => placed.diagnostic);
   }
 
-  /**
-   * Show problems found outside a save, such as by Fix settings' check of a
-   * file, as a save's would show: on the fields their key paths name. They
-   * replace the file's earlier problems, and its next save replaces them.
-   */
   flagProblems(file: FieldFile, found: readonly Diagnostic[]): void {
     const state = this.file(file);
     if (state !== undefined) this.place(state, found);
   }
 
-  // ── Focus on arrival ────────────────────────────────────────────────
-
-  /** Ask the section holding `ref` to bring it into view and focus it when it next shows. */
   requestFocus(ref: FieldRef): void {
     this.focusRequest = ref;
   }
 
-  /** Take the field to focus, which is asked for once: the next call returns null. */
   takeFocus(): FieldRef | null {
     const ref = this.focusRequest;
     this.focusRequest = null;
@@ -680,17 +516,6 @@ export abstract class ScopeModel {
     ];
   }
 
-  // ── Saving ──────────────────────────────────────────────────────────
-
-  /**
-   * Save every file with staged changes, as a diff through the coordinator:
-   * providers first, then config, then MCP servers, because config validation
-   * reads providers from disk. `choose` settles a file that changed on disk
-   * under keys being saved. A file that fails keeps its staged changes, and
-   * the rest still save, except that `config.toml` waits on `providers.toml`.
-   * Typed credentials are stored as secrets first. A second call while one runs
-   * gets that save's result.
-   */
   save(choose: ConfigChooser): Promise<SaveResult> {
     this.running ??= this.runSave(choose).finally(() => {
       this.running = null;
@@ -767,7 +592,6 @@ export abstract class ScopeModel {
     };
   }
 
-  /** Send one file's diff. */
   private async writeFile(state: StagedFile, choose: ConfigChooser): Promise<FileSaveResult> {
     const label = fileLabel(state.file);
     const outcome = (
@@ -811,7 +635,6 @@ export abstract class ScopeModel {
     }
   }
 
-  /** Take the file's text after a write as its baseline, reading it back when the save couldn't. */
   private async adopt(
     state: StagedFile,
     done: (raw: string) => void,
@@ -824,14 +647,6 @@ export abstract class ScopeModel {
     }
   }
 
-  // ── Undo ────────────────────────────────────────────────────────────
-
-  /**
-   * Put each file the last save wrote back as it was, newest first, from the
-   * checkpoint the save took just before writing it. A file that changed again
-   * since is skipped, so that change isn't lost. A file that can't be restored
-   * is named, and its checkpoint stays for another try.
-   */
   async undo(): Promise<UndoResult> {
     const checkpoints = this.lastResult?.checkpoints ?? [];
     const files: UndoFileResult[] = [];
@@ -866,7 +681,6 @@ export abstract class ScopeModel {
   }
 }
 
-/** An agent's settings: `providers.toml`, `config.toml` and `mcp.json`. */
 export class AgentScopeModel extends ScopeModel {
   readonly kind = "agent";
   readonly files: readonly StagedFile[];
@@ -874,12 +688,7 @@ export class AgentScopeModel extends ScopeModel {
   readonly configFile: FileState<ConfigFields>;
   readonly mcpFile: FileState<McpServerEntry[]>;
 
-  /**
-   * The install-wide values that matter to an agent's page, read from the hub's
-   * `config.toml` and never written from here. Show them read-only.
-   */
   install = $state.raw<Readonly<ConfigFields>>(defaultConfigFields());
-  /** Why the hub's file couldn't be read for `install`. */
   installError = $state<string | null>(null);
 
   constructor(
@@ -897,7 +706,6 @@ export class AgentScopeModel extends ScopeModel {
     this.files = [this.providersFile, this.configFile, this.mcpFile];
   }
 
-  /** The agent's `config.toml` as a form. */
   get config(): ConfigFields {
     return this.configFile.form;
   }
@@ -906,7 +714,6 @@ export class AgentScopeModel extends ScopeModel {
     return this.providersFile.form.providers;
   }
 
-  /** The model roles, with their failover lists. */
   get models(): SettingsModelAssignments {
     return this.providersFile.form.models;
   }
@@ -922,7 +729,6 @@ export class AgentScopeModel extends ScopeModel {
     for (const provider of current) {
       const name = provider.name.trim();
       const was = before.find((candidate) => candidate.name.trim() === name);
-      // An Ollama server's key isn't a credential the secret store holds.
       if (name !== "" && provider.type !== "ollama" && isTyped(provider.apiKey, was?.apiKey)) {
         keys.push({
           name,
@@ -960,7 +766,6 @@ export class AgentScopeModel extends ScopeModel {
   }
 }
 
-/** The install-wide settings: the hub's `config.toml`. */
 export class AllScopeModel extends ScopeModel {
   readonly kind = "all";
   readonly agent = null;
@@ -973,7 +778,6 @@ export class AllScopeModel extends ScopeModel {
     this.files = [this.configFile];
   }
 
-  /** The hub's `config.toml` as a form. */
   get config(): ConfigFields {
     return this.configFile.form;
   }
@@ -983,19 +787,11 @@ export class AllScopeModel extends ScopeModel {
   }
 }
 
-// ── Every scope ───────────────────────────────────────────────────────
-
-/**
- * The scopes the user has opened, kept so staged changes outlive the modal and
- * a switch of scope. Get a scope in a script, not in a template expression:
- * creating one changes this registry.
- */
 export class SettingsModel {
   private readonly scopes = new SvelteMap<string, AgentScopeModel | AllScopeModel>();
 
   constructor(private readonly deps: SettingsDeps = APP_DEPS) {}
 
-  /** The install-wide scope. */
   all(): AllScopeModel {
     const existing = this.scopes.get(ALL_SCOPE);
     if (existing instanceof AllScopeModel) return existing;
@@ -1012,17 +808,14 @@ export class SettingsModel {
     return created;
   }
 
-  /** The scope a URL token names: `_all`, or an agent. */
   scope(id: string): AgentScopeModel | AllScopeModel {
     return scopeKind(id) === "all" ? this.all() : this.agent(id);
   }
 
-  /** The scopes that hold unsaved work: staged changes or raw edits. */
   get stagedScopes(): (AgentScopeModel | AllScopeModel)[] {
     return [...this.scopes.values()].filter((scope) => scope.unsaved);
   }
 
-  /** Forget a scope, such as an agent that was deleted, with whatever it had staged. */
   drop(id: string): void {
     this.scopes.get(id)?.dispose();
     this.scopes.delete(id);
@@ -1031,8 +824,6 @@ export class SettingsModel {
 
 export const settingsModel = new SettingsModel();
 
-// A deleted agent's staged settings go with it, whoever deleted it. The model
-// loads with Settings, so before then there is nothing to drop.
 hub.onFrame((msg) => {
   if (msg.type === "agent_deleted") settingsModel.drop(msg.name);
 });

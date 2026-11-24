@@ -1,6 +1,3 @@
-//! Checkpoint HTTP API: visibility (list/show/diff/file/stats) and
-//! restore/undo, for the web UI. See `docs/systems-usage/checkpoints.md`.
-
 use std::sync::Arc;
 
 use axum::Router;
@@ -14,23 +11,17 @@ use residuum_checkpoints::{
 };
 use residuum_workspace::team_files::TeamWriter;
 
-/// The repositories an agent's checkpoint routes address.
 pub(crate) const AGENT_REPOS: &[RepoKind] = &[RepoKind::Workspace, RepoKind::AgentConfig];
 
-/// The repositories the hub's checkpoint routes address.
 pub(crate) const HUB_REPOS: &[RepoKind] = &[RepoKind::Hub, RepoKind::Team];
 
-/// Shared state for the checkpoints API.
 #[derive(Clone)]
 pub(crate) struct CheckpointApiState {
     pub checkpoints: Arc<CheckpointEngine>,
-    /// The repositories these routes serve; a request for any other is
-    /// refused, since it belongs to the hub or to an agent, not to this scope.
     pub repos: &'static [RepoKind],
 }
 
 impl CheckpointApiState {
-    /// Refuse a request for a repository outside this scope.
     fn allow(&self, repo: RepoKind) -> Result<(), (StatusCode, String)> {
         if self.repos.contains(&repo) {
             return Ok(());
@@ -48,7 +39,6 @@ impl CheckpointApiState {
     }
 }
 
-/// Build the checkpoints API router.
 pub(crate) fn checkpoints_api_router(state: CheckpointApiState, prefix: &str) -> Router {
     use axum::routing::{get, post};
 
@@ -63,8 +53,6 @@ pub(crate) fn checkpoints_api_router(state: CheckpointApiState, prefix: &str) ->
     Router::new().nest(prefix, routes).with_state(state)
 }
 
-/// `repo` query parameter shared by every route: which checkpoint
-/// repository the request targets.
 #[derive(Deserialize)]
 pub(super) struct RepoQuery {
     pub repo: RepoKind,
@@ -81,19 +69,12 @@ fn error_response(e: &CheckpointError) -> (StatusCode, String) {
     (status, e.to_string())
 }
 
-/// Query parameters for `GET /api/checkpoints`.
 #[derive(Deserialize)]
 pub(super) struct ListQuery {
     pub repo: RepoKind,
-    /// Restrict to checkpoints that changed this path (a file, or a
-    /// directory prefix).
     pub path: Option<String>,
-    /// Restrict to checkpoints recorded against this exact turn id — finds
-    /// a turn's turn-start/turn-end pair for "undo this turn".
     pub turn_id: Option<String>,
-    /// Opaque cursor from a previous response's `next_cursor`.
     pub before: Option<String>,
-    /// Page size, 1-200 (default 50).
     pub limit: Option<usize>,
 }
 
@@ -113,8 +94,6 @@ async fn api_checkpoints_list(
         .map_err(|e| error_response(&e))
 }
 
-/// `GET /api/checkpoints/stats?repo=workspace|agent_config|hub` — on-disk size,
-/// checkpoint count, and oldest checkpoint.
 async fn api_checkpoints_stats(
     State(state): State<CheckpointApiState>,
     Query(query): Query<RepoQuery>,
@@ -144,23 +123,17 @@ async fn api_checkpoints_show(
         .map_err(|e| error_response(&e))
 }
 
-/// Query parameters shared by the diff and file-content routes.
 #[derive(Deserialize)]
 pub(super) struct RepoPathQuery {
     pub repo: RepoKind,
     pub path: String,
 }
 
-/// Response for `GET /api/checkpoints/{id}/diff`.
 #[derive(Serialize)]
 struct DiffResponse {
-    /// Unified diff text, or `null` if `path` didn't change at this
-    /// checkpoint.
     diff: Option<String>,
 }
 
-/// `GET /api/checkpoints/{id}/diff?repo=&path=` — unified diff for one
-/// file at one checkpoint, relative to the checkpoint before it.
 async fn api_checkpoints_diff(
     State(state): State<CheckpointApiState>,
     Path(id): Path<String>,
@@ -209,17 +182,12 @@ async fn api_checkpoints_file(
     Ok(response)
 }
 
-/// Body for `POST /api/checkpoints/{id}/restore`.
 #[derive(Deserialize)]
 struct RestoreRequest {
     repo: RepoKind,
-    /// The file or directory to restore, relative to the repository's root.
     path: String,
 }
 
-/// `POST /api/checkpoints/{id}/restore` — restore a path to its content at
-/// this checkpoint. Checkpoints the result, so the restore can itself be
-/// undone.
 async fn api_checkpoints_restore(
     State(state): State<CheckpointApiState>,
     Path(id): Path<String>,

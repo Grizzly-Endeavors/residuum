@@ -1,6 +1,3 @@
-// residuum.fetch, residuum.ask and residuum.state in the workbench SDK
-// (assets/workbench/sdk.js): how a page's calls reach Residuum on its own origin.
-
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { described, lastRequest, loadSdk, settle } from "../test/workbench-sdk";
 

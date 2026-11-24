@@ -1,15 +1,7 @@
-//! An agent's A2A base URL, in order of precedence: `[a2a] public_url` plus
-//! `/agents/<name>` when set; otherwise the tunnel's address for the hub while
-//! the tunnel is connected (`{instance origin}/a2a/<name>`); otherwise the local listener address plus `/agents/<name>`.
-//! See `docs/systems-usage/a2a.md`.
-
 use residuum_config::A2aConfig;
 use residuum_net::remote_access::A2A_AGENTS_PATH_PREFIX;
 use residuum_net::tunnel::TunnelStatus;
 
-/// The address other agents can use to reach `agent_name`, when one is
-/// configured: `[a2a] public_url` plus `/agents/<name>`. `None` when
-/// `public_url` is unset.
 #[must_use]
 pub fn known_a2a_public_url(a2a: &A2aConfig, agent_name: &str) -> Option<String> {
     a2a.public_url.as_ref().map(|url| {
@@ -20,9 +12,6 @@ pub fn known_a2a_public_url(a2a: &A2aConfig, agent_name: &str) -> Option<String>
     })
 }
 
-/// The address every agent of this hub is reachable under through the tunnel,
-/// once it is connected: the instance's own host, `{instance origin}/a2a`. An
-/// agent's own address appends `/<name>`.
 #[must_use]
 pub fn relay_a2a_base(status: &TunnelStatus) -> Option<String> {
     let TunnelStatus::Connected {
@@ -35,16 +24,11 @@ pub fn relay_a2a_base(status: &TunnelStatus) -> Option<String> {
     Some(format!("{}/a2a", instance_origin.trim_end_matches('/')))
 }
 
-/// `agent_name`'s address on the relay: `relay_base` (see
-/// [`relay_a2a_base`]) plus `/<name>`.
 #[must_use]
 pub fn relay_agent_url(relay_base: &str, agent_name: &str) -> String {
     format!("{}/{agent_name}", relay_base.trim_end_matches('/'))
 }
 
-/// The URL `agent_name`'s Agent Card advertises: [`known_a2a_public_url`],
-/// else the agent's address under `relay_base`, else the local listener
-/// address.
 #[must_use]
 pub(crate) fn resolve_a2a_public_url(
     a2a: &A2aConfig,

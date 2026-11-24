@@ -29,7 +29,6 @@ class NoObserver {
   disconnect(): void {}
 }
 
-/** Show `item` the way the feed holds it: inside the store's reactive feed. */
 function show(item: FeedItem, agent = "atlas"): void {
   const store = new FeedStore();
   store.feed.push(item);

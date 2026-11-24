@@ -4,9 +4,6 @@
   import type { SettingsScope } from "./sections";
   import SettingsSection from "./SettingsSection.svelte";
 
-  // Settings → History for either scope: an agent's workspace and config
-  // files, or for All agents the shared files and the install-wide config.
-
   let { scope, section }: { scope: SettingsScope; section: SectionId } = $props();
 </script>
 

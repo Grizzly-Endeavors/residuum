@@ -1,6 +1,3 @@
-//! The per-agent watcher and the turn hook against real agents: what a
-//! running agent does reaches the hub's feed of agent changes, and stops
-//! reaching it when the agent stops.
 #![expect(
     clippy::tests_outside_test_module,
     reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
@@ -17,8 +14,6 @@ use residuum::hub::agent_watch::{
 };
 use residuum::memory::types::Visibility;
 
-/// Collect changes until one satisfies `found`, returning everything seen up
-/// to and including it.
 async fn until(
     what: &str,
     changes: &mut AgentChangeReceiver,
@@ -44,7 +39,6 @@ fn turns(changes: &[AgentChange]) -> Vec<&MainTurnEnded> {
         .collect()
 }
 
-/// The turn a batch of changes reports, which must be the only one.
 fn only_turn(changes: &[AgentChange]) -> MainTurnEnded {
     let mut turns = turns(changes);
     assert_eq!(turns.len(), 1, "one turn is reported: {changes:?}");
@@ -63,7 +57,6 @@ fn agent_dir(hub: &Fixture, name: &str) -> std::path::PathBuf {
     hub.root.path().join(name)
 }
 
-/// The bus of the running agent `name`.
 pub(super) fn agent_bus(hub: &Fixture, name: &str) -> residuum::bus::BusHandle {
     hub.host
         .slot(name)
@@ -85,7 +78,6 @@ async fn a_started_agent_is_resynced_and_each_main_turn_is_reported_once() {
     let started = until("the start to be announced", &mut changes, is_resync).await;
     assert_eq!(started.last().unwrap().agent, "scout");
 
-    // A user turn, with the WebSocket open throughout.
     assert_eq!(hub.chat("scout", "hello there").await, "scout here");
     let seen = until("the user turn", &mut changes, is_turn).await;
     let user_turn = only_turn(&seen);
@@ -94,8 +86,6 @@ async fn a_started_agent_is_resynced_and_each_main_turn_is_reported_once() {
     assert_eq!(user_turn.visibility, Visibility::User);
     assert!(user_turn.client_connected);
 
-    // A teammate's message starts a background turn, with no user message
-    // and, with no one connected, no client.
     let link = TeamLink::new("guest", Arc::clone(&hub.services.team_router));
     let target = parse_team_address("agent:scout").unwrap().unwrap();
     let main =
@@ -110,8 +100,6 @@ async fn a_started_agent_is_resynced_and_each_main_turn_is_reported_once() {
     assert_eq!(background_turn.visibility, Visibility::Background);
     assert!(!background_turn.client_connected);
 
-    // A stop returns once the agent's watcher has drained, so every change it
-    // made is already in the feed.
     hub.host.stop("scout").await.unwrap();
     let rest = wait::drain(&mut changes);
     assert!(
@@ -137,9 +125,6 @@ async fn the_user_inbox_tool_reaches_the_feed_as_user_inbox_added() {
     hub.wait_for_file_watcher("scout").await;
 
     hub.chat("scout", "please file a note").await;
-    // The announcement and the change to the inbox's files come from
-    // different sources, so either can arrive first. The file itself is
-    // reported as a change to the inbox's files too.
     let mut announced_item = None;
     let mut file_change_seen = false;
     until(
@@ -290,8 +275,6 @@ async fn sessions_reach_the_feed_and_the_relay_until_the_agent_stops() {
     })
     .await;
 
-    // The relay carries the session's turn events too, each with the label
-    // the session started with.
     let mut relayed_kinds = Vec::new();
     while !relayed_kinds
         .iter()
@@ -306,8 +289,6 @@ async fn sessions_reach_the_feed_and_the_relay_until_the_agent_stops() {
         relayed_kinds.push(event.event.kind);
     }
 
-    // Stopping the agent records the live session as interrupted, and the
-    // completion still reaches the feed before the stop returns.
     let bus = agent_bus(&hub, "scout");
     hub.host.stop("scout").await.unwrap();
     let after_stop = wait::drain(&mut changes);
@@ -319,8 +300,6 @@ async fn sessions_reach_the_feed_and_the_relay_until_the_agent_stops() {
         "the interrupted session's completion arrives: {after_stop:?}"
     );
 
-    // Nothing arrives once the agent has stopped, even when something is
-    // still published on its bus.
     bus.publisher()
         .publish(
             residuum::bus::topics::UserInbox,
@@ -330,8 +309,6 @@ async fn sessions_reach_the_feed_and_the_relay_until_the_agent_stops() {
         )
         .await
         .unwrap();
-    // The barrier proves the publish has reached every subscriber of the bus.
-    // The stopped agent's watcher has none left to reach the feed.
     bus_barrier(&bus).await;
     assert!(wait::drain(&mut changes).is_empty());
 }
@@ -349,8 +326,6 @@ async fn a_restarted_agent_is_watched_once_and_resynced_again() {
 
     let dir = agent_dir(&hub, "scout");
     std::fs::write(dir.join("scheduled_actions.json"), "[]").unwrap();
-    // File notifications arrive in order, so once the sentinel's change is
-    // reported, every report for the write above has been too.
     std::fs::write(dir.join("config/mcp.json"), "{}").unwrap();
     let seen = until("the sentinel's change", &mut changes, |change| {
         matches!(
@@ -394,8 +369,6 @@ async fn a_turn_that_fails_is_still_reported_once_without_a_reply() {
     assert_eq!(failed.reply, None);
     assert_eq!(failed.visibility, Visibility::User);
     assert!(failed.client_connected);
-    // A stop returns once the agent's watcher has drained, so any second report
-    // is already in the feed.
     hub.host.stop("scout").await.unwrap();
     let rest = wait::drain(&mut changes);
     assert!(turns(&rest).is_empty(), "reported once: {rest:?}");
@@ -411,8 +384,6 @@ async fn an_agent_that_never_runs_is_never_reported() {
         "[]",
     )
     .unwrap();
-    // Only a running agent has a watcher to report its files, and this one
-    // has none, so there is nothing that could report the write.
     assert!(hub.host.workspace_watch_health("quiet").is_none());
     assert!(wait::drain(&mut changes).is_empty());
 }

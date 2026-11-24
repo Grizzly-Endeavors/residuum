@@ -1,5 +1,3 @@
-//! External notification channels: ntfy and webhook.
-
 use async_trait::async_trait;
 use reqwest::Client;
 
@@ -7,7 +5,6 @@ use residuum_bus::NotificationEvent;
 
 use super::channels::NotificationChannel;
 
-/// Ntfy push notification channel.
 pub struct NtfyChannel {
     channel_name: String,
     client: Client,
@@ -17,7 +14,6 @@ pub struct NtfyChannel {
 }
 
 impl NtfyChannel {
-    /// Create a new ntfy channel.
     #[must_use]
     pub fn new(
         channel_name: String,
@@ -85,7 +81,6 @@ impl NotificationChannel for NtfyChannel {
     }
 }
 
-/// Webhook notification channel.
 pub struct WebhookChannel {
     channel_name: String,
     client: Client,
@@ -95,7 +90,6 @@ pub struct WebhookChannel {
 }
 
 impl WebhookChannel {
-    /// Create a new webhook channel.
     #[must_use]
     pub fn new(
         channel_name: String,

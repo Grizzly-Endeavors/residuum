@@ -13,7 +13,6 @@ import { replyTitle } from "./mail-threads";
 import { fetchJson, startMockServer, type MockServerHarness } from "./test-support";
 import type { MockAgent } from "./state";
 
-/** The threads of the scenario by subject, for a test to name them without their ids. */
 const WIKI = MAIL_SEED.wikiAudit;
 
 describe("the mail routes", () => {
@@ -35,7 +34,6 @@ describe("the mail routes", () => {
       headers: { "Content-Type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
-  /** The status of a thread action, which answers with no body. */
   const act = async (id: string, action: "read" | "archive" | "restore"): Promise<number> =>
     (await fetch(url(threadPath(id, action)), { method: "POST" })).status;
   const threadPath = (id: string, action?: string): string =>
@@ -53,7 +51,6 @@ describe("the mail routes", () => {
     return res.body as MailThreadPage;
   };
 
-  /** The id of every thread of a page, in order. */
   const listed = async (query: string): Promise<string[]> =>
     (await page(query)).threads.map((thread) => thread.thread_id);
 
@@ -66,7 +63,6 @@ describe("the mail routes", () => {
   const summary = async (folder: string, id: string): Promise<MailThreadSummary | undefined> =>
     (await page(`folder=${folder}`)).threads.find((entry) => entry.thread_id === id);
 
-  /** Stage a file the way the client does and answer its id. */
   const upload = async (
     filename: string,
     bytes: Uint8Array<ArrayBuffer> | string,
@@ -126,7 +122,6 @@ describe("the mail routes", () => {
       };
       fromAgent("scout", "tie");
       fromAgent("atlas", "tie");
-      // atlas answers a message of yours, which ties with the other threads on the answer's time.
       agent("atlas").state.agentInbox.push({
         id: "tie_question",
         title: "tie_question",
@@ -380,7 +375,6 @@ describe("the mail routes", () => {
     });
 
     it("lists a thread's agents sorted by name, whichever wrote first, and replies to them all", async () => {
-      // scout starts the thread and atlas answers it, so atlas sorts before the agent who came first.
       const started = await post("/api/mock/user-inbox-add?agent=scout", {
         title: "Standup notes",
         body: "Here are mine.",
@@ -463,7 +457,6 @@ describe("the mail routes", () => {
       await post(threadPath(thread_id, "reply"), { body: "Great.", attachments: [staged] });
 
       const [, theirs, mine] = (await thread(thread_id)).messages;
-      // Both messages are `Re: Pairing` from the same day, so they share an id.
       expect(theirs?.ref).toBe("atlas/user/20260314_re_pairing");
       expect(mine?.ref).toBe("atlas/agent/20260314_re_pairing");
       expect(theirs?.attachments[0]?.url).toBe(
@@ -478,7 +471,6 @@ describe("the mail routes", () => {
       expect(await serve(theirs?.attachments[0]?.url)).toBe("Mock attachment: theirs.txt\n");
       expect(await serve(mine?.attachments[0]?.url)).toBe("mine\n");
 
-      // Both routes are file routes, so they answer with the agent stopped.
       await post("/api/hub/agents/atlas/stop");
       expect(await serve(theirs?.attachments[0]?.url)).toBe("Mock attachment: theirs.txt\n");
       expect(await serve(mine?.attachments[0]?.url)).toBe("mine\n");
@@ -514,7 +506,6 @@ describe("the mail routes", () => {
       for (const action of ["read", "archive", "restore"] as const) {
         expect(await act("scout/user/nothing", action), action).toBe(404);
       }
-      // Anything that isn't a ref names no message, including an escape that isn't one.
       expect(await get("/api/hub/mail/threads/%ZZ")).toEqual({
         status: 404,
         body: { error: "There is no message '%ZZ'. It may have been deleted." },
@@ -576,7 +567,6 @@ describe("the mail routes", () => {
       });
       await act(MAIL_SEED.lastWeeksDigest.threadIds.scout, "read");
       expect(archived.read).toBe(true);
-      // atlas's own copy is a different message.
       expect(agent("atlas").state.inboxItems.find((item) => item.id === "mock_1")?.read).toBe(
         false,
       );
@@ -927,7 +917,6 @@ describe("the mail routes", () => {
           { to: ["scout"], subject: "Hi", body: "Hi", attachments: ["upload_9999"] },
           "(upload 'upload_9999') isn't available anymore",
         ],
-        // The staged files are checked first, then the recipients, then the words.
         [{ to: [], subject: "", body: " ", attachments: ["upload_9999"] }, "upload_9999"],
         [{ to: [], subject: "", body: " ", attachments: [] }, "at least one agent"],
         [{ to: ["ghost"], subject: "", body: " ", attachments: [] }, "Write a message"],
@@ -937,7 +926,6 @@ describe("the mail routes", () => {
         expect(res.status, mentions).toBe(400);
         expect((res.body as { error: string }).error, mentions).toContain(mentions);
       }
-      // Nothing was written, and the file a refused send named is still staged.
       expect(agent("scout").state.agentInbox.filter((item) => item.title === "Hi")).toEqual([]);
       const ok = await post("/api/hub/mail/send", {
         to: ["scout"],

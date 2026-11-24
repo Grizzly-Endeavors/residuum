@@ -1,8 +1,3 @@
-//! One pulse fire, run on its own task: the pulse's task scripts, then
-//! either a `script_only` pulse's result or the pulse's session, followed to
-//! its end so the Schedule place can show the fire as running, in which
-//! phase, and how it ended (see [`crate::pulse_fires`]).
-
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -22,7 +17,6 @@ use residuum_proactivity::pulse::script::{
 };
 use residuum_proactivity::pulse::types::PulseDef;
 
-/// What a pulse fire needs to run away from the event loop.
 #[derive(Clone)]
 pub(super) struct FireDeps {
     pub publisher: Publisher,
@@ -50,13 +44,6 @@ impl FireDeps {
     }
 }
 
-/// Register a fire of `pulse` and run it on its own task, so a slow script
-/// or a long session never holds up the agent's event loop.
-///
-/// The fire is flagged when an earlier fire of the same pulse is still in
-/// flight. That never blocks or skips it — the owner decided pulses that
-/// overlap their own previous run start anyway — it only makes the overlap
-/// visible.
 pub(super) fn start_pulse_fire(pulse: PulseDef, context: Option<PulseContext>, deps: FireDeps) {
     let overlap = deps.fires.overlap(&pulse.name, &deps.registry);
     if let Some(ov) = &overlap {
@@ -85,17 +72,6 @@ pub(super) fn start_pulse_fire(pulse: PulseDef, context: Option<PulseContext>, d
     residuum_core::util::spawn_in_span(run_pulse_fire(pulse, overlap, context, deps, fire));
 }
 
-/// Run one fire: its task scripts in task order, then a `script_only`
-/// pulse's result straight to the notification router, or the pulse's
-/// session with each script's output in its task's prompt, followed until
-/// it ends.
-///
-/// In a pulse that runs a session, a failed script is reported to the
-/// owner here (see [`report_script_failures`]) and the session still runs,
-/// told the script failed; a `script_only` pulse's failures travel in its
-/// result instead. A fire the owner stops delivers nothing more and is
-/// recorded as stopped; a fire the agent's stop catches delivers and
-/// records nothing.
 async fn run_pulse_fire(
     pulse: PulseDef,
     overlap: Option<residuum_bus::PulseOverlap>,
@@ -119,13 +95,6 @@ async fn run_pulse_fire(
     deliver_scripted_fire(fire, &pulse, &runs, overlap, context.as_ref(), &deps).await;
 }
 
-/// Deliver what a fire's finished scripts produced: a `script_only`
-/// pulse's result, or the session (after reporting any failed script).
-///
-/// A stop that landed after the scripts finished still keeps the fire from
-/// delivering anything: a script that finished during shutdown never starts
-/// a session or files a result into an agent that is going away, and a fire
-/// the owner stopped stays stopped.
 async fn deliver_scripted_fire(
     fire: PulseFire,
     pulse: &PulseDef,
@@ -149,7 +118,6 @@ async fn deliver_scripted_fire(
     run_session_phase(fire, spawn, deps).await;
 }
 
-/// End a fire whose stop token fired before it delivered anything.
 async fn end_stopped_fire(fire: PulseFire) {
     if fire.agent_stopping() {
         tracing::info!(
@@ -172,8 +140,6 @@ async fn end_stopped_fire(fire: PulseFire) {
     .await;
 }
 
-/// Deliver a `script_only` pulse's result to the notification router and
-/// finish the fire with its outcome (a silent result included).
 async fn deliver_script_only(
     fire: PulseFire,
     pulse: &PulseDef,
@@ -194,7 +160,6 @@ async fn deliver_script_only(
     fire.finish(outcome, None).await;
 }
 
-/// A fire's outcome from the status of the run that ended it.
 fn fire_outcome(status: &AgentResultStatus) -> PulseFireOutcome {
     let (status, error) = match status {
         AgentResultStatus::Completed => (PulseFireStatus::Ok, None),
@@ -208,19 +173,9 @@ fn fire_outcome(status: &AgentResultStatus) -> PulseFireOutcome {
     }
 }
 
-/// Ask for the fire's session and follow it until it ends: until the
-/// session completes, or the spawn listener says it couldn't start.
-///
-/// The fire offers its stop token to the session it asks for (see
-/// [`residuum_background::fire_stops`]), so a stop stops that session
-/// wherever it is: one that lands before the spawn listener forks it means
-/// it is never forked, and one that lands later has already cancelled the
-/// session's own stop token, a child of the fire's.
 async fn run_session_phase(fire: PulseFire, mut spawn: SpawnRequestEvent, deps: &FireDeps) {
     let address = spawn.address.clone();
     let pulse = spawn.source_label.clone();
-    // Subscribed before the spawn is published, so neither the session's
-    // start nor its end can be missed.
     let subscriptions = async {
         let sessions: Subscriber<SessionEvent> = deps.bus.subscribe(topics::Sessions).await?;
         let failures: Subscriber<SessionStartFailedEvent> =
@@ -228,8 +183,6 @@ async fn run_session_phase(fire: PulseFire, mut spawn: SpawnRequestEvent, deps: 
         Ok::<_, residuum_bus::BusError>((sessions, failures))
     }
     .await;
-    // A stop that landed while the fire was subscribing (the owner's, or the
-    // agent's during shutdown) keeps the session from being asked for at all.
     if fire.stop_token().is_cancelled() {
         end_stopped_fire(fire).await;
         return;
@@ -259,8 +212,6 @@ async fn run_session_phase(fire: PulseFire, mut spawn: SpawnRequestEvent, deps: 
             () = fire.stop_token().cancelled(), if !stop_requested => {
                 stop_requested = true;
                 if !deps.registry.fire_stops().withdraw(fire.id()) {
-                    // The listener hadn't forked the session, and now never
-                    // will.
                     end_stopped_fire(fire).await;
                     return;
                 }
@@ -273,9 +224,6 @@ async fn run_session_phase(fire: PulseFire, mut spawn: SpawnRequestEvent, deps: 
                         run_id = Some(event.run_id);
                         fire.announce(PulseFireChange::SessionStarted).await;
                     }
-                    // A run id the fire doesn't know yet is still its own:
-                    // a request whose address was already live is delivered
-                    // into that run instead of starting a new one.
                     SessionEventKind::Completed { status, .. }
                         if run_id.as_ref().is_none_or(|id| *id == event.run_id) =>
                     {
@@ -317,9 +265,6 @@ async fn run_session_phase(fire: PulseFire, mut spawn: SpawnRequestEvent, deps: 
     }
 }
 
-/// End a fire whose session the spawn listener couldn't fork: as stopped
-/// when the fire had been stopped by then, else as failed with the
-/// listener's plain-language reason, the full cause going to the log.
 async fn end_unstarted_fire(fire: PulseFire, failed: SessionStartFailedEvent, stopped: bool) {
     if stopped {
         end_stopped_fire(fire).await;
@@ -342,8 +287,6 @@ async fn end_unstarted_fire(fire: PulseFire, failed: SessionStartFailedEvent, st
     .await;
 }
 
-/// Publish a due pulse's spawn request, which forks its session. Returns
-/// whether it was published.
 async fn publish_pulse_spawn(publisher: &Publisher, spawn_event: SpawnRequestEvent) -> bool {
     let source_label = spawn_event.source_label.clone();
     match publisher.publish(topics::Background, spawn_event).await {
@@ -355,9 +298,6 @@ async fn publish_pulse_spawn(publisher: &Publisher, spawn_event: SpawnRequestEve
     }
 }
 
-/// End a fire whose spawn request couldn't be published, so no session will
-/// ever start for it: as failed, unless the agent is stopping, which is
-/// usually why the bus refused it.
 async fn end_unrequested_fire(fire: PulseFire) {
     if fire.agent_stopping() {
         fire.end().await;
@@ -379,11 +319,6 @@ async fn end_unrequested_fire(fire: PulseFire) {
     .await;
 }
 
-/// Tell the owner about each failed script in a pulse that still runs its
-/// session, on the same two surfaces the notification router uses for a
-/// failed pulse: an inbox item carrying the command, how it ended and the
-/// tail of its stderr, and an owner notice naming the pulse, the task and
-/// the reason.
 async fn report_script_failures(pulse: &PulseDef, runs: &[Option<ScriptRun>], deps: &FireDeps) {
     for (task, run) in pulse.tasks.iter().zip(runs) {
         let Some(ScriptRun::Failed(failure)) = run else {
@@ -470,8 +405,6 @@ mod tests {
         pulse
     }
 
-    /// A script that marks `started` once it runs, then runs until it is
-    /// killed.
     fn blocking_script(started: &std::path::Path) -> String {
         if cfg!(windows) {
             format!(
@@ -499,7 +432,6 @@ mod tests {
         )
     }
 
-    /// Run one fire of `pulse` to its end.
     async fn run_fire(pulse: PulseDef, deps: &FireDeps) {
         let fire = begin(deps, &pulse);
         run_pulse_fire(pulse, None, None, deps.clone(), fire).await;
@@ -511,14 +443,12 @@ mod tests {
             .unwrap()
     }
 
-    /// The next change the fire publishes that isn't its start.
     async fn next_after_start(events: &mut Subscriber<PulseFireEvent>) -> PulseFireEvent {
         let started = next_event("the fire's start", events).await;
         assert_eq!(started.change, PulseFireChange::Started);
         next_event("the fire's next change", events).await
     }
 
-    /// The next change the fire publishes that `matches`.
     async fn next_change_where(
         events: &mut Subscriber<PulseFireEvent>,
         matches: impl Fn(&PulseFireChange) -> bool,
@@ -563,17 +493,11 @@ mod tests {
         }
     }
 
-    /// Stand in for the spawn listener: claim the stop token the fire
-    /// offered for `spawn`'s session, as `fork_and_spawn` does. `None` when
-    /// the listener would fork nothing.
     fn claim_session_stop(deps: &FireDeps, spawn: &SpawnRequestEvent) -> Option<CancellationToken> {
         let fire_id = spawn.fire_id.as_deref().expect("a fire's request names it");
         deps.registry.fire_stops().claim(fire_id)
     }
 
-    /// Stand in for the session runtime: register the session at `address`
-    /// with `stop` as its stop token and announce its start, as
-    /// `SessionRuntime::spawn` does.
     async fn register_session(
         deps: &FireDeps,
         address: &SessionAddress,
@@ -595,9 +519,6 @@ mod tests {
             .unwrap();
     }
 
-    /// Stand in for the spawn listener and the session runtime together:
-    /// fork `spawn`'s session with the stop token claimed from its fire, and
-    /// announce its start. Returns the session's stop token.
     async fn start_session(
         deps: &FireDeps,
         spawn: &SpawnRequestEvent,
@@ -608,8 +529,6 @@ mod tests {
         stop
     }
 
-    /// End the session at `address` with `status`, as the session runtime
-    /// does: out of the registry, then `Completed`.
     async fn complete_session(
         deps: &FireDeps,
         address: &SessionAddress,
@@ -633,8 +552,6 @@ mod tests {
             .unwrap();
     }
 
-    /// A broker with the notification router running on it, as in a live
-    /// agent, so a script-only result is followed all the way to the inbox.
     async fn bus_with_router() -> BusHandle {
         let bus = residuum_bus::spawn_broker();
         let router = residuum_notify::router::spawn_notification_router(
@@ -647,10 +564,7 @@ mod tests {
         bus
     }
 
-    // `exit 0` with no output works the same under `sh -c` and `cmd /C`.
     const SILENT_SCRIPT: &str = "exit 0";
-
-    // ── script-only fires ────────────────────────────────────────────────
 
     #[tokio::test]
     async fn a_silent_script_only_fire_finishes_ok_without_a_session() {
@@ -749,8 +663,6 @@ mod tests {
         );
         assert_eq!(session_run_id, None);
     }
-
-    // ── fires that run a session ─────────────────────────────────────────
 
     #[tokio::test]
     async fn a_fire_moves_from_its_scripts_to_its_session_and_finishes_with_it() {
@@ -927,8 +839,6 @@ mod tests {
             ..fire_deps(&bus, dir.path())
         };
         let pulse = plain_pulse();
-        // The fire's own changes still reach the bus; only the spawn request
-        // is refused.
         let fire = deps.fires.begin(
             &pulse.name,
             PulseFirePhase::Session,
@@ -1000,8 +910,6 @@ mod tests {
         assert!(spawn.prompt.contains("script failed"), "{}", spawn.prompt);
         task.abort();
     }
-
-    // ── stopping a fire ──────────────────────────────────────────────────
 
     #[tokio::test]
     async fn stopping_a_fire_in_its_scripts_kills_the_script_and_starts_no_session() {
@@ -1194,7 +1102,6 @@ mod tests {
         let mut inbox: Subscriber<NotificationEvent> = bus.subscribe(topics::Inbox).await.unwrap();
         let mut events = fire_events(&bus).await;
         let deps = fire_deps(&bus, dir.path());
-        // The scripts have already run; the stop lands before delivery.
         let output = Some(ScriptRun::Succeeded {
             stdout: "changed".to_string(),
         });
@@ -1235,8 +1142,6 @@ mod tests {
         assert!(inbox.drain().is_empty(), "no failure is filed");
     }
 
-    // ── overlap ──────────────────────────────────────────────────────────
-
     #[tokio::test]
     async fn two_fires_overlapping_in_their_scripts_flag_the_overlap() {
         let dir = tempfile::tempdir().unwrap();
@@ -1271,8 +1176,6 @@ mod tests {
             "the first is still in its scripts"
         );
 
-        // Both fires end before the test does, so the first one's script
-        // (and the `sleep` it started) has been killed by then.
         deps.fires.stop_all();
         for _ in 0..2 {
             next_change_where(&mut events, |change| *change == PulseFireChange::Ended).await;

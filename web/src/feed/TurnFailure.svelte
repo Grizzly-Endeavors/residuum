@@ -5,13 +5,6 @@
   import { Button, Disclosure } from "../lib/ui";
   import { ws } from "../lib/ws.svelte";
 
-  // The end of a turn that couldn't finish: what went wrong in plain words,
-  // the technical detail behind Details, and Try again, which has the agent
-  // run the turn again on the message it already holds (no message is sent,
-  // so no new bubble). It stays after the toast for the failure is gone, and
-  // gives way to the rerun when that starts. Should the agent decline, the
-  // button is replaced by its reason.
-
   let { item, agent }: { item: TurnFailureFeedItem; agent: string } = $props();
 
   const retry = $derived(ws.agent === agent ? item.retry : undefined);
@@ -58,7 +51,6 @@
     flex: none;
     place-items: center;
     width: 16px;
-    /* The title's line box (ui size), which the base styles round to a whole pixel. */
     height: round(calc(var(--font-size-ui) * var(--line-height-ui)), 1px);
     color: var(--color-err-text);
   }
@@ -87,7 +79,6 @@
     margin-top: var(--space-4);
   }
 
-  /* The agent's reason for not running the turn again, where the button was. */
   .failure-refusal {
     margin-top: var(--space-4);
     color: var(--color-text);

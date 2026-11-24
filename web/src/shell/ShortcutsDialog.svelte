@@ -1,8 +1,6 @@
 <script lang="ts">
   import { Dialog, Kbd } from "../lib/ui";
 
-  // The Keyboard shortcuts dialog: every key the app answers, where it works.
-
   let { open = $bindable(false) }: { open?: boolean } = $props();
 
   interface Shortcut {

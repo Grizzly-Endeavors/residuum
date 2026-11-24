@@ -1,6 +1,3 @@
-//! The user-inbox tools: `user_inbox_add` writes an item to the user,
-//! `user_inbox_list` lists every agent's items.
-
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
@@ -20,19 +17,12 @@ use super::paging::{
     DEFAULT_LIMIT, MAX_LIMIT, PageRequest, before_schema, limit_schema, more_note, query_schema,
 };
 
-// ─── user_inbox_add ─────────────────────────────────────────────────────────
-
-/// Tool for adding items to the user's inbox.
 pub struct UserInboxAddTool {
     mail: MailAccess,
-    /// Where each saved item is announced, so the hub learns of it without
-    /// waiting for a file change. `None` announces nothing.
     publisher: Option<Publisher>,
 }
 
 impl UserInboxAddTool {
-    /// Create a new `UserInboxAddTool` writing to the user inbox of the
-    /// agent `mail` belongs to.
     #[must_use]
     pub fn new(mail: MailAccess) -> Self {
         Self {
@@ -41,14 +31,12 @@ impl UserInboxAddTool {
         }
     }
 
-    /// Announce every saved item on `publisher`'s bus.
     #[must_use]
     pub fn with_publisher(mut self, publisher: Publisher) -> Self {
         self.publisher = Some(publisher);
         self
     }
 
-    /// The message `raw` names, found in any agent's mail.
     async fn reply_target(&self, raw: &str) -> Result<ReplyTarget, ToolError> {
         let item_ref =
             parse_item_ref(raw, self.mail.own_agent(), InboxKind::User).map_err(|e| {
@@ -74,8 +62,6 @@ impl UserInboxAddTool {
         })
     }
 
-    /// Tell the bus the item `item_id` was saved. A failure to announce
-    /// leaves the item saved: the hub still sees the file appear.
     async fn announce(&self, item_id: &str) {
         let Some(publisher) = &self.publisher else {
             return;
@@ -94,7 +80,6 @@ impl UserInboxAddTool {
     }
 }
 
-/// The message a reply answers: its ref and its thread's subject.
 struct ReplyTarget {
     item_ref: inbox::InboxRef,
     subject: String,
@@ -212,25 +197,19 @@ impl Tool for UserInboxAddTool {
     }
 }
 
-// ─── user_inbox_list ────────────────────────────────────────────────────────
-
-/// The parameters of `user_inbox_list` a next-page call repeats.
 const LIST_FILTERS: &str = "query, agent and include_archived";
 
-/// Tool for listing every agent's user-inbox items.
 pub struct UserInboxListTool {
     mail: MailAccess,
 }
 
 impl UserInboxListTool {
-    /// Create a new `UserInboxListTool` for the agent `mail` belongs to.
     #[must_use]
     pub fn new(mail: MailAccess) -> Self {
         Self { mail }
     }
 }
 
-/// One line of the listing for `message`, an agent's message to the user.
 fn list_line(agent: &str, message: &MailMessage) -> String {
     let mut status = vec![if message.read { "read" } else { "unread" }];
     if message.archived {

@@ -5,7 +5,6 @@ import { expectSetupOpen } from "../support/lazy";
 
 const DRAFT_KEY = "residuum-setup-draft";
 
-/** The step's heading, which takes focus each time a step opens. */
 function stepHeading(page: Page, name: string): Locator {
   return page.getByRole("heading", { level: 1, name });
 }
@@ -16,7 +15,6 @@ async function next(page: Page, heading: string): Promise<void> {
 }
 
 test.beforeEach(async ({ page, mock }) => {
-  // A hub with no agents opens the setup wizard.
   await mock.post("/api/mock/reset", { data: { setup: true } });
   await page.goto("/");
   await expectSetupOpen(page);
@@ -57,7 +55,6 @@ test("completes the wizard and opens the app on the new agent", async ({ page })
   const teams = page.getByRole("region", { name: "Microsoft Teams" });
   await teams.getByLabel("App ID").fill("app-1");
   await page.getByRole("button", { name: "Next" }).click();
-  // The toast region's alert group is on the page too, empty until an error toast comes.
   await expect(
     page.getByRole("alert").filter({ hasText: /Fill in all three Teams fields/ }),
   ).toBeVisible();
@@ -74,7 +71,6 @@ test("completes the wizard and opens the app on the new agent", async ({ page })
   await page.getByRole("button", { name: "Save and start" }).click();
   await expect(page.getByText("Saved. Starting scout…")).toBeVisible();
 
-  // The wizard hands over to the app, which now has the agent setup created.
   await expect(stepHeading(page, "Save and start")).toBeHidden();
   expect(await page.evaluate((key) => localStorage.getItem(key), DRAFT_KEY)).toBeNull();
   const agents = (await (await page.request.get("/api/hub/agents")).json()) as {
@@ -90,9 +86,6 @@ test("a reload mid-way restores the draft, without its keys", async ({ page }) =
   await page.getByRole("switch", { name: "Ollama" }).click();
   await page.getByLabel("Anthropic API key", { exact: true }).fill("sk-test-anthropic");
 
-  // The draft is written half a second after the last change. The wizard may
-  // already have written its first draft (every provider's settings, Ollama's
-  // among them), so wait for the one that holds what was just entered.
   await expect
     .poll(async () => {
       const raw = await page.evaluate((key) => localStorage.getItem(key), DRAFT_KEY);

@@ -1,12 +1,3 @@
-//! Bug-report subcommand: capture a structured incident report and
-//! POST it to the running gateway, which forwards to the upstream
-//! feedback endpoint.
-//!
-//! Three input modes are supported:
-//!   * **Flags** — all four required fields supplied on the CLI; submit immediately.
-//!   * **Pipe** — stdin is not a TTY; read a markdown form from stdin and parse.
-//!   * **Editor** — neither of the above; open `$EDITOR` on a templated form.
-
 use std::io::{IsTerminal, Read, Write};
 
 use residuum::build_info::BuildInfo;
@@ -33,19 +24,14 @@ impl SeverityArg {
 
 #[derive(clap::Args)]
 pub(super) struct BugReportArgs {
-    /// What actually happened (required)
     #[arg(long)]
     pub happened: Option<String>,
-    /// What you expected to happen (required)
     #[arg(long)]
     pub expected: Option<String>,
-    /// What you were doing when it happened (required)
     #[arg(long)]
     pub doing: Option<String>,
-    /// Severity: one of broken, wrong, annoying
     #[arg(long, value_enum)]
     pub severity: Option<SeverityArg>,
-    /// Backwards-compatible alias for --happened
     #[arg(short, long)]
     pub message: Option<String>,
 }
@@ -57,11 +43,6 @@ struct SubmissionReceipt {
     submitted_at: String,
 }
 
-/// Send a bug report to the developer endpoint via the local gateway.
-///
-/// # Errors
-/// Returns a `FatalError::Gateway` if the gateway is unreachable, the
-/// upstream rejects the report, or the user-supplied input is invalid.
 pub(super) async fn run_bug_report_command(
     args: &BugReportArgs,
     gateway_addr: &str,
@@ -189,12 +170,9 @@ Severity must be one of: broken, wrong, annoying.
 
 ## What happened?
 
-
 ## What did you expect?
 
-
 ## What were you doing?
-
 
 ## Severity
 
@@ -202,10 +180,6 @@ Severity must be one of: broken, wrong, annoying.
     )
 }
 
-/// Parse the four-section markdown into a request body.
-///
-/// Splits on `## ` headings, ignoring HTML comment blocks. Each section
-/// must be present and non-empty after trimming.
 fn parse_markdown(text: &str) -> Result<serde_json::Value, FatalError> {
     let mut sections: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let mut current: Option<String> = None;

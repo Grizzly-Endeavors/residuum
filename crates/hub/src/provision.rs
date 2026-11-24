@@ -1,11 +1,3 @@
-//! Writing and removing agent directories: the filesystem half of agent
-//! creation and deletion. The agent host calls these in the order the
-//! design gives (validate, write the directory, role page, start; and for
-//! deletion: stop, checkpoint, remove directory, remove role page).
-//!
-//! Nothing here starts or stops an agent, publishes notices, or touches hub
-//! state, so each function can be tested against a temp directory.
-
 use std::path::{Path, PathBuf};
 
 use residuum_checkpoints::{
@@ -21,55 +13,23 @@ use residuum_workspace::team_files::{TeamWriteCoordinator, TeamWriter};
 
 use residuum_background::team::{A2aVisibility, LifecycleError};
 
-/// Marks a workspace whose first-run interview is over. Written to every
-/// created agent so `BOOTSTRAP.md` is never recreated.
 const BOOTSTRAPPED_MARKER: &str = ".bootstrapped";
 
-/// What a new agent is created from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentSpec {
-    /// The agent's folder name.
     pub name: String,
-    /// The name people see and address.
     pub display_name: String,
-    /// Full `providers.toml` content. Validated before anything is written.
     pub providers_toml: String,
-    /// The agent's A2A visibility, written to its `config.toml`.
     pub a2a_visibility: A2aVisibility,
-    /// One-line role for the agent's role page; a placeholder when absent.
     pub description: Option<String>,
 }
 
-/// One file of a new agent, at its final path under the staging directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PlannedFile {
     path: PathBuf,
     content: String,
 }
 
-/// Create the agent's directory from the blank template and its role page.
-///
-/// The directory is assembled under a hidden staging directory beside the
-/// final one, with `config/config.toml` (the file that makes a directory an
-/// agent) written last, and moved into place only when complete. A failure
-/// or crash therefore never leaves a discoverable half-agent, and a failure
-/// removes what was written. Returns the agent's directory.
-///
-/// The caller serializes creation of one name; two concurrent calls for the
-/// same name share a staging directory. Creating different names at the same
-/// time is safe: the role page, roster index, and wiki log are written under
-/// `coordinator`'s path locks (it must guard `team`), with `actor`, the
-/// creator, recorded as their writer.
-///
-/// # Errors
-/// - [`LifecycleError::InvalidName`] when the name breaks the agent-name
-///   rules.
-/// - [`LifecycleError::AlreadyExists`] when a directory with that name
-///   exists.
-/// - [`LifecycleError::InvalidRequest`] when `providers_toml` is not a valid
-///   model configuration.
-/// - [`LifecycleError::Failed`] when the directory or role page cannot be
-///   written.
 #[tracing::instrument(skip_all, fields(agent = %spec.name))]
 pub async fn provision_agent(
     root: &Path,
@@ -111,7 +71,6 @@ pub async fn provision_agent(
     .await
     {
         tracing::error!(error = %e, agent = %spec.name, "failed to write the agent's role page");
-        // The agent must not exist without its role page, so undo the directory.
         remove_dir_logged(&final_dir).await;
         if let Err(cleanup) = remove_agent_role_page(team, coordinator, actor, &spec.name).await {
             tracing::warn!(error = %cleanup, agent = %spec.name, "failed to clean up a partial role page");
@@ -126,9 +85,6 @@ pub async fn provision_agent(
     Ok(final_dir)
 }
 
-/// The template files of a new agent in write order: the blank template,
-/// the bootstrapped marker, `providers.toml`, and `config/config.toml`
-/// last.
 fn plan_files(layout: &WorkspaceLayout, spec: &AgentSpec) -> Vec<PlannedFile> {
     let mut files: Vec<PlannedFile> = blank_agent_template(layout, &spec.display_name)
         .into_iter()
@@ -149,8 +105,6 @@ fn plan_files(layout: &WorkspaceLayout, spec: &AgentSpec) -> Vec<PlannedFile> {
     files
 }
 
-/// The created agent's `config.toml`: the name people see, `autostart`, and
-/// its A2A visibility. Every other value is the default.
 fn agent_config_toml(display_name: &str, visibility: A2aVisibility) -> String {
     let visibility = match visibility {
         A2aVisibility::Public => "public",
@@ -162,9 +116,6 @@ fn agent_config_toml(display_name: &str, visibility: A2aVisibility) -> String {
     )
 }
 
-/// Check `spec.providers_toml` against the hub's config the way the agent's
-/// own settings save does, so a bad model configuration is refused before
-/// anything is written.
 async fn validate_providers(root: &Path, spec: &AgentSpec) -> Result<(), LifecycleError> {
     let hub_dir = hub_dir(root);
     let agent_dir = agent_dir(root, &spec.name);
@@ -193,10 +144,6 @@ async fn validate_providers(root: &Path, spec: &AgentSpec) -> Result<(), Lifecyc
     })
 }
 
-/// Write `dirs`, the config reference files into `config_dir`, and `files`
-/// (in order) under `staging`, then move `staging`
-/// to `final_dir`. On any failure `staging` is removed and nothing exists
-/// at `final_dir`.
 async fn install_agent_dir(
     staging: &Path,
     final_dir: &Path,
@@ -258,14 +205,6 @@ async fn install_agent_dir(
     Ok(())
 }
 
-/// The text of `providers.toml` from an existing agent, to give a new agent
-/// the same model configuration.
-///
-/// # Errors
-/// [`LifecycleError::NotFound`] when the agent has no `providers.toml`
-/// (no such agent, or one that was never configured);
-/// [`LifecycleError::InvalidName`] for a malformed name;
-/// [`LifecycleError::Failed`] when the file cannot be read.
 pub fn copy_providers_from(root: &Path, agent: &str) -> Result<String, LifecycleError> {
     validate_agent_name(agent).map_err(LifecycleError::InvalidName)?;
     let path = agent_dir(root, agent).join("config").join("providers.toml");
@@ -281,9 +220,6 @@ pub fn copy_providers_from(root: &Path, agent: &str) -> Result<String, Lifecycle
     })
 }
 
-/// The first message a new agent receives when it was created with a
-/// description: it asks the agent to turn the description into its own
-/// notes and its role page.
 #[must_use]
 pub fn first_message(description: &str) -> String {
     format!(
@@ -303,27 +239,6 @@ pub fn first_message(description: &str) -> String {
     )
 }
 
-/// Remove an agent's directory, role page, and roster entry, after
-/// checkpointing the directory so the agent can be restored.
-///
-/// Precondition: the caller has already stopped the agent, so nothing is
-/// writing to the directory. The role page, roster entry, and log line are
-/// removed under `coordinator`'s path locks (it must guard `team`), with
-/// `actor`, whoever deletes the agent, recorded as their writer. The caller also passes the agent's own
-/// checkpoint engine: its workspace root is the agent's directory and its
-/// config root is the agent's `config/` directory (see [`restore_agent`]).
-///
-/// Returns the id of the workspace checkpoint holding the directory as it
-/// was, or `None` when it could not be recorded (logged at warn; the
-/// deletion still proceeds, as for every checkpoint taken before an
-/// action). The agent's `config.toml` and `providers.toml` are recorded in
-/// the agent-config repository at the same time.
-///
-/// # Errors
-/// - [`LifecycleError::InvalidName`] for a malformed name.
-/// - [`LifecycleError::NotFound`] when no agent has this name.
-/// - [`LifecycleError::Failed`] when the directory or role page cannot be
-///   removed. The message names the checkpoint when one was taken.
 #[tracing::instrument(skip_all, fields(agent = %name))]
 pub async fn deprovision_agent(
     root: &Path,
@@ -354,8 +269,6 @@ pub async fn deprovision_agent(
         tracing::warn!(agent = %name, "no config checkpoint was recorded before deleting the agent; its settings cannot be restored");
     }
 
-    // Renaming first takes the agent out of discovery in one step, so a
-    // slow or failing recursive removal never leaves a half-deleted agent.
     let trash = root.join(format!(".deleting-{name}"));
     remove_dir_logged(&trash).await;
     if let Err(e) = residuum_core::util::fs::rename_dir_when_released(&dir, &trash).await {
@@ -388,40 +301,12 @@ fn checkpoint_note(checkpoint_id: Option<&str>) -> String {
     checkpoint_id.map_or_else(String::new, |id| format!(" Its checkpoint is {id}."))
 }
 
-/// What a deleted agent is restored from.
 pub struct RestoreSource<'a> {
-    /// The agent's own checkpoint engine, built the way it was when the agent
-    /// ran (workspace root = the agent's directory, config root = its
-    /// `config/` directory, over the agent's checkpoint repositories).
     pub checkpoints: &'a CheckpointEngine,
-    /// The workspace checkpoint to restore the directory from, such as the id
-    /// [`deprovision_agent`] returned.
     pub workspace_checkpoint: &'a str,
-    /// The text of the agent's role page when it was deleted. Without it the
-    /// page comes back with the placeholder role.
     pub role_page: Option<&'a str>,
 }
 
-/// Bring a deleted agent back from the checkpoint [`deprovision_agent`]
-/// returned.
-///
-/// The directory comes back from the workspace repository at
-/// `source.workspace_checkpoint`, then `providers.toml` and `config.toml`
-/// from the tip of the agent-config repository, `config.toml` last, so the
-/// agent is discoverable only once it is complete. The role page is
-/// recreated from `source.role_page`, or with the placeholder role, which
-/// the agent replaces on its next turn. The restored agent is stopped; the
-/// caller starts it. The role page is written under `coordinator`'s path
-/// locks (it must guard `team`) with `actor` recorded as its writer; the
-/// agent's own workspace and config repositories are private to it and need
-/// none.
-///
-/// # Errors
-/// - [`LifecycleError::InvalidName`] for a malformed name.
-/// - [`LifecycleError::AlreadyExists`] when the agent exists again.
-/// - [`LifecycleError::Failed`] when the checkpoint or the agent's saved
-///   settings cannot be restored. A retry is safe: restoring is repeatable
-///   and the agent stays undiscoverable until `config.toml` is back.
 #[tracing::instrument(skip_all, fields(agent = %name))]
 pub async fn restore_agent(
     root: &Path,
@@ -522,9 +407,6 @@ async fn path_exists(path: &Path) -> Result<bool, LifecycleError> {
     })
 }
 
-/// Remove `dir` and everything under it; an absent directory is fine. A
-/// failure is logged and leaves hidden leftovers that no discovery scan
-/// sees.
 async fn remove_dir_logged(dir: &Path) {
     match tokio::fs::remove_dir_all(dir).await {
         Ok(()) => {}
@@ -832,7 +714,6 @@ mod tests {
         let final_dir = fx.root().join("scout");
         let layout = WorkspaceLayout::new(&staging);
         let mut files = plan_files(&layout, &spec("scout", None));
-        // SOUL.md is a file, so writing beneath it fails after earlier files are written.
         let config_at = files.len() - 1;
         files.insert(
             config_at,
@@ -864,7 +745,6 @@ mod tests {
     #[tokio::test]
     async fn a_failed_role_page_removes_the_new_directory() {
         let fx = Fixture::new().await;
-        // A file where the roster directory belongs makes the role page unwritable.
         std::fs::remove_dir_all(fx.team.wiki_agents_dir()).unwrap();
         std::fs::write(fx.team.wiki_agents_dir(), "not a directory").unwrap();
 

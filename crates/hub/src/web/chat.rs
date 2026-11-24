@@ -1,5 +1,3 @@
-//! Chat history and session-usage HTTP handlers.
-
 use std::path::Path;
 
 use axum::extract::{Query, State};
@@ -19,40 +17,23 @@ use residuum_memory::types::Visibility;
 use super::AgentFilesState;
 use crate::file_server::{FileRegistry, SentAttachment};
 
-/// Query parameters for `GET /api/agents/{name}/chat/history`.
 #[derive(Debug, Deserialize)]
 pub(super) struct ChatHistoryQuery {
-    /// If set, fetch this specific episode instead of the live recent messages.
     #[serde(default)]
     pub(super) episode: Option<String>,
 }
 
-/// One message of chat history, as the web client reads it.
-///
-/// A [`RecentMessage`] with the model's reasoning reduced to readable text:
-/// the opaque signatures and encrypted data a provider needs replayed
-/// belong to the model's conversation, never to a client. The status line
-/// the agent reads with a user message is left out the same way: nobody
-/// wrote it.
 #[derive(Debug, Serialize)]
 pub struct HistoryMessage {
-    /// The message, without its reasoning blocks.
     #[serde(flatten)]
     pub message: Message,
-    /// The readable reasoning behind an assistant message, one entry per
-    /// block that has text. Absent when the model produced none.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub thinking: Vec<String>,
-    /// When the message was recorded.
     #[serde(with = "residuum_core::time::minute_format")]
     pub timestamp: chrono::NaiveDateTime,
-    /// Whether the message came from a user-visible or background turn.
     pub visibility: Visibility,
-    /// The correlation id of the turn that produced the message, if known.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub turn_id: Option<String>,
-    /// File attachment delivered to the web UI by a `send_message(endpoint = "ws")`
-    /// tool call whose result this message records.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sent_attachment: Option<SentAttachment>,
 }
@@ -86,13 +67,10 @@ impl From<RecentMessage> for HistoryMessage {
 #[derive(Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(super) enum ChatHistorySegment {
-    /// Live, uncompressed messages from `recent_messages.json`.
     Recent {
         messages: Vec<HistoryMessage>,
         next_cursor: Option<String>,
     },
-    /// A single archived episode, synthesized as history messages so the
-    /// frontend can render them through the existing pipeline.
     Episode {
         episode_id: String,
         date: NaiveDate,
@@ -212,15 +190,6 @@ pub(super) async fn api_chat_history(
     }
 }
 
-/// `GET /api/agents/{name}/usage` — the main agent's cumulative session token usage, for
-/// the conversation size to render correctly on load or reconnect without
-/// waiting for the next model call.
-///
-/// Reads the same on-disk totals the running agent writes through to after
-/// every model call (see `residuum_agent::usage::MainUsageSink`), the same
-/// way `GET /api/agents/{name}/chat/history` reads `recent_messages.json` rather than
-/// reaching into the live agent — this HTTP layer never holds a reference
-/// to it. Returns the zero default in setup mode (no memory dir yet).
 pub(super) async fn api_usage(State(state): State<AgentFilesState>) -> Json<SessionUsageTotals> {
     let Some(memory_dir) = &state.memory_dir else {
         return Json(SessionUsageTotals::default());
@@ -229,11 +198,6 @@ pub(super) async fn api_usage(State(state): State<AgentFilesState>) -> Json<Sess
     Json(load_session_usage_totals(&path).await)
 }
 
-/// Synthesize a `RecentMessage` wrapper around a raw episode `Message`.
-///
-/// Episode JSONL stores only raw `Message` values, so we fabricate metadata
-/// using the episode's date (at 00:00). Visibility is always `User` because
-/// the original per-message visibility was not recorded in the transcript.
 fn wrap_episode_message(message: Message, timestamp: chrono::NaiveDateTime) -> RecentMessage {
     RecentMessage {
         message,
@@ -243,12 +207,6 @@ fn wrap_episode_message(message: Message, timestamp: chrono::NaiveDateTime) -> R
     }
 }
 
-/// Point each attachment at its archived file when the file has moved.
-///
-/// Archiving an inbox item moves its attachment directory into the archive, so
-/// an attachment recorded at `inbox/agent/attachments/<id>/<name>` is then only
-/// at `archive/inbox/agent/attachments/<id>/<name>`. An attachment whose file is
-/// still at its recorded path, or is in neither place, keeps the recorded path.
 async fn refresh_attachment_paths(workspace_dir: &Path, messages: &mut [HistoryMessage]) {
     let archive_root = WorkspaceLayout::new(workspace_dir).agent_inbox_archive_attachments_dir();
     for history in messages {
@@ -274,8 +232,6 @@ async fn refresh_attachment_paths(workspace_dir: &Path, messages: &mut [HistoryM
     }
 }
 
-/// Attach [`SentAttachment`] metadata to any `tool` message that records a
-/// successful `send_message(endpoint = "ws", file_path = ...)` call.
 async fn resolve_sent_attachments(registry: &FileRegistry, messages: &mut [HistoryMessage]) {
     let mut pending_ws_files: std::collections::HashMap<String, (String, Option<String>)> =
         std::collections::HashMap::new();
@@ -306,8 +262,6 @@ async fn resolve_sent_attachments(registry: &FileRegistry, messages: &mut [Histo
     }
 }
 
-/// Extract `(file_path, caption)` from a `send_message` call targeting the
-/// web UI (`endpoint = "ws"`) with a `file_path`.
 fn parse_ws_file_send(
     name: &str,
     arguments: &serde_json::Value,
@@ -340,7 +294,6 @@ fn parse_ws_file_send(
     Some((file_path.to_string(), caption))
 }
 
-/// Whether `content` is the success output of a `send_message` call to `"ws"`.
 fn is_ws_publish_success(content: &str) -> bool {
     content
         .lines()
@@ -348,7 +301,6 @@ fn is_ws_publish_success(content: &str) -> bool {
         .is_some_and(|line| line.ends_with(" published to endpoint 'ws'"))
 }
 
-/// Whether `path` exists as a file. A failed lookup is logged and reads as absent.
 async fn file_exists(path: &Path) -> bool {
     match tokio::fs::try_exists(path).await {
         Ok(exists) => exists,
@@ -375,9 +327,6 @@ mod tests {
     use residuum_inference::{MessageAttachment, ThinkingBlock};
     use residuum_memory::recent_messages::append_recent_messages;
 
-    /// An assistant message whose reasoning the provider needs replayed:
-    /// readable text, a signature to send back, and a block that is only
-    /// encrypted.
     fn assistant_with_reasoning() -> Message {
         Message::assistant("The answer is 42.".to_string(), None).with_thinking(vec![
             ThinkingBlock {
@@ -503,7 +452,6 @@ mod tests {
         );
     }
 
-    /// A user message that came with one saved file, recorded at `path`.
     fn message_with_attachment(path: &str) -> HistoryMessage {
         let mut message = Message::user("see attached");
         message.attachments = vec![MessageAttachment {

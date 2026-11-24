@@ -34,15 +34,9 @@
   import { AGENT_PANEL_PLACES, agentRowStatus } from "./rail-model";
   import type { ShellActions } from "./shell-actions";
 
-  // The rail: the search row, Home and Inbox, every agent with its places in
-  // an accordion, the team's places, and a footer with help and Settings. When
-  // the user has more than one instance, a switcher sits above the search row. At
-  // phone width the same rail opens in the drawer.
-
   interface Props {
     accordion: RailAccordion;
     actions: ShellActions;
-    /** Set in the phone drawer: shows a close button, and is called once a place opens. */
     onclose?: () => void;
   }
 
@@ -57,19 +51,16 @@
   const homeCount = $derived(overview.needsYou.count);
   const helpActions = $derived(actionRegistry.all.filter((action) => action.group === HELP_GROUP));
 
-  /** The Inbox and the Workbench stay current whatever filter or artifact they show. */
   function isCurrent(target: Place): boolean {
     if (target.kind === "inbox" || target.kind === "workbench") return place.kind === target.kind;
     return placesEqual(place, target);
   }
 
-  /** Go to `to` (push) and close the drawer. */
   function go(to: AppLocation): void {
     void router.open(to);
     onclose?.();
   }
 
-  /** A row's link click: a modified click opens the place in a new tab, as a link does. */
   function follow(event: MouseEvent, to: AppLocation, onFollow?: () => void): void {
     if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) {
       return;
@@ -79,7 +70,6 @@
     go(to);
   }
 
-  /** Up and Down move between the rows that show, Home and End go to the ends. */
   const rowKeys: Attachment<HTMLElement> = (container) => {
     const onKeydown = (event: KeyboardEvent): void => {
       if (!ROW_KEYS.has(event.key) || !(event.target instanceof HTMLElement)) return;
@@ -417,7 +407,6 @@
       color: var(--color-vein-bright);
     }
 
-    /* text-3 is not allowed on the current row's vein tint; text-2 is. */
     [aria-current="page"] &[data-tone="quiet"] {
       color: var(--color-text-2);
     }
@@ -451,7 +440,6 @@
     }
   }
 
-  /* An agent's places hang from a thin vein that runs down from its row. */
   .rail-places {
     position: relative;
     padding: var(--space-2) 0 var(--space-8) calc(var(--space-24) + var(--space-2));
@@ -468,7 +456,6 @@
     }
   }
 
-  /* A place under an agent, and its way to open beside the agent's Chat. The row carries the hover and current fills, so they cover both. */
   .rail-place-row {
     display: flex;
     align-items: center;
@@ -483,7 +470,6 @@
       background: var(--color-vein-tint);
     }
 
-    /* Beside chat stays out of the way until the row is in play, and shows on the row that is open. */
     & > :global(.rail-beside) {
       flex: none;
       margin-right: var(--space-2);
@@ -532,7 +518,6 @@
     border-top: 1px solid var(--color-line-soft);
   }
 
-  /* Touch has no hover: beside chat shows on every row. */
   @media (hover: none) {
     .rail-place-row > :global(.rail-beside) {
       opacity: 1;
@@ -543,7 +528,6 @@
     .rail-search {
       height: var(--layout-touch-target);
 
-      /* A phone has no keyboard to press it on. */
       & :global(.ui-kbd) {
         display: none;
       }

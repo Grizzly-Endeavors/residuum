@@ -1,28 +1,13 @@
-//! Update subcommand: check for and install updates from GitHub Releases.
-
 use residuum::util::FatalError;
 
 #[derive(clap::Args)]
 pub(super) struct UpdateArgs {
-    /// Only check for updates, don't install
     #[arg(long)]
     pub check: bool,
-    /// Automatically restart the gateway after updating
     #[arg(long, short)]
     pub yes: bool,
 }
 
-/// Check for and install updates from GitHub Releases.
-///
-/// Fetches the latest release tag, compares it against the build-time
-/// version, and optionally downloads the install script to replace the
-/// current binary. With `-y`/`--yes`, automatically triggers a daemon
-/// restart after a successful update.
-///
-/// # Errors
-///
-/// Returns `FatalError::Gateway` if the GitHub API request fails or
-/// the install script cannot be executed.
 #[tracing::instrument(skip_all)]
 pub(super) async fn run_update_command(args: &UpdateArgs) -> Result<(), FatalError> {
     use residuum::hub::update;
@@ -54,13 +39,11 @@ pub(super) async fn run_update_command(args: &UpdateArgs) -> Result<(), FatalErr
         );
     }
 
-    // Check if gateway is running and try to restart it
     if let Ok(pid_path) = residuum::daemon::pid_file_path()
         && let Ok(pid) = residuum::daemon::read_pid_file(&pid_path)
         && residuum::daemon::is_process_running(pid)
     {
         if args.yes {
-            // Try to trigger seamless restart via the API
             let gateway_addr = super::resolve_gateway_addr(&residuum::config::residuum_root()?);
             let url = format!("http://{gateway_addr}/api/hub/update/restart");
             let response = match super::hub_client::local_hub_client().build() {

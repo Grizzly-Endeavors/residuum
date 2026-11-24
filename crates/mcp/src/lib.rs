@@ -1,5 +1,3 @@
-//! MCP (Model Context Protocol) server lifecycle management.
-
 pub mod client;
 pub(crate) mod registry;
 pub mod types;

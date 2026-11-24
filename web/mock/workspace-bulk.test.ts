@@ -20,7 +20,6 @@ describe("the workspace directory, raw, tree and read routes", () => {
 
   const agent = (route: string): string => `${harness.baseUrl}/api/workspace${route}`;
   const team = (route: string): string => `${harness.baseUrl}/api/team/workspace${route}`;
-  /** A request with a JSON body. The response body is parsed when it is JSON, and left as text when it isn't. */
   async function send(
     url: string,
     method: string,

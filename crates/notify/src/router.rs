@@ -1,25 +1,3 @@
-//! Notification router: subscribes to `TopicId::Background` and delivers
-//! each result according to the disposition its producing agent declared.
-//!
-//! Routing is a match on `ResultDisposition`, decided upstream by the agent that
-//! ran the task:
-//! - `Silent` → discard
-//! - agent-spawned (`spawned` sessions) → discard here; each turn's result is
-//!   already relayed to the session's direct spawner as it happens, via
-//!   `AgentMessenger` from the session runtime (see
-//!   `relay_result_to_spawner` in the background runtime), not through this
-//!   router
-//! - artifact-started (`artifact` sessions) → discard; their output reaches
-//!   the artifact that started them through the session stream, and is never
-//!   filed to the inbox or pushed to notification channels on its own
-//! - conversation-started (`external` sessions with `EventTrigger::Conversation`,
-//!   i.e. A2A callers and non-owner Discord/Telegram/Teams chats) → discard;
-//!   the session's output already went back to the conversation it came from,
-//!   and its observations are merged into memory as an episode, so filing it
-//!   to the inbox or a notification channel would be pure noise
-//! - `Normal` → inbox
-//! - `Urgent` → inbox and every configured notification channel
-
 use tokio::task::JoinHandle;
 
 use residuum_bus::{
@@ -28,12 +6,6 @@ use residuum_bus::{
     topics,
 };
 
-/// Spawn the notification router as a bus subscriber.
-///
-/// Subscribes to `TopicId::Background` and routes each `AgentResultEvent`
-/// by its declared disposition.
-///
-/// Returns `None` if subscription fails.
 pub async fn spawn_notification_router(
     bus_handle: &BusHandle,
     endpoint_registry: EndpointRegistry,
@@ -57,13 +29,11 @@ pub async fn spawn_notification_router(
     )))
 }
 
-/// The notification router state.
 struct NotificationRouter {
     endpoint_registry: EndpointRegistry,
     publisher: Publisher,
 }
 
-/// Main loop: receive agent results and route them.
 async fn router_loop(mut subscriber: Subscriber<AgentResultEvent>, router: NotificationRouter) {
     loop {
         match subscriber.recv().await {
@@ -78,39 +48,23 @@ async fn router_loop(mut subscriber: Subscriber<AgentResultEvent>, router: Notif
     tracing::info!("notification router shutting down");
 }
 
-/// Route a single `AgentResultEvent` by its declared disposition.
 #[tracing::instrument(skip_all, fields(source_label = %event.source_label, session_address = %event.session_address, run_id = %event.run_id))]
 async fn route_agent_result(event: &AgentResultEvent, router: &NotificationRouter) {
-    // Silent results are the majority of traffic through this path and are a
-    // discard by design, so check for them before logging anything at info —
-    // otherwise routine health-check pulses would spam the info log.
     if event.disposition == ResultDisposition::Silent {
         tracing::trace!("pulse check: nothing to report");
         return;
     }
 
-    // A `spawned` session's result is relayed to its direct spawner as each
-    // turn happens (see `relay_result_to_spawner` in the background runtime),
-    // not through this router — the disposition rules below (inbox, urgent
-    // fanout) are for `scheduled` results only.
     if matches!(event.source, EventTrigger::Agent) {
         tracing::trace!("spawned session result: already relayed per-turn, nothing to do here");
         return;
     }
 
-    // An `artifact` session's output belongs to the artifact that started
-    // it, which follows the session's own stream. Filing it to the inbox or
-    // notifying on it would surface work the user started from a page as if
-    // the agent had produced it unprompted.
     if matches!(event.source, EventTrigger::Artifact(_)) {
         tracing::trace!("artifact session result: stays with its artifact, nothing to route");
         return;
     }
 
-    // A `conversation` session's output already went back to the conversation
-    // it came from, and its observations are merged into memory as an
-    // episode. Filing it to the inbox or notifying on it would surface the
-    // same content twice — once where it belongs, once as manufactured noise.
     if matches!(event.source, EventTrigger::Conversation) {
         tracing::trace!(
             "conversation session result: already delivered to its conversation, nothing to route"
@@ -129,11 +83,6 @@ async fn route_agent_result(event: &AgentResultEvent, router: &NotificationRoute
     tracing::info!(targets = ?targets, urgent, "delivering result");
     publish_to_targets(event, &targets, urgent, &router.publisher).await;
 
-    // A failed pulse or scheduled action gets its own owner-facing notice —
-    // separate from the inbox item above — since those are easy to miss
-    // amid routine pulse chatter. Scoped to Pulse/Action: a webhook-
-    // triggered `external` run also reaches this point, but has no
-    // "scheduled" framing the owner would recognize the same way.
     if matches!(event.status, AgentResultStatus::Failed { .. })
         && matches!(event.source, EventTrigger::Pulse | EventTrigger::Action)
     {
@@ -141,8 +90,6 @@ async fn route_agent_result(event: &AgentResultEvent, router: &NotificationRoute
     }
 }
 
-/// Publish an owner-facing notice for a pulse or scheduled action run that
-/// failed, naming what failed and why in plain language.
 async fn publish_failed_scheduled_run_notice(event: &AgentResultEvent, publisher: &Publisher) {
     let AgentResultStatus::Failed { error, .. } = &event.status else {
         return;
@@ -150,9 +97,6 @@ async fn publish_failed_scheduled_run_notice(event: &AgentResultEvent, publisher
     let kind = match event.source {
         EventTrigger::Pulse => "pulse",
         EventTrigger::Action => "scheduled action",
-        // The caller only reaches here for Pulse/Action; every other
-        // trigger keeps a generic label rather than a wildcard match, so a
-        // future trigger variant doesn't silently fall through unnoticed.
         EventTrigger::Agent
         | EventTrigger::Webhook(_)
         | EventTrigger::Conversation
@@ -174,7 +118,6 @@ async fn publish_failed_scheduled_run_notice(event: &AgentResultEvent, publisher
     }
 }
 
-/// Inbox always; every configured notification channel as well when urgent.
 fn delivery_targets(registry: &EndpointRegistry, urgent: bool) -> Vec<String> {
     let mut targets = vec![INBOX_TARGET.to_string()];
     if urgent {
@@ -190,14 +133,6 @@ fn delivery_targets(registry: &EndpointRegistry, urgent: bool) -> Vec<String> {
 
 const INBOX_TARGET: &str = "inbox";
 
-/// Build the body a result's inbox item (and any channel push) carries.
-///
-/// A completed run's own summary is the content, same as always. A failed or
-/// stopped run previously produced an inbox item with only the
-/// "[Originally at ...]" timestamp line and no reason at all, since its
-/// summary is always empty (a failed/cancelled turn never produces text
-/// output — see `execute_turn_outcome`); this appends a plain-language line
-/// naming what happened instead of leaving the body blank.
 fn notification_content(event: &AgentResultEvent) -> String {
     match &event.status {
         AgentResultStatus::Completed => event.summary.clone(),
@@ -211,8 +146,6 @@ fn notification_content(event: &AgentResultEvent) -> String {
     }
 }
 
-/// Append a status line to a summary, or use it alone when the summary is
-/// empty (the common case for a failed/cancelled run).
 fn append_status_line(summary: &str, line: String) -> String {
     if summary.is_empty() {
         line
@@ -221,7 +154,6 @@ fn append_status_line(summary: &str, line: String) -> String {
     }
 }
 
-/// Publish notifications to the specified targets.
 async fn publish_to_targets(
     event: &AgentResultEvent,
     targets: &[String],
@@ -412,11 +344,6 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn agent_spawned_result_is_discarded_here_not_relayed_to_main() {
-        // The per-turn relay to a spawned session's direct spawner now
-        // happens straight from the session runtime via `AgentMessenger` —
-        // this router must not also relay it to main (which would double up
-        // for main-spawned sessions, and be outright wrong for a session
-        // spawned by another session).
         let handle = residuum_bus::spawn_broker();
         let mut user_sub = handle.subscribe(topics::UserMessage).await.unwrap();
         let mut inbox_sub = handle.subscribe(topics::Inbox).await.unwrap();
@@ -549,8 +476,6 @@ mod tests {
         );
     }
 
-    // ── Failure reason reaches the inbox item ────────────────────────────
-
     #[tokio::test]
     async fn failed_pulse_inbox_item_carries_the_failure_reason() {
         let handle = residuum_bus::spawn_broker();
@@ -609,8 +534,6 @@ mod tests {
         let event = sample_event(ResultDisposition::Normal);
         assert_eq!(notification_content(&event), "3 new emails found");
     }
-
-    // ── Failed scheduled run gets its own notice ─────────────────────────
 
     #[tokio::test]
     async fn failed_pulse_publishes_an_owner_notice() {
@@ -695,10 +618,6 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn failed_spawned_session_publishes_no_owner_notice() {
-        // Spawned-session results are relayed per-turn to their spawner
-        // (see `relay_result_to_spawner`), never routed through this
-        // notice — a failure notice here would be redundant with that relay
-        // and, for a deeply nested spawn, attributed to the wrong thing.
         let handle = residuum_bus::spawn_broker();
         let mut notice_sub: Subscriber<NoticeEvent> = handle
             .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))

@@ -16,10 +16,6 @@ import Memory from "./Memory.svelte";
 import Runtime from "./Runtime.svelte";
 import Schedule from "./Schedule.svelte";
 
-// The Memory, Schedule and Runtime sections drawn on their own, with a real
-// scope over a fake agent's files: what each field shows, what an edit
-// stages, and what a save writes.
-
 let agent = "";
 let server: FakeAgentConfig;
 let count = 0;
@@ -33,7 +29,6 @@ async function loaded(config: string): Promise<AgentScopeModel> {
   return scope;
 }
 
-/** The JSON of every config PATCH the page sent, in order. */
 const patches = (): unknown[] =>
   server.requests
     .filter((request) => request.method === "PATCH" && request.url.endsWith("/config/patch"))

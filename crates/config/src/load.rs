@@ -1,6 +1,3 @@
-//! Agent config loading and validation methods: the agent counterpart to
-//! [`super::hub_load`]'s `HubConfig::load_at`.
-
 use std::path::{Path, PathBuf};
 
 use residuum_core::util::FatalError;
@@ -11,31 +8,10 @@ use super::{Config, HubConfig};
 use super::{bootstrap, deserialize, resolve};
 
 impl Config {
-    /// Create an agent's `config/` directory and regenerate its reference
-    /// templates.
-    ///
-    /// - `config.example.toml`/`providers.example.toml` are always regenerated (kept in
-    ///   sync with the current schema).
-    /// - The live `config.toml`/`providers.toml` are never written here: an
-    ///   agent is discovered by its `config/config.toml`, so the caller writes it
-    ///   last, once the real configuration is complete.
-    ///
-    /// # Errors
-    /// Returns `FatalError::Config` if the directory or files cannot be written.
     pub fn bootstrap_agent_config_dir(agent_config_dir: &Path) -> Result<(), FatalError> {
         bootstrap::bootstrap_agent_at(agent_config_dir)
     }
 
-    /// Load an agent's configuration from `agent_dir` (its workspace root)
-    /// and the hub config it belongs to.
-    ///
-    /// The agent's own `config.toml`/`providers.toml` live in
-    /// `agent_dir/config/`. The agent's name is `agent_dir`'s directory name.
-    ///
-    /// # Errors
-    /// Returns `FatalError::Config` if `providers.toml` is missing, either
-    /// file exists but cannot be read or parsed, or required values are
-    /// missing/invalid.
     #[tracing::instrument(skip_all, fields(agent_dir = %agent_dir.display()))]
     pub fn load_agent_at(agent_dir: &Path, hub: &HubConfig) -> Result<Self, FatalError> {
         let agent_config_dir = agent_dir.join("config");
@@ -45,17 +21,6 @@ impl Config {
         Self::load_agent_from_paths(agent_dir, &config_path, &providers_path, &agent_name, hub)
     }
 
-    /// Load an agent's configuration from explicit `config.toml`/`providers.toml`
-    /// paths.
-    ///
-    /// Used by [`load_agent_at`](Self::load_agent_at) for the normal path, and by
-    /// the last-known-good fallback (`hub::last_known_good`) to load a
-    /// saved copy under different filenames without touching the user's
-    /// live `config.toml`/`providers.toml`.
-    ///
-    /// # Errors
-    /// Returns `FatalError::Config` if either file exists but cannot be
-    /// read or parsed, or if required values are missing.
     pub fn load_agent_from_paths(
         agent_dir: &Path,
         config_path: &Path,
@@ -105,17 +70,6 @@ impl Config {
         Ok(cfg)
     }
 
-    /// Whether the pulse system is on in the `config.toml` of the agent at
-    /// `agent_dir`, read without resolving the rest of the configuration.
-    ///
-    /// A missing file, or one with no `[pulse]` setting, takes the default.
-    /// What `from_file_and_env` makes of every other key does not matter
-    /// here, so an unknown key is not a failure.
-    ///
-    /// # Errors
-    /// Returns `FatalError::Config` when the file exists but cannot be read,
-    /// is not valid TOML, or gives `[pulse] enabled` a value that is not true
-    /// or false.
     pub fn pulse_enabled_at(agent_dir: &Path) -> Result<bool, FatalError> {
         #[derive(serde::Deserialize)]
         struct PulseSwitch {
@@ -151,14 +105,6 @@ impl Config {
             .unwrap_or(DEFAULT_PULSE_ENABLED))
     }
 
-    /// Validate a TOML string as an agent's `config.toml` without saving it.
-    ///
-    /// Parses the TOML into the raw config structure, then runs full resolution
-    /// to catch semantic errors. Reads the existing `providers.toml` from the
-    /// agent's config directory for model resolution.
-    ///
-    /// # Errors
-    /// Returns a human-readable error string if validation fails.
     pub fn validate_agent_toml(
         contents: &str,
         agent_dir: &Path,
@@ -184,13 +130,6 @@ impl Config {
         Ok(())
     }
 
-    /// Validate a TOML string as an agent's `providers.toml` without saving it.
-    ///
-    /// Parses the TOML and runs model resolution against the existing
-    /// `config.toml` on disk to catch semantic errors.
-    ///
-    /// # Errors
-    /// Returns a human-readable error string if validation fails.
     pub fn validate_agent_providers_toml(
         contents: &str,
         agent_dir: &Path,
@@ -218,15 +157,6 @@ impl Config {
         Ok(())
     }
 
-    /// Diagnostics for `contents` as an agent's `config.toml`.
-    ///
-    /// Reuses [`Self::validate_agent_toml`] for the semantic check, so a
-    /// diagnostic can never disagree with what loading rejects. Parses the
-    /// TOML a second time first so a syntax error can carry the parser's own
-    /// line/column via its byte span — `validate_agent_toml` only returns
-    /// the crate's pre-formatted `Display` text, which has no structured
-    /// position. Semantic errors have no byte position to report, since
-    /// they're found only after deserialization succeeds.
     #[must_use]
     pub fn diagnose_agent_toml(
         contents: &str,
@@ -239,8 +169,6 @@ impl Config {
         })
     }
 
-    /// Diagnostics for `contents` as an agent's `providers.toml`. See
-    /// [`Self::diagnose_agent_toml`] for the approach.
     #[must_use]
     pub fn diagnose_agent_providers_toml(
         contents: &str,
@@ -253,21 +181,12 @@ impl Config {
         })
     }
 
-    /// The stable key that names this agent's main conversation to model
-    /// providers that route requests by key: a hash of the workspace path,
-    /// so no filesystem detail leaves the machine.
     #[must_use]
     pub fn main_conversation_key(&self) -> String {
         crate::resolve::session_affinity_key(&self.workspace_dir, "main")
     }
 }
 
-/// The agent's name from its workspace directory's file name.
-///
-/// # Errors
-/// Returns `FatalError::Config` if `agent_dir` has no valid UTF-8 file name
-/// component (shouldn't happen for a directory reached through agent
-/// discovery, which already filters on this).
 fn agent_name_from_dir(agent_dir: &Path) -> Result<String, FatalError> {
     agent_dir
         .file_name()
@@ -281,10 +200,6 @@ fn agent_name_from_dir(agent_dir: &Path) -> Result<String, FatalError> {
         })
 }
 
-/// Locate the `providers.toml` to load for the given agent config directory.
-///
-/// # Errors
-/// Returns `FatalError::Config` if no providers file can be found.
 fn find_providers_path(agent_config_dir: &Path) -> Result<PathBuf, FatalError> {
     let providers_path = agent_config_dir.join("providers.toml");
     if providers_path.exists() {
@@ -297,14 +212,6 @@ fn find_providers_path(agent_config_dir: &Path) -> Result<PathBuf, FatalError> {
     )))
 }
 
-/// Read and parse a TOML file if it exists, returning `None` if absent.
-///
-/// Unknown keys are skipped the same way loading skips them (see
-/// [`parse_tolerating_unknown_keys`]); the notices are dropped because this
-/// reads the *other* file while validating one, and loading reports them.
-///
-/// # Errors
-/// Returns a human-readable error string if the file cannot be read or parsed.
 fn read_optional_toml<T: serde::de::DeserializeOwned>(
     path: &Path,
     file_name: &str,
@@ -318,15 +225,6 @@ fn read_optional_toml<T: serde::de::DeserializeOwned>(
     Ok(Some(parsed))
 }
 
-/// Shared syntax-then-semantic diagnostic path for a TOML config file: try
-/// to parse `contents` as `T` first so a syntax error carries the parser's
-/// own line/column (from its byte span). An unknown top-level key is not a
-/// syntax error here — [`load_agent_at`](Config::load_agent_at) tolerates it
-/// (see [`parse_tolerating_unknown_keys`]), skipping the key with a notice
-/// instead of failing the file — so it's reported as a warning, one per
-/// dropped key, not an error. Once the file parses (with or without keys
-/// dropped), `validate` (the real semantic check loading also runs) finds
-/// the one error loading would actually raise.
 fn diagnose_toml_file<T: serde::de::DeserializeOwned>(
     contents: &str,
     file_label: &str,
@@ -345,9 +243,6 @@ fn diagnose_toml_file<T: serde::de::DeserializeOwned>(
             }];
         }
 
-        // At least one unknown key is present; re-parse tolerating it (and
-        // any others) to collect one warning per dropped key, matching what
-        // loading actually does with this content.
         return match parse_tolerating_unknown_keys::<T>(contents, file_label) {
             Ok((_, notices)) => {
                 let mut diagnostics: Vec<Diagnostic> =
@@ -367,7 +262,6 @@ fn diagnose_toml_file<T: serde::de::DeserializeOwned>(
     }
 }
 
-/// Load and parse a `providers.toml` file from the given path.
 fn load_providers(path: &Path) -> Result<(deserialize::ProvidersFile, Vec<String>), FatalError> {
     let contents = std::fs::read_to_string(path).map_err(|e| {
         FatalError::Config(format!(
@@ -383,10 +277,8 @@ fn load_providers(path: &Path) -> Result<(deserialize::ProvidersFile, Vec<String
 mod tests {
     use super::*;
 
-    /// Valid minimal agent config TOML (no timezone — that's hub-level now).
     const VALID_CONFIG: &str = "";
 
-    /// Valid minimal providers TOML.
     const VALID_PROVIDERS: &str = "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n";
 
     fn test_hub() -> HubConfig {
@@ -405,8 +297,6 @@ mod tests {
         }
     }
 
-    /// Write a bootstrapped agent directory (`config/config.toml`,
-    /// `config/providers.toml`) under `dir/<name>`, returning the agent dir.
     fn write_agent(dir: &Path, name: &str, config: &str, providers: &str) -> PathBuf {
         let agent_dir = dir.join(name);
         let config_dir = agent_dir.join("config");
@@ -427,8 +317,6 @@ mod tests {
     #[test]
     fn validate_agent_toml_resolves_secrets_from_hub_store() {
         let dir = tempfile::tempdir().unwrap();
-        // Its own hub dir: the secret store written here must not be read by
-        // other tests that share `test_hub()`'s directory.
         let hub = HubConfig {
             config_dir: dir.path().join("hub"),
             ..test_hub()

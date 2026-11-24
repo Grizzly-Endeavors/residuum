@@ -72,7 +72,6 @@ function uploaded(id: string, filename: string): Response {
   return jsonResponse({ id, filename, size: 4 });
 }
 
-/** Answer the hub's upload route with `answer`, and everything else (the model control's read) with 404. */
 function answerUploads(answer: FetchHandler): void {
   mockFetch((url, init) =>
     url.startsWith("/api/hub/uploads") ? answer(url, init) : jsonResponse({}, 404),
@@ -83,7 +82,6 @@ function attachedList(): HTMLElement {
   return screen.getByRole("list", { name: "Attached files" });
 }
 
-/** Whether the device reports a coarse pointer, as a touch screen does. */
 let coarsePointer = false;
 
 beforeEach(() => {
@@ -91,7 +89,6 @@ beforeEach(() => {
   stubPointer(() => coarsePointer);
   stubWebSocket();
   Element.prototype.scrollIntoView = vi.fn();
-  // The model control's file read; its own tests are in ModelControl's.
   mockFetch(() => jsonResponse({}, 404));
   vi.spyOn(console, "error").mockImplementation(() => {});
   unregister = actionRegistry.register("test", () => [
@@ -225,7 +222,6 @@ describe("the / menu", () => {
     expect(screen.getAllByRole("combobox")).toEqual([box]);
     expect(box.tagName).toBe("TEXTAREA");
     expect(box).toHaveAttribute("aria-expanded", "false");
-    // Nothing to control while the list isn't there.
     expect(box).not.toHaveAttribute("aria-controls");
     expect(box).not.toHaveAttribute("aria-activedescendant");
     expect(screen.getByRole("button", { name: "Chat actions" })).not.toHaveAttribute(
@@ -266,7 +262,6 @@ describe("the / menu", () => {
     const escape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
     box.dispatchEvent(escape);
     await settle();
-    // Claimed, so the chat doesn't take it as Stop.
     expect(escape.defaultPrevented).toBe(true);
     expect(screen.queryByRole("listbox")).toBeNull();
   });

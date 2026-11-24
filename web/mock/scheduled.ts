@@ -13,49 +13,30 @@ import { decodedParam, type Route, type RouteContext } from "./routes";
 import type { MockState } from "./state";
 import { instantOfLocal, localMs } from "./zone";
 
-/** A pulse as HEARTBEAT.yml declares it, and when it last ran (`pulse_state.json`). */
 export interface MockPulse {
   name: string;
   enabled: boolean;
-  /** `null` for a pulse that failed to load. */
   schedule: string | null;
   activeHours: string | null;
   agent: string | null;
-  /** The pulse's `model_tier`, when it names one. */
   modelTier?: string;
   lastRunAt: string | null;
   problems: string[];
 }
 
-/**
- * An action as the action store holds it: the listing without its live run,
- * and with no `problem` unless one is set.
- */
 export type MockAction = Omit<ActionInfo, "current_run" | "problem"> & { problem?: string };
 
-/**
- * A pulse fire in flight, running its task scripts. The mock's fires never
- * ask for a session: each ends with an outcome of its own, or is stopped.
- */
 export interface MockPulseFire {
   fireId: string;
   pulse: string;
   startedAt: string;
-  /** Asked to stop, and finishing. */
   stopping: boolean;
 }
 
-/**
- * The pulses and scheduled actions of an agent that has run. Session runs
- * come from the agent's sessions, the way the backend reads them from its
- * session store; fires that run no session are held here.
- */
 export interface MockScheduled {
   pulses: MockPulse[];
   actions: MockAction[];
-  /** The fires in flight, oldest first. */
   fires: MockPulseFire[];
-  /** Each pulse's last fire that ended without a session (`last_fire` in `pulse_state.json`). */
   lastFires: Record<string, ScheduledRunOutcome>;
 }
 
@@ -116,7 +97,6 @@ export function createScheduled(clock: MockClock): MockScheduled {
   };
 }
 
-/** The `parse_schedule_duration` of the backend, in milliseconds, or `null` for a schedule it refuses. */
 function scheduleMs(schedule: string): number | null {
   const match = /^(\d+)([smhd])$/.exec(schedule);
   const value = Number(match?.[1]);
@@ -126,16 +106,10 @@ function scheduleMs(schedule: string): number | null {
   );
 }
 
-/** The pulse a source label (`pulse:<name>`) names, or `null` for an action's. */
 function pulseOf(source: string): string | null {
   return source.startsWith("pulse:") ? source.slice("pulse:".length) : null;
 }
 
-/**
- * The run of `source` (`pulse:<name>`, `action:<name>`) in flight now, as the
- * backend picks it: the pulse's newest fire, else the newest live session.
- * A fire's overlap is the oldest run of the pulse still in flight before it.
- */
 function currentRun(state: MockState, source: string): ScheduledCurrentRun | null {
   const live = state.sessions.live.filter(
     (s) => s.category === "scheduled" && s.source_label === source,
@@ -180,11 +154,6 @@ function currentRun(state: MockState, source: string): ScheduledCurrentRun | nul
       };
 }
 
-/**
- * How the last run of `source` went, as the Scheduled view shows it: the
- * newer of its newest finished session and, for a pulse, its last fire that
- * ran no session.
- */
 function lastOutcome(state: MockState, source: string): ScheduledRunOutcome | null {
   const run: SessionSummary | undefined = state.sessions.completed.find(
     (s) => s.category === "scheduled" && s.source_label === source,
@@ -205,7 +174,6 @@ function lastOutcome(state: MockState, source: string): ScheduledRunOutcome | nu
   return Date.parse(fire.at) > Date.parse(session.at) ? fire : session;
 }
 
-/** Tell the agent's pages that a fire of `pulse` changed, and with what outcome when it ended with one. */
 function announceFire(
   state: MockState,
   pulse: string,
@@ -221,11 +189,6 @@ function announceFire(
   });
 }
 
-/**
- * Fire `pulse` now, in its task scripts, as the scheduler does when it is
- * due: its last run is now, and the fire is announced. `null` for a pulse
- * HEARTBEAT.yml doesn't have.
- */
 export function startPulseFire(state: MockState, pulse: string): MockPulseFire | null {
   const declared = state.scheduled.pulses.find((p) => p.name === pulse);
   if (declared === undefined) return null;
@@ -242,11 +205,6 @@ export function startPulseFire(state: MockState, pulse: string): MockPulseFire |
   return fire;
 }
 
-/**
- * End the fire `fireId` without a session: its outcome becomes its pulse's
- * last fire, and the end is announced with it. `false` for a fire that isn't
- * in flight.
- */
 export function finishPulseFire(
   state: MockState,
   fireId: string,
@@ -263,7 +221,6 @@ export function finishPulseFire(
   return true;
 }
 
-/** The `parse_active_hours` of the backend: the window as minutes into the day, or `null` for one it refuses. */
 function parseActiveHours(hours: string): readonly [number, number] | null {
   const match = /^(\d+):(\d+)-(\d+):(\d+)$/.exec(hours);
   if (match === null) return null;
@@ -277,10 +234,6 @@ function parseActiveHours(hours: string): readonly [number, number] | null {
   return [startHour * 60 + startMinute, endHour * 60 + endMinute];
 }
 
-/**
- * The first wall-clock moment at or after `local` inside the window, `null`
- * for a window that never opens: `next_active_moment` in `crates/proactivity/src/pulse/next_run.rs`.
- */
 function intoActiveHours(local: number, [start, end]: readonly [number, number]): number | null {
   if (start === end) return null;
   const day = Math.floor(local / DAY_MS) * DAY_MS;
@@ -291,16 +244,6 @@ function intoActiveHours(local: number, [start, end]: readonly [number, number])
   return local < opensToday ? opensToday : opensToday + DAY_MS;
 }
 
-/**
- * When the pulse next runs, as an instant in milliseconds, or `null` when it
- * will not: `next_run_at` in `crates/proactivity/src/pulse/next_run.rs`, the one calculation behind
- * the Scheduled view's `next_fire_at` and the overview's `upcoming`.
- *
- * It is the first moment at or after the later of `nowMs` and the end of the
- * schedule since the last run that falls inside the active hours, read in the
- * hub's timezone. A pulse that is due already is reported at the start of the
- * current minute.
- */
 export function nextPulseRun(pulse: MockPulse, nowMs: number): number | null {
   const interval = pulse.schedule === null ? null : scheduleMs(pulse.schedule);
   if (!pulse.enabled || interval === null) return null;
@@ -340,17 +283,11 @@ function pulseInfo(state: MockState, pulse: MockPulse): PulseInfo {
   };
 }
 
-/**
- * A running agent's file watcher sees an edit to its pulses or its actions,
- * and the hub reads its schedule again. Nothing watches a stopped agent's, so
- * its schedule is read the next time the overview is asked for.
- */
 function noticeScheduleChange(ctx: RouteContext): void {
   const agent = ctx.hub.agents.get(ctx.state.agentName);
   if (agent?.runState === "running") ctx.hub.overview.changed(agent);
 }
 
-/** `PUT .../scheduled/pulses/{pulse}/enabled`: body `{ enabled }`; answers `{ name, enabled }`. */
 async function setPulseEnabled(ctx: RouteContext): Promise<void> {
   const { res, state } = ctx;
   let enabled: unknown;
@@ -373,7 +310,6 @@ async function setPulseEnabled(ctx: RouteContext): Promise<void> {
   json(res, 200, { name, enabled });
 }
 
-/** `DELETE .../scheduled/actions/{id}`: cancel a pending action. */
 function cancelAction(ctx: RouteContext): void {
   const { res, state } = ctx;
   const id = decodedParam(ctx, 0);
@@ -387,7 +323,6 @@ function cancelAction(ctx: RouteContext): void {
   json(res, 200, { id, cancelled: true });
 }
 
-/** How long a stopped fire takes to finish, as the backend's fire task ends its scripts. */
 const STOP_MS = 300;
 
 /**
@@ -416,11 +351,6 @@ function stopPulseFire(ctx: RouteContext): void {
 
 const FIRE_STATUSES: readonly SessionRunStatus[] = ["completed", "failed", "cancelled"];
 
-/**
- * Test control `POST /api/mock/pulse-fire` (`{ pulse }`): the pulse fires now
- * and runs its task scripts until `/api/mock/pulse-fire/finish` or a stop
- * ends it. Answers `{ fire_id }`.
- */
 async function startPulseFireControl(ctx: RouteContext): Promise<void> {
   const pulse = stringField(await readJsonObject(ctx.req), "pulse") ?? "";
   const fire = startPulseFire(ctx.state, pulse);
@@ -432,11 +362,6 @@ async function startPulseFireControl(ctx: RouteContext): Promise<void> {
   json(ctx.res, 200, { fire_id: fire.fireId });
 }
 
-/**
- * Test control `POST /api/mock/pulse-fire/finish` (`{ fire_id, status, error? }`,
- * `status` `completed`, `failed` or `cancelled`): the fire's scripts end and
- * it runs no session, with that outcome.
- */
 async function finishPulseFireControl(ctx: RouteContext): Promise<void> {
   const body = await readJsonObject(ctx.req);
   const fireId = stringField(body, "fire_id") ?? "";
@@ -453,7 +378,6 @@ async function finishPulseFireControl(ctx: RouteContext): Promise<void> {
   json(ctx.res, 200, { ok: true });
 }
 
-/** The Scheduled view routes, in the unscoped `/api/...` spelling, and their test controls. */
 export const scheduledRoutes: readonly Route[] = [
   {
     method: "GET",

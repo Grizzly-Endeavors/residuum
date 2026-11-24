@@ -1,7 +1,3 @@
-//! What an agent's last message was, read from its files: how the overview
-//! answers for an agent that isn't running, and for one that just started
-//! and hasn't had a turn yet.
-
 use std::path::Path;
 
 use anyhow::Context as _;
@@ -18,12 +14,6 @@ use residuum_memory::episode_store::{EpisodeMeta, read_episode_jsonl, transcript
 use residuum_memory::recent_messages::load_recent_messages;
 use residuum_memory::types::Visibility;
 
-/// The newest message of the agent's main conversation that the user saw: in
-/// its recent history, else in the newest episode of the main conversation
-/// that has one, which dates it to the day.
-///
-/// An unreadable file is logged and read past, so one broken file costs the
-/// preview and not the overview.
 pub(super) async fn last_message(agent: &str, files: &AgentFiles) -> Option<LastMessage> {
     let layout = WorkspaceLayout::new(&files.dir);
     let path = layout.recent_messages_json();
@@ -53,8 +43,6 @@ pub(super) async fn last_message(agent: &str, files: &AgentFiles) -> Option<Last
     last_message_in_episodes(agent, files, &layout).await
 }
 
-/// Who wrote `message` and what it says, when it is something the user saw
-/// the agent or themselves say: a user or assistant message with text.
 fn shown(message: &Message) -> Option<(LastMessageRole, String)> {
     let role = match message.role {
         Role::User => LastMessageRole::User,
@@ -65,9 +53,6 @@ fn shown(message: &Message) -> Option<(LastMessageRole, String)> {
     (!preview.is_empty()).then_some((role, preview))
 }
 
-/// The newest message of the newest main-conversation episode that has one.
-/// Episodes keep the date and not the time, and not who saw each message, so
-/// every message counts and the time is the start of the day.
 async fn last_message_in_episodes(
     agent: &str,
     files: &AgentFiles,
@@ -109,9 +94,6 @@ async fn last_message_in_episodes(
     None
 }
 
-/// The episode's newest message that is shown, when the episode is of the
-/// main conversation. A session's episode isn't, and is told by its first
-/// line alone so it costs a line to skip.
 async fn main_conversation_message(
     transcript: &Path,
 ) -> anyhow::Result<Option<(EpisodeMeta, LastMessageRole, String)>> {

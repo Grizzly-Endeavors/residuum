@@ -1,5 +1,3 @@
-//! Ollama model provider implementation.
-
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
@@ -21,7 +19,6 @@ use crate::{
 use residuum_config::ThinkingConfig;
 use residuum_config::{ProviderKind, RetryConfig};
 
-/// Ollama API client implementing the [`InferenceProvider`] trait.
 #[derive(Clone)]
 pub(crate) struct OllamaClient {
     http: SharedHttpClient,
@@ -29,15 +26,11 @@ pub(crate) struct OllamaClient {
     model: String,
     api_key: Option<String>,
     keep_alive: Option<String>,
-    /// Output limit for requests whose options don't set one.
     max_tokens: u32,
     retry: RetryConfig,
 }
 
 impl OllamaClient {
-    /// Create a new Ollama client with a shared HTTP client.
-    ///
-    /// Use this constructor to share connection pools across multiple model providers.
     #[must_use]
     pub fn with_http_client(
         http: SharedHttpClient,
@@ -61,9 +54,6 @@ impl OllamaClient {
         }
     }
 
-    /// Create a new Ollama client with a shared HTTP client and API key authentication.
-    ///
-    /// Use this constructor for cloud-hosted Ollama instances that require authentication.
     #[must_use]
     pub fn with_http_client_and_api_key(
         http: SharedHttpClient,
@@ -88,14 +78,10 @@ impl OllamaClient {
         }
     }
 
-    /// Who the reasoning this client returns is recorded as coming from, and
-    /// the only origin whose reasoning it sends back.
     fn origin(&self) -> ThinkingOrigin {
         ThinkingOrigin::new(ProviderApi::Ollama, &self.model)
     }
 
-    /// Build everything about a request that stays the same across retries.
-    /// Reasoning goes back only when `origin`'s provider produced it.
     fn prepare(
         &self,
         messages: &[Message],
@@ -132,8 +118,6 @@ impl OllamaClient {
         }
     }
 
-    /// Run a prepared request to completion: retrying transient failures,
-    /// and streaming the response into `sink` when there is one.
     async fn run(
         &self,
         messages: &[Message],
@@ -276,7 +260,6 @@ impl OllamaClient {
     }
 }
 
-/// Turn a finished reply into an `InferenceResponse`.
 fn build_response(
     reply: ReplyAssembler<'_>,
     tool_calls: Vec<OllamaToolCall>,
@@ -305,11 +288,6 @@ fn build_response(
     resp
 }
 
-// --- Streaming ---
-
-/// Read a streamed chat to its end, pushing text and thinking to `sink` as
-/// they arrive, and return it as the response a non-streaming request would
-/// have returned.
 async fn read_stream(
     response: reqwest::Response,
     idle_secs: u64,
@@ -331,7 +309,6 @@ struct StreamAssembler<'a> {
     tool_calls: Vec<OllamaToolCall>,
     done_reason: Option<String>,
     counts: TokenCounts,
-    /// The final chunk, the one marked `done`, has arrived.
     done: bool,
 }
 
@@ -360,7 +337,6 @@ impl StreamAssembler<'_> {
         Ok(Flow::Continue)
     }
 
-    /// Fails when the stream stopped short of its final chunk.
     fn finish(self) -> Result<InferenceResponse, InferenceError> {
         if !self.done {
             return Err(InferenceError::StreamInterrupted(
@@ -388,13 +364,6 @@ impl InferenceProvider for OllamaClient {
         self.run(messages, tools, options, None).await
     }
 
-    /// Like `complete`, streaming the response's text and thinking into
-    /// `sink` as they arrive.
-    ///
-    /// # Errors
-    /// Returns the errors `complete` does, plus `InferenceError::Stalled`
-    /// when the stream goes quiet for the configured timeout and
-    /// `InferenceError::StreamInterrupted` when it breaks or ends early.
     #[tracing::instrument(skip_all, fields(model = %self.model, message_count = messages.len(), tool_count = tools.len()))]
     async fn complete_streaming(
         &self,
@@ -406,7 +375,6 @@ impl InferenceProvider for OllamaClient {
         self.run(messages, tools, options, Some(sink)).await
     }
 
-    /// The `thinking` the converted request carries on its messages.
     fn replayed_reasoning(
         &self,
         messages: &[Message],
@@ -426,7 +394,6 @@ impl InferenceProvider for OllamaClient {
 
 // Ollama API request/response types
 
-/// Nested model options for Ollama: sampling temperature and the output limit.
 #[derive(Debug, Serialize, Clone)]
 struct OllamaModelOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -435,7 +402,6 @@ struct OllamaModelOptions {
     num_predict: u32,
 }
 
-/// What stays the same across a request's attempts.
 struct PreparedRequest {
     messages: Vec<OllamaMessage>,
     tools: Option<Vec<OllamaTool>>,
@@ -466,21 +432,16 @@ struct OllamaMessage {
     content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_calls: Option<Vec<OllamaToolCall>>,
-    /// Name of the tool a result message answers, so the server can match it
-    /// up without relying on message order.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     tool_name: Option<String>,
-    /// ID of the tool call a result message answers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     tool_call_id: Option<String>,
-    /// The reasoning behind an assistant message that made tool calls.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     thinking: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     images: Option<Vec<String>>,
 }
 
-/// The request's `think` flag: `None` when thinking is not configured.
 fn think_flag(options: &CompletionOptions) -> Option<bool> {
     options.thinking.as_ref().map(|tc| match tc {
         ThinkingConfig::Toggle(val) => *val,
@@ -488,9 +449,6 @@ fn think_flag(options: &CompletionOptions) -> Option<bool> {
     })
 }
 
-/// The conversation a request sends, replaying `origin`'s reasoning when the
-/// request has thinking on. Both the request and
-/// [`InferenceProvider::replayed_reasoning`] come from here.
 fn wire_messages(
     messages: &[Message],
     options: &CompletionOptions,
@@ -516,9 +474,6 @@ fn to_ollama_messages(
     replay_thinking: Option<&ThinkingOrigin>,
 ) -> Vec<OllamaMessage> {
     let exchange_start = current_exchange_start(messages);
-    // Filled in conversation order rather than up front: ids synthesized when
-    // the server sends none (`call_0`, `call_1`, ...) repeat across turns, so
-    // a result must resolve against the calls that preceded it.
     let mut tool_names_by_id: std::collections::BTreeMap<&str, &str> =
         std::collections::BTreeMap::new();
 
@@ -606,8 +561,6 @@ struct OllamaChatResponse {
     counts: TokenCounts,
 }
 
-/// One line of a streamed chat: a piece of the message, or on the last line
-/// (`done`) the reason it ended and the token counts.
 #[derive(Deserialize)]
 struct OllamaStreamChunk {
     #[serde(default)]
@@ -622,13 +575,10 @@ struct OllamaStreamChunk {
     counts: TokenCounts,
 }
 
-/// The token counts Ollama reports when a response is done.
 #[derive(Deserialize, Default, Clone, Copy)]
 struct TokenCounts {
-    /// The whole prompt, the part reused from the KV cache included.
     #[serde(default, rename = "prompt_eval_count")]
     prompt: Option<u32>,
-    /// The part of the prompt reused from the KV cache.
     #[serde(default, rename = "prompt_eval_cached_count")]
     cached: Option<u32>,
     #[serde(default, rename = "eval_count")]
@@ -649,7 +599,6 @@ impl TokenCounts {
     }
 }
 
-/// Map Ollama's `done_reason` to the provider-agnostic [`StopReason`].
 fn map_stop_reason(raw: &str) -> StopReason {
     match raw {
         "stop" => StopReason::EndTurn,
@@ -671,7 +620,6 @@ struct OllamaErrorResponse {
     error: String,
 }
 
-/// Ollama embeddings API client.
 pub(crate) struct OllamaEmbeddingClient {
     http: SharedHttpClient,
     base_url: String,
@@ -682,7 +630,6 @@ pub(crate) struct OllamaEmbeddingClient {
 }
 
 impl OllamaEmbeddingClient {
-    /// Create a new Ollama embedding client with a shared HTTP client.
     #[must_use]
     pub fn with_http_client(
         http: SharedHttpClient,
@@ -704,7 +651,6 @@ impl OllamaEmbeddingClient {
         }
     }
 
-    /// Create a new Ollama embedding client with a shared HTTP client and API key authentication.
     #[must_use]
     pub fn with_http_client_and_api_key(
         http: SharedHttpClient,
@@ -842,7 +788,6 @@ mod tests {
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    /// The output limit the test clients fall back to when a request sets none.
     const TEST_MAX_TOKENS: u32 = 4096;
 
     fn make_client(url: impl Into<String>, model: &str) -> OllamaClient {
@@ -1340,8 +1285,6 @@ mod tests {
 
     #[tokio::test]
     async fn complete_timeout() {
-        // The reply waits at a gate that never opens, so only the client's own
-        // 1 second timeout can end the call.
         let model = GatedModel::replying("unused").await;
         let client = make_client_with_timeout(model.uri(), "test-model", 1);
         let result = client
@@ -1677,8 +1620,6 @@ mod tests {
         );
     }
 
-    // --- Embedding client tests ---
-
     use crate::embedding::EmbeddingProvider;
 
     #[tokio::test]
@@ -1841,9 +1782,6 @@ mod tests {
         );
     }
 
-    // --- Thinking replay ---
-
-    /// Where the reasoning of the clients in these tests comes from.
     fn test_origin() -> ThinkingOrigin {
         ThinkingOrigin::new(ProviderApi::Ollama, "m")
     }
@@ -2010,8 +1948,6 @@ mod tests {
         );
     }
 
-    // --- Streaming ---
-
     fn line(value: impl Into<serde_json::Value>) -> String {
         let value: serde_json::Value = value.into();
         format!("{value}\n")
@@ -2034,7 +1970,6 @@ mod tests {
         }))
     }
 
-    /// A reply with thinking, text and a tool call, as Ollama streams it.
     fn full_stream() -> String {
         [
             piece(json!({"role": "assistant", "content": "", "thinking": "Let me "})),
@@ -2270,7 +2205,6 @@ mod tests {
     #[tokio::test]
     async fn stalled_stream_fails_after_the_idle_timeout() {
         let mut script = sse_chunks(&[piece(json!({"content": "partial"}))]);
-        // Held rather than paused: nothing more arrives, so only the idle timeout ends the stream.
         let stall = Gate::closed("stalled stream");
         script.push(Step::Hold(stall.entry()));
         let (result, _, _) = stream_from(script, |url| make_client_with_timeout(url, "m", 1)).await;
@@ -2377,8 +2311,6 @@ mod tests {
         );
     }
 
-    /// The fixtures' counts: 20 of the 26 prompt tokens came from the KV
-    /// cache.
     fn full_usage() -> Usage {
         Usage {
             uncached_input_tokens: Some(6),

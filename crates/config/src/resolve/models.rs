@@ -1,8 +1,3 @@
-//! Model and provider chain resolution.
-//!
-//! Resolves `"provider/model"` strings and `[models]` config into fully-built
-//! `ProviderSpec` values with failover chains.
-
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -14,7 +9,6 @@ use super::super::model_catalog::{NamedProvider, implicit_provider_spec, split_m
 use super::super::provider::{ProviderKind, ProviderSpec};
 use super::super::secrets::SecretStore;
 
-/// Resolved model provider specs for all roles.
 pub(super) struct ResolvedModels {
     pub(super) main: Vec<ProviderSpec>,
     pub(super) observer: Vec<ProviderSpec>,
@@ -25,12 +19,6 @@ pub(super) struct ResolvedModels {
     pub(super) role_overrides: HashMap<String, RoleOverrides>,
 }
 
-/// Resolve all model specs (main, observer, reflector, pulse, embedding) from the
-/// `[models]` config section.
-///
-/// # Errors
-/// Returns `FatalError::Config` if any model string is invalid or an unsupported
-/// provider is used for embeddings.
 pub(super) fn resolve_all_model_specs(
     models: Option<&ModelsConfigFile>,
     providers_map: Option<&HashMap<String, ProviderEntryFile>>,
@@ -38,7 +26,6 @@ pub(super) fn resolve_all_model_specs(
 ) -> Result<ResolvedModels, FatalError> {
     let mut role_overrides = HashMap::new();
 
-    // Resolve main: models.main > default
     let main = if let Some(main_spec) = models.and_then(|m| m.main.clone()) {
         extract_role_overrides("main", &main_spec, &mut role_overrides)?;
         resolve_assignment_chain(main_spec, providers_map, secrets)?
@@ -50,7 +37,6 @@ pub(super) fn resolve_all_model_specs(
         )?]
     };
 
-    // Resolve each role: models.<role> > models.default > main
     let default_assignment = models.and_then(|m| m.default.clone());
 
     let observer = resolve_role_chain_from_assignment(
@@ -90,7 +76,6 @@ pub(super) fn resolve_all_model_specs(
         &mut role_overrides,
     )?;
 
-    // Resolve embedding: models.embedding only, no fallback to default or main
     let embedding = models
         .and_then(|m| m.embedding.as_deref())
         .map(|s| resolve_model_string(s, providers_map, secrets))
@@ -116,18 +101,6 @@ pub(super) fn resolve_all_model_specs(
     })
 }
 
-/// Resolve a `"provider_or_name/model"` string into a `ProviderSpec`.
-///
-/// Splits on the first `/`:
-/// - If `provider_part` matches a key in `providers_map`, that entry's `type`,
-///   `url`, and `api_key` are used.
-/// - Otherwise `provider_part` is treated as an implicit `ProviderKind` name
-///   (e.g. `"anthropic"`). API key falls back to the provider-specific env var.
-///
-/// # Errors
-/// Returns `FatalError::Config` if the model string format is invalid,
-/// the provider is unknown, or an explicit provider entry references an
-/// unknown type.
 fn resolve_model_string(
     model_str: &str,
     providers_map: Option<&HashMap<String, ProviderEntryFile>>,
@@ -141,10 +114,6 @@ fn resolve_model_string(
     .map_err(FatalError::Config)
 }
 
-/// Resolve a `ModelAssignment` into a `Vec<ProviderSpec>` (failover chain).
-///
-/// # Errors
-/// Returns `FatalError::Config` if any model string in the assignment cannot be resolved.
 pub(super) fn resolve_assignment_chain(
     assignment: ModelAssignment,
     providers_map: Option<&HashMap<String, ProviderEntryFile>>,
@@ -157,11 +126,6 @@ pub(super) fn resolve_assignment_chain(
         .collect()
 }
 
-/// Extract per-role overrides from a `ModelAssignment` and insert into the map.
-///
-/// # Errors
-/// Returns `FatalError::Config` if the thinking string is invalid or temperature
-/// is out of range.
 pub(super) fn extract_role_overrides(
     role: &str,
     assignment: &ModelAssignment,
@@ -192,13 +156,6 @@ pub(super) fn extract_role_overrides(
     Ok(())
 }
 
-/// Resolve a role's provider chain from a `ModelAssignment`:
-/// explicit role > default > clone of main chain.
-///
-/// Also extracts per-role overrides into the map.
-///
-/// # Errors
-/// Returns `FatalError::Config` if any model string cannot be resolved.
 fn resolve_role_chain_from_assignment(
     role_spec: Option<ModelAssignment>,
     default_spec: Option<&ModelAssignment>,
@@ -220,7 +177,6 @@ fn resolve_role_chain_from_assignment(
     Ok(main.to_vec())
 }
 
-/// Give every role's chain, including background tiers, its session-affinity key.
 pub(super) fn scope_all_session_affinity(
     models: &mut ResolvedModels,
     background: &mut BackgroundModelsConfig,
@@ -246,11 +202,6 @@ pub(super) fn scope_all_session_affinity(
     }
 }
 
-/// A role's session-affinity key: `residuum-<role>-<hash of the workspace path>`.
-///
-/// The hash is SHA-256 over the path's bytes, keeping the first 64 bits, so a
-/// key stays the same across toolchain upgrades. `DefaultHasher` promises no
-/// such stability.
 pub(crate) fn session_affinity_key(workspace_dir: &Path, role: &str) -> String {
     let digest = ring::digest::digest(
         &ring::digest::SHA256,
@@ -264,12 +215,6 @@ pub(crate) fn session_affinity_key(workspace_dir: &Path, role: &str) -> String {
     format!("residuum-{role}-{hash:016x}")
 }
 
-/// Stamp every spec in a role's chain with that role's session-affinity key.
-///
-/// The key hashes the workspace path so no filesystem detail leaves the
-/// machine, and includes the role because each role sends a different stable
-/// prompt prefix. Runs after role resolution because roles without their own
-/// assignment clone the main chain, including main's key.
 fn scope_session_affinity(specs: &mut [ProviderSpec], workspace_dir: &Path, role: &str) {
     let key = session_affinity_key(workspace_dir, role);
     for spec in specs {
@@ -292,8 +237,6 @@ mod tests {
     use super::super::from_file_and_env;
     use super::super::test_helpers::*;
     use super::*;
-
-    // ── Provider / model resolution ───────────────────────────────────────────
 
     #[test]
     fn implicit_provider_resolution() {
@@ -361,8 +304,6 @@ mod tests {
         assert_eq!(spec.provider_url, "https://api.cerebras.ai/v1");
     }
 
-    // ── Per-model input declarations ─────────────────────────────────────────
-
     fn chain_with_models(toml: &str) -> Vec<ProviderSpec> {
         let prov_file = parse_providers(toml);
         let cfg = from_file_and_env(
@@ -422,7 +363,6 @@ main = "local/qwen3"
         assert_eq!(main[0].image_input, ImageInput::TextOnly);
     }
 
-    /// Apply the patch the web Settings sends for a model's image setting.
     fn patched(toml: &str, models: &serde_json::Value) -> String {
         let diff = serde_json::json!({ "providers": { "zai": { "models": models.clone() } } });
         crate::patch::apply_patch(toml, diff.as_object().unwrap(), "providers.toml").unwrap()
@@ -493,8 +433,6 @@ inputs = ["text"]
         );
     }
 
-    // ── Full config resolution via from_file_and_env ──────────────────────────
-
     #[test]
     fn default_model_fallback() {
         let cfg_file = parse_config("");
@@ -513,12 +451,10 @@ default = "anthropic/claude-haiku-4-5"
             &test_hub_config(),
         )
         .unwrap();
-        // observer was not set, so it falls back to default
         assert_eq!(cfg.observer[0].model.model, "claude-haiku-4-5");
         assert_eq!(cfg.reflector[0].model.model, "claude-haiku-4-5");
         assert_eq!(cfg.pulse[0].model.model, "claude-haiku-4-5");
         assert_eq!(cfg.subconscious[0].model.model, "claude-haiku-4-5");
-        // main is still the explicit main
         assert_eq!(cfg.main[0].model.model, "claude-sonnet-4-6");
     }
 
@@ -603,8 +539,6 @@ subconscious = "gemini/gemini-3.0-flash"
             "unset observer should still use default"
         );
     }
-
-    // ── Failover chain resolution ──────────────────────────────────────────
 
     #[test]
     fn model_chain_single_string() {
@@ -747,8 +681,6 @@ main = "cerebras/llama-4"
         assert_eq!(cfg.main[0].provider_url, "https://api.cerebras.ai/v1");
     }
 
-    // ── Embedding config ──────────────────────────────────────────────────
-
     #[test]
     fn embedding_role_resolved() {
         let cfg_file = parse_config("");
@@ -846,8 +778,6 @@ default = "openai/gpt-4o"
         );
     }
 
-    // ── Secret / env expansion in providers ──────────────────────────────────
-
     #[test]
     fn provider_api_key_env_expansion() {
         let _guard = ENV_MUTEX.lock().unwrap();
@@ -929,8 +859,6 @@ default = "openai/gpt-4o"
         );
         unsafe { std::env::remove_var("OPENAI_API_KEY") };
     }
-
-    // ── ModelAssignment deserialization and overrides ──────────────────────
 
     #[test]
     fn model_assignment_simple_string() {

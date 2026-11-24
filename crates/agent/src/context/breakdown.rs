@@ -1,7 +1,3 @@
-//! The context breakdown: the parts of the request a turn sends the model,
-//! each with its estimated token count, and the snapshot of it saved after
-//! every main turn.
-
 use std::ops::Range;
 use std::path::Path;
 
@@ -15,44 +11,26 @@ use residuum_memory::tokens::{TOKENS_PER_IMAGE, estimate_request_message_tokens,
 use super::types::SectionKind;
 use crate::turn::ModelRequest;
 
-/// The approximate tokens of each part of the agent's next model request.
-/// The parts add up to `total_tokens`, the estimate of the whole request.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextBreakdown {
-    /// Identity and team files in the system prompt: SOUL.md, AGENTS.md,
-    /// BOOTSTRAP.md, USER.md, the wiki index and the team roster.
     pub identity_tokens: usize,
-    /// The code-owned HARNESS section of the system prompt.
     pub harness_tokens: usize,
-    /// The memory pipeline: the observation log and the recent context.
     pub memory_pipeline_tokens: usize,
-    /// The skills index.
     pub skills_index_tokens: usize,
-    /// Active skill instructions (0 if none are active).
     pub active_skills_tokens: usize,
-    /// Built-in tool definitions.
     pub system_tool_tokens: usize,
-    /// MCP tool definitions.
     pub mcp_tool_tokens: usize,
-    /// The recent message history, as it is sent (sender lines included),
-    /// without its status lines.
     pub history_tokens: usize,
-    /// Number of messages in the recent history.
     pub history_count: usize,
-    /// The status lines stored with the history's messages.
     pub status_line_tokens: usize,
-    /// Images the request sends; 0 when the model doesn't take images.
     pub image_count: usize,
     /// Those images, at a flat 1,600 tokens each.
     pub image_tokens: usize,
-    /// Earlier reasoning the provider sends back with the history.
     pub reasoning_tokens: usize,
-    /// Every part above added up.
     pub total_tokens: usize,
 }
 
 impl ContextBreakdown {
-    /// The count a system prompt section of `kind` adds to.
     fn section_tokens_mut(&mut self, kind: SectionKind) -> &mut usize {
         match kind {
             SectionKind::Identity => &mut self.identity_tokens,
@@ -82,19 +60,13 @@ impl ContextBreakdown {
     }
 }
 
-/// A context breakdown and when it was computed, as the agent saves it after
-/// each main turn and the hub serves it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextSnapshot {
-    /// When the breakdown was computed (UTC).
     pub computed_at: DateTime<Utc>,
     #[serde(flatten)]
     pub breakdown: ContextBreakdown,
 }
 
-/// Count `request`, the request a turn builds, as `provider` sends it: the
-/// images only when the model takes them, and the earlier reasoning the
-/// provider's own conversion sends back.
 pub(crate) fn compute_context_breakdown(
     request: &ModelRequest,
     provider: &dyn InferenceProvider,
@@ -143,11 +115,6 @@ fn count_request(
     breakdown
 }
 
-/// Share the system message's estimate among its sections. Each section
-/// gets the estimate of the text up to its end less what the sections
-/// before it got, and the last one gets the rest (the role overhead
-/// included), so the shares add up to exactly the message's estimate and
-/// each is within a few tokens of its own text's.
 fn count_system_prompt(
     system: &Message,
     sections: &[(SectionKind, Range<usize>)],
@@ -171,16 +138,12 @@ fn count_system_prompt(
     }
 }
 
-/// The estimate of one tool definition as the request sends it.
 fn estimate_tool_tokens(definition: &ToolDefinition) -> usize {
     estimate_tokens(&definition.name)
         + estimate_tokens(&definition.description)
         + estimate_tokens(&definition.parameters.to_string())
 }
 
-/// Save `snapshot` to `path`, atomically, so a reader never sees half a
-/// file. A failure is logged at `warn` and never fails the turn: the hub
-/// then serves the previous snapshot until the next turn writes one.
 pub(crate) async fn save_context_snapshot(path: &Path, snapshot: &ContextSnapshot) {
     let json = match serde_json::to_string(snapshot) {
         Ok(json) => json,
@@ -198,11 +161,6 @@ pub(crate) async fn save_context_snapshot(path: &Path, snapshot: &ContextSnapsho
     }
 }
 
-/// The context snapshot saved at `path`, or `None` when no turn has saved
-/// one yet.
-///
-/// # Errors
-/// Returns an error when the file exists but can't be read or parsed.
 pub async fn load_context_snapshot(path: &Path) -> anyhow::Result<Option<ContextSnapshot>> {
     let text = match tokio::fs::read_to_string(path).await {
         Ok(text) => text,
@@ -239,8 +197,6 @@ mod tests {
     use crate::testing::{EchoTool, RequestInputs, render_model_request};
     use crate::tool::ToolRegistry;
 
-    /// A model that takes images or not and sends `reasoning` back, and is
-    /// never called.
     struct Model {
         takes_images: bool,
         reasoning: Vec<String>,
@@ -307,8 +263,6 @@ mod tests {
         }
     }
 
-    /// The estimate of the whole rendered request, taken over the request
-    /// itself rather than its parts.
     fn estimate_of(request: &ModelRequest, takes_images: bool, reasoning: &[String]) -> usize {
         let images: usize = if takes_images {
             request.messages.iter().map(|m| m.images.len()).sum()
@@ -362,8 +316,6 @@ mod tests {
         };
         let breakdown = breakdown_of(&inputs, &Model::plain()).await;
 
-        // A section is counted with its tags and the separator ahead of it;
-        // a share can differ from that text's own estimate by rounding.
         let near = |got: usize, text: &str, tag: &str| {
             let expected = estimate_tokens(&format!("\n\n<{tag}>\n{text}\n</{tag}>"));
             assert!(
@@ -621,7 +573,6 @@ mod tests {
             recent_messages: history(stored.clone()),
             ..RequestInputs::default()
         };
-        // A provider that takes the image and sends all the reasoning back.
         let model = Model {
             takes_images: true,
             reasoning: vec!["it has whiskers and pointed ears".to_string()],
@@ -629,11 +580,6 @@ mod tests {
 
         let breakdown = breakdown_of(&inputs, &model).await;
 
-        // The stored history's own estimate counts the sender line, status
-        // line, image and reasoning with each message; the breakdown counts
-        // each in its own part. They differ only by each part rounding up on
-        // its own, while counting any of them twice adds a whole line or
-        // image.
         let sent = breakdown.history_tokens
             + breakdown.status_line_tokens
             + breakdown.image_tokens

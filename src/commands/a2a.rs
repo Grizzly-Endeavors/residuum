@@ -1,42 +1,30 @@
-//! `a2a` subcommand: manage caller keys for the A2A protocol listener.
-
 use std::path::PathBuf;
 
 use residuum::a2a::A2aKeys;
 use residuum::checkpoints::CheckpointEngine;
 use residuum::util::FatalError;
 
-/// A2A subcommands.
 #[derive(clap::Subcommand)]
 pub(super) enum A2aCommand {
-    /// Manage caller keys other agents present to reach this instance
     Keys {
         #[command(subcommand)]
         command: A2aKeysCommand,
     },
 }
 
-/// A2A caller-key management subcommands.
 #[derive(clap::Subcommand)]
 pub(super) enum A2aKeysCommand {
-    /// Mint a caller key and print the token once
     Create {
-        /// Key name: lowercase letters, digits, underscores
         name: String,
-        /// What this key is for, shown in listings
         #[arg(long, short)]
         description: Option<String>,
     },
-    /// List caller keys (names, descriptions, creation time — never tokens)
     List,
-    /// Revoke a caller key
     Revoke {
-        /// Name of the key to revoke
         name: String,
     },
 }
 
-/// Run the `a2a` subcommand.
 pub(super) async fn run_a2a_command(command: &A2aCommand) -> Result<(), FatalError> {
     match command {
         A2aCommand::Keys { command } => run_a2a_keys_command(command).await,
@@ -47,8 +35,6 @@ async fn run_a2a_keys_command(command: &A2aKeysCommand) -> Result<(), FatalError
     run_a2a_keys_command_at(residuum::config::default_hub_dir()?, command).await
 }
 
-/// [`run_a2a_keys_command`] against an explicit config directory, so the
-/// dispatch logic is testable without touching the real `~/.residuum`.
 async fn run_a2a_keys_command_at(
     config_dir: PathBuf,
     command: &A2aKeysCommand,
@@ -162,8 +148,6 @@ mod tests {
     async fn create_and_revoke_each_checkpoint_the_config_repo() {
         let dir = tempfile::tempdir().unwrap();
 
-        // First write has nothing preexisting to checkpoint (nothing to
-        // protect yet); the checkpoint appears from the second write on.
         run_a2a_keys_command_at(
             dir.path().to_path_buf(),
             &A2aKeysCommand::Create {

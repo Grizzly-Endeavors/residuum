@@ -1,5 +1,3 @@
-//! File reading tool for the agent.
-
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -15,35 +13,22 @@ use residuum_inference::{ToolError, ToolResult};
 use residuum_workspace::inbox::attachment::MAX_IMAGE_INLINE_SIZE;
 use residuum_workspace::team_files::{FileStamp, TeamFiles};
 
-/// Default maximum lines returned when no explicit offset/limit is given.
 const DEFAULT_MAX_LINES: usize = 2000;
 
-/// Maximum characters per output line before truncation.
 const MAX_CHARS_PER_LINE: usize = 2000;
 
-/// How a completed read is recorded in the tracker.
 enum ReadRecord {
-    /// An agent-private file: only that it was read.
     Private,
-    /// A team file, with its stamp from just before the read (`None` when it
-    /// couldn't be taken).
     Team(Option<FileStamp>),
 }
 
-/// Tool that reads file contents with numbered lines.
 pub struct ReadTool {
     tracker: SharedFileTracker,
-    /// The agent's workspace root. A relative `path` argument is resolved
-    /// against this rather than the process's current directory, which is
-    /// shared across every agent hosted in the same process.
     workspace_root: PathBuf,
-    /// Supplies the `team/` namespace, when the agent belongs to a team.
     policy: Option<SharedPathPolicy>,
 }
 
 impl ReadTool {
-    /// Create a new `ReadTool` with a shared file tracker and the workspace
-    /// root a relative `path` argument resolves against.
     #[must_use]
     pub fn new(tracker: SharedFileTracker, workspace_root: PathBuf) -> Self {
         Self {
@@ -53,16 +38,12 @@ impl ReadTool {
         }
     }
 
-    /// Resolve `team/...` paths through the team namespace held by `policy`,
-    /// and record the version of each team file read so a later write can
-    /// detect a change made since.
     #[must_use]
     pub fn with_policy(mut self, policy: SharedPathPolicy) -> Self {
         self.policy = Some(policy);
         self
     }
 
-    /// The agent's view of the team namespace, if it has one.
     async fn team(&self) -> Option<TeamFiles> {
         match &self.policy {
             Some(policy) => policy.read().await.team().cloned(),
@@ -70,10 +51,6 @@ impl ReadTool {
         }
     }
 
-    /// Resolve a `path` argument, and for a team file take its stamp. The
-    /// stamp is taken before the file is read, so a write that lands
-    /// mid-read shows up as a conflict on the next write instead of going
-    /// unnoticed.
     async fn locate(&self, path: &str) -> (PathBuf, ReadRecord) {
         let Some(team) = self.team().await else {
             return (self.workspace_root.join(path), ReadRecord::Private);
@@ -86,7 +63,6 @@ impl ReadTool {
         (resolved, ReadRecord::Team(stamp))
     }
 
-    /// Record a completed read.
     async fn record_read(&self, resolved: &Path, record: ReadRecord) {
         let key = resolved.to_string_lossy();
         let mut tracker = self.tracker.lock().await;
@@ -96,10 +72,6 @@ impl ReadTool {
         }
     }
 
-    /// Record that a team file was found missing: the stamp taken before the
-    /// read (version `None`) becomes the file's known-absent state. Ignored
-    /// when the stamp shows the file existed a moment ago, or for private
-    /// files.
     async fn record_absent(&self, resolved: &Path, record: ReadRecord) {
         if let ReadRecord::Team(Some(stamp)) = &record
             && stamp.version.is_none()
@@ -108,7 +80,6 @@ impl ReadTool {
         }
     }
 
-    /// Read an image file, base64-encode it, and return as a tool result with inline image data.
     #[expect(clippy::cast_precision_loss, reason = "file size in KB display only")]
     async fn read_image(
         &self,
@@ -209,20 +180,11 @@ impl Tool for ReadTool {
         let offset = arguments.get("offset").and_then(Value::as_u64).unwrap_or(0);
         let explicit_limit = arguments.get("limit").and_then(Value::as_u64);
 
-        // `path` as given by the model (absolute or workspace-relative) is
-        // kept for display; every filesystem operation and the tracker key
-        // use `resolved`, which resolves against the workspace root instead
-        // of the process's current directory — see `workspace_root`'s doc
-        // comment.
         let (resolved, record) = self.locate(path).await;
 
         let metadata = match tokio::fs::metadata(&resolved).await {
             Ok(m) => m,
             Err(e) => {
-                // A read that finds a team file gone still tells the tracker
-                // so: the agent has now seen the deletion, and its next write
-                // recreating the file must not conflict with the version it
-                // read before the file was removed.
                 if e.kind() == std::io::ErrorKind::NotFound {
                     self.record_absent(&resolved, record).await;
                 }
@@ -246,23 +208,11 @@ impl Tool for ReadTool {
                 .await;
         }
 
-        // Text files have no size limit: page through by offset/limit rather
-        // than loading the whole file into memory. `start` and `effective_limit`
-        // are resolved against line numbers as we stream, not against a
-        // pre-counted total, so a file of any size can be paged with bounded
-        // memory use.
-        // `try_from` rather than `as`: a fallible conversion clamped to
-        // `usize::MAX` on overflow, so no truncating cast is needed here.
         let start = usize::try_from(offset).unwrap_or(usize::MAX);
 
-        // Every call is capped, including one that pages with an offset, so a
-        // read never returns the rest of a large file in one result.
         let limit = explicit_limit.map_or(DEFAULT_MAX_LINES, |l| {
             usize::try_from(l).unwrap_or(usize::MAX)
         });
-        // A default page also stops at the page budget, so it fits under the
-        // history limit and is never cut again by the turn loop. An explicit
-        // limit is the caller's choice and is honoured in full.
         let char_budget = if explicit_limit.is_some() {
             usize::MAX
         } else {
@@ -278,32 +228,20 @@ impl Tool for ReadTool {
             Err(e) => return Ok(ToolResult::error(format!("failed to read {path}: {e}"))),
         };
 
-        // Record read in tracker, keyed by the resolved path so it matches
-        // what write_file/edit_file check against regardless of how this
-        // call's path argument was spelled.
         self.record_read(&resolved, record).await;
 
         Ok(ToolResult::success(page.render(total_size, offset)))
     }
 }
 
-/// One page of a text file, as `read_file` shows it.
 struct TextPage {
-    /// The shown lines, numbered.
     lines: Vec<String>,
-    /// How many shown lines were cut at [`MAX_CHARS_PER_LINE`].
     truncated: usize,
-    /// Lines in the whole file.
     total_lines: usize,
-    /// The first and last line numbers shown (1-based), when any are.
     shown: Option<(usize, usize)>,
 }
 
 impl TextPage {
-    /// Stream `file`, keeping the lines after the first `start`, up to
-    /// `limit` lines and `char_budget` characters of numbered lines (at least
-    /// one line). Lines past the page are still counted, so `total_lines` is
-    /// the file's.
     async fn read(
         file: tokio::fs::File,
         start: usize,
@@ -328,7 +266,6 @@ impl TextPage {
             }
 
             let (formatted, was_truncated) = format_numbered_line(line_no, &line);
-            // Each shown line costs its characters plus the newline joining it.
             let line_chars = formatted.chars().count() + 1;
             if !page.lines.is_empty() && body_chars + line_chars > char_budget {
                 page_full = true;
@@ -343,10 +280,6 @@ impl TextPage {
         Ok(page)
     }
 
-    /// The result text: a header, then the numbered lines. The header always
-    /// reports the file's size and line count, so a paged or truncated view
-    /// never hides how much more there is to see; a partial page also names
-    /// its range and the offset to continue from.
     fn render(&self, total_size: u64, offset: u64) -> String {
         let total_lines = self.total_lines;
         let mut header: Vec<String> = vec![format!(
@@ -387,10 +320,6 @@ impl TextPage {
     }
 }
 
-/// Format one line the way `read_file` shows it: right-aligned line number, a tab, the text.
-///
-/// Lines longer than `MAX_CHARS_PER_LINE` are cut at a UTF-8 boundary; the returned flag
-/// reports whether that happened.
 pub(super) fn format_numbered_line(line_num: usize, line: &str) -> (String, bool) {
     if line.len() > MAX_CHARS_PER_LINE {
         let boundary = line.floor_char_boundary(MAX_CHARS_PER_LINE);
@@ -401,7 +330,6 @@ pub(super) fn format_numbered_line(line_num: usize, line: &str) -> (String, bool
     }
 }
 
-/// Return the MIME type for a supported image extension, or `None`.
 fn image_mime_type(path: &Path) -> Option<&'static str> {
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
     match ext.as_str() {
@@ -419,9 +347,6 @@ mod tests {
     use crate::file_tracker::FileTracker;
     use residuum_inference::ImageData;
 
-    /// A workspace root that doesn't correspond to any real directory, for
-    /// tests that always pass an absolute `path` (join drops the base for
-    /// an absolute joined component, so its value never matters there).
     fn unused_workspace_root() -> std::path::PathBuf {
         std::path::PathBuf::from("/tmp/residuum-test-workspace-unused")
     }
@@ -562,7 +487,6 @@ mod tests {
             result.output.contains("showing lines 1-2000 of 3000"),
             "should show the default-limited range"
         );
-        // Count actual content lines (skip warning lines)
         let content_lines: Vec<&str> = result.output.lines().filter(|l| l.contains('\t')).collect();
         assert_eq!(
             content_lines.len(),
@@ -697,7 +621,6 @@ mod tests {
         );
     }
 
-    /// A file of `count` lines of 80 characters each, as written and as text.
     async fn wide_lines_file(dir: &Path, count: usize) -> PathBuf {
         use std::fmt::Write as _;
         let path = dir.join("wide-lines.txt");
@@ -709,7 +632,6 @@ mod tests {
         path
     }
 
-    /// The `offset=N` a paged read says to continue from.
     fn continue_offset(output: &str) -> usize {
         let (_, rest) = output.split_once("continue with offset=").unwrap();
         rest.split(|c: char| !c.is_ascii_digit())
@@ -830,7 +752,6 @@ mod tests {
     async fn read_image_file_returns_inline_image() {
         let dir = tempfile::tempdir().unwrap();
         let file_path = dir.path().join("photo.jpg");
-        // Write fake JPEG bytes (real image not needed — just testing encoding path)
         tokio::fs::write(&file_path, b"\xFF\xD8\xFF\xE0fake jpeg data")
             .await
             .unwrap();
@@ -914,8 +835,6 @@ mod tests {
             let image = read_image_block(name, bytes).await;
             assert_eq!(image.media_type, expected, "{name}");
 
-            // The same bytes in stored history under a wrong label are
-            // recognized from the base64 text alone.
             let mislabeled = ImageData {
                 media_type: "image/bmp".to_string(),
                 data: image.data,
@@ -971,9 +890,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file_path = dir.path().join("huge.bin");
         let file = tokio::fs::File::create(&file_path).await.unwrap();
-        // Sparse file past the old 10 MB hard cap; content is all NUL bytes,
-        // which are valid UTF-8, so this exercises size handling without
-        // writing real data to disk.
         file.set_len(11 * 1024 * 1024).await.unwrap();
         drop(file);
 
@@ -1013,9 +929,6 @@ mod tests {
 
     #[tokio::test]
     async fn relative_path_resolves_against_workspace_root_not_process_cwd() {
-        // The process's current directory here is the crate root (however
-        // `cargo test` was invoked), not `workspace_root` — so this only
-        // passes if the relative path is joined against `workspace_root`.
         let workspace_root = tempfile::tempdir().unwrap();
         tokio::fs::write(workspace_root.path().join("relative.txt"), "from workspace")
             .await

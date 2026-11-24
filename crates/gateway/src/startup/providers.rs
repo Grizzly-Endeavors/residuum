@@ -1,5 +1,3 @@
-//! Model providers and memory pipeline initialization.
-
 use std::sync::Arc;
 
 use residuum_bus::Publisher;
@@ -14,7 +12,6 @@ use residuum_memory::reflector::Reflector;
 
 use super::memory::build_memory_components;
 
-/// Model providers and memory pipeline observers built from config.
 pub struct ProviderComponents {
     pub provider: Box<dyn residuum_inference::InferenceProvider>,
     pub options: CompletionOptions,
@@ -23,17 +20,6 @@ pub struct ProviderComponents {
     pub embedding_provider: Option<std::sync::Arc<dyn EmbeddingProvider>>,
 }
 
-/// Build model providers, observer, reflector, and embedding provider.
-///
-/// Only an unusable primary main-model provider is fatal here. Every other
-/// degradation — a dropped fallback, a disabled observer or reflector, the
-/// embedding provider below — is collected into `degradations` for the
-/// caller to report as one grouped notice; the main model's own chain
-/// additionally gets a live notice on a fallback/recovery transition at
-/// runtime (see `residuum_inference::FailoverProvider`).
-///
-/// # Errors
-/// Returns `FatalError` if the primary main model provider fails to build.
 pub fn init_providers(
     cfg: &Config,
     tz: chrono_tz::Tz,

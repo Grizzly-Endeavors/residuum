@@ -2,14 +2,8 @@ import { artifactIdentity, json, readJsonObject, stringField, text } from "./htt
 import type { Route, RouteContext } from "./routes";
 import type { MockState } from "./state";
 
-/** The name of the header a workbench artifact's requests carry. */
 const ARTIFACT_HEADER = "x-residuum-artifact";
 
-/**
- * An item's id, as the backend makes it: the day and the title's words, with
- * `_2`, `_3` and so on when that day already has an item of the same title in
- * any of `states`' inboxes (a message to several agents takes one id for them all).
- */
 export function agentInboxItemId(states: readonly MockState[], title: string): string {
   const [first] = states;
   if (first === undefined) throw new Error("an item id needs the inbox it goes in");
@@ -31,17 +25,10 @@ export function agentInboxItemId(states: readonly MockState[], title: string): s
   return id;
 }
 
-/** The title of an item added without one: the first line of its body, in full (the backend's `derive_title`). */
 export function deriveTitle(body: string): string {
   return body === "" ? "Inbox message" : (body.split(/\r?\n/)[0] ?? "");
 }
 
-/**
- * `POST .../agent-inbox`: add an item to the agent's own inbox, for it to
- * triage later. The body is `{ title?, body }`, and the title defaults to the
- * body's first line. The item's source is the artifact the request names, or
- * `web`. Answers `{ id }`.
- */
 async function addAgentInboxItem({ req, res, state }: RouteContext): Promise<void> {
   let body: Awaited<ReturnType<typeof readJsonObject>>;
   try {
@@ -78,7 +65,6 @@ async function addAgentInboxItem({ req, res, state }: RouteContext): Promise<voi
   json(res, 200, { id });
 }
 
-/** The agent inbox route, in the unscoped `/api/...` spelling. It is one of the routes only a running agent serves. */
 export const agentInboxRoutes: readonly Route[] = [
   { method: "POST", pattern: "/api/agent-inbox", handler: addAgentInboxItem },
 ];

@@ -1,21 +1,10 @@
-//! Prompt construction for the observer LLM call.
-
 use crate::recent_messages::RecentMessage;
 use crate::types::Visibility;
 use residuum_inference::Message;
 
-/// User-customizable content guidance — default when `memory/OBSERVER.md` is absent.
-///
-/// Embedded from the same asset the workspace bootstrap writes to disk, so the
-/// fallback and the bundled file cannot drift. The format spec is always appended by code.
 pub(super) const EXTRACTION_CONTENT_PROMPT: &str =
     include_str!("../../../../assets/workspace-bootstrap/memory/OBSERVER.md");
 
-/// Output format spec — always appended by code, never stored in editable files.
-///
-/// This is injected unconditionally so editing `OBSERVER.md` cannot break JSON parsing.
-/// The structural JSON requirements are enforced by the model's structured output mode
-/// (JSON schema), so this spec focuses on semantic field guidance only.
 pub(super) const EXTRACTION_FORMAT_SPEC: &str = r#"For each observation:
 - "content": a complete, self-contained observation sentence
 - "timestamp": timestamp at minute precision (YYYY-MM-DDTHH:MM) matching the most relevant message
@@ -26,10 +15,6 @@ written as if briefing someone who needs to continue the conversation. Include t
 topic, any open questions, and the overall direction of the conversation.
 Set to empty string if there is insufficient context for a meaningful narrative."#;
 
-/// JSON schema for the observer response, used with structured output mode.
-///
-/// Returns a schema requiring `observations` (array of items with content, timestamp,
-/// visibility) and `narrative` (string, required but empty string maps to `None`).
 #[must_use]
 pub(super) fn observer_response_schema() -> serde_json::Value {
     serde_json::json!({
@@ -55,10 +40,6 @@ pub(super) fn observer_response_schema() -> serde_json::Value {
     })
 }
 
-/// Format a single `RecentMessage` for the extraction prompt transcript.
-///
-/// Includes timestamp, role, visibility, content, and any tool calls or
-/// tool call IDs, so the observer LLM has full context.
 pub(super) fn format_recent_message(rm: &RecentMessage) -> String {
     let role = rm.message.role.as_str();
     let timestamp = rm.timestamp.format("%Y-%m-%dT%H:%M:%S").to_string();
@@ -94,10 +75,6 @@ pub(super) fn format_recent_message(rm: &RecentMessage) -> String {
     parts.join("\n")
 }
 
-/// Build the extraction prompt for the observer model.
-///
-/// Injects the format spec alongside user-customizable content guidance so the
-/// format requirement cannot be lost by editing the disk file.
 pub(super) fn build_extraction_prompt(
     recent_messages: &[RecentMessage],
     content_guidance: &str,

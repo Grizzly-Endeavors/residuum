@@ -1,6 +1,3 @@
-//! The wire frames sent to clients, built from bus session events, registry
-//! entries and the workspace change feed.
-
 use residuum_bus::session::SessionInfo;
 use residuum_bus::workspace_change::WorkspaceResyncReason;
 use residuum_bus::{
@@ -10,7 +7,6 @@ use residuum_workspace::watch::{LIVE_UPDATES_OFF_MESSAGE, WatchSet, WatchedChang
 
 use super::{ServerMessage, SessionRunStatus, SessionSummary};
 
-/// Summarize a live run from its registry entry.
 #[must_use]
 pub fn summary_from_live(info: &SessionInfo) -> SessionSummary {
     SessionSummary {
@@ -28,8 +24,6 @@ pub fn summary_from_live(info: &SessionInfo) -> SessionSummary {
         memory_pending: false,
         interrupted: false,
         usage: info.usage,
-        // A live run has no outcome yet; `session_completed` carries it when
-        // the run finishes (see `session_event_to_server_message` below).
         outcome: None,
         error: None,
         error_details: None,
@@ -39,10 +33,6 @@ pub fn summary_from_live(info: &SessionInfo) -> SessionSummary {
     }
 }
 
-/// The frame for an owner-started session that couldn't be forked; `None`
-/// for any other session's failure (a pulse fire's), because the web UI keeps
-/// a failure per address until a run starts there, and a pulse fire's
-/// address never gets one.
 #[must_use]
 pub fn session_start_failed_frame(event: SessionStartFailedEvent) -> Option<ServerMessage> {
     let SessionStartFailedEvent {
@@ -58,7 +48,6 @@ pub fn session_start_failed_frame(event: SessionStartFailedEvent) -> Option<Serv
     })
 }
 
-/// Translate a bus session event into the WebSocket frame clients receive.
 #[must_use]
 pub fn session_event_to_server_message(event: SessionEvent) -> ServerMessage {
     let SessionEvent {
@@ -160,7 +149,6 @@ pub fn session_event_to_server_message(event: SessionEvent) -> ServerMessage {
     }
 }
 
-/// The `SessionCompleted` frame for a run that finished with `status`.
 fn completed_frame(
     address: String,
     run_id: String,
@@ -184,8 +172,6 @@ fn completed_frame(
     }
 }
 
-/// The frame a workspace change-feed event becomes for a connection watching
-/// `watch_set`, if any. A connection watching nothing gets nothing.
 #[must_use]
 pub fn workspace_frame(watch_set: &WatchSet, event: WorkspaceEvent) -> Option<ServerMessage> {
     if watch_set.is_empty() {

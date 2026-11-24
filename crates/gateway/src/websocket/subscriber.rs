@@ -1,5 +1,3 @@
-//! WebSocket bus subscriber — translates typed bus events to `ServerMessage` frames.
-
 use crate::turn_journal::{JournaledEvent, TurnJournal, TurnRecord};
 use residuum_bus::{
     EndpointName, ErrorEvent, InlineOutputEvent, MainConversationEvent, NoticeEvent, NotifyName,
@@ -16,7 +14,6 @@ use tokio::sync::mpsc;
 
 use residuum_workspace::watch::WatchSet;
 
-/// The frame for one event of the main agent's conversation.
 #[expect(
     clippy::too_many_lines,
     reason = "one arm per conversation event, each a field-for-field move into its frame"
@@ -138,13 +135,11 @@ pub(crate) fn main_conversation_frame(event: MainConversationEvent) -> ServerMes
     }
 }
 
-/// Pending `send_message` call targeting this WebSocket endpoint inside the turn in flight.
 struct PendingEndpointSend {
     file_path: Option<String>,
     message: Option<String>,
 }
 
-/// Extract a `send_message` call targeting `endpoint` with no conversation override.
 fn parse_endpoint_send(
     name: &str,
     arguments: &serde_json::Value,
@@ -183,7 +178,6 @@ fn parse_endpoint_send(
     Some(PendingEndpointSend { file_path, message })
 }
 
-/// The turn in flight as a `turn_snapshot` frame carries it.
 async fn turn_in_progress(
     record: TurnRecord,
     file_registry: &FileRegistry,
@@ -264,8 +258,6 @@ async fn turn_in_progress(
     }
 }
 
-/// The frame for a background post-turn cycle (see
-/// `crate::post_turn`) starting or finishing.
 fn post_turn_activity_frame(event: PostTurnActivityEvent) -> ServerMessage {
     ServerMessage::PostTurnActivity {
         kind: match event.kind {
@@ -278,7 +270,6 @@ fn post_turn_activity_frame(event: PostTurnActivityEvent) -> ServerMessage {
     }
 }
 
-/// The frame for the main agent's turn-usage progress.
 fn turn_usage_frame(usage: TurnUsageEvent) -> ServerMessage {
     ServerMessage::TurnUsage {
         reply_to: usage.correlation_id,
@@ -289,14 +280,6 @@ fn turn_usage_frame(usage: TurnUsageEvent) -> ServerMessage {
     }
 }
 
-/// Convert a message the agent posted to this endpoint into the appropriate
-/// `ServerMessage`.
-///
-/// If the post carries a file attachment, registers it with the file
-/// registry and returns a `FileAttachment` frame; otherwise returns a plain
-/// `Response` frame delivered to `endpoint`. Extracted from
-/// `WsSubscribers::recv` to keep the select loop within clippy's
-/// `too_many_lines` budget.
 async fn response_to_server_message(
     registry: &FileRegistry,
     endpoint: &str,
@@ -333,63 +316,30 @@ async fn response_to_server_message(
     }
 }
 
-/// Typed subscribers for a single WebSocket connection.
 pub struct WsSubscribers {
-    /// Every main-agent turn, whatever endpoint started it, in order, as the
-    /// turn journal relays it: the source of all the main conversation's
-    /// frames — turn lifecycle, user messages, tool activity, thinking,
-    /// streamed text, intermediate text, replies and usage.
     main: mpsc::UnboundedReceiver<JournaledEvent>,
-    /// The main conversation's turn in flight, for `turn_snapshot` frames.
     journal: TurnJournal,
-    /// The last relayed event a `turn_snapshot` already sent covers; relayed
-    /// events up to it are dropped so none is shown twice.
     covered_through: u64,
-    /// Requests for a `turn_snapshot`, from the connection's read loop.
     resync_rx: mpsc::UnboundedReceiver<()>,
     resync_tx: mpsc::UnboundedSender<()>,
-    /// Messages posted to this endpoint with `send_message`, files included.
-    /// Nothing else is published to the web UI's endpoint: a turn's reply
-    /// arrives through `main`.
     pub response: Subscriber<ResponseEvent>,
-    /// The endpoint `response` listens on, named in the frames it yields.
     endpoint: EndpointName,
-    /// Background post-turn cycle start/finish, for the quiet activity
-    /// indicator — see `crate::post_turn`.
     pub post_turn_activity: Subscriber<PostTurnActivityEvent>,
     pub notice: Subscriber<NoticeEvent>,
     pub inline_output: Subscriber<InlineOutputEvent>,
     pub error: Subscriber<ErrorEvent>,
-    /// Agent session lifecycle and turn events, forwarded as the
-    /// `session_*` frames. Main-agent frames never come from here.
     pub session: Subscriber<SessionEvent>,
-    /// Sessions that couldn't be forked; the owner-started ones are
-    /// forwarded as `session_start_failed` frames.
     pub session_start_failed: Subscriber<SessionStartFailedEvent>,
-    /// Tasks sent to remote agents, for Activity's Running now.
     pub outbound_a2a: Subscriber<OutboundA2aTaskEvent>,
-    /// Pulse fires starting, moving to their session, and finishing, for
-    /// the Schedule place.
     pub pulse_fire: Subscriber<PulseFireEvent>,
-    /// Workbench artifact file changes, so an open artifact page reloads live.
     pub workbench: Subscriber<WorkbenchEvent>,
-    /// The agent's own workspace change feed, filtered by `watch_set`.
     pub workspace: Subscriber<WorkspaceEvent>,
-    /// The hub's team change feed (paths under `team/`), filtered by
-    /// `watch_set`.
     pub team_workspace: Subscriber<WorkspaceEvent>,
-    /// The prefixes this connection watches, replaced by its
-    /// `watch_workspace` frames.
     pub watch_set: tokio::sync::watch::Receiver<WatchSet>,
     pub file_registry: residuum_hub::file_server::FileRegistry,
 }
 
 impl WsSubscribers {
-    /// Create all typed subscribers for a WebSocket connection.
-    ///
-    /// # Errors
-    ///
-    /// Returns `BusError` if any subscription fails.
     pub async fn new(
         bus_handle: &residuum_bus::BusHandle,
         team_bus: &residuum_bus::BusHandle,
@@ -424,14 +374,11 @@ impl WsSubscribers {
         })
     }
 
-    /// Where the connection's read loop asks for a `turn_snapshot` frame,
-    /// which then arrives in order among the others from [`Self::recv`].
     #[must_use]
     pub fn resync_requests(&self) -> mpsc::UnboundedSender<()> {
         self.resync_tx.clone()
     }
 
-    /// The turn in flight as of now; the relayed events it covers are dropped.
     async fn turn_snapshot_frame(&mut self) -> ServerMessage {
         let snapshot = self.journal.snapshot();
         self.covered_through = snapshot.through;
@@ -447,9 +394,6 @@ impl WsSubscribers {
         }
     }
 
-    /// Receive the next server message from any subscribed topic.
-    ///
-    /// Returns `None` when all subscribers have closed.
     pub async fn recv(&mut self) -> Option<ServerMessage> {
         loop {
             let msg = tokio::select! {
@@ -568,7 +512,6 @@ mod tests {
             .unwrap()
     }
 
-    /// A broker with a `WsSubscribers` on the `ws` endpoint.
     async fn subscribed() -> (residuum_bus::BusHandle, WsSubscribers) {
         let handle = residuum_bus::spawn_broker();
         let subs = WsSubscribers::new(
@@ -606,7 +549,6 @@ mod tests {
         )
         .await
         .unwrap();
-        // Wait for the journal itself rather than for time to pass.
         let mut seen = journal.follow();
         publish_main(
             &handle,
@@ -624,8 +566,6 @@ mod tests {
         subs.resync_requests().send(()).unwrap();
         publish_main(&handle, delta(" there")).await;
 
-        // Frames relayed before the request may come first; the snapshot
-        // covers them, and only what came after it follows.
         let turn = loop {
             if let ServerMessage::TurnSnapshot { turn, .. } = subs.recv().await.unwrap() {
                 break turn.unwrap();
@@ -750,9 +690,6 @@ mod tests {
         );
     }
 
-    /// Publish `agent`'s message opening a turn, and check the socket gets it
-    /// with its sender both live and in the snapshot a page opening now
-    /// asks for.
     async fn assert_agent_message_reaches_the_socket(
         agent: residuum_inference::AgentSender,
         content: &str,
@@ -795,7 +732,6 @@ mod tests {
             ServerMessage::TurnStarted { .. }
         ));
 
-        // A page that opens now is shown it too.
         subs.resync_requests().send(()).unwrap();
         let ServerMessage::TurnSnapshot {
             turn: Some(turn), ..
@@ -856,8 +792,6 @@ mod tests {
         }
     }
 
-    /// A turn that started on Telegram, thought, spoke, called a tool and
-    /// replied, as the events its loop publishes.
     fn a_telegram_turn() -> Vec<MainConversationEvent> {
         vec![
             MainConversationEvent::UserMessage {
@@ -1467,8 +1401,6 @@ mod tests {
         )
         .await
         .unwrap();
-        // The connection starts watching after it subscribed; batches from
-        // then on are filtered by the set it sent.
         watch_tx.send_replace(WatchSet::parse(vec!["wiki".into()]).unwrap());
         handle
             .publisher()

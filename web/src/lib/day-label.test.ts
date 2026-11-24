@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { dayLabel } from "./day-label";
 
-// Wednesday 8 October 2026, midday.
 const NOW = new Date(2026, 9, 8, 12, 0).getTime();
 
 describe("dayLabel", () => {

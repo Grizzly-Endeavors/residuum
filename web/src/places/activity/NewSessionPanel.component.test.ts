@@ -79,7 +79,6 @@ function startFailed(address: string): Extract<ServerMessage, { type: "session_s
 }
 
 let starts: unknown[];
-/** Whether the device reports a coarse pointer, as a touch screen does. */
 let coarsePointer = false;
 let answer: () => Response;
 
@@ -140,7 +139,6 @@ describe("the new session panel", () => {
 
     expect(await screen.findByText("Starting")).toBeVisible();
     expect(starts).toEqual([{ prompt: "Plan the garden", model: "large" }]);
-    // The task stays until the run starts, in case the start fails.
     expect(session.prompt).toBe("Plan the garden");
     expect(replacePanel).not.toHaveBeenCalled();
 
@@ -183,7 +181,6 @@ describe("the new session panel", () => {
 
   it("gives the task back when the failure arrives before the agent's answer to the start", async () => {
     answer = () => {
-      // The agent publishes the start before it answers, so its failure can come first.
       ws.sessions.handleFrame(startFailed("spawned-session-1a2b"));
       return jsonResponse({ address: "spawned-session-1a2b" }, 202);
     };

@@ -1,5 +1,3 @@
-//! Tracing subcommand: manage trace export and observability.
-
 use std::collections::HashMap;
 
 use residuum::util::FatalError;
@@ -7,89 +5,68 @@ use serde::Deserialize;
 
 #[derive(clap::Subcommand)]
 pub(super) enum TracingCommand {
-    /// Show current tracing configuration and streaming state
     Status,
-    /// Manage OTEL endpoints
     Otel {
         #[command(subcommand)]
         command: OtelCommand,
     },
-    /// Export buffered traces to configured OTEL endpoints
     Dump {
-        /// Export to a specific endpoint URL instead of all configured endpoints
         #[arg(long)]
         endpoint: Option<String>,
     },
-    /// Control live trace streaming
     Stream {
         #[command(subcommand)]
         command: StreamCommand,
     },
-    /// Toggle content sanitization for trace exports
     Sanitize(SanitizeArgs),
-    /// Toggle automatic error reporting
     ErrorReporting(ErrorReportingArgs),
 }
 
 #[derive(clap::Subcommand)]
 pub(super) enum OtelCommand {
-    /// Add an OTEL endpoint
     Add(OtelAddArgs),
-    /// Remove an OTEL endpoint
     Remove(OtelRemoveArgs),
-    /// List configured OTEL endpoints
     List,
-    /// Test connectivity to an OTEL endpoint
     Test(OtelTestArgs),
 }
 
 #[derive(clap::Args)]
 pub(super) struct OtelAddArgs {
-    /// OTLP HTTP endpoint URL
     pub url: String,
-    /// Human-readable name for this endpoint
     #[arg(long)]
     pub name: Option<String>,
-    /// Additional HTTP headers (KEY=VALUE format, repeatable)
     #[arg(long = "header", value_name = "KEY=VALUE")]
     pub headers: Vec<String>,
 }
 
 #[derive(clap::Args)]
 pub(super) struct OtelRemoveArgs {
-    /// URL of the endpoint to remove
     pub url: String,
 }
 
 #[derive(clap::Args)]
 pub(super) struct OtelTestArgs {
-    /// URL of the endpoint to test (tests all if omitted)
     pub url: Option<String>,
 }
 
 #[derive(clap::Subcommand)]
 pub(super) enum StreamCommand {
-    /// Start streaming traces to OTEL endpoints
     Start,
-    /// Stop streaming traces
     Stop,
 }
 
 #[derive(clap::Args)]
 pub(super) struct SanitizeArgs {
-    /// Enable or disable sanitization
     #[arg(value_parser = parse_on_off)]
     pub state: bool,
 }
 
 #[derive(clap::Args)]
 pub(super) struct ErrorReportingArgs {
-    /// Enable or disable automatic error reporting
     #[arg(value_parser = parse_on_off)]
     pub state: bool,
 }
 
-/// Parse "on"/"off" strings into booleans.
 fn parse_on_off(s: &str) -> Result<bool, String> {
     match s {
         "on" => Ok(true),
@@ -98,7 +75,6 @@ fn parse_on_off(s: &str) -> Result<bool, String> {
     }
 }
 
-/// Run a tracing subcommand by sending HTTP requests to the running daemon.
 pub(super) async fn run_tracing_command(
     command: &TracingCommand,
     gateway_addr: &str,
@@ -112,8 +88,6 @@ pub(super) async fn run_tracing_command(
         TracingCommand::ErrorReporting(args) => cmd_error_reporting(gateway_addr, args.state).await,
     }
 }
-
-// ── Helper ───────────────────────────────────────────────────────────
 
 fn make_client() -> Result<reqwest::Client, FatalError> {
     super::hub_client::local_hub_client()
@@ -181,9 +155,6 @@ fn check_response(resp: &reqwest::Response, context: &str) -> Result<(), FatalEr
     }
 }
 
-// ── Subcommand implementations ───────────────────────────────────────
-
-/// Response type matching `TracingStatus` from the service.
 #[derive(Deserialize)]
 struct TracingStatusResponse {
     log_level: String,

@@ -1,6 +1,3 @@
-//! The hub routes that concern the whole process: cloud, update, shutdown,
-//! tracing, and the hub and team checkpoint repositories.
-
 use std::sync::Arc;
 
 use axum::Router;
@@ -10,10 +7,6 @@ use super::state::HubHttpState;
 use crate::web;
 use residuum_net::remote_control_guard::reject_remote_shutdown_and_disconnect;
 
-/// Cloud connection routes. Disconnect is refused over the tunnel, since a
-/// remote disconnect leaves no way to reconnect. The relay's sign-in callback
-/// stays at the root because the relay redirects the browser to it, and it
-/// takes a token only for a sign-in that connect started.
 pub(super) fn cloud_routes(hub: &HubHttpState) -> Router {
     let state = web::cloud::CloudApiState {
         hub_dir: hub.hub_dir.clone(),
@@ -44,8 +37,6 @@ pub(super) fn cloud_routes(hub: &HubHttpState) -> Router {
         )
 }
 
-/// Update and shutdown routes. Shutdown is refused over the tunnel, since a
-/// remote shutdown leaves no way to bring the hub back.
 pub(super) fn update_routes(hub: &HubHttpState) -> Router {
     let state = web::update::UpdateApiState {
         build: hub.build,
@@ -76,7 +67,6 @@ pub(super) fn update_routes(hub: &HubHttpState) -> Router {
         )
 }
 
-/// The tracing and observability routes.
 pub(super) fn tracing_routes(hub: &HubHttpState) -> Router {
     use web::tracing_api as api;
 
@@ -120,7 +110,6 @@ pub(super) fn tracing_routes(hub: &HubHttpState) -> Router {
         .with_state(state)
 }
 
-/// Checkpoint history and restore for the hub config and team repositories.
 pub(super) fn checkpoint_routes(hub: &HubHttpState) -> Router {
     web::checkpoints::checkpoints_api_router(
         web::checkpoints::CheckpointApiState {
@@ -131,7 +120,6 @@ pub(super) fn checkpoint_routes(hub: &HubHttpState) -> Router {
     )
 }
 
-/// The team's workspace file API and its workbench routes.
 pub(super) fn team_routes(hub: &HubHttpState) -> Router {
     let team_root = hub.team.root().to_path_buf();
     let team_view = hub.team.view_for_user(&team_root);
@@ -156,7 +144,6 @@ pub(super) fn team_routes(hub: &HubHttpState) -> Router {
     web::team_workspace_api_router(files).merge(workbench)
 }
 
-/// The hub-level config, secret, key, and onboarding routes.
 pub(super) fn hub_config_routes(hub: &HubHttpState) -> Router {
     web::hub_api_router(web::HubApiState {
         hub_dir: hub.hub_dir.clone(),

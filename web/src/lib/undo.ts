@@ -1,33 +1,9 @@
-// ── Single-click destructive actions, backed by a checkpoint undo ────
-//
-// Residuum's confirm-before-act pattern (a two-click "Remove?" button) is
-// gone: a destructive action fires on the first click, and its result toast
-// carries a direct "Undo" instead of asking the user to confirm ahead of
-// time. This works because the server checkpoints the affected repository
-// immediately before every one of these actions runs — see
-// `docs/systems-usage/checkpoints.md` — so undoing is always just restoring
-// that pre-action checkpoint.
-
 import type { WorkspaceCheckpoint } from "./api";
 import { configCoordinator } from "./config-coordinator";
 import { userErrorMessage } from "./errors";
 import { toast } from "./toast.svelte";
 import type { RepoKind } from "./types";
 
-/**
- * Show a success toast for a destructive action that just completed.
- * `agent` is the agent the action ran on; only its own repositories
- * (`workspace`, `agent_config`) need one, so the hub-level ones take `null`.
- * When `checkpointId` is the id the action returned, the toast carries
- * Undo for that checkpoint. When it is null — the checkpoint failed, so
- * there is nothing correct to restore — the toast has no Undo.
- *
- * `path` may list several paths (an artifact's page and its data files); Undo
- * restores each from the same checkpoint.
- *
- * `onRestored` runs after a successful undo, so the caller can refresh
- * whatever list or view showed the now-gone item.
- */
 export function notifyWithUndo(
   agent: string | null,
   message: string,
@@ -66,7 +42,6 @@ async function runUndo(
   }
 }
 
-/** One restore an Undo performs: `path` is relative to `repo`'s root. */
 export interface RestoreTarget {
   checkpointId: string;
   repo: RepoKind;
@@ -75,11 +50,6 @@ export interface RestoreTarget {
 
 const TEAM_PREFIX = "team/";
 
-/**
- * Locate a workspace-API tree path in its checkpoint repository: `team/...`
- * lives in the team repository relative to `team/`; anything else lives in
- * the workspace repository under its own path.
- */
 export function checkpointLocation(path: string): { repo: RepoKind; path: string } {
   if (path.startsWith(TEAM_PREFIX)) {
     return { repo: "team", path: path.slice(TEAM_PREFIX.length) };
@@ -87,13 +57,6 @@ export function checkpointLocation(path: string): { repo: RepoKind; path: string
   return { repo: "workspace", path };
 }
 
-/**
- * Pick the restores that undo an action on workspace-API `paths`. A
- * `team/...` path lives in the team repository, relative to `team/`; any
- * other path lives in the workspace repository. Each path restores from the
- * checkpoint of its own repository, and a path whose repository recorded no
- * checkpoint is left out (nothing correct to restore it from).
- */
 export function restoreTargets(
   paths: string[],
   checkpoints: WorkspaceCheckpoint[],
@@ -108,11 +71,6 @@ export function restoreTargets(
   return targets;
 }
 
-/**
- * `notifyWithUndo` for the workspace file API, whose paths may be agent
- * files or `team/...` files and whose response names one checkpoint per
- * repository. Undo restores each path from the right repository.
- */
 export function notifyWithWorkspaceUndo(
   agent: string | null,
   message: string,

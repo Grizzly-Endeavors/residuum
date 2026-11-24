@@ -42,11 +42,9 @@ use self::auth::TokenValidator;
 use self::connector::ConnectorClient;
 use self::store::{ConversationRef, TeamsStore};
 
-/// Activities waiting for the inbound worker before the endpoint sheds load.
 const INBOUND_QUEUE: usize = 64;
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// State shared by the HTTP endpoint, the inbound worker, and the outbound subscriber.
 pub(super) struct TeamsRuntime {
     cfg: TeamsConfig,
     http: reqwest::Client,
@@ -54,7 +52,6 @@ pub(super) struct TeamsRuntime {
     connector: ConnectorClient,
     store: TeamsStore,
     buffer: ContextBuffer,
-    /// Conversation each in-flight turn should answer in, by correlation ID.
     reply_targets: ReplyTargets<ConversationRef>,
     inbound_tx: tokio::sync::mpsc::Sender<activity::Activity>,
     publisher: Publisher,
@@ -63,14 +60,11 @@ pub(super) struct TeamsRuntime {
     stop_tx: tokio::sync::mpsc::Sender<StopRequest>,
     session_registry: Arc<SessionRegistry>,
     inbox_dir: PathBuf,
-    /// Main's saved conversation, which `/multitask` forks.
     main_conversation: PathBuf,
     tz: chrono_tz::Tz,
 }
 
 impl TeamsRuntime {
-    /// Where output for `correlation_id` goes: the conversation that started
-    /// the turn, or the owner's DM for proactive output.
     async fn target_for(&self, correlation_id: &str) -> Option<ConversationRef> {
         match self.reply_targets.get(correlation_id) {
             Some(target) => Some(target),
@@ -83,14 +77,12 @@ impl TeamsRuntime {
         self.store.conversation(&owner.dm_conversation_id).await
     }
 
-    /// Send a markdown message, logging (not propagating) failure.
     async fn send_text(&self, target: &ConversationRef, text: &str) {
         if let Err(e) = self.try_send_text(target, text).await {
             tracing::error!(error = %e, conversation = %target.label, "failed to send teams message");
         }
     }
 
-    /// Send a markdown message in chunks, stopping at the first failure.
     async fn try_send_text(
         &self,
         target: &ConversationRef,
@@ -116,7 +108,6 @@ impl ConversationSource for TeamsRuntime {
     }
 }
 
-/// The Teams adapter: messaging listener, inbound worker, and outbound subscriber.
 pub struct TeamsInterface {
     cfg: TeamsConfig,
     senders: AdapterSenders,
@@ -127,7 +118,6 @@ pub struct TeamsInterface {
 }
 
 impl TeamsInterface {
-    /// Create the adapter; `bind` is the gateway's bind address.
     #[must_use]
     pub fn new(
         cfg: TeamsConfig,
@@ -147,16 +137,6 @@ impl TeamsInterface {
         }
     }
 
-    /// Run until the shutdown signal fires.
-    ///
-    /// A corrupt saved Teams state file is moved aside and started fresh
-    /// rather than treated as an error (see
-    /// `ChatStateStore::load`).
-    ///
-    /// # Errors
-    /// Returns an error if the saved Teams state cannot be read (a
-    /// permissions problem, not corrupt content), the bus subscription
-    /// fails, or the listener port cannot be bound.
     pub async fn start(self) -> anyhow::Result<()> {
         use anyhow::Context as _;
 
@@ -236,7 +216,6 @@ impl TeamsInterface {
         let mut shutdown_rx = self.shutdown_rx;
         let served = axum::serve(listener, app)
             .with_graceful_shutdown(async move {
-                // Either a shutdown signal or the sender going away ends the adapter.
                 if shutdown_rx.changed().await.is_err() {
                     tracing::debug!("teams shutdown sender dropped; stopping listener");
                 }

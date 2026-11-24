@@ -18,21 +18,12 @@
   import type { SettingsScope } from "./sections";
   import SettingsSection from "./SettingsSection.svelte";
 
-  // The Raw config section: each of the scope's files as text,
-  // checked for problems as it is typed, and written whole by its own Save
-  // even when it has problems. A file whose form holds staged changes is
-  // read-only here until they are saved or discarded; the reverse holds while
-  // an edit here is unsaved (see SettingsSection).
-
   let { scope, section }: { scope: SettingsScope; section: SectionId } = $props();
 
-  /** Names this editor's writes, so the settings model reads the file back after them. */
   const RAW_SOURCE = Symbol("raw-config");
-  /** How long typing pauses before the text is checked, as the Files editor waits. */
   const CHECK_DELAY_MS = 500;
   const TAB_ORDER: readonly FieldFile[] = ["config", "providers", "mcp"];
 
-  /** A check of some text: what it found, or why it couldn't be made. */
   interface Check {
     text: string;
     problems: readonly Diagnostic[];
@@ -68,7 +59,6 @@
       const error = userErrorMessage(err, { action: "Couldn't check this file for problems." });
       found = { text, problems: [], error };
     }
-    // An answer for text that has since changed is dropped; the newer text's check follows.
     if (shownText(target) === text) checks = { ...checks, [target.name]: found };
   }
 

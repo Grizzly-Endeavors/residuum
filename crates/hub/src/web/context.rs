@@ -9,15 +9,6 @@ use residuum_config::WorkspaceLayout;
 
 use super::agent_files::{AgentFilesState, FileRouteError};
 
-/// `GET /api/agents/{name}/context` — the context breakdown the agent saved
-/// after its latest turn or memory change (`memory/context_breakdown.json`),
-/// with when it was computed. It reads the file, not the live agent, so it
-/// answers for a stopped agent too and never waits for a running turn. A
-/// `404` means no turn has saved one yet; a file that can't be read or parsed
-/// is a `500`, logged.
-///
-/// # Errors
-/// `404` when there is no breakdown yet, `500` when it can't be read.
 pub(super) async fn api_context(
     State(state): State<AgentFilesState>,
 ) -> Result<Json<ContextSnapshot>, FileRouteError> {

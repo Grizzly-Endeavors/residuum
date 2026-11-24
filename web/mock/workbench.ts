@@ -6,7 +6,6 @@ import { decodedParam, type Route, type RouteContext } from "./routes";
 import { discoverArtifacts, WORKBENCH_DIR } from "./workbench-files";
 import { listDirectory, pathKind, removePath } from "./workspace-tree";
 
-/** The character references the backend decodes in a page's title. */
 const TITLE_ENTITIES: ReadonlyArray<readonly [string, string]> = [
   ["&lt;", "<"],
   ["&gt;", ">"],
@@ -17,7 +16,6 @@ const TITLE_ENTITIES: ReadonlyArray<readonly [string, string]> = [
   ["&amp;", "&"],
 ];
 
-/** The text of the page's first `<title>`, with its whitespace collapsed, or `null` when it has none. */
 function pageTitle(html: string): string | null {
   const raw = /<title(?:\s[^>]*)?>([\s\S]*?)<\/title/i.exec(html)?.[1];
   if (raw === undefined) return null;
@@ -29,7 +27,6 @@ function pageTitle(html: string): string | null {
   return decoded === "" ? null : decoded;
 }
 
-/** Every artifact, most recently modified first. */
 function listArtifacts({ res, hub }: RouteContext): void {
   const team = hub.hubState;
   const artifacts: ArtifactSummary[] = [...discoverArtifacts(team).values()].map((artifact) => ({
@@ -44,7 +41,6 @@ function listArtifacts({ res, hub }: RouteContext): void {
   json(res, 200, artifacts);
 }
 
-/** Where artifacts are served: the mock artifacts listener's port, once it is up. There is no relay. */
 function workbenchInfo({ res, state }: RouteContext): void {
   json(res, 200, {
     port: state.workbenchPort,
@@ -60,11 +56,6 @@ interface DeleteArtifactResponse {
   checkpoint_id: string | null;
 }
 
-/**
- * Remove an artifact (its page, or its folder), and the `<name>.*` data files
- * next to it in the workbench folder, such as its saved state. The team is
- * checkpointed first, so restoring the paths it lists undoes the delete.
- */
 function deleteArtifact(ctx: RouteContext): void {
   const { res, hub } = ctx;
   const team = hub.hubState;
@@ -101,7 +92,6 @@ function deleteArtifact(ctx: RouteContext): void {
   } satisfies DeleteArtifactResponse);
 }
 
-/** The workbench routes, in the unscoped `/api/...` spelling. */
 export const workbenchRoutes: readonly Route[] = [
   { method: "GET", pattern: "/api/workbench/artifacts", handler: listArtifacts },
   { method: "GET", pattern: "/api/workbench/info", handler: workbenchInfo },

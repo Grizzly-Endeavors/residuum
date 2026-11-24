@@ -1,5 +1,3 @@
-//! Tool system for agent-invoked operations.
-
 #[cfg(test)]
 #[path = "../../core/src/testing/crypto.rs"]
 mod crypto;
@@ -52,17 +50,8 @@ use serde_json::Value;
 
 use residuum_inference::ToolError;
 
-/// The `model` parameter of `subagent_spawn` and the `model_tier` parameter of
-/// `schedule_action`: both take a tier or an explicit model id.
 pub(crate) const MODEL_PARAMETER_DESCRIPTION: &str = "A tier (\"small\", \"medium\", or \"large\") or an explicit model id in provider/model form (the format providers.toml uses). An explicit model runs that one model with no failover. Defaults to \"medium\".";
 
-/// The most a tool that shapes its own output returns from one call: a
-/// `read_file` page, a `web_fetch` page, `exec`'s capped output. It sits under
-/// the history limit with room for the tool's header and notes, so the turn
-/// loop never cuts these results a second time.
-///
-/// Counted in bytes where a tool measures bytes; a byte budget never holds
-/// more characters than bytes, so it fits the character limit either way.
 pub(crate) const PAGE_BUDGET: usize = residuum_agent::HISTORY_RESULT_MAX_CHARS - 2_000;
 
 pub(crate) fn require_str<'a>(args: &'a Value, field: &'static str) -> Result<&'a str, ToolError> {
@@ -71,7 +60,6 @@ pub(crate) fn require_str<'a>(args: &'a Value, field: &'static str) -> Result<&'
         .ok_or_else(|| ToolError::InvalidArguments(format!("{field} is required")))
 }
 
-/// The first `max` characters of `text`, and how many characters follow them.
 pub(crate) fn split_chars(text: &str, max: usize) -> (&str, usize) {
     match text.char_indices().nth(max) {
         None => (text, 0),
@@ -82,11 +70,6 @@ pub(crate) fn split_chars(text: &str, max: usize) -> (&str, usize) {
     }
 }
 
-/// Publish a plain-language notice to the system notification channel, if a
-/// publisher is configured. Never fails the caller: a publish error is
-/// logged and otherwise ignored. Shared by tools that take user-visible
-/// action on the user's behalf (e.g. overwriting or deleting a key the user
-/// created) and need to surface it outside the transcript.
 pub(crate) async fn publish_notice(publisher: Option<&residuum_bus::Publisher>, message: String) {
     if let Some(publisher) = publisher {
         residuum_bus::notice::publish_notice(publisher, message).await;

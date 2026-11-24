@@ -4,12 +4,6 @@ import { expect, test } from "../support/fixtures";
 import { FIRST_RECONNECT_MS, reconnectingLine, sendFromComposer } from "../support/composer";
 import { expectFileRendered } from "../support/lazy";
 
-/**
- * The chat feed: older history loading near the top, Jump to latest, catching
- * up after the connection drops, path links into the context panel, and the
- * header.
- */
-
 const GREETING = "Hi, this is atlas. You are in my conversation, not scout's.";
 const FIRST_REPLY = "I've looked into that and here's what I found:";
 const FALLBACKS = "team/wiki/notification-fallbacks.md";
@@ -27,7 +21,6 @@ async function send(page: Page, text: string): Promise<void> {
   await sendFromComposer(composer(page));
 }
 
-/** How many pages have atlas's chat socket open, by the mock's count. */
 async function connectedPages(page: Page): Promise<number> {
   const answer = (await (
     await page.request.get("/api/mock/connected-pages?agent=atlas")
@@ -35,7 +28,6 @@ async function connectedPages(page: Page): Promise<number> {
   return answer.pages;
 }
 
-/** How far the feed's scroll position is above the bottom of its range. */
 async function gapToBottom(feed: Locator): Promise<number> {
   return feed.evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight);
 }
@@ -54,9 +46,7 @@ test("the conversation reads as replies, bubbles and cards", async ({ page }) =>
   await expect(
     feed.getByText("Good. Let's keep iterating on the notification routing doc."),
   ).toBeVisible();
-  // A header the owner pasted stays their own message, not a card.
   await expect(feed.getByRole("article")).toHaveCount(2);
-  // A background turn that didn't start with an agent's message stays out of the conversation.
   await expect(feed.getByText("Pulse check: inbox_check.")).toHaveCount(0);
   await expect(feed.getByText("HEARTBEAT_OK")).toHaveCount(0);
   await expect(
@@ -72,7 +62,6 @@ test("older episodes load as the reader nears the top, and what they read stays 
   const feed = conversation(page);
   await expect(feed.getByText(GREETING)).toBeInViewport();
 
-  // The newest episode comes with recent history, so the marker shows from the start.
   const newest = feed.getByRole("separator", { name: /, ep-003$/ });
   await expect(newest).toBeAttached();
   await expect(feed.getByRole("note")).toHaveText(
@@ -82,7 +71,6 @@ test("older episodes load as the reader nears the top, and what they read stays 
 
   await scrollToTop(feed);
   await expect(feed.getByRole("separator", { name: /, ep-002$/ })).toBeAttached();
-  // The older part went in above: the divider the reader was at is still in view.
   await expect(newest).toBeInViewport();
 
   await expect(async () => {
@@ -105,7 +93,6 @@ test("Jump to latest sits above the composer, says when a reply landed below, an
 
   await scrollToTop(feed);
   await expect(jump).toBeVisible();
-  // Bottom centre of the conversation, just above the composer.
   const pill = await jump.boundingBox();
   const area = await feed.boundingBox();
   const field = await page.locator("form.composer").boundingBox();
@@ -117,7 +104,6 @@ test("Jump to latest sits above the composer, says when a reply landed below, an
   await expect(jump).not.toHaveAccessibleDescription(/ep-00/);
   await expectNoAxeViolations(page);
 
-  // A reply lands below them: the pill says so.
   await mock.post("/api/mock/teammate-message?agent=atlas");
   const fresh = page.getByRole("button", { name: "New reply, jump to latest" });
   await expect(fresh).toBeVisible();
@@ -130,9 +116,6 @@ test("Jump to latest sits above the composer, says when a reply landed below, an
   await expect(fresh).toHaveCount(0);
   await expect(jump).toHaveCount(0);
 
-  // Sending from further up brings the reader down to their own message. The reply is held
-  // short of its end: a whole one is longer than a phone's view, and following it moves the
-  // message up out of sight.
   await scrollToTop(feed);
   await expect(jump).toBeVisible();
   await mock.post("/api/mock/turn-hold", { data: { held: true } });
@@ -151,8 +134,6 @@ test("scrolling back up while the Jump to latest glide is under way brings the p
   const jump = page.getByRole("button", { name: "Jump to latest" });
   await expect(jump).toBeVisible();
 
-  // Press the pill, and once the glide has started, move back to the top with no wheel,
-  // touch, key or pointer event in the feed, as find in page or a screen reader does.
   await feed.evaluate(
     (el) =>
       new Promise<void>((resolve) => {
@@ -168,7 +149,6 @@ test("scrolling back up while the Jump to latest glide is under way brings the p
   );
 
   await expect(jump).toBeVisible();
-  // A reply landing now leaves the reader where they went.
   await mock.post("/api/mock/teammate-message?agent=atlas");
   await expect(page.getByRole("button", { name: "New reply, jump to latest" })).toBeVisible();
   await expect(feed.getByText(GREETING)).not.toBeInViewport();
@@ -184,7 +164,6 @@ test("a reader who starts scrolling up while a reply streams isn't pulled back d
     isMobile && browserName !== "chromium",
     "A touch drag is sent over CDP, which only Chromium has.",
   );
-  // 100px is well inside the distance a reader coming back down counts as at the end.
   const distance = 100;
   await page.goto("/agent/atlas");
   const feed = conversation(page);
@@ -193,14 +172,11 @@ test("a reader who starts scrolling up while a reply streams isn't pulled back d
   await mock.manualTime();
   await send(page, "markdown please");
   await expect(feed.getByText("Working")).toBeVisible();
-  // The reply has started streaming, and the reader is following it.
   const before = await feed.evaluate((el) => el.scrollHeight);
   await mock.advance(1_000);
   await expect.poll(() => feed.evaluate((el) => el.scrollHeight)).toBeGreaterThan(before + 100);
   await expect.poll(() => gapToBottom(feed)).toBeLessThan(2);
 
-  // A short drag up, a finger on a phone and the wheel on a desktop, with a piece of the
-  // reply landing between each move and the next.
   const area = await feed.boundingBox();
   if (!area) throw new Error("the conversation isn't laid out");
   const x = Math.round(area.x + area.width / 2);
@@ -225,7 +201,6 @@ test("a reader who starts scrolling up while a reply streams isn't pulled back d
   for (let piece = 0; piece < 10; piece++) await mock.advance(45);
   expect(await gapToBottom(feed)).toBeGreaterThan(distance / 2);
 
-  // The rest of the reply lands below them, and the pill says so.
   await mock.advance(60_000);
   await expect(feed.getByText("Working")).toHaveCount(0);
   await expect(page.getByRole("button", { name: /Jump to latest|New reply/ })).toBeVisible();
@@ -241,7 +216,6 @@ test("the keyboard scrolls a conversation that overflows, and follows it again a
   await expect(greeting).toBeInViewport();
   const jump = page.getByRole("button", { name: "Jump to latest" });
 
-  // It scrolls, so it is a tab stop.
   await expect(feed).toHaveAttribute("tabindex", "0");
   await feed.focus();
   await expect(feed).toBeFocused();
@@ -260,8 +234,6 @@ test("the keyboard scrolls a conversation that overflows, and follows it again a
 test("End pressed while an older episode loads still follows the conversation to its end", async ({
   page,
 }) => {
-  // Home brings the reader near the top, which asks for the older episode; its answer
-  // waits until End has been pressed, so it lands while End takes the reader down.
   let releaseOlder: () => void = () => undefined;
   const released = new Promise<void>((resolve) => {
     releaseOlder = resolve;
@@ -304,10 +276,8 @@ test.describe("after the connection drops", () => {
 
     await mock.manualTime();
     await send(page, "drop finish: check the routing doc");
-    // The connection drops at 600ms, and the turn ends at 900ms while the page is away.
     await expect(feed.getByText("Working")).toBeVisible();
     await mock.advance(1_000);
-    // The page tries again a second after it saw the drop, and loads the turn from history.
     await expect(reconnectingLine(page)).toBeVisible();
     await mock.advance(FIRST_RECONNECT_MS);
 
@@ -324,8 +294,6 @@ test.describe("after the connection drops", () => {
     await mock.manualTime();
     await send(page, "drop: keep going");
     await expect(feed.getByText("Working")).toBeVisible();
-    // The connection drops at 600ms. The page tries again a second after it saw the drop, while
-    // the turn is still running: the mock's connection returns at 3.5s, and the turn ends at 4s.
     await mock.advance(1_000);
     await expect(reconnectingLine(page)).toBeVisible();
     await mock.advance(FIRST_RECONNECT_MS);
@@ -359,8 +327,6 @@ test.describe("after the connection drops", () => {
     const feed = conversation(page);
     await expect(feed.getByText(GREETING)).toBeVisible();
 
-    // The summarizer folds the conversation into a new episode while the
-    // connection is down, so the page reloads its history when it's back.
     await mock.manualTime();
     await send(page, "drop compress: tidy the wiki");
     await expect(feed.getByText("Working")).toBeVisible();
@@ -370,8 +336,6 @@ test.describe("after the connection drops", () => {
     });
     await expect(page.getByRole("button", { name: "Jump to latest" })).toBeVisible();
 
-    // The connection drops at 600ms, the history is compressed while it is down, and the page
-    // tries again a second after it saw the drop, before the turn ends at 4s.
     await mock.advance(1_000);
     await expect(reconnectingLine(page)).toBeVisible();
     await mock.advance(FIRST_RECONNECT_MS);
@@ -441,7 +405,6 @@ test("a session's message the running turn read shows on a page opened partway, 
   mock,
 }) => {
   const note = "Interim note: the cascade option needs a retry cap.";
-  // The turn waits at its last step, so the page opens again while it runs.
   await mock.post("/api/mock/turn-hold", { data: { held: true } });
   await page.goto("/agent/atlas");
   const feed = conversation(page);
@@ -459,7 +422,6 @@ test("a session's message the running turn read shows on a page opened partway, 
     .filter({ hasText: note });
   await expect(card).toHaveCount(1);
 
-  // History holds the turn only once it ends, so the reopened page has the card from the turn so far.
   await page.reload();
   await expect(feed.getByText(GREETING)).toBeVisible();
   await expect(feed.getByText("Working", { exact: true })).toBeVisible();

@@ -2,34 +2,4 @@
 import type { PushFailure } from "./PushFailure";
 import type { PushPreferences } from "./PushPreferences";
 
-/**
- * One browser or installed app that receives notifications.
- */
-export type PushDevice = { 
-/**
- * The hub's id for the device.
- */
-id: string, 
-/**
- * The name the user gave it.
- */
-label: string, 
-/**
- * When the device was first registered.
- */
-created_at: string, 
-/**
- * When a notification last reached the push service, or `null` if none
- * has.
- */
-last_success_at: string | null, 
-/**
- * The most recent failure. It stays until the next failure replaces it,
- * so compare its `at` with `last_success_at` to tell whether delivery
- * has recovered.
- */
-last_failure: PushFailure | null, 
-/**
- * Which notifications the device receives.
- */
-preferences: PushPreferences, };
+export type PushDevice = { id: string, label: string, created_at: string, last_success_at: string | null, last_failure: PushFailure | null, preferences: PushPreferences, };

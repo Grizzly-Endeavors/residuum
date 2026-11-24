@@ -1,7 +1,3 @@
-//! How the process puts the hub together with the gateway: the hub runs the
-//! agents, and the gateway's launcher starts each one's runtime. The root
-//! also embeds the web app, the only crate that needs `web/dist/` to build.
-
 use std::path::Path;
 use std::sync::Arc;
 
@@ -11,7 +7,6 @@ use crate::hub::{HubExit, HubInputs};
 use crate::util::FatalError;
 
 mod embedded {
-    //! Module boundary isolates `rust-embed` derive from clippy `same_name_method`.
     #![expect(
         clippy::same_name_method,
         reason = "rust-embed derive generates get/iter methods that shadow trait methods"
@@ -19,9 +14,6 @@ mod embedded {
 
     use rust_embed::Embed;
 
-    /// Embedded web assets from `web/dist/`. In debug builds, files are served
-    /// from disk (hot-reload); in release builds, they are compiled into the
-    /// binary.
     #[derive(Embed)]
     #[folder = "web/dist/"]
     pub(super) struct WebAssets;
@@ -29,8 +21,6 @@ mod embedded {
 
 use embedded::WebAssets;
 
-/// The embedded web app's file at `path` under `web/dist/`, in the form the
-/// hub serves it.
 #[must_use]
 fn web_asset(path: &str) -> Option<WebAsset> {
     WebAssets::get(path).map(|file| WebAsset {
@@ -39,14 +29,6 @@ fn web_asset(path: &str) -> Option<WebAsset> {
     })
 }
 
-/// Run the hub on the residuum root `root` until it is told to stop, with
-/// this binary's build, the gateway's launcher, the embedded web app, the
-/// readiness marker and the global log filter.
-///
-/// # Errors
-///
-/// Returns `FatalError` when the hub can't start or a hub-level service
-/// fails; see [`crate::hub::run_hub`].
 pub async fn run_hub(root: &Path) -> Result<HubExit, FatalError> {
     let inputs = HubInputs {
         root: root.to_path_buf(),
@@ -56,7 +38,6 @@ pub async fn run_hub(root: &Path) -> Result<HubExit, FatalError> {
         on_ready: Box::new(crate::daemon::write_ready_file),
         log_filter: crate::logging::global_filter_handle(),
     };
-    // Box::pin reduces stack frame size — this future is large
     Box::pin(crate::hub::run_hub(inputs)).await
 }
 
@@ -73,13 +54,6 @@ mod tests {
         );
     }
 
-    /// The asset tests model the real build's layout, so this checks that the
-    /// build holds what they model: each plain file, a content-hashed script
-    /// and stylesheet under `assets/`, the service worker's version line and
-    /// the app shell's mount point. Debug builds read `web/dist/` from disk,
-    /// so a dist built from older web sources fails here while the code is
-    /// fine: `just test` rebuilds a stale dist first, plain `cargo test` does
-    /// not.
     #[test]
     fn the_build_holds_every_plain_file_the_fixture_models() {
         const REBUILD: &str = "web/dist may be stale or incomplete: rebuild it with `just web-build`, or run the tests with `just test`, which rebuilds it when needed";

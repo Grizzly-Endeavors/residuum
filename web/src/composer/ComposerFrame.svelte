@@ -1,7 +1,6 @@
 <script lang="ts" module>
   import type { AppAction } from "../lib/action-registry.svelte";
 
-  /** The actions under `/`, and the name the menu and its button go by. */
   export interface ComposerMenu {
     label: string;
     actions: readonly AppAction[];
@@ -15,40 +14,20 @@
   import { IconButton, VisuallyHidden } from "../lib/ui";
   import SlashMenu from "./SlashMenu.svelte";
 
-  // What the chat's composer and a session's message box share: the box with
-  // its boundary and focus ring, a message box that grows with its text,
-  // Enter to send (a new line on a touch screen, where only the send control
-  // sends), and, when there are actions to offer, the `/` menu with the
-  // message box as its combobox. What sits above the message box, the tools
-  // in the bar and the send control are the owner's.
-
   interface Props {
     value: string;
-    /** The message box's name, such as "Message atlas". */
     label: string;
     placeholder: string;
-    /** The `/` menu; without one the message box is a plain text box. */
     menu?: ComposerMenu;
     disabled?: boolean;
-    /** The id of what says why the message box is disabled. */
     describedby?: string;
-    /** Send what is typed. False when it couldn't go: the menu stays as it was. */
     onsend: () => boolean;
-    /**
-     * Keys from anywhere in the composer, heard before the message box's own
-     * handler, so `menuShown` says whether the open menu is about to claim one.
-     */
     onkeys?: (event: KeyboardEvent, menuShown: boolean) => void;
-    /** Focus left the composer. */
     onleave?: () => void;
     onpaste?: (event: ClipboardEvent) => void;
-    /** Lines above the message box, such as attached files. */
     above?: Snippet;
-    /** The bar's tools, given the `/` menu's button to place among them. */
     tools?: Snippet<[Snippet]>;
-    /** The send control, at the end of the bar. */
     sendControl: Snippet;
-    /** Anything else the form holds, such as a hidden file input. */
     children?: Snippet;
   }
 
@@ -69,7 +48,6 @@
     children,
   }: Props = $props();
 
-  /** The tallest the message box grows before it scrolls. */
   const MAX_FIELD_HEIGHT = 200;
 
   const uid = $props.id();
@@ -78,7 +56,6 @@
 
   let field = $state<HTMLTextAreaElement>();
 
-  // The message box grows with its text, up to a limit, however the text changed.
   $effect(() => {
     void value;
     const box = field;
@@ -87,12 +64,9 @@
     box.style.height = `${String(Math.min(box.scrollHeight, MAX_FIELD_HEIGHT))}px`;
   });
 
-  /** Put the keyboard in the message box. */
   export function focus(): void {
     field?.focus();
   }
-
-  // ── The `/` menu ───────────────────────────────────────────────────
 
   let menuOpen = $state(false);
   let menuFromButton = $state(false);
@@ -108,7 +82,6 @@
     menuIndex = 0;
   }
 
-  // `/` as the first character, with no space yet, narrows the menu by what follows.
   function followTyping(): void {
     if (menu !== undefined && /^\/\S*$/.test(value)) openMenu(value.slice(1), false);
     else menuOpen = false;
@@ -120,7 +93,6 @@
     field?.focus();
   }
 
-  // A disabled action stays in the menu with its reason, and does nothing.
   function pick(action: AppAction): void {
     if (action.disabled !== undefined) return;
     menuOpen = false;
@@ -145,7 +117,6 @@
       case "Tab": {
         const action = menuActions[menuIndex];
         if (action?.command === undefined) return false;
-        // Filled in, to read over or add to before sending.
         value = `/${action.command}${action.takesText === true ? " " : ""}`;
         menuOpen = false;
         return true;
@@ -156,15 +127,12 @@
         return true;
       }
       case "Escape":
-        // Claimed here, so Esc closes the menu rather than doing what the composer's owner does with it.
         menuOpen = false;
         return true;
       default:
         return false;
     }
   }
-
-  // ── Sending ────────────────────────────────────────────────────────
 
   function send(): void {
     if (onsend()) menuOpen = false;
@@ -186,16 +154,12 @@
     }
   }
 
-  // The send control is about to be disabled or change, either of which
-  // would drop focus to the page: put it back in the box first.
   function onsubmit(event: SubmitEvent): void {
     event.preventDefault();
     send();
     if (event.submitter !== null) field?.focus();
   }
 
-  // This listener is on the form itself, so it hears a key before the message
-  // box's delegated handler does.
   const watchKeys = (form: HTMLElement): (() => void) => {
     const listener = (event: KeyboardEvent): void => {
       onkeys?.(event, showMenu);
@@ -204,7 +168,6 @@
     return () => form.removeEventListener("keydown", listener);
   };
 
-  // A press anywhere else closes the menu.
   function onfocusout(event: FocusEvent & { currentTarget: HTMLElement }): void {
     if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
     menuOpen = false;
@@ -281,7 +244,6 @@
     padding: var(--space-10) var(--space-10) var(--space-8) var(--space-14);
     border-radius: var(--corner-lg);
     background: var(--color-stone-2);
-    /* A text field's boundary and focus ring (see Input): the control border at rest, vein at double weight with a halo while focused. */
     box-shadow: inset 0 0 0 1px var(--color-control-border);
     transition: box-shadow var(--duration-fast) var(--ease-out);
 
@@ -304,7 +266,6 @@
     font-size: var(--font-size-message);
     --leading: var(--line-height-ui);
 
-    /* The composer's own ring shows focus. */
     &:focus-visible {
       outline: none;
     }
@@ -321,7 +282,6 @@
     min-width: 0;
   }
 
-  /* Never narrower than its button: a long model name gives way first. */
   .composer-send {
     display: flex;
     align-items: center;

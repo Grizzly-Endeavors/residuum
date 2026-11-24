@@ -1,14 +1,3 @@
-//! Attachment downloading and metadata formatting for channel messages.
-//!
-//! Each inbound attachment is filed under a companion agent-inbox item, in that
-//! item's own directory: `inbox/agent/attachments/<item id>/<filename>`.
-//! [`reserve_attachment_item`] claims that directory on disk (a [`ClaimedItem`])
-//! before the download starts, and every save goes through the [`AttachmentItem`],
-//! so a file can only land in its item's directory. A caller whose save fails
-//! calls [`AttachmentItem::discard`]; an item dropped without being finalized or
-//! discarded releases its claim too. Supported image formats are base64-encoded
-//! for inline delivery to the model.
-
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -20,23 +9,16 @@ use residuum_inference::{ImageData, MessageAttachment, prepare_inline_image};
 
 use super::{ClaimedItem, dedupe_filename, sanitize_attachment_filename};
 
-/// The result of finalizing an attachment.
 #[derive(Debug)]
 pub struct FinalizedAttachment {
-    /// The file encoded for inline delivery, when it is a supported image within
-    /// the inline size limit.
     pub image: Option<ImageData>,
-    /// The file as a message records it: its companion item, name, size and path.
     pub attachment: MessageAttachment,
 }
 
-/// Images larger than 20 MB are saved but not sent inline to the model.
 pub const MAX_IMAGE_INLINE_SIZE: u32 = 20 * 1024 * 1024;
 
-/// MIME types that can be sent inline to the model as images.
 const SUPPORTED_IMAGE_TYPES: &[&str] = &["image/jpeg", "image/png", "image/gif", "image/webp"];
 
-/// Check if a content type is a supported image format for inline encoding.
 #[must_use]
 pub fn is_supported_image(content_type: &str) -> bool {
     SUPPORTED_IMAGE_TYPES.contains(&content_type)
@@ -67,24 +49,15 @@ pub async fn encode_image_from_file(path: &Path, media_type: &str) -> Result<Ima
     Ok(image)
 }
 
-/// Metadata about an attachment from an incoming message.
 pub struct AttachmentInfo {
-    /// Original filename.
     pub filename: String,
-    /// File size in bytes, as the sending platform reported it. Zero when the
-    /// platform gave no size; the saved file's real size is on [`SavedAttachment`].
     pub size: u32,
-    /// MIME content type, if known.
     pub content_type: Option<String>,
 }
 
-/// What an attached file is, which sets the word its companion item is titled with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AttachmentKind {
-    /// A file sent with a message: titled `"{platform} attachment: {filename}"`.
     Attachment,
-    /// A file a remote agent returned for a task it was given: titled
-    /// `"{platform} artifact: {filename}"`.
     Artifact,
 }
 
@@ -97,38 +70,25 @@ impl AttachmentKind {
     }
 }
 
-/// A file saved into an [`AttachmentItem`]'s directory.
-///
-/// Only the item's own save methods build one, so a saved file always sits in
-/// the directory of the item it is finalized into.
 #[derive(Debug)]
 pub struct SavedAttachment {
     local_path: PathBuf,
-    /// The file's name in the item's directory (the last component of `local_path`).
     file_name: String,
     size: u32,
 }
 
 impl SavedAttachment {
-    /// Where the file was saved.
     #[must_use]
     pub fn local_path(&self) -> &Path {
         &self.local_path
     }
 
-    /// The number of bytes written to the file.
     #[must_use]
     pub fn size(&self) -> u32 {
         self.size
     }
 }
 
-/// The companion inbox item an attachment is filed under.
-///
-/// Reserved by [`reserve_attachment_item`], which claims the item's id and
-/// attachment directory on disk. The item's JSON is written only by finalizing
-/// it, after the file is saved. A save that fails leaves the directory claimed
-/// until the caller calls [`AttachmentItem::discard`] (or drops the item).
 #[derive(Debug)]
 pub struct AttachmentItem {
     claim: ClaimedItem,
@@ -137,8 +97,6 @@ pub struct AttachmentItem {
     timestamp: NaiveDateTime,
 }
 
-/// A file being streamed into an [`AttachmentItem`]'s directory, for downloads
-/// that write as they arrive rather than in one buffer.
 pub struct AttachmentWriter {
     file: tokio::fs::File,
     local_path: PathBuf,
@@ -146,19 +104,11 @@ pub struct AttachmentWriter {
 }
 
 impl AttachmentWriter {
-    /// The file to write into.
     pub fn file_mut(&mut self) -> &mut tokio::fs::File {
         &mut self.file
     }
 
-    /// Flush the written bytes to disk and return the saved file.
-    ///
-    /// # Errors
-    /// Returns an error if the flush or the size lookup fails.
     pub async fn finish(mut self) -> Result<SavedAttachment, String> {
-        // `tokio::fs::File` queues writes on a blocking thread and dropping it
-        // does not wait for them; flush so the file is complete on disk before
-        // anything reads it back.
         self.file.flush().await.map_err(|e| {
             format!(
                 "failed to save attachment to {}: {e}",
@@ -183,11 +133,6 @@ impl AttachmentWriter {
 }
 
 impl AttachmentItem {
-    /// Save `bytes` as the item's attachment file, named by the sanitized
-    /// `info.filename` (with `_2`, `_3`, ... when the directory already holds that name).
-    ///
-    /// # Errors
-    /// Returns an error if the directory cannot be created or the write fails.
     pub async fn save_bytes(
         &self,
         info: &AttachmentInfo,
@@ -211,11 +156,6 @@ impl AttachmentItem {
         })
     }
 
-    /// Copy the file at `source` into the item's directory, named as [`Self::save_bytes`]
-    /// names it. `source` is left in place.
-    ///
-    /// # Errors
-    /// Returns an error if the directory cannot be created or the copy fails.
     pub async fn save_file(
         &self,
         info: &AttachmentInfo,
@@ -266,10 +206,6 @@ impl AttachmentItem {
         self.save_bytes(info, &bytes).await
     }
 
-    /// Create the item's attachment file for streaming, named as [`Self::save_bytes`] names it.
-    ///
-    /// # Errors
-    /// Returns an error if the directory cannot be created or the file cannot be created.
     pub async fn create_writer(&self, info: &AttachmentInfo) -> Result<AttachmentWriter, String> {
         let (file_name, local_path) =
             unique_attachment_path(self.claim.attachments_dir(), &info.filename).await?;
@@ -287,21 +223,10 @@ impl AttachmentItem {
         })
     }
 
-    /// Release the item's claim: remove its attachment directory and anything
-    /// partly written in it, after the attachment failed to save. Nothing is
-    /// removed when the directory is already gone. A failed removal is logged,
-    /// not returned: the failure that led here is already reported to the user.
     pub async fn discard(self) {
         self.claim.release().await;
     }
 
-    /// Finalize a saved attachment: append its metadata line to `content`, encode
-    /// it inline when it is a supported image within the size limit, and save the
-    /// companion item that records it. Consumes the item.
-    ///
-    /// `author` is the sender named in the item body. The returned
-    /// [`FinalizedAttachment`] carries the inline image, if any, and the
-    /// [`MessageAttachment`] the message records for the file.
     pub async fn finalize(
         self,
         saved: &SavedAttachment,
@@ -359,13 +284,6 @@ impl AttachmentItem {
         FinalizedAttachment { image, attachment }
     }
 
-    /// Save the companion inbox item that records the saved file at its path in
-    /// this item's directory. Consumes the item. `author` is the sender named in
-    /// the item body.
-    ///
-    /// A failed save is logged, not returned: the file is already on disk and
-    /// named in the message, so the claimed directory and the file in it are
-    /// kept for the agent.
     pub async fn file_companion_item(
         self,
         saved: &SavedAttachment,
@@ -397,15 +315,6 @@ impl AttachmentItem {
     }
 }
 
-/// Reserve the companion inbox item for an attachment arriving on `platform`,
-/// claiming its id and attachment directory on disk.
-///
-/// The claim is atomic, so reservations that overlap, even for the same title on
-/// the same day, get distinct items. The caller must save the file through the
-/// returned item, or [`AttachmentItem::discard`] it.
-///
-/// # Errors
-/// Returns an error if the item's attachment directory cannot be claimed.
 pub async fn reserve_attachment_item(
     inbox_dir: &Path,
     info: &AttachmentInfo,
@@ -426,14 +335,6 @@ pub async fn reserve_attachment_item(
     })
 }
 
-/// Choose the name and path a file called `filename` is saved to in `dir`,
-/// creating `dir` if needed.
-///
-/// The name is sanitized, then `_2`, `_3`, ... is appended before the extension
-/// while `dir` already holds a file of that name.
-///
-/// # Errors
-/// Returns an error if the directory cannot be created or read.
 async fn unique_attachment_path(dir: &Path, filename: &str) -> Result<(String, PathBuf), String> {
     tokio::fs::create_dir_all(dir)
         .await
@@ -456,7 +357,6 @@ async fn unique_attachment_path(dir: &Path, filename: &str) -> Result<(String, P
     Ok((name, path))
 }
 
-/// Format a metadata line for a successfully saved attachment.
 #[must_use]
 pub fn format_attachment_line(saved: &SavedAttachment, info: &AttachmentInfo) -> String {
     format!(
@@ -467,7 +367,6 @@ pub fn format_attachment_line(saved: &SavedAttachment, info: &AttachmentInfo) ->
     )
 }
 
-/// Format a metadata line for a failed attachment download.
 #[must_use]
 pub fn format_failed_attachment_line(info: &AttachmentInfo, reason: &str) -> String {
     format!(
@@ -483,7 +382,6 @@ mod tests {
     use base64::Engine as _;
     use residuum_config::WorkspaceLayout;
 
-    /// Reserve a companion item under `root`'s agent inbox and save `bytes` into it.
     async fn reserve_and_save(
         root: &Path,
         info: &AttachmentInfo,
@@ -504,7 +402,6 @@ mod tests {
         (item, saved)
     }
 
-    /// Reserve a companion item under `root`'s agent inbox without saving anything.
     async fn reserve_only(root: &Path, info: &AttachmentInfo) -> AttachmentItem {
         let inbox_dir = WorkspaceLayout::new(root).agent_inbox_dir();
         tokio::fs::create_dir_all(&inbox_dir).await.unwrap();
@@ -717,7 +614,6 @@ mod tests {
         let info = pdf_info();
         let (item, saved) = reserve_and_save(dir.path(), &info, b"pdf bytes").await;
         let inbox_dir = WorkspaceLayout::new(dir.path()).agent_inbox_dir();
-        // A directory where the item's JSON belongs makes the companion save fail.
         tokio::fs::create_dir(inbox_dir.join(item.claim.filename()))
             .await
             .unwrap();
@@ -768,9 +664,6 @@ mod tests {
         use wiremock::matchers::method;
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
-        // Downloading an attachment is just an HTTP fetch — the sending
-        // platform already enforced its own upload limit, if any. There is
-        // no size cap here, unlike the old 25 MB blanket refusal.
         let mock_server = MockServer::start().await;
         let body = vec![0_u8; 30 * 1024 * 1024];
         Mock::given(method("GET"))
@@ -1085,8 +978,6 @@ mod tests {
             size: 0,
             content_type: Some("image/jpeg".to_string()),
         };
-        // The inline limit applies to the saved file's real size, not the
-        // platform-reported one, so the oversized bytes must actually be written.
         let oversized = vec![0_u8; MAX_IMAGE_INLINE_SIZE as usize + 1];
         let (item, saved) = reserve_and_save(dir.path(), &info, &oversized).await;
         let mut content = String::new();

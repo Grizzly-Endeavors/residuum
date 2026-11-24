@@ -17,7 +17,6 @@
   function picked(): void {
     const chosen = picker?.files;
     if (chosen !== null && chosen !== undefined && chosen.length > 0) files.attach(chosen);
-    // Cleared so picking the same file again (after removing it) still reports a change.
     if (picker !== undefined) picker.value = "";
   }
 </script>

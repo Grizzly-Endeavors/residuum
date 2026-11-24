@@ -1,7 +1,3 @@
-// The workbench SDK's live side (assets/workbench/sdk.js): the hub socket it
-// opens as the page loads, live reload, `on` and `watch`, agent handles, and
-// sessions followed through the hub's session relay.
-
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FakeWebSocket } from "../test/fake-websocket";
 import {
@@ -21,7 +17,6 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-/** A page whose hub socket is open. */
 function connected(artifact = "chart"): LoadedSdk & { hub: FakeWebSocket } {
   const loaded = loadSdk(artifact);
   const hub = loaded.socket(HUB);
@@ -267,18 +262,12 @@ describe("residuum.agent", () => {
   });
 });
 
-/** Acknowledge the page's artifact-session subscription on `hub`. */
 function acknowledge(hub: FakeWebSocket, artifact = "chart"): void {
   hub.simulateMessage({ type: "subscribed", kind: "artifact_sessions", artifact });
 }
 
-/** How many of each hub socket's subscriptions the test has acknowledged. */
 const acknowledged = new WeakMap<FakeWebSocket, number>();
 
-/**
- * Start a session on `agent` that Residuum gives `address`, acknowledging the
- * page's subscription when it sent one, as the hub does.
- */
 async function startSession(
   page: LoadedSdk & { hub: FakeWebSocket },
   agent: string,
@@ -319,7 +308,6 @@ describe("residuum.sessions.start", () => {
     const handle = await started;
     expect(handle).toMatchObject({ agent: "scout", address: "artifact-chart-0001" });
 
-    // Subscribed once for the page.
     void sdk.sessions.start({ agent: "atlas", prompt: "again" });
     await settle();
     expect(lastRequest(requests).url).toBe("/api/agents/atlas/sessions");
@@ -409,7 +397,6 @@ describe("residuum.sessions.start", () => {
     await settle();
     acknowledge(hub);
     await settle();
-    // The relay can announce the run before the start request answers.
     hub.simulateMessage(
       relayed("atlas", {
         type: "session_started",
@@ -559,7 +546,6 @@ describe("residuum.sessions.follow", () => {
     const { sdk, hub, requests } = connected("chart");
     const handle = sdk.sessions.follow("atlas", "artifact-chart-1");
     expect(handle).toMatchObject({ agent: "atlas", address: "artifact-chart-1" });
-    // Not the artifact-wide relay a start uses: the session relay's own subscription.
     expect(hub.sentFrames()).toEqual([
       { type: "subscribe_session", agent: "atlas", address: "artifact-chart-1" },
     ]);

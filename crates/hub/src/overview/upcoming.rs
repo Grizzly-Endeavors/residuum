@@ -1,9 +1,3 @@
-//! `upcoming`: the next runs of an agent's pulses and scheduled actions, read
-//! from its files, the same way whether the agent is running or not.
-//!
-//! A pulse's time comes from [`next_run_at`], which the Schedule place's
-//! `next_fire_at` uses too. A scheduled action's is the time it was set for.
-
 use chrono::{DateTime, Utc};
 use tracing::Instrument as _;
 
@@ -16,31 +10,16 @@ use residuum_proactivity::actions::store::ActionStore;
 use residuum_proactivity::pulse::next_run::{load_anchors, next_run_at};
 use residuum_proactivity::pulse::types::load_heartbeat;
 
-/// How many upcoming runs an overview lists.
 pub(super) const MOST_UPCOMING: usize = 3;
 
-/// What reading an agent's upcoming runs found.
 pub struct UpcomingRead {
-    /// The next runs, soonest first, at most `MOST_UPCOMING`.
     pub runs: Vec<UpcomingRun>,
-    /// What could not be read, one plain sentence each, which the service
-    /// reports once for as long as it stays unreadable.
     pub problems: Vec<String>,
 }
 
-/// One run before it is told in the agent's time: when, what, and its name.
 type Run = (DateTime<Utc>, UpcomingKind, String);
 
-/// The next runs of the agent's pulses and scheduled actions as of `now`.
-///
-/// An agent whose `config.toml` can't be read lists nothing: whether its
-/// pulses run is that file's to say, and an agent that can't be loaded
-/// can't run an action either. An unreadable `scheduled_actions.json` costs
-/// only the actions, and a `HEARTBEAT.yml` with a problem lists the pulses
-/// that loaded. The agent's own scheduler reports the pulse problems.
 pub async fn read(agent: &str, files: &AgentFiles, now: DateTime<Utc>) -> UpcomingRead {
-    // The pulse files are read by the code the agent's own scheduler uses, which
-    // logs on the agent's behalf.
     read_files(files, now)
         .instrument(tracing::info_span!("agent", agent = %agent))
         .await
@@ -98,8 +77,6 @@ async fn read_files(files: &AgentFiles, now: DateTime<Utc>) -> UpcomingRead {
     }
 }
 
-/// The next run of each pulse that will run. `Err` carries the sentence for a
-/// `config.toml` that can't be read.
 fn pulse_runs(
     layout: &WorkspaceLayout,
     now: DateTime<Utc>,

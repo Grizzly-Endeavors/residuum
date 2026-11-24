@@ -1,23 +1,8 @@
-//! Guard against browsers issuing requests to the gateway on behalf of other sites.
-//!
-//! The gateway has no authentication of its own, so any web page open in the
-//! user's browser could otherwise POST to `localhost:<port>/api/hub/shutdown` or
-//! open `/ws` and drive the agent. Browsers label every request with
-//! `Sec-Fetch-Site`, which the relay passes through unchanged, so it identifies
-//! the initiator both locally and through the tunnel (where the `Host` header is
-//! rewritten and an `Origin`-vs-`Host` comparison would reject the real UI).
-//!
-//! Non-browser clients (the CLI, webhook senders, the tunnel itself) send no
-//! `Sec-Fetch-Site` and are unaffected. Plain `GET`/`HEAD`/`OPTIONS` requests are
-//! let through because they have no side effects and a cross-site page cannot
-//! read their responses without CORS headers, which the gateway never sends.
-
 use axum::extract::Request;
 use axum::http::{HeaderMap, Method, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 
-/// Reject state-changing requests and WebSocket upgrades initiated by another site.
 pub async fn reject_cross_site_requests(req: Request, next: Next) -> Response {
     if is_cross_site_request(req.method(), req.headers()) {
         tracing::warn!(
@@ -46,7 +31,6 @@ fn is_cross_site_request(method: &Method, headers: &HeaderMap) -> bool {
     }
 
     match headers.get("sec-fetch-site") {
-        // `none` is a user-initiated navigation (address bar, bookmark).
         Some(site) => {
             !(site.as_bytes().eq_ignore_ascii_case(b"same-origin")
                 || site.as_bytes().eq_ignore_ascii_case(b"none"))

@@ -1,6 +1,3 @@
-//! What the two instances of a join agree on: the wire shapes, the paths, and
-//! the confirmation code both people compare.
-
 use ring::digest::{SHA256, digest};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -9,68 +6,50 @@ use super::keys::is_key_shaped;
 use crate::remote_access::identity::is_valid_slug;
 use crate::remote_access::jws::{JwsError, thumbprint};
 
-/// Path prefix of the join endpoints on an instance host.
 pub(crate) const PATH_PREFIX: &str = "/_sibling/join";
-/// `GET`: a fresh single-use nonce.
 pub(crate) const NONCE_PATH: &str = "/_sibling/join/nonce";
 /// `POST`: the signed join request. `GET {PATH}/{join id}` polls the answer.
 pub(crate) const REQUEST_PATH: &str = "/_sibling/join";
 
-/// How long a nonce, a pending request and an unfetched answer live.
 pub(crate) const LIFETIME_SECS: i64 = 600;
 
-/// The longest display name a join request may carry.
 const MAX_DISPLAY_NAME: usize = 64;
-/// The longest account URL a join request may carry.
 const MAX_ACCOUNT_URI: usize = 256;
 
-/// `GET /_sibling/join/nonce`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct NonceReply {
     pub(crate) nonce: String,
-    /// The instance's own slug.
     pub(crate) slug: String,
     pub(crate) account_uri: String,
     pub(crate) account_jwk: Value,
 }
 
-/// The payload of the signed join request.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct JoinPayload {
     pub(crate) nonce: String,
     pub(crate) slug: String,
     pub(crate) display_name: String,
     pub(crate) account_uri: String,
-    /// The key the requester issues for the host to present when calling it.
     pub(crate) key: String,
 }
 
-/// `POST /_sibling/join` answer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct SubmitReply {
     pub(crate) join_id: String,
 }
 
-/// `GET /_sibling/join/{join id}` answer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub(crate) enum PollReply {
-    /// Nobody has decided yet.
     Pending,
-    /// Approved: the host's key for the requester and its account.
     Approved {
         key: String,
         account_uri: String,
         account_jwk: Value,
     },
-    /// The person on the host said no.
     Denied,
 }
 
-/// The first six decimal digits both people compare: the digest is read as a
-/// number from its first four bytes and reduced to six digits, with leading
-/// zeros kept. It covers both account keys and the nonce, so a request from a
-/// different key shows a different code.
 pub(crate) fn confirmation_code(
     host_jwk: &Value,
     requester_jwk: &Value,
@@ -88,7 +67,6 @@ pub(crate) fn confirmation_code(
     Ok(format!("{:06}", leading % 1_000_000))
 }
 
-/// Why a join request's contents were refused, in words for the requester.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum PayloadError {
     #[error("the instance name isn't valid")]
@@ -104,10 +82,6 @@ pub(crate) enum PayloadError {
 }
 
 impl JoinPayload {
-    /// Check every field the host will store or show.
-    ///
-    /// # Errors
-    /// Returns the first field that isn't acceptable.
     pub(crate) fn validate(&self, host_slug: &str) -> Result<(), PayloadError> {
         if !is_valid_slug(&self.slug) {
             return Err(PayloadError::Slug);
@@ -132,7 +106,6 @@ impl JoinPayload {
     }
 }
 
-/// An `https` URL with no whitespace or control characters, of sane length.
 pub(crate) fn is_account_uri(uri: &str) -> bool {
     uri.len() <= MAX_ACCOUNT_URI
         && uri.starts_with("https://")
@@ -168,7 +141,6 @@ mod tests {
             code,
             "both sides compute the same code"
         );
-        // A million codes could collide by chance; these three keys and nonces don't.
         assert_ne!(
             confirmation_code(&host.jwk(), &other.jwk(), "nonce-1").unwrap(),
             code
@@ -185,7 +157,6 @@ mod tests {
 
     #[test]
     fn the_code_has_a_fixed_known_answer() {
-        // Worked out independently with a short Python script over the same bytes.
         let host = serde_json::json!({
             "kty": "EC", "crv": "P-256",
             "x": "f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU",

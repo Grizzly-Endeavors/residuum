@@ -9,12 +9,6 @@
   import { Banner, Button, EmptyState, SegmentedControl, Skeleton, TextField } from "../../lib/ui";
   import CheckpointChanges from "./CheckpointChanges.svelte";
 
-  // The checkpoint browser behind Settings → History, for either scope: an
-  // agent's workspace and config repositories, or with `agent` null the
-  // team's and the hub's. Newest first, filtered by path, paged; a row opens
-  // in place to what it changed, with restore and undo. Its routes answer for
-  // a stopped agent too.
-
   let { agent }: { agent: string | null } = $props();
 
   const PAGE_SIZE = 30;
@@ -31,7 +25,6 @@
   let stats = $state.raw<RepoStats | null>(null);
   let statsError = $state(false);
   let openId = $state<string | null>(null);
-  /** Counts loads, so an answer for a repository or filter no longer shown is dropped. */
   let generation = 0;
 
   async function load(fromStart: boolean): Promise<void> {
@@ -68,7 +61,6 @@
     }
   }
 
-  /** The list and its size again, after a restore or undo added a checkpoint. */
   function refresh(): void {
     void load(true);
     void loadStats();

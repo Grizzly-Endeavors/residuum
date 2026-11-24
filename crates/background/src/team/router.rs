@@ -1,19 +1,3 @@
-//! Teamwork messaging between the hub's agents.
-//!
-//! [`TeamRouter`] is the hub-level service that carries a `message_agent`
-//! call addressed `agent:<name>` (a teammate's main) or
-//! `agent:<name>/<session-address>` (one of its sessions) from the sending
-//! agent to the target agent's [`AgentMessenger`], which delivers it exactly
-//! as it delivers a local message: an interrupt or a new turn for main, an
-//! interrupt for a live session, a resume for a completed one.
-//!
-//! Every running agent registers its messenger at start and unregisters at
-//! stop, so nothing is ever queued for an agent that isn't running. Each
-//! agent holds a [`TeamLink`], its handle on the router: it knows the
-//! agent's own name, sends on its behalf, and reads the roster that
-//! `list_agents` shows. The agent's prompt reads the same roster through
-//! [`TeamRoster`].
-
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::sync::{Arc, PoisonError, RwLock};
@@ -27,18 +11,13 @@ use residuum_config::canonicalize_display_name;
 use super::directory::{DirectoryHandle, TeamDirectory};
 use super::types::{AgentState, AgentSummary, LifecycleError};
 
-/// Where a teammate message is going: an agent, and one of its sessions
-/// (`None` for its main).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TeamTarget {
-    /// The teammate's name.
     pub agent: String,
-    /// The teammate's session address, or `None` for its main.
     pub session: Option<String>,
 }
 
 impl TeamTarget {
-    /// The address form this target was parsed from.
     #[must_use]
     pub fn address(&self) -> String {
         match &self.session {
@@ -47,25 +26,20 @@ impl TeamTarget {
         }
     }
 
-    /// The address on the target agent's own messenger.
     fn local_address(&self) -> &str {
         self.session.as_deref().unwrap_or(MAIN_ADDRESS)
     }
 }
 
-/// A teammate address that doesn't parse.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum TeamAddressError {
-    /// `agent:` with nothing after it.
     #[error(
         "the address 'agent:' names no teammate. Use \"agent:<name>\" for a teammate's main or \
          \"agent:<name>/<session-address>\" for one of its sessions."
     )]
     MissingName,
-    /// The agent name breaks the agent-name rules.
     #[error("{0}. Use \"agent:<name>\" or \"agent:<name>/<session-address>\".")]
     InvalidName(String),
-    /// `agent:<name>/` with no session address after the slash.
     #[error(
         "the address '{0}' has an empty session address after the '/'. Use \"agent:<name>\" for \
          the teammate's main or \"agent:<name>/<session-address>\" for one of its sessions."
@@ -73,11 +47,6 @@ pub enum TeamAddressError {
     MissingSession(String),
 }
 
-/// Parse a `message_agent` destination as a teammate address.
-///
-/// Returns `None` when `to` is not in the `agent:` form at all (a local
-/// address or an `a2a:` remote agent), so callers fall through to their
-/// other address forms. `agent:<name>/main` is the teammate's main.
 #[must_use]
 pub fn parse_team_address(to: &str) -> Option<Result<TeamTarget, TeamAddressError>> {
     let rest = to.strip_prefix(TEAMMATE_SENDER_PREFIX)?;
@@ -102,47 +71,24 @@ pub fn parse_team_address(to: &str) -> Option<Result<TeamTarget, TeamAddressErro
     }))
 }
 
-/// A teammate message couldn't be delivered. The text is written for the
-/// sending agent: it says what happened and what to do.
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum TeamSendError {
-    /// The address names the sender itself.
     #[error("'agent:{0}' is you. Use \"main\" or a session address to reach your own agent.")]
     ToSelf(String),
-    /// No agent has this name.
     #[error("no teammate named '{name}'. {}", teammates_phrase(teammates))]
     UnknownAgent {
-        /// The name that was addressed.
         name: String,
-        /// The other agents on the team.
         teammates: Vec<String>,
     },
-    /// The teammate exists but isn't running. Nothing was queued.
     #[error("{}", not_running_text(name, state))]
-    NotRunning {
-        /// The teammate's name.
-        name: String,
-        /// Its state, in words.
-        state: String,
-    },
-    /// The teammate is running but has no such session.
+    NotRunning { name: String, state: String },
     #[error(
         "teammate '{agent}' has no session '{session}'. Use the exact address from a message it \
          sent you."
     )]
-    NoSuchSession {
-        /// The teammate's name.
-        agent: String,
-        /// The session address that was addressed.
-        session: String,
-    },
-    /// The target's interrupt channel is full.
+    NoSuchSession { agent: String, session: String },
     #[error("{target} is busy, try again shortly")]
-    Busy {
-        /// The address that was busy.
-        target: String,
-    },
-    /// Delivery failed inside the teammate (publish failure, hop limit).
+    Busy { target: String },
     #[error("{0}")]
     Delivery(SendError),
 }
@@ -169,16 +115,12 @@ fn teammates_phrase(teammates: &[String]) -> String {
     }
 }
 
-/// The hub's team router: each running agent's messenger, by agent name.
 pub struct TeamRouter {
     messengers: RwLock<BTreeMap<String, Arc<AgentMessenger>>>,
-    /// The agent host, bound once it exists (it is built from the services
-    /// that hold this router). Read for existence and state.
     directory: DirectoryHandle,
 }
 
 impl TeamRouter {
-    /// An empty router that checks names and states against `directory`.
     #[must_use]
     pub fn new_shared(directory: DirectoryHandle) -> Arc<Self> {
         Arc::new(Self {
@@ -187,8 +129,6 @@ impl TeamRouter {
         })
     }
 
-    /// Register a starting agent's messenger. A restarted agent replaces its
-    /// previous registration.
     pub fn register(&self, name: &str, messenger: Arc<AgentMessenger>) {
         self.messengers
             .write()
@@ -196,8 +136,6 @@ impl TeamRouter {
             .insert(name.to_string(), messenger);
     }
 
-    /// Remove a stopping agent's messenger, so nothing more is delivered to
-    /// it.
     pub fn unregister(&self, name: &str) {
         self.messengers
             .write()
@@ -217,16 +155,12 @@ impl TeamRouter {
         self.directory.get()
     }
 
-    /// Every agent on the team, sorted by name. Empty until the directory is
-    /// bound.
     fn members(&self) -> Vec<AgentSummary> {
         self.directory()
             .map(|directory| directory.list())
             .unwrap_or_default()
     }
 
-    /// Send `content` from `sender` (an address in agent `me`) to `target`,
-    /// carrying `hop_count`.
     async fn send(
         &self,
         me: &str,
@@ -268,8 +202,6 @@ impl TeamRouter {
                 if matches!(error, SendError::HopLimitExceeded { .. })
                     && let Some(own) = self.messenger(me)
                 {
-                    // The target's messenger noted the refusal in its own
-                    // session; the sender's side gets the same note.
                     own.note_refused_send(sender, &target.address(), hop_count)
                         .await;
                 }
@@ -278,8 +210,6 @@ impl TeamRouter {
         }
     }
 
-    /// The running teammate's messenger, or the error that says why there
-    /// isn't one.
     fn reachable_messenger(
         &self,
         me: &str,
@@ -309,8 +239,6 @@ impl TeamRouter {
         let shown = summary.label().to_string();
         match (summary.state, self.messenger(&slug)) {
             (AgentState::Running, Some(messenger)) => Ok((slug, messenger)),
-            // A running agent whose messenger is gone is between its stop
-            // request and its state change.
             (AgentState::Running, None) => Err(TeamSendError::NotRunning {
                 name: shown,
                 state: "stopping".to_string(),
@@ -323,8 +251,6 @@ impl TeamRouter {
     }
 }
 
-/// The sender's fully qualified address as a teammate sees it:
-/// `agent:<me>` for main, `agent:<me>/<session>` for a session.
 fn qualify_sender(me: &str, sender: &SessionAddress) -> String {
     if sender.as_ref() == MAIN_ADDRESS {
         format!("{TEAMMATE_SENDER_PREFIX}{me}")
@@ -333,8 +259,6 @@ fn qualify_sender(me: &str, sender: &SessionAddress) -> String {
     }
 }
 
-/// An agent's handle on the team router: its own name, sending on its
-/// behalf, and the roster.
 #[derive(Clone)]
 pub struct TeamLink {
     me: String,
@@ -342,7 +266,6 @@ pub struct TeamLink {
 }
 
 impl TeamLink {
-    /// The link agent `me` holds on `router`.
     #[must_use]
     pub fn new(me: impl Into<String>, router: Arc<TeamRouter>) -> Self {
         Self {
@@ -351,24 +274,16 @@ impl TeamLink {
         }
     }
 
-    /// A link to a team of one: no directory, no teammates.
     #[must_use]
     pub fn alone(me: impl Into<String>) -> Self {
         Self::new(me, TeamRouter::new_shared(DirectoryHandle::unbound()))
     }
 
-    /// The agent's own name.
     #[must_use]
     pub fn name(&self) -> &str {
         &self.me
     }
 
-    /// Send `content` to a teammate from `sender`, an address in this agent.
-    ///
-    /// # Errors
-    ///
-    /// [`TeamSendError`] when the teammate is unknown, not running, has no
-    /// such session, is busy, or the hub's hop limit refuses the message.
     pub async fn send(
         &self,
         sender: &SessionAddress,
@@ -381,13 +296,11 @@ impl TeamLink {
             .await
     }
 
-    /// Every agent on the team, this one included, sorted by name.
     #[must_use]
     pub fn members(&self) -> Vec<AgentSummary> {
         self.router.members()
     }
 
-    /// The other agents on the team, sorted by name.
     #[must_use]
     pub fn teammates(&self) -> Vec<AgentSummary> {
         self.members()
@@ -398,9 +311,6 @@ impl TeamLink {
 }
 
 impl TeamRoster for TeamLink {
-    /// The prompt's `TEAM` block, or `None` when this agent has no
-    /// teammates. Built from the same roster `list_agents` returns, so it
-    /// reflects state changes on the next turn.
     fn prompt_block(&self) -> Option<String> {
         let teammates = self.teammates();
         if teammates.is_empty() {

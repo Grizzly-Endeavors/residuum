@@ -447,7 +447,6 @@ describe("agent socket", () => {
       await verbose.nextOfType("turn_ended");
       await socket.nextOfType("turn_ended");
 
-      // Not the pieces the model's text and reasoning stream in as.
       const types = (frames: Frame[]): string[] =>
         frames
           .map((f) => String(f.type))
@@ -500,7 +499,6 @@ describe("agent socket", () => {
         busy_since: null,
       });
       const history = harness.hub.agents.get("atlas")?.state.extraRecent ?? [];
-      // Every agent but scout opens its conversation with a greeting.
       expect(history.slice(-7).map((m) => m.role)).toEqual([
         "user",
         "assistant",

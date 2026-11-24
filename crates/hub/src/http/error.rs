@@ -6,7 +6,6 @@ use serde_json::json;
 
 use residuum_background::team::LifecycleError;
 
-/// A `{ "error": message }` response with `status`.
 pub(super) fn json_error(status: StatusCode, message: impl Into<String>) -> Response {
     (status, Json(json!({ "error": message.into() }))).into_response()
 }
@@ -31,9 +30,6 @@ pub(super) fn lifecycle_error_response(error: &LifecycleError) -> Response {
             Json(json!({ "error": message, "state": state })),
         )
             .into_response(),
-        // Expected and temporary: refused because the hub is shutting down,
-        // not because the request or the agent is broken. 503 lets clients
-        // tell it apart from a real failure and retry later.
         LifecycleError::ShuttingDown(_) => json_error(StatusCode::SERVICE_UNAVAILABLE, message),
         LifecycleError::Failed(_) => {
             tracing::error!(error = %message, "hub request failed");

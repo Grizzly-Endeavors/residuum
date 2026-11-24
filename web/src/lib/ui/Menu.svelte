@@ -2,11 +2,9 @@
   import { createContext } from "svelte";
 
   interface MenuContext {
-    /** An item was chosen: the menu closes and focus goes back to its button. */
     chosen: () => void;
   }
 
-  /** What a MenuItem reads from the Menu around it. */
   export const [menuContext, setMenuContext] = createContext<MenuContext>();
 </script>
 
@@ -16,21 +14,13 @@
   import FloatingLayer from "./FloatingLayer.svelte";
   import type { FloatAlign, FloatSide, FloatTriggerProps } from "./types";
 
-  // A menu button and its menu. The arrow keys, Home and End move through the
-  // items, typing jumps to the item that starts with what was typed, Enter
-  // and Space choose, and Esc, Tab or a pointer outside close it.
-
   interface Props {
     open?: boolean;
-    /** The menu's accessible name, such as "Manage atlas". */
     label: string;
-    /** The menu button. Spread `props` onto it: `<IconButton icon="more" label="More" {...props} />`. */
     trigger: Snippet<[FloatTriggerProps]>;
     side?: FloatSide;
     align?: FloatAlign;
-    /** A quiet line above the items, such as the agent and its state. It describes the menu. */
     heading?: Snippet;
-    /** MenuItem and MenuSeparator. */
     children: Snippet;
   }
 
@@ -45,12 +35,10 @@
   }: Props = $props();
 
   const uid = $props.id();
-  /** Typed letters run together into one search until a pause this long. */
   const TYPEAHEAD_PAUSE_MS = 500;
   const ITEMS = '[role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]';
 
   let anchor = $state<HTMLElement | null>(null);
-  /** Where focus starts: an item when opened from the keyboard, the menu itself from a pointer. */
   let startOn: "first" | "last" | "menu" = "first";
   let typed = "";
   let typedAt = 0;
@@ -80,7 +68,6 @@
     "aria-haspopup": "menu",
     "aria-expanded": open,
     "aria-controls": open ? uid : undefined,
-    // A click from the keyboard or a screen reader reports no pointer presses.
     onclick: (event) => {
       if (open) open = false;
       else openFrom(event.detail === 0 ? "first" : "menu");
@@ -111,21 +98,18 @@
     (target ?? menu).focus();
   }
 
-  /** The item a typed letter leads to, or undefined when the key isn't typing. */
   function typeahead(
     event: KeyboardEvent,
     items: HTMLElement[],
     at: number,
   ): HTMLElement | undefined {
     if (event.key.length !== 1 || event.ctrlKey || event.metaKey || event.altKey) return undefined;
-    // Space chooses the item, unless it continues a search.
     if (event.key === " " && (typed === "" || event.timeStamp - typedAt > TYPEAHEAD_PAUSE_MS)) {
       return undefined;
     }
     typed = event.timeStamp - typedAt > TYPEAHEAD_PAUSE_MS ? event.key : typed + event.key;
     typedAt = event.timeStamp;
     const search = typed.toLowerCase();
-    // One letter pressed again moves on to the next item that starts with it.
     const first = search.charAt(0);
     const term = search === first.repeat(search.length) ? first : search;
     const from = term.length === 1 ? at + 1 : Math.max(at, 0);
@@ -143,8 +127,6 @@
     else if (event.key === "End") next = items.at(-1);
     else next = typeahead(event, items, at);
     if (next === undefined) {
-      // A link's Space would scroll the page, so Space chooses a focused link here,
-      // after typeahead has declined the key, so a space within a search still types.
       const focused = items[at];
       if (event.key === " " && focused instanceof HTMLAnchorElement) {
         event.preventDefault();

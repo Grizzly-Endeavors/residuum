@@ -1,5 +1,3 @@
-//! Update status and control API endpoints.
-
 use std::path::PathBuf;
 
 use axum::Json;
@@ -11,21 +9,15 @@ use tokio::sync::mpsc;
 use crate::update::SharedUpdateStatus;
 use residuum_core::build_info::BuildInfo;
 
-/// Shared state for the update and lifecycle API routes.
 #[derive(Clone)]
 pub(crate) struct UpdateApiState {
-    /// The running build, which an install replaces.
     pub build: BuildInfo,
     pub update_status: SharedUpdateStatus,
     pub restart_tx: mpsc::Sender<()>,
     pub gateway_shutdown_tx: mpsc::Sender<()>,
-    /// Where to look for a rollback notice the update-rollback watchdog may
-    /// have left behind (see `crate::update::RollbackNotice`).
     pub hub_dir: PathBuf,
 }
 
-/// Why an update-rollback watchdog restored the previous version, for the
-/// web UI to show.
 #[derive(Serialize)]
 pub(crate) struct RollbackNoticeResponse {
     attempted_version: String,
@@ -43,7 +35,6 @@ impl From<crate::update::RollbackNotice> for RollbackNoticeResponse {
     }
 }
 
-/// An update that installed without a checksum to check it against.
 #[derive(Serialize)]
 pub(crate) struct UnverifiedUpdateResponse {
     version: String,
@@ -59,7 +50,6 @@ impl From<crate::update::UnverifiedUpdate> for UnverifiedUpdateResponse {
     }
 }
 
-/// Response from `GET /api/hub/update/status` and `POST /api/hub/update/check`.
 #[derive(Serialize)]
 pub(crate) struct UpdateStatusResponse {
     current: String,
@@ -67,23 +57,16 @@ pub(crate) struct UpdateStatusResponse {
     update_available: bool,
     last_checked: Option<String>,
     checking: bool,
-    /// Present when the most recent restart rolled back to the previous
-    /// version instead of completing. Stays present until the next update
-    /// attempt clears it.
     rollback_notice: Option<RollbackNoticeResponse>,
-    /// Present when the installed update had no checksum manifest. Stays
-    /// present until a later verified install, or until a rollback.
     unverified_update: Option<UnverifiedUpdateResponse>,
 }
 
-/// `GET /api/hub/update/status` — return current update state.
 pub(crate) async fn api_update_status(
     State(state): State<UpdateApiState>,
 ) -> Json<UpdateStatusResponse> {
     Json(current_status(&state).await)
 }
 
-/// `POST /api/hub/update/check` — trigger an immediate check, return refreshed status.
 pub(crate) async fn api_update_check(
     State(state): State<UpdateApiState>,
 ) -> Json<UpdateStatusResponse> {
@@ -106,7 +89,6 @@ async fn current_status(state: &UpdateApiState) -> UpdateStatusResponse {
     }
 }
 
-/// `POST /api/hub/update/apply` — download, install, then restart.
 pub(crate) async fn api_update_apply(
     State(state): State<UpdateApiState>,
 ) -> Result<Json<UpdateStatusResponse>, (StatusCode, String)> {
@@ -126,22 +108,17 @@ pub(crate) async fn api_update_apply(
     crate::update::download_and_install(state.build.version, &version)
         .await
         .map_err(|e| match crate::update::rejection_message(&e) {
-            // 422 so the Update page shows this text. A 500 is replaced
-            // with a generic server fault, and a refused checksum is a
-            // message the user has to see in order to retry.
             Some(message) => (StatusCode::UNPROCESSABLE_ENTITY, message.to_string()),
             None => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")),
         })?;
 
     tracing::info!(version = %version, "update installed, sending restart signal");
 
-    // Update shared status to reflect the install
     {
         let mut s = state.update_status.write().await;
         s.update_available = false;
     }
 
-    // Signal the event loop to restart
     state.restart_tx.send(()).await.map_err(|_closed| {
         tracing::error!(version = %version, "update installed but the restart signal could not be sent");
         (
@@ -153,7 +130,6 @@ pub(crate) async fn api_update_apply(
     Ok(Json(current_status(&state).await))
 }
 
-/// `POST /api/hub/update/restart` — send restart signal only (binary already replaced).
 pub(crate) async fn api_update_restart(
     State(state): State<UpdateApiState>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
@@ -167,7 +143,6 @@ pub(crate) async fn api_update_restart(
     Ok(Json(serde_json::json!({ "restarting": true })))
 }
 
-/// `POST /api/hub/shutdown` — trigger graceful gateway shutdown.
 pub(crate) async fn api_shutdown(
     State(state): State<UpdateApiState>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {

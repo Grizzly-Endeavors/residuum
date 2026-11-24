@@ -146,7 +146,6 @@ describe("deriveNeedsYou", () => {
   });
 
   it("counts threads, not the unread messages several of them hold", () => {
-    // Six unread threads, the first five holding two unread messages each.
     const needs = deriveNeedsYou({
       agents: [agent("atlas")],
       overviews: { atlas: overview("atlas", { inbox_unread: 11 }) },
@@ -158,7 +157,6 @@ describe("deriveNeedsYou", () => {
   });
 
   it("gives no number for the threads beyond the newest page, only that there are more", () => {
-    // The page held five unread threads and isn't the last; the 9 unread messages don't say how many threads there are.
     const needs = deriveNeedsYou({
       agents: [agent("atlas")],
       overviews: { atlas: overview("atlas", { inbox_unread: 9 }) },
@@ -225,7 +223,6 @@ describe("deriveNeedsYou", () => {
   });
 
   it("counts nothing more in the Inbox once the threads listed are all there are", () => {
-    // One thread holding three unread items.
     const needs = deriveNeedsYou({
       agents: [agent("atlas")],
       overviews: { atlas: overview("atlas", { inbox_unread: 3 }) },

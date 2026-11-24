@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-# Exports the TypeScript protocol types that ts-rs generates from the Rust types
-# into the directory given as the argument, which must be an absolute path. The
-# checkout is not written. The check and the regeneration scripts both use this.
 set -euo pipefail
 
 if [ "$#" -ne 1 ]; then

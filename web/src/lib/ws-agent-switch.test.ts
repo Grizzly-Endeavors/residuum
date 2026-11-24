@@ -4,7 +4,6 @@ import { setViewedAgent } from "./viewed-agent";
 import { ws } from "./ws.svelte";
 import { scheduled } from "./scheduled.svelte";
 
-/** A history segment whose only message says `text`. */
 function history(text: string): Record<string, unknown> {
   return {
     kind: "recent",
@@ -17,13 +16,8 @@ function history(text: string): Record<string, unknown> {
 
 const USER_ORIGIN = { endpoint: "ws", visibility: "user" };
 
-/** A finished turn as history records it: its id, the user's message, the reply. */
 type RecordedTurn = [turnId: string, question: string, answer: string];
 
-/**
- * Scout's history once `turns` are recorded: the earlier message, unless it
- * was compressed into the episode `cursor`, then the finished turns.
- */
 function recordedTurns(cursor: string | null, turns: RecordedTurn[]): Record<string, unknown> {
   return {
     kind: "recent",
@@ -41,7 +35,6 @@ function recordedTurns(cursor: string | null, turns: RecordedTurn[]): Record<str
   };
 }
 
-/** Run a whole turn on `socket` for the message `question`, recording it in history before it ends. */
 function runTurn(
   server: FakeServer,
   socket: FakeWebSocket,
@@ -54,13 +47,11 @@ function runTurn(
   socket.simulateMessage({ type: "turn_started", reply_to: turnId, origin: USER_ORIGIN });
   socket.simulateMessage({ type: "response", reply_to: turnId, endpoint: "ws", content: answer });
   const turns: RecordedTurn[] = [...recorded, [turnId, question, answer]];
-  // History records the turn before its end reaches the page.
   server.setHistory("scout", recordedTurns(null, turns));
   socket.simulateMessage({ type: "turn_ended", reply_to: turnId });
   return turns;
 }
 
-/** The id of the last message the page sent on `socket`, which names the turn it starts. */
 function sentMessageId(socket: FakeWebSocket): string {
   const sent = socket
     .sentFrames()
@@ -75,12 +66,9 @@ function json(body: unknown): Response {
   });
 }
 
-/** What the fake server answers, and the URLs it was asked for. */
 interface FakeServer {
   urls: string[];
-  /** Hold the next history request for this agent until `release` is called. */
   hold: (agent: string) => { release: () => void };
-  /** Answer this agent's history requests from now on with `segment`. */
   setHistory: (agent: string, segment: Record<string, unknown>) => void;
 }
 
@@ -103,9 +91,7 @@ function installServer(): FakeServer {
         });
       }
       if (input.includes("/chat/history")) {
-        // The history as it stood when asked, however long the answer takes.
         const segment = histories.get(agent) ?? history(`hello from ${agent}`);
-        // Taken before waiting, so a hold set after this one holds the next request.
         const hold = held.get(agent);
         held.delete(agent);
         await hold;
@@ -147,7 +133,6 @@ function installServer(): FakeServer {
   };
 }
 
-/** Let promise callbacks (fetches and the stores' follow-ups) run. */
 async function flush(): Promise<void> {
   for (let i = 0; i < 10; i++) await Promise.resolve();
   await new Promise((resolve) => setTimeout(resolve, 0));
@@ -284,8 +269,6 @@ describe("switching agents leaves nothing of the old agent behind", () => {
     expect(ws.transport.pendingCount).toBe(0);
     FakeWebSocket.last.simulateOpen();
 
-    // Only the frames every connection starts with: the tool frames turned
-    // on, and the turn in flight asked for.
     expect(FakeWebSocket.last.sent).toEqual([
       JSON.stringify({ type: "set_verbose", enabled: true }),
       JSON.stringify({ type: "resync_turn" }),
@@ -395,8 +378,6 @@ describe("a turn that ends while the history is on its way stays in the feed", (
     const turnId = sentMessageId(first);
     first.simulateMessage({ type: "turn_started", reply_to: turnId, origin: USER_ORIGIN });
     first.simulateClose();
-    // While the page is away the earlier message is compressed into ep-004;
-    // the turn in flight isn't recorded yet.
     server.setHistory("scout", { kind: "recent", messages: [], next_cursor: "ep-004" });
     const held = server.hold("scout");
     ws.transport.reconnectNow();

@@ -8,28 +8,20 @@ use ts_rs::TS;
 use super::error::InferenceError;
 use residuum_config::ThinkingConfig;
 
-/// Base64-encoded image data for multimodal messages.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, rename = "ImageAttachment")]
 pub struct ImageData {
-    /// MIME type (e.g. `"image/jpeg"`, `"image/png"`).
     pub media_type: String,
-    /// Base64-encoded image bytes.
     pub data: String,
 }
 
 impl ImageData {
-    /// The media type to send a provider: what the stored bytes are when they
-    /// match a known image format, otherwise the stored label. Providers
-    /// reject an image whose label disagrees with its bytes, and history is
-    /// replayed every turn, so a mislabeled image would fail every request.
     #[must_use]
     pub fn request_media_type(&self) -> &str {
         sniff_image_media_type_base64(&self.data).unwrap_or(&self.media_type)
     }
 }
 
-/// Identify an image format from its leading bytes: PNG, JPEG, GIF or WebP.
 #[must_use]
 pub fn sniff_image_media_type(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
@@ -45,10 +37,6 @@ pub fn sniff_image_media_type(bytes: &[u8]) -> Option<&'static str> {
     }
 }
 
-/// [`sniff_image_media_type`] over base64 text, without decoding it. The
-/// prefixes are the base64 of the same magic bytes: `RIFF` is `UklGR` and
-/// `WEBP` at byte 8 is `XRUJQ` from character 11 (`X` is the low six bits of
-/// the `W`).
 fn sniff_image_media_type_base64(data: &str) -> Option<&'static str> {
     if data.starts_with("iVBOR") {
         Some("image/png")
@@ -63,95 +51,47 @@ fn sniff_image_media_type_base64(data: &str) -> Option<&'static str> {
     }
 }
 
-/// A file that came with a user's message, saved as a companion agent-inbox item.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct MessageAttachment {
-    /// Id of the companion agent-inbox item that holds the file.
     pub item_id: String,
-    /// The file's name as saved.
     pub filename: String,
-    /// Size in bytes.
     #[ts(type = "number")]
     pub size: u64,
-    /// MIME type.
     pub content_type: String,
-    /// Workspace-relative path of the file (`inbox/agent/attachments/<id>/<name>`).
     pub path: String,
 }
 
-/// A message in the conversation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
-    /// The role of the message sender.
     pub role: Role,
-    /// The text content of the message.
     pub content: String,
-    /// Tool calls requested by the assistant.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
-    /// The ID of the tool call this message is a result for.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
-    /// Inline images attached to the message.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<ImageData>,
-    /// Files that came with a user message, each saved as a companion agent-inbox item.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<MessageAttachment>,
-    /// Who sent a user message, when it came from an identifiable person.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sender: Option<MessageSender>,
-    /// The agent that sent a user-role message, when it is a message one
-    /// agent sent another (a session's relayed result, a `message_agent`
-    /// call). Lets readers such as the web UI attribute it without trusting
-    /// the header in its text, which anyone can type.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_sender: Option<AgentSender>,
-    /// The model's reasoning behind an assistant message, as its provider
-    /// returned it. Kept so the conversation's readers can show it and so a
-    /// provider that takes its reasoning back (within a tool-use exchange,
-    /// or with every earlier turn) gets it unchanged. Providers decide which
-    /// of it they replay.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub thinking: Vec<ThinkingBlock>,
-    /// The id of the message this entry records, for a message one agent,
-    /// the owner or an artifact sent a session: the id its sender chose (or
-    /// was given), which the session's `session_user_message` frame carries
-    /// when the session reads it. Lets a reader of the transcript match the
-    /// entry to that message. `None` for every other entry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    /// Whether this entry is context the agent reads with a turn's opening
-    /// messages rather than a message anyone sent: a resumed session's
-    /// pointer to its previous run, a conversation session's note on how its
-    /// chat hears it, the earlier conversation an interface supplies. The
-    /// agent reads it like any other entry; a reader that shows the
-    /// conversation to a person leaves it out, since nobody said it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub context: bool,
-    /// For a system message, the byte offset in `content` where the part
-    /// that rarely changes ends. A provider that caches at explicit
-    /// breakpoints marks one there; every provider still sends `content`
-    /// whole. Set when the request is built,
-    /// never stored.
     #[serde(skip)]
     pub cache_boundary: Option<usize>,
-    /// The status line (arrival time, time since the previous message, the
-    /// interface it came from) the agent reads with a user message, rendered
-    /// once when the message entered the main conversation. Every request
-    /// replays it unchanged as a system message immediately before the
-    /// message, so the request's bytes up to the newest message stay the
-    /// same from one turn to the next. `None` for every other entry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status_line: Option<String>,
 }
 
-/// One piece of a model's reasoning, as its provider returned it.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct ThinkingBlock {
-    /// The readable reasoning. Some providers return a summary of it rather
-    /// than the full text; empty when the provider withheld it.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub text: String,
     /// Opaque token the provider requires back, unchanged, when the
@@ -159,8 +99,6 @@ pub struct ThinkingBlock {
     /// `thoughtSignature`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
-    /// Encrypted reasoning returned in place of readable text (Anthropic's
-    /// `redacted_thinking`), replayed unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub redacted: Option<String>,
     /// Which part of the response the provider attached `signature` to, for
@@ -169,11 +107,6 @@ pub struct ThinkingBlock {
     /// each signature goes back on the part it came with.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub part: Option<String>,
-    /// The provider and model that produced the block, recorded by the
-    /// provider that answered. Signatures and encrypted blocks mean something
-    /// only to the provider (and model) that issued them, so a provider
-    /// replays only the blocks it produced itself. A block saved without an
-    /// origin has none to match and is never replayed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<ThinkingOrigin>,
     /// A fingerprint of everything the request that produced the block sent
@@ -186,7 +119,6 @@ pub struct ThinkingBlock {
 }
 
 impl ThinkingBlock {
-    /// A block holding readable reasoning and nothing to replay.
     #[must_use]
     pub fn text(text: impl Into<String>) -> Self {
         Self {
@@ -195,7 +127,6 @@ impl ThinkingBlock {
         }
     }
 
-    /// This block, recorded as produced at `origin`.
     #[cfg(test)]
     #[must_use]
     pub(crate) fn with_origin(mut self, origin: &ThinkingOrigin) -> Self {
@@ -204,35 +135,23 @@ impl ThinkingBlock {
     }
 }
 
-/// The kind of provider API a model's reply came from. Providers that speak
-/// the same wire protocol are one kind: a Fireworks host and any other
-/// OpenAI-compatible server are both [`OpenAiCompatible`](Self::OpenAiCompatible).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderApi {
-    /// The Anthropic Messages API.
     Anthropic,
-    /// The Google Gemini `generateContent` API.
     Gemini,
-    /// An OpenAI-compatible chat completions API, including `OpenAI` itself.
     #[serde(rename = "openai_compatible")]
     OpenAiCompatible,
-    /// The Ollama chat API.
     Ollama,
 }
 
-/// Who produced a piece of reasoning: the provider API and the model behind
-/// it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThinkingOrigin {
-    /// The provider API that returned the reasoning.
     pub provider: ProviderApi,
-    /// The model that wrote it, as the provider names it.
     pub model: String,
 }
 
 impl ThinkingOrigin {
-    /// The origin of reasoning that `model` returned through `provider`.
     #[must_use]
     pub fn new(provider: ProviderApi, model: impl Into<String>) -> Self {
         Self {
@@ -242,23 +161,12 @@ impl ThinkingOrigin {
     }
 }
 
-/// How closely a provider ties the reasoning it replays to whoever produced
-/// it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ReplayScope {
-    /// Any model of the provider's own API: the reasoning goes back as plain
-    /// text, which means the same whichever model wrote it.
     SameProvider,
-    /// Only the model that wrote it: the reasoning carries a signature or
-    /// encrypted data that the issuing model binds to itself.
     SameModel,
 }
 
-/// The blocks of `thinking` that the provider at `reader` may replay: those
-/// whose origin matches `reader` within `scope`. Every other block (another
-/// provider's, another model's, or one saved with no origin) is left out, with
-/// a debug line saying how many, so a provider never sends a request the API
-/// refuses over reasoning it did not produce.
 pub(crate) fn blocks_produced_at<'a>(
     thinking: &'a [ThinkingBlock],
     reader: &ThinkingOrigin,
@@ -285,11 +193,6 @@ pub(crate) fn blocks_produced_at<'a>(
     own
 }
 
-/// Index of the first message of the tool-use exchange the conversation is
-/// in the middle of: the message after the last assistant message that made
-/// no tool calls, or the first message when there is none. A provider that
-/// needs its reasoning replayed with the tool calls it led to replays it for
-/// the assistant messages from here on.
 pub(crate) fn current_exchange_start(messages: &[Message]) -> usize {
     messages
         .iter()
@@ -299,9 +202,6 @@ pub(crate) fn current_exchange_start(messages: &[Message]) -> usize {
         .map_or(0, |last_reply| last_reply + 1)
 }
 
-/// The readable text of each block that has some, in order, skipping blocks
-/// the provider withheld. The one place reasoning becomes text for a reader:
-/// signatures and encrypted data never leave the blocks.
 #[must_use]
 pub fn readable_thinking(blocks: &[ThinkingBlock]) -> Vec<&str> {
     blocks
@@ -311,8 +211,6 @@ pub fn readable_thinking(blocks: &[ThinkingBlock]) -> Vec<&str> {
         .collect()
 }
 
-/// The readable text of `blocks` joined by a blank line, or `None` when there
-/// is none (see [`readable_thinking`]).
 #[must_use]
 pub fn joined_thinking_text(blocks: &[ThinkingBlock]) -> Option<String> {
     let parts = readable_thinking(blocks);
@@ -323,38 +221,22 @@ pub fn joined_thinking_text(blocks: &[ThinkingBlock]) -> Option<String> {
     }
 }
 
-/// The person behind a user message and where they sent it from.
-///
-/// Stored with the message so the agent can tell participants apart in
-/// shared spaces (team channels) long after the message arrived.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct MessageSender {
-    /// Display name as the interface reports it.
     pub name: String,
-    /// Stable identifier on that interface (user ID, AAD object ID).
     pub id: String,
-    /// Interface the message arrived on (e.g. `"discord"`, `"teams"`).
     pub interface: String,
-    /// Where on the interface it was sent (e.g. `"direct message"`, `"#general"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub location: Option<String>,
 }
 
-/// The agent behind a message one agent sent another.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct AgentSender {
-    /// Sender's address (`"main"` or a session address, or `agent:<name>` /
-    /// `agent:<name>/<session>` for a teammate).
     pub address: String,
-    /// Sender's category label (`"main"`, `"scheduled"`, `"external"`,
-    /// `"spawned"`, or `"teammate"`).
     pub category: String,
-    /// The sending session's run, for a message one of this agent's own
-    /// sessions sent main. `None` for a teammate, and on a history entry
-    /// that does not record one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub run_id: Option<String>,
@@ -371,7 +253,6 @@ impl std::fmt::Display for MessageSender {
 }
 
 impl Message {
-    /// Create a user message.
     #[must_use]
     pub fn user(content: impl Into<String>) -> Self {
         Self {
@@ -391,7 +272,6 @@ impl Message {
         }
     }
 
-    /// Create a user message with inline images.
     #[must_use]
     pub fn user_with_images(content: impl Into<String>, images: Vec<ImageData>) -> Self {
         Self {
@@ -411,7 +291,6 @@ impl Message {
         }
     }
 
-    /// Create a system message.
     #[must_use]
     pub fn system(content: impl Into<String>) -> Self {
         Self {
@@ -431,8 +310,6 @@ impl Message {
         }
     }
 
-    /// Create a system message whose content is `stable` followed by `rest`,
-    /// with its cache boundary between the two.
     #[must_use]
     pub fn system_with_cache_boundary(stable: impl Into<String>, rest: &str) -> Self {
         let mut content = stable.into();
@@ -444,7 +321,6 @@ impl Message {
         }
     }
 
-    /// Create an assistant message with optional tool calls.
     #[must_use]
     pub fn assistant(content: impl Into<String>, tool_calls: Option<Vec<ToolCall>>) -> Self {
         Self {
@@ -464,7 +340,6 @@ impl Message {
         }
     }
 
-    /// Create a tool result message.
     #[must_use]
     pub fn tool(content: impl Into<String>, tool_call_id: impl Into<String>) -> Self {
         Self {
@@ -484,7 +359,6 @@ impl Message {
         }
     }
 
-    /// Create a tool result message with inline images.
     #[must_use]
     pub fn tool_with_images(
         content: impl Into<String>,
@@ -508,46 +382,36 @@ impl Message {
         }
     }
 
-    /// Attach the person who sent this message.
     #[must_use]
     pub fn with_sender(mut self, sender: Option<MessageSender>) -> Self {
         self.sender = sender;
         self
     }
 
-    /// Attach the agent that sent this message.
     #[must_use]
     pub fn with_agent_sender(mut self, agent_sender: Option<AgentSender>) -> Self {
         self.agent_sender = agent_sender;
         self
     }
 
-    /// Attach the id of the message this entry records.
     #[must_use]
     pub fn with_id(mut self, id: Option<String>) -> Self {
         self.id = id;
         self
     }
 
-    /// Mark this entry as context the agent reads rather than a message
-    /// anyone sent (see [`Self::context`]).
     #[must_use]
     pub fn as_context(mut self) -> Self {
         self.context = true;
         self
     }
 
-    /// Attach the reasoning the model produced for this message.
     #[must_use]
     pub fn with_thinking(mut self, thinking: Vec<ThinkingBlock>) -> Self {
         self.thinking = thinking;
         self
     }
 
-    /// This message for an archive nothing replays to a provider: its
-    /// reasoning is kept as readable text only, without the signatures and
-    /// encrypted blocks a provider needs back within a conversation, which
-    /// mean nothing once the conversation is over.
     #[must_use]
     pub fn without_replay_data(&self) -> Self {
         Self {
@@ -559,10 +423,6 @@ impl Message {
         }
     }
 
-    /// Message text as the agent reads it in history and transcripts.
-    ///
-    /// A message with a known sender is prefixed with a `[From: …]` line so
-    /// the agent can tell who said what in a shared conversation.
     #[must_use]
     pub fn attributed_content(&self) -> std::borrow::Cow<'_, str> {
         match &self.sender {
@@ -572,22 +432,16 @@ impl Message {
     }
 }
 
-/// The role of a message participant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
-    /// System instruction message.
     System,
-    /// User input message.
     User,
-    /// Assistant response message.
     Assistant,
-    /// Tool result message.
     Tool,
 }
 
 impl Role {
-    /// Lowercase string label for this role (e.g. `"system"`, `"user"`).
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -599,65 +453,39 @@ impl Role {
     }
 }
 
-/// A tool call requested by the model.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
-    /// Unique identifier for this tool call.
     pub id: String,
-    /// Name of the tool to invoke.
     pub name: String,
-    /// Arguments as a JSON value.
     pub arguments: serde_json::Value,
-    /// The MCP server (its name in `mcp.json`) that owns this tool, or
-    /// `None` for a built-in. Unknown when the model's response is first
-    /// parsed; filled in from the MCP registry before the call is recorded
-    /// or dispatched (see `agent::turn::annotate_tool_call_servers`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub server: Option<String>,
 }
 
-/// Definition of an available tool sent to the model.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolDefinition {
-    /// The tool name.
     pub name: String,
-    /// Human-readable description of what the tool does.
     pub description: String,
-    /// JSON Schema describing the tool's parameters.
     pub parameters: serde_json::Value,
 }
 
-/// Token usage of one model response, normalized so every provider means the
-/// same thing by each field.
-///
-/// The three input parts are disjoint and together make up the whole prompt.
-/// `None` always means the provider did not report the number, never zero.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
-    /// Input tokens billed at the full input rate: neither read from nor written to the prompt cache.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uncached_input_tokens: Option<u32>,
-    /// Input tokens read from the prompt cache.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_read_tokens: Option<u32>,
-    /// Input tokens written to the prompt cache, all TTLs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_write_tokens: Option<u32>,
-    /// The part of `cache_write_tokens` written with a long (1 hour) TTL, when the provider reports the split.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_write_long_tokens: Option<u32>,
-    /// Output tokens generated, reasoning included.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_tokens: Option<u32>,
-    /// The part of `output_tokens` spent on reasoning, when reported separately.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_tokens: Option<u32>,
 }
 
 impl Usage {
-    /// The whole prompt: uncached input plus cache reads plus cache writes.
-    ///
-    /// `None` only when the provider reported none of the three parts.
     #[must_use]
     pub fn total_input_tokens(&self) -> Option<u32> {
         [
@@ -671,9 +499,6 @@ impl Usage {
     }
 }
 
-/// Uncached input for providers whose prompt count includes the cached part:
-/// the prompt minus cache reads and writes, `None` when the prompt count is
-/// missing.
 pub(crate) fn uncached_from_inclusive_prompt(
     prompt_tokens: Option<u32>,
     cache_read_tokens: Option<u32>,
@@ -686,25 +511,17 @@ pub(crate) fn uncached_from_inclusive_prompt(
     })
 }
 
-/// One request a model call sent: who served it, how it ended, and what the
-/// provider reported it spent. A retried or failed-over call makes several.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttemptUsage {
-    /// Provider kind that served the attempt (e.g. "anthropic", "openai", "fireworks", "gemini", "ollama").
     pub provider: String,
-    /// Model id the attempt was sent to.
     pub model: String,
-    /// Whether the attempt produced the call's response.
     pub outcome: AttemptOutcome,
-    /// What the provider reported for this attempt; None when it reported nothing.
     pub usage: Option<Usage>,
 }
 
-/// How one attempt of a model call ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AttemptOutcome {
-    /// The attempt produced the call's response.
     Succeeded,
     /// The attempt failed: an error status, a broken stream, or a response
     /// that could not be used.
@@ -718,49 +535,33 @@ pub enum AttemptOutcome {
 /// response.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StopReason {
-    /// The model reached a natural stopping point.
     EndTurn,
-    /// The model decided to call a tool.
     ToolUse,
     /// Generation was cut off by the configured output-token limit —
     /// the response is incomplete.
     MaxTokens,
-    /// The provider's content filter stopped generation.
     ContentFilter,
-    /// A configured stop sequence was hit.
     StopSequence,
-    /// A reason not covered above, carrying the provider's own raw value.
     Other(String),
 }
 
-/// Response from a model provider.
 #[derive(Debug, Clone)]
 pub struct InferenceResponse {
-    /// The assistant's text response (may be empty if only tool calls).
     pub content: String,
-    /// Tool calls the assistant wants to make.
     pub tool_calls: Vec<ToolCall>,
-    /// Token usage information, if the provider reports it.
     pub usage: Option<Usage>,
-    /// The model's reasoning for this response, in the order it was returned.
     pub thinking: Vec<ThinkingBlock>,
-    /// Why generation ended, if the provider reports it.
     pub stop_reason: Option<StopReason>,
-    /// Images left out of the request because the model can't take them.
     pub images_omitted: Option<super::ImagesOmitted>,
     /// How many replayed reasoning blocks the provider dropped from the
     /// request instead of reading them, because the conversation before them
     /// changed (Anthropic's `thinking_dropped` input transformation). The
     /// model answered without that reasoning.
     pub thinking_dropped: usize,
-    /// Every request this call sent, in order; the last is the one that
-    /// produced this response, and `usage` is its usage. Empty for a provider
-    /// that sends no request of its own.
     pub attempts: Vec<AttemptUsage>,
 }
 
 impl InferenceResponse {
-    /// Create a new model response.
     #[must_use]
     pub fn new(content: String, tool_calls: Vec<ToolCall>) -> Self {
         Self {
@@ -775,17 +576,11 @@ impl InferenceResponse {
         }
     }
 
-    /// The provider and model that produced this response: the last
-    /// attempt's. `None` for a response no provider request produced.
     #[must_use]
     pub fn answered_by(&self) -> Option<&AttemptUsage> {
         self.attempts.last()
     }
 
-    /// This response with every thinking block recorded as produced at
-    /// `origin`. The provider that answered calls this on what it returns,
-    /// so a chain of providers (failover) records the one that actually
-    /// answered.
     #[must_use]
     pub(crate) fn produced_at(mut self, origin: &ThinkingOrigin) -> Self {
         for block in &mut self.thinking {
@@ -794,46 +589,34 @@ impl InferenceResponse {
         self
     }
 
-    /// Whether this response represents a complete turn (text, no tool calls).
     #[cfg(test)]
     #[must_use]
     pub(crate) fn is_complete(&self) -> bool {
         self.tool_calls.is_empty() && !self.content.is_empty()
     }
 
-    /// Whether generation was cut off by the output-token limit rather than
-    /// ending naturally.
     #[must_use]
     pub fn was_truncated(&self) -> bool {
         self.stop_reason == Some(StopReason::MaxTokens)
     }
 }
 
-/// Desired response format for model completions.
 #[derive(Debug, Clone, Default)]
 pub enum ResponseFormat {
-    /// Plain text response (default behavior).
     #[default]
     Text,
-    /// JSON response conforming to a JSON Schema.
     JsonSchema {
         /// Schema name (required by `OpenAI`, ignored by other providers).
         name: String,
-        /// The JSON Schema that the response must conform to.
         schema: serde_json::Value,
     },
 }
 
-/// Provider-native web search configuration passed to completion requests.
-///
-/// Flat struct — each provider reads the fields it cares about.
 #[derive(Debug, Clone, Default)]
 pub struct WebSearchNativeConfig {
     /// Maximum web search invocations per request (Anthropic).
     pub max_uses: Option<u32>,
-    /// Restrict search to these domains (Anthropic).
     pub allowed_domains: Option<Vec<String>>,
-    /// Exclude these domains from search (Anthropic).
     pub blocked_domains: Option<Vec<String>>,
     /// Search context size (`OpenAI`: `"low"`, `"medium"`, `"high"`).
     pub search_context_size: Option<String>,
@@ -841,13 +624,8 @@ pub struct WebSearchNativeConfig {
     pub exclude_domains: Option<Vec<String>>,
 }
 
-/// How a call should be cached by providers that let the caller choose.
-///
-/// The default suits a one-off call: no conversation key, short retention.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CacheHints {
-    /// Stable identifier of the conversation this call belongs to, for
-    /// providers that route requests by key. None for one-off calls.
     pub conversation_key: Option<String>,
     /// How long the provider should keep this call's cached prefix.
     pub retention: CacheRetention,
@@ -866,41 +644,24 @@ pub enum CacheRetention {
     Long,
 }
 
-/// Options for model completion requests.
 #[derive(Debug, Clone, Default)]
 pub struct CompletionOptions {
-    /// Maximum tokens to generate.
     pub max_tokens: Option<u32>,
-    /// Desired response format.
     pub response_format: ResponseFormat,
-    /// Sampling temperature (0.0–2.0). None uses provider default.
     pub temperature: Option<f32>,
-    /// Thinking/reasoning configuration. None means not configured (off).
     pub thinking: Option<ThinkingConfig>,
-    /// Provider-native web search configuration. None disables web search.
     pub web_search: Option<WebSearchNativeConfig>,
-    /// How the call should be cached.
     pub cache: CacheHints,
 }
 
-/// A piece of a model response that arrived while the call is still running.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamDelta {
-    /// More of the response's text.
     Text(String),
-    /// More of the model's readable reasoning.
     Thinking(String),
-    /// Everything streamed so far for this call is void: the request is
-    /// being sent again (a retry, or the next provider in a failover chain),
-    /// and what follows starts over from the beginning.
     Restart,
 }
 
-/// Receives a response's pieces as they stream in.
-///
-/// `push` must not block: providers call it from inside their read loop.
 pub trait StreamSink: Send + Sync {
-    /// Take the next piece of the response.
     fn push(&self, delta: StreamDelta);
 }
 
@@ -918,13 +679,6 @@ pub trait InferenceProvider: Send + Sync {
         options: &CompletionOptions,
     ) -> Result<InferenceResponse, InferenceError>;
 
-    /// Like [`complete`](Self::complete), also handing the response's text
-    /// and reasoning to `sink` as they arrive. The returned response is
-    /// complete and authoritative; what the sink received previews it. A
-    /// provider that can't stream keeps this default, which streams nothing.
-    ///
-    /// # Errors
-    /// Returns `InferenceError` if the request fails, times out, or the response is malformed.
     async fn complete_streaming(
         &self,
         messages: &[Message],
@@ -936,14 +690,6 @@ pub trait InferenceProvider: Send + Sync {
         self.complete(messages, tools, options).await
     }
 
-    /// Answer as one hop of a failover chain: streaming into `sink` when
-    /// there is one. `image_fallback` is true when a later hop takes images,
-    /// so a provider that would retry an image rejection without the images
-    /// returns the error instead and lets the chain move on. A provider with
-    /// no such retry keeps this default.
-    ///
-    /// # Errors
-    /// Returns `InferenceError` if the request fails, times out, or the response is malformed.
     async fn complete_as_hop(
         &self,
         messages: &[Message],
@@ -962,18 +708,10 @@ pub trait InferenceProvider: Send + Sync {
         }
     }
 
-    /// Whether requests reach the model with their images: false once its
-    /// model is declared or found text-only.
     fn takes_images(&self) -> bool {
         true
     }
 
-    /// The readable text of the reasoning a request of `messages`, `tools`
-    /// and `options` sends back to the model, one entry per block, chosen by
-    /// the same rule the provider's request conversion applies. Reasoning
-    /// that goes back only as a signature or encrypted data has no text and
-    /// is not listed. A provider that sends no reasoning back keeps this
-    /// default.
     fn replayed_reasoning(
         &self,
         messages: &[Message],
@@ -984,9 +722,6 @@ pub trait InferenceProvider: Send + Sync {
         Vec::new()
     }
 
-    /// The model this provider is configured for. A chain that fails over
-    /// keeps naming its primary; the model that answered a call is the last
-    /// of its response's [`InferenceResponse::attempts`].
     fn model_name(&self) -> &str;
 }
 
@@ -1078,7 +813,6 @@ mod tests {
         let back: Message = serde_json::from_str(&json).unwrap();
         assert_eq!(back.sender, Some(jane_in_channel()));
 
-        // History written before senders existed has no `sender` key.
         let legacy: Message = serde_json::from_str(r#"{"role":"user","content":"hi"}"#).unwrap();
         assert_eq!(legacy.sender, None);
         let plain = serde_json::to_string(&Message::user("hi")).unwrap();
@@ -1092,7 +826,6 @@ mod tests {
         let back: Message = serde_json::from_str(&json).unwrap();
         assert_eq!(back.id.as_deref(), Some("m-1"));
 
-        // A transcript entry without an `id` key loads with none.
         let without_id: Message =
             serde_json::from_str(r#"{"role":"user","content":"hi"}"#).unwrap();
         assert_eq!(without_id.id, None);
@@ -1108,7 +841,6 @@ mod tests {
         let back: Message = serde_json::from_value(json).unwrap();
         assert!(back.context);
 
-        // A transcript entry without the mark loads as an ordinary message.
         let unmarked: Message = serde_json::from_str(r#"{"role":"user","content":"hi"}"#).unwrap();
         assert!(!unmarked.context);
         let plain = serde_json::to_value(Message::user("hi")).unwrap();
@@ -1296,7 +1028,6 @@ mod tests {
 
     #[test]
     fn message_serde_without_images_backward_compat() {
-        // Simulate old JSON without images field
         let json = r#"{"role":"user","content":"hello"}"#;
         let msg: Message = serde_json::from_str(json).unwrap();
         assert_eq!(msg.content, "hello");

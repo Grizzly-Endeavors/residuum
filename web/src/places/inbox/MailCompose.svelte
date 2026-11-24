@@ -10,13 +10,7 @@
   import { joinNames } from "../../lib/words";
   import { deliveryHint, moveOnEnter, PICK_AGENT_HINT, sendOnModEnter } from "./thread-model";
 
-  // New message, shown as a thread not sent yet: who it goes to (one agent
-  // or more), a subject, the Markdown body and attachments. The draft is the
-  // store's, so it outlives this view while the address keeps it open.
-  // Cancel asks the place to close it; the place's guard asks about text.
-
   interface Props {
-    /** Recipients to address the draft to: one with nothing written is addressed to them, and one with something written gains them. */
     to: string[];
     onsent: (threadId: string) => void;
     oncancel: () => void;
@@ -24,10 +18,8 @@
 
   let { to, onsent, oncancel }: Props = $props();
 
-  // Opened once: a draft already being written keeps what was written.
   const draft = untrack(() => mail.openNewMessage(to));
 
-  /** Every agent, and any recipient the draft holds that the list doesn't (yet). */
   const choices = $derived([
     ...hub.agents.map((agent) => ({ name: agent.name, stopped: agent.state === "stopped" })),
     ...draft.to
@@ -129,7 +121,6 @@
 </form>
 
 <style>
-  /* The place frames it: its padding, reading width and scrolling. */
   .mail-compose {
     display: flex;
     flex-direction: column;
@@ -161,7 +152,6 @@
     font-size: var(--font-size-sm);
   }
 
-  /* The fields share one card, as the reply does under a thread. */
   .compose-fields {
     display: flex;
     flex-direction: column;

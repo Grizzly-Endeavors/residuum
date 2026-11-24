@@ -1,6 +1,3 @@
-//! `file_bug_report` tool — lets the agent file a structured bug
-//! report against itself when it observes broken behavior.
-
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -14,15 +11,9 @@ use super::require_str;
 use residuum_agent::Tool;
 use residuum_inference::{ToolError, ToolResult};
 
-/// Built-in tool that submits a bug report through the tracing service.
 pub(crate) struct FileBugReportTool {
     service: Arc<TracingService>,
-    /// Snapshot of the static runtime client context (version, model, OS,
-    /// etc.). Built at registration time; refreshed when the gateway is
-    /// rebuilt on config reload.
     client_context: Arc<ClientContext>,
-    /// Session registry, read fresh on each report to populate
-    /// `active_subagents` (closes #99).
     session_registry: Arc<SessionRegistry>,
 }
 

@@ -70,7 +70,6 @@ describe("ToastRegion", () => {
       });
       render(NotificationsHarness);
       await act();
-      // With no composer to reach, a phone keeps clear of a sheet's footer above the bottom bar.
       expect(region()).toHaveAttribute("data-clearance", "away");
 
       const composer = document.createElement("form");
@@ -128,7 +127,6 @@ describe("ToastRegion", () => {
     const region = politeRegion();
     expect(region.closest("[inert]")).toBeNull();
     await user.click(within(region).getByRole("button", { name: "Undo" }));
-    // The press didn't count as outside the dialog.
     expect(screen.getByRole("dialog", { name: "Settings" })).toBeInTheDocument();
   });
 });
@@ -197,7 +195,6 @@ describe("RecentNotifications", () => {
       "scout finished its weekly review.",
     ]);
     expect(within(dialog).getByRole("button", { name: "Clear all" })).toHaveFocus();
-    // Undone here, the toast's Undo goes with it.
     expect(politeRegion().textContent.trim()).toBe("");
   });
 

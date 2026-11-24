@@ -1,5 +1,3 @@
-//! Retry logic with exponential backoff for model provider calls.
-
 use std::time::Duration;
 
 use tokio::time::sleep;
@@ -9,13 +7,6 @@ use super::InferenceError;
 use crate::attempt::ListsAttempts;
 use residuum_config::RetryConfig;
 
-/// Execute a fallible async operation with retry logic.
-///
-/// Only retries if the error is marked as retryable via [`InferenceError::is_retryable()`].
-/// The result lists every attempt the failed tries recorded ahead of its own.
-///
-/// # Errors
-/// Returns the last error if all retries are exhausted or if a non-retryable error occurs.
 #[tracing::instrument(skip_all, fields(max_retries = config.max_retries))]
 pub async fn with_retry<F, Fut, T>(config: &RetryConfig, operation: F) -> Result<T, InferenceError>
 where
@@ -60,7 +51,6 @@ where
         }
         attempts += 1;
 
-        // Add jitter (+-25%)
         #[expect(
             clippy::cast_precision_loss,
             reason = "precision loss acceptable for jitter calculation"
@@ -78,7 +68,6 @@ where
         let jittered_delay = Duration::from_millis((delay.as_millis() as f64 + jitter) as u64);
         sleep(jittered_delay).await;
 
-        // Exponential backoff
         #[expect(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,

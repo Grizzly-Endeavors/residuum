@@ -38,7 +38,6 @@
     if (!srv) return;
 
     if (isAdded(srv.name)) {
-      // Toggle off
       const existsIdx = wizardState.mcpServers.findIndex((s) => s.name === srv.name);
       if (existsIdx >= 0) wizardState.mcpServers.splice(existsIdx, 1);
       pendingIdx = null;
@@ -63,7 +62,6 @@
     const srv = catalog[idx];
     if (!srv) return;
 
-    // Validate all required inputs
     let hasError = false;
     for (const req of srv.requires_input) {
       const val = (pendingInputs[req.field] ?? "").trim();
@@ -87,7 +85,6 @@
       env,
       secretEnvKeys,
     };
-    // A server restored from a draft is already added, without its key.
     const existsIdx = wizardState.mcpServers.findIndex((s) => s.name === srv.name);
     if (existsIdx >= 0) wizardState.mcpServers[existsIdx] = entry;
     else wizardState.mcpServers.push(entry);

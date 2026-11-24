@@ -1,23 +1,7 @@
-//! Builds the startup error for a hub whose config exists but can't load.
-//!
-//! Reached only when the install already has an agent (an agent is
-//! discovered by scanning for `config/config.toml` — see
-//! `residuum::config::discover_agents`). A fresh install with no agent at all
-//! is routed straight to the setup wizard by the caller, before this is ever
-//! reached. An agent's own broken config never stops `serve`: that one agent
-//! starts `failed` and the rest run.
-
 use std::path::Path;
 
 use residuum::util::FatalError;
 
-/// Fail with [`invalid_hub_config_error`] if the hub config under `hub_dir`
-/// doesn't load and has no last-known-good copy to fall back on (the hub
-/// itself retries on one and publishes a notice once it's up if it had to).
-///
-/// A missing timezone is not a failure when `residuum_root` has no agent:
-/// the first-run file leaves it commented out, and the setup wizard is what
-/// writes it. An invalid timezone name still fails here.
 pub(super) fn ensure_hub_config_loads_or_has_fallback(
     residuum_root: &Path,
     hub_dir: &Path,
@@ -37,11 +21,6 @@ pub(super) fn ensure_hub_config_loads_or_has_fallback(
     }
 }
 
-/// Build the startup error for a hub config that failed to load, naming
-/// what's wrong and whether a last-known-good fallback was also tried (it
-/// failed too, or this wouldn't have been reached — see the caller).
-///
-/// The user's files are never modified.
 pub(super) fn invalid_hub_config_error(
     hub_dir: &Path,
     err: &FatalError,
@@ -86,7 +65,6 @@ mod tests {
         assert!(message.contains("last configuration that worked"));
     }
 
-    /// A hub directory whose live config is broken.
     fn hub_with_broken_config() -> tempfile::TempDir {
         let root = tempfile::tempdir().unwrap();
         let hub_dir = root.path().join("hub");

@@ -1,13 +1,3 @@
-// ── Team overview (Svelte 5 runes) ───────────────────────────────────
-//
-// What Home and the rail's Home count show beyond the hub's agent list: each
-// agent's overview, the team event log, and the newest unread inbox threads.
-// The hub socket feeds it (`agent_overview`, `team_event`), and it fetches
-// again whenever the socket can't vouch for what it holds: on every
-// connection, after a snapshot sent in place of lost frames, and when the
-// hub process changed. The agent list, activity and stopping set stay in the
-// hub store, which this reads.
-
 import {
   ApiError,
   fetchMailThreads,
@@ -31,16 +21,12 @@ import { deriveNeedsYou, type NeedsYou } from "./needs-you";
 import { notifications } from "./notifications.svelte";
 import { unreachableAgentMessage } from "./sessions.svelte";
 
-/** How many team events the store keeps, newest first. */
 const MAX_EVENTS = 50;
 
-/** How many inbox threads the one request for the newest unread ones asks for. */
 const INBOX_PAGE = 50;
 
-/** What the store reads from the hub store. */
 export interface OverviewHub {
   readonly agents: readonly AgentSummary[];
-  /** The decision model service's status, when the hub has reported it. */
   readonly systemOne?: SystemOneStatus | null;
   onFrame: (listener: (msg: HubServerMessage) => void) => () => void;
 }
@@ -50,32 +36,22 @@ function newestFirst(a: TeamEvent, b: TeamEvent): number {
 }
 
 export class OverviewStore {
-  /** The hub process this connection belongs to, as `hub_boot` announced it. */
   bootId = $state<string | null>(null);
-  /** Each agent's overview by name. Empty until the first fetch lands. */
   overviews = $state<Record<string, AgentOverview>>({});
-  /** The overview has arrived from the current hub process. */
   loaded = $state(false);
-  /** Why the last overview fetch failed, in plain words, or null. */
   loadError = $state<string | null>(null);
 
-  /** Team events, newest first, at most `MAX_EVENTS`. */
   events = $state<TeamEvent[]>([]);
   eventsLoaded = $state(false);
   eventsError = $state<string | null>(null);
 
-  /** The unread threads among the newest page of the inbox, across agents, newest first. */
   unreadThreads = $state<MailThreadSummary[]>([]);
-  /** `unreadThreads` is every unread thread: that page was the last of the inbox. */
   unreadThreadsComplete = $state(false);
   unreadThreadsError = $state<string | null>(null);
 
-  /** Outbound tasks whose stop is in flight, as `agent:task`. */
   stoppingTasks = $state<string[]>([]);
-  /** Why a task's stop couldn't reach its agent, by `agent:task`. */
   taskNotes = $state<Record<string, string>>({});
 
-  /** What needs the user right now. */
   readonly needsYou: NeedsYou = $derived.by(() =>
     deriveNeedsYou({
       agents: this.source.agents,
@@ -86,19 +62,15 @@ export class OverviewStore {
     }),
   );
 
-  /** The next snapshot is the one every connection starts with, not one sent after lost frames. */
   private awaitingConnectSnapshot = false;
   private overviewRequest = 0;
-  /** Agents whose overview frame arrived while the overview request was out. */
   private framedDuringFetch: string[] = [];
   private eventsRequest = 0;
   private unreadRequest = 0;
-  /** The per-agent unread counts the inbox threads were last fetched for. */
   private unreadCountsFetched: string | null = null;
 
   constructor(private readonly source: OverviewHub) {}
 
-  /** Follow the hub socket's frames. Returns a function that stops following them. */
   start(): () => void {
     return this.source.onFrame((msg) => {
       this.handleFrame(msg);
@@ -109,7 +81,6 @@ export class OverviewStore {
     return this.overviews[name];
   }
 
-  /** Unread user-inbox items across every agent. */
   get inboxUnread(): number {
     return Object.values(this.overviews).reduce((sum, o) => sum + o.inbox_unread, 0);
   }
@@ -123,7 +94,6 @@ export class OverviewStore {
         if (this.awaitingConnectSnapshot) {
           this.awaitingConnectSnapshot = false;
         } else {
-          // The hub sends a snapshot in place of frames this connection lost.
           void this.refreshOverview();
           void this.refreshEvents();
         }
@@ -162,15 +132,12 @@ export class OverviewStore {
       case "session_frame":
       case "session_relay_lagged":
       case "pong":
-        // Other owners keep these; an agent's overview changes reach here as its own frame.
         break;
     }
   }
 
-  /** A connection opened: what it says from now on belongs to `bootId`. */
   private connected(bootId: string): void {
     if (this.bootId !== bootId) {
-      // A different hub process: nothing held came from it.
       this.overviews = {};
       this.loaded = false;
       this.events = [];
@@ -185,19 +152,15 @@ export class OverviewStore {
     void this.refreshEvents();
   }
 
-  /** Fetch every agent's overview. A failure lands in `loadError`. */
   async refreshOverview(): Promise<void> {
     const request = ++this.overviewRequest;
     this.framedDuringFetch = [];
     try {
       const response = await fetchOverview();
       if (request !== this.overviewRequest) return;
-      // An answer from another hub process is stale; that process's own
-      // connection fetches again.
       if (this.bootId !== null && response.boot_id !== this.bootId) return;
       const next: Record<string, AgentOverview> = {};
       for (const overview of response.agents) {
-        // A frame that arrived while the request was out is at least as new.
         const framed = this.framedDuringFetch.includes(overview.name)
           ? this.overviews[overview.name]
           : undefined;
@@ -214,10 +177,6 @@ export class OverviewStore {
     }
   }
 
-  /**
-   * Fetch the team events newer than the newest one held, or the newest page
-   * when none are held. A failure lands in `eventsError`.
-   */
   async refreshEvents(): Promise<void> {
     const request = ++this.eventsRequest;
     const after = this.events[0]?.id;
@@ -242,11 +201,6 @@ export class OverviewStore {
     }
   }
 
-  /**
-   * Fetch the unread threads of the newest page of the inbox: one request,
-   * however long the inbox is. `unreadThreadsComplete` says whether that page
-   * was the last. A failure lands in `unreadThreadsError`.
-   */
   async refreshUnreadThreads(): Promise<void> {
     const request = ++this.unreadRequest;
     this.unreadCountsFetched = this.unreadCounts();
@@ -270,23 +224,16 @@ export class OverviewStore {
     }
   }
 
-  // ── Outbound tasks ─────────────────────────────────────────────────
-
   isStoppingTask(agent: string, taskId: string): boolean {
     return this.stoppingTasks.includes(`${agent}:${taskId}`);
   }
 
-  /**
-   * Ask the task's remote agent to cancel it. When the agent can't be reached,
-   * say so on the task. Resolves to the task as it stands after, or null.
-   */
   async stopTask(agent: string, taskId: string): Promise<OutboundA2aTaskSummary | null> {
     return this.taskCommand(agent, taskId, "Couldn't stop the task.", () =>
       stopOutboundA2aTask(agent, taskId),
     );
   }
 
-  /** Stop following the task here, without reaching its agent. Resolves like `stopTask`. */
   async stopWatching(agent: string, taskId: string): Promise<OutboundA2aTaskSummary | null> {
     return this.taskCommand(agent, taskId, "Couldn't stop watching the task.", () =>
       stopWatchingOutboundA2aTask(agent, taskId),
@@ -305,7 +252,6 @@ export class OverviewStore {
     try {
       const task = await call();
       this.clearTaskNote(key);
-      // The hub's frame follows within a second; the task is already over.
       this.dropProblem(agent, taskId);
       return task;
     } catch (err) {
@@ -313,7 +259,6 @@ export class OverviewStore {
       if (unreachable !== null) {
         this.taskNotes = { ...this.taskNotes, [key]: unreachable };
       } else if (err instanceof ApiError && err.status === 404) {
-        // It ended some other way.
         this.dropProblem(agent, taskId);
       } else {
         notifications.surface("error", userErrorMessage(err, { action }));
@@ -341,14 +286,11 @@ export class OverviewStore {
     };
   }
 
-  // ── Keeping the inbox threads in step ──────────────────────────────
-
   private setOverviews(next: Record<string, AgentOverview>): void {
     this.overviews = next;
     if (this.unreadCounts() !== this.unreadCountsFetched) void this.refreshUnreadThreads();
   }
 
-  /** Each agent's unread count, as one comparable value: it changes whenever any count does. */
   unreadCounts(): string {
     return Object.values(this.overviews)
       .map((o) => `${o.name}=${String(o.inbox_unread)}`)

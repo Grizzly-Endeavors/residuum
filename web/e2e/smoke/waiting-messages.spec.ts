@@ -3,12 +3,6 @@ import { expectNoAxeViolations } from "../support/axe";
 import { sendFromComposer } from "../support/composer";
 import { expect, test, type MockControls } from "../support/fixtures";
 
-/**
- * A message sent while the agent works waits apart from the conversation
- * until the agent reads it, and can be sent now or sent to a multitask
- * session instead.
- */
-
 const GREETING = "Hi, this is atlas. You are in my conversation, not scout's.";
 
 function conversation(page: Page): Locator {
@@ -25,7 +19,6 @@ async function send(page: Page, text: string): Promise<void> {
   await sendFromComposer(box);
 }
 
-/** A turn that waits at its end until let go, so messages sent during it wait too. */
 async function startHeldTurn(page: Page, mock: MockControls): Promise<void> {
   await mock.post("/api/mock/turn-hold", { data: { held: true } });
   await page.goto("/agent/atlas");
@@ -45,7 +38,6 @@ test("a message sent while the agent works waits, then joins the chat once read"
     .getByRole("listitem")
     .filter({ hasText: "also check the error logs" });
   await expect(message).toBeVisible();
-  // Not part of the conversation yet: no user bubble says it.
   await expect(
     conversation(page).locator(".user-message").filter({ hasText: "also check the error logs" }),
   ).toHaveCount(0);
@@ -83,7 +75,6 @@ test("Multitask sends the message to a forked session instead", async ({ page, m
 
   await expect(page.getByText(/^Forked into /)).toBeVisible();
   await expect(waiting(page)).toHaveCount(0);
-  // The turn it waited on carries on, and the message never reaches it.
   await expect(conversation(page).getByText("Working", { exact: true })).toBeVisible();
   await expect(
     conversation(page).locator(".user-message").filter({ hasText: "compare the three quotes" }),

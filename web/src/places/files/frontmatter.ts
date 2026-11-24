@@ -1,9 +1,5 @@
-// A Markdown file's leading YAML frontmatter, split from its body so it can
-// show as a key/value block instead of rendering as a rule and a heading.
-
 export interface FrontmatterField {
   key: string;
-  /** The value as written, with any indented or list lines after its key line. */
   value: string;
 }
 
@@ -15,11 +11,6 @@ export interface SplitFrontmatter {
 const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
 const KEY_LINE = /^([A-Za-z_][\w-]*):(?:[ \t]+(.*))?$/;
 
-/**
- * The frontmatter block at the top of `content`, with its fields, and the
- * body after it; null when the file has no frontmatter. Lines that aren't a
- * `key:` line continue the field above them, and a comment line is dropped.
- */
 export function splitFrontmatter(content: string): SplitFrontmatter | null {
   const match = FRONTMATTER.exec(content);
   if (match === null) return null;

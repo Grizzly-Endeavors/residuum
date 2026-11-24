@@ -17,13 +17,6 @@
   import KeyList from "./KeyList.svelte";
   import SettingsGroup from "./SettingsGroup.svelte";
 
-  // The values settings refer to by name (`secret:openai`): provider keys,
-  // channel tokens. Adding and removing act at once through the hub's own
-  // endpoints and have no part in the save bar. Removing asks first, because
-  // the hub keeps no copy to bring a value back from here; History can restore
-  // the store as a whole. The list never has a value, and says nothing about
-  // where a name is used, since the hub doesn't either.
-
   let names = $state.raw<string[] | null>(null);
   let loadError = $state("");
   let removing = $state<string | null>(null);
@@ -91,7 +84,6 @@
       await deleteSecret(secret);
       toast.success(`Removed ${secret}.`);
       await load();
-      // The row that held focus is gone.
       await tick();
       addButton?.focus();
     } catch (err) {

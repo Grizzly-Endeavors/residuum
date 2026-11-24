@@ -10,15 +10,9 @@
   import { agentActions } from "../home/agent-actions.svelte";
   import FailedAgentActions from "../home/FailedAgentActions.svelte";
 
-  // What an agent's Chat shows in place of the composer while the agent
-  // isn't running: why it couldn't start and the fix, that it is
-  // stopped with Start, or that it is starting or stopping. The conversation
-  // above stays readable.
-
   interface Props {
     agent: AgentSummary;
     shown: Exclude<AgentDisplayState, "running">;
-    /** There's no conversation above it, so it stands alone in the middle of the feed. */
     alone: boolean;
     actions: ShellActions;
   }
@@ -30,7 +24,6 @@
   const busy = $derived(agentActions.pendingOf(agent.name));
 
   let heading = $state<HTMLHeadingElement>();
-  /** A restart from this card ended with the agent failed again. */
   let failedAgain = $state(false);
 
   const title = $derived.by(() => {
@@ -39,8 +32,6 @@
     return shown === "starting" ? `Starting ${name}` : `Stopping ${name}`;
   });
 
-  // The button pressed goes away while the agent starts, so the card's
-  // heading keeps the keyboard's place.
   function holdFocus(): void {
     heading?.focus();
   }

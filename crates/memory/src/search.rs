@@ -1,6 +1,3 @@
-//! Full-text BM25 search over observations, interaction-pair chunks, and wiki pages using tantivy,
-//! with optional hybrid vector search via sqlite-vec.
-
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -22,58 +19,32 @@ use crate::wiki_index::WikiPage;
 use residuum_config::SearchConfig;
 use residuum_inference::EmbeddingProvider;
 
-/// Memory budget for the tantivy index writer (50 MB).
 const WRITER_MEMORY_BUDGET_BYTES: usize = 50_000_000;
 
-/// A search result from the memory index.
 #[derive(Debug, Clone)]
 pub struct SearchResult {
-    /// Document identifier (obs ID, chunk ID, or wiki page path).
     pub id: String,
-    /// Which kind of document this result came from.
     pub source_type: DocSource,
-    /// Parent episode identifier.
     pub episode_id: String,
-    /// Date string (YYYY-MM-DD).
     pub date: String,
-    /// Line range start in the episode transcript (chunks only).
     pub line_start: Option<usize>,
-    /// Line range end in the episode transcript (chunks only).
     pub line_end: Option<usize>,
-    /// Snippet of matching content.
     pub snippet: String,
-    /// BM25 relevance score.
     pub score: f32,
 }
 
-/// The result of a [`HybridSearcher::search`] call.
 #[derive(Debug, Clone)]
 pub struct SearchOutcome {
-    /// Results at or above the min-score threshold, sorted and limited.
     pub results: Vec<SearchResult>,
-    /// How many results among the retrieved candidates scored below the
-    /// min-score threshold and were dropped. Not a count of every weaker
-    /// match in the whole index — only among the candidates this search
-    /// actually retrieved — but enough to tell the caller there's more to
-    /// see with a lower threshold rather than reporting a flat "no results".
     pub below_threshold: usize,
-    /// Whether vector similarity contributed to the ranking on any side that was
-    /// searched. `false` means every searched side fell back to BM25 alone.
     pub semantic: bool,
 }
 
-/// Filters for narrowing search results.
 #[derive(Debug, Clone, Default)]
 pub struct SearchFilters {
-    /// Filter to a single document source. `None` searches every source.
-    /// The tool layer translates user-facing names before setting this.
     pub source: Option<DocSource>,
-    /// Filter results on or after this date (YYYY-MM-DD, inclusive).
     pub date_from: Option<String>,
-    /// Filter results on or before this date (YYYY-MM-DD, inclusive).
     pub date_to: Option<String>,
-    /// Filter to results from these episode IDs. Wiki pages belong to no episode,
-    /// so an episode filter excludes them.
     pub episode_ids: Option<Vec<String>>,
 }
 
@@ -94,35 +65,22 @@ pub fn validate_date_filter(value: &str) -> Result<(), String> {
         .map_err(|e| format!("invalid date '{value}': expected YYYY-MM-DD ({e})"))
 }
 
-/// Statistics from a rebuild operation.
 #[derive(Debug)]
 pub struct RebuildResult {
-    /// Number of observation documents indexed.
     pub obs_count: usize,
-    /// Number of chunk documents indexed.
     pub chunk_count: usize,
-    /// Manifest data for each indexed file.
     pub file_entries: Vec<(String, ManifestFileEntry)>,
 }
 
-/// Statistics from an incremental sync operation.
 #[derive(Debug)]
 pub struct SyncStats {
-    /// Files that were newly indexed.
     pub added: usize,
-    /// Files that were re-indexed after modification.
     pub updated: usize,
-    /// Stale documents removed (from deleted files).
     pub removed: usize,
-    /// Files that were unchanged and skipped.
     pub unchanged: usize,
-    /// Document IDs removed from the BM25 index — from files deleted off disk, plus
-    /// the pre-update IDs of files that were modified and reindexed. The vector
-    /// store needs these too, to stay consistent with the BM25 index.
     pub pruned_doc_ids: Vec<String>,
 }
 
-/// BM25 full-text search index over memory observations and chunks.
 pub struct MemoryIndex {
     index: Index,
     reader: IndexReader,
@@ -149,7 +107,6 @@ struct SearchSchema {
     line_end_field: Field,
 }
 
-/// Build the tantivy schema and return it with all field handles.
 fn build_schema() -> (Schema, SearchSchema) {
     let mut builder = Schema::builder();
     let id_field = builder.add_text_field("id", STRING | STORED);
@@ -203,11 +160,6 @@ impl MemoryIndex {
         })
     }
 
-    /// Open or create a tantivy index at the given directory.
-    ///
-    /// # Errors
-    /// Returns an error if the directory is inaccessible, the index is corrupt,
-    /// or an index already exists whose stored schema differs from this build's.
     pub fn open_or_create(index_dir: &Path) -> anyhow::Result<Self> {
         std::fs::create_dir_all(index_dir).with_context(|| {
             format!(
@@ -224,25 +176,12 @@ impl MemoryIndex {
         Self::from_index(index, &fields)
     }
 
-    /// Create an empty in-RAM search index (no disk directory).
-    ///
-    /// Used as a fallback when the on-disk index cannot be created or
-    /// opened during degraded startup.
-    ///
-    /// # Errors
-    /// Returns an error if the in-memory index cannot be created.
     pub fn empty() -> anyhow::Result<Self> {
         let (schema, fields) = build_schema();
         let index = Index::create_in_ram(schema);
         Self::from_index(index, &fields)
     }
 
-    /// Index observations from an episode.
-    ///
-    /// Returns the list of document IDs that were indexed.
-    ///
-    /// # Errors
-    /// Returns an error if the index writer fails.
     pub fn index_observations(
         &self,
         episode_id: &str,
@@ -266,12 +205,6 @@ impl MemoryIndex {
         Ok(doc_ids)
     }
 
-    /// Index interaction-pair chunks.
-    ///
-    /// Returns the list of document IDs that were indexed.
-    ///
-    /// # Errors
-    /// Returns an error if the index writer fails.
     pub(crate) fn index_chunks(&self, chunks: &[IndexChunk]) -> anyhow::Result<Vec<String>> {
         if chunks.is_empty() {
             return Ok(Vec::new());
@@ -289,10 +222,6 @@ impl MemoryIndex {
         Ok(doc_ids)
     }
 
-    /// Delete documents by their IDs.
-    ///
-    /// # Errors
-    /// Returns an error if the index writer fails.
     pub(crate) fn delete_documents(&self, ids: &[String]) -> anyhow::Result<()> {
         if ids.is_empty() {
             return Ok(());
@@ -306,14 +235,6 @@ impl MemoryIndex {
         self.commit_and_reload(writer)
     }
 
-    /// Replace wiki page documents in one commit.
-    ///
-    /// Deletes each page in `pages` and each ID in `removed_ids`, then adds
-    /// `pages`. With `replace_all`, every existing wiki document is deleted
-    /// first, so the index holds exactly `pages`.
-    ///
-    /// # Errors
-    /// Returns an error if the index writer fails.
     pub fn replace_wiki_documents(
         &self,
         pages: &[WikiPage],
@@ -346,14 +267,6 @@ impl MemoryIndex {
         self.commit_and_reload(writer)
     }
 
-    /// Delete every wiki document, returning how many were removed.
-    ///
-    /// Wiki pages are indexed in the team wiki's own index; this clears any
-    /// wiki documents an agent's index holds. It commits only when there is
-    /// something to remove.
-    ///
-    /// # Errors
-    /// Returns an error if counting or deleting fails.
     pub fn purge_wiki_documents(&self) -> anyhow::Result<usize> {
         let wiki_term = Term::from_field_text(self.source_type_field, DocSource::Wiki.as_str());
         let wiki_query = tantivy::query::TermQuery::new(
@@ -374,10 +287,6 @@ impl MemoryIndex {
         Ok(count)
     }
 
-    /// Search the index with a query string and optional filters.
-    ///
-    /// # Errors
-    /// Returns an error if the query is unparseable or search fails.
     pub fn search(
         &self,
         query_str: &str,
@@ -392,7 +301,6 @@ impl MemoryIndex {
         let query_parser = QueryParser::for_index(&self.index, vec![self.content_field]);
         let (text_query, _errors) = query_parser.parse_query_lenient(query_str);
 
-        // Apply source_type filter as a BooleanQuery for early reduction
         let query: Box<dyn tantivy::query::Query> = if let Some(source) = filters.source {
             let source_term = Term::from_field_text(self.source_type_field, source.as_str());
             let source_query = tantivy::query::TermQuery::new(
@@ -407,7 +315,6 @@ impl MemoryIndex {
             text_query
         };
 
-        // Fetch extra candidates to account for post-retrieval filtering
         let has_post_filters = filters.date_from.is_some()
             || filters.date_to.is_some()
             || filters.episode_ids.is_some();
@@ -434,7 +341,6 @@ impl MemoryIndex {
             let date = get_text(&doc, self.date_field);
             let ep_id = get_text(&doc, self.episode_id_field);
 
-            // Post-retrieval filters
             if let Some(ref from) = filters.date_from
                 && date.as_str() < from.as_str()
             {
@@ -480,12 +386,6 @@ impl MemoryIndex {
         Ok(results)
     }
 
-    /// Rebuild the index from `.obs.json` and `.idx.jsonl` files.
-    ///
-    /// Clears the existing index and re-indexes everything.
-    ///
-    /// # Errors
-    /// Returns an error if files cannot be read or the index cannot be written.
     pub fn rebuild(&self, memory_dir: &Path) -> anyhow::Result<RebuildResult> {
         let mut writer = self.writer()?;
 
@@ -533,10 +433,6 @@ impl MemoryIndex {
         Ok(result)
     }
 
-    /// Incremental sync: compare files against manifest, index new/modified, remove stale.
-    ///
-    /// # Errors
-    /// Returns an error if files cannot be read or the index cannot be written.
     pub fn incremental_sync(
         &self,
         memory_dir: &Path,
@@ -551,7 +447,6 @@ impl MemoryIndex {
         };
         let mut new_manifest = manifest.clone();
 
-        // Collect current files on disk
         let episodes_dir = memory_dir.join("episodes");
         let mut disk_files: Vec<(String, String)> = Vec::new(); // (rel_path, mtime)
         if episodes_dir.exists() {
@@ -562,7 +457,6 @@ impl MemoryIndex {
         let disk_paths: std::collections::HashSet<&str> =
             disk_files.iter().map(|(p, _)| p.as_str()).collect();
 
-        // Remove stale entries (files in manifest but not on disk)
         let stale_keys: Vec<String> = manifest
             .files
             .keys()
@@ -577,7 +471,6 @@ impl MemoryIndex {
             }
         }
 
-        // Process each file on disk
         let mut writer = self.writer()?;
         for (rel_path, mtime) in &disk_files {
             if let Some(existing) = manifest.files.get(rel_path) {
@@ -585,7 +478,6 @@ impl MemoryIndex {
                     stats.unchanged += 1;
                     continue;
                 }
-                // Modified: delete old docs first
                 for id in &existing.doc_ids {
                     let term = Term::from_field_text(self.id_field, id);
                     writer.delete_term(term);
@@ -621,24 +513,12 @@ impl MemoryIndex {
         Ok((new_manifest, stats))
     }
 
-    /// Create an index writer with a reasonable memory budget.
     fn writer(&self) -> anyhow::Result<IndexWriter> {
         self.index
             .writer(WRITER_MEMORY_BUDGET_BYTES)
             .context("failed to create index writer")
     }
 
-    /// Commit the writer, reload the reader, and wait for the writer's
-    /// background merge threads to exit.
-    ///
-    /// `IndexWriter::commit` returns as soon as the new segment is durable;
-    /// any merge it schedules keeps running on the writer's own thread pool
-    /// after that. Dropping the writer without waiting on those threads lets
-    /// them outlive this call, which in tests races the `TempDir` guard: the
-    /// still-running thread can recreate `.tantivy-meta.lock` after the
-    /// guard has already removed the directory, leaving a lock-only leftover
-    /// under the OS temp dir. Taking `writer` by value and waiting here
-    /// keeps the index fully shut down before this function returns.
     fn commit_and_reload(&self, mut writer: IndexWriter) -> anyhow::Result<()> {
         writer.commit().context("failed to commit search index")?;
         self.reader
@@ -650,7 +530,6 @@ impl MemoryIndex {
         Ok(())
     }
 
-    /// Index a single `.obs.json` or `.idx.jsonl` file into a writer, returning doc IDs.
     fn index_file_into_writer(
         &self,
         writer: &mut IndexWriter,
@@ -677,11 +556,6 @@ impl MemoryIndex {
         Ok(doc_ids)
     }
 
-    /// Add an observation document, replacing any existing document with the same ID.
-    ///
-    /// Doc IDs are deterministic per episode, so replacing keeps the index free of
-    /// duplicates when an episode is indexed again (e.g. by startup sync after the
-    /// observer already indexed it).
     fn add_obs_document(
         &self,
         writer: &mut IndexWriter,
@@ -706,7 +580,6 @@ impl MemoryIndex {
         Ok(())
     }
 
-    /// Add a chunk document, replacing any existing document with the same ID.
     fn add_chunk_document(
         &self,
         writer: &mut IndexWriter,
@@ -729,7 +602,6 @@ impl MemoryIndex {
     }
 }
 
-/// Extract a text field value from a tantivy document.
 fn get_text(doc: &TantivyDocument, field: Field) -> String {
     match doc.get_first(field).map(|v| v.as_value()) {
         Some(ReferenceValue::Leaf(ReferenceValueLeaf::Str(s))) => (*s).to_owned(),
@@ -737,7 +609,6 @@ fn get_text(doc: &TantivyDocument, field: Field) -> String {
     }
 }
 
-/// Extract a snippet (first 200 chars of content) from a document.
 fn get_snippet(doc: &TantivyDocument, content_field: Field) -> String {
     match doc.get_first(content_field).map(|v| v.as_value()) {
         Some(ReferenceValue::Leaf(ReferenceValueLeaf::Str(s))) => {
@@ -747,7 +618,6 @@ fn get_snippet(doc: &TantivyDocument, content_field: Field) -> String {
     }
 }
 
-/// Parse a stored line number field, returning `None` for the sentinel value.
 fn parse_line_num(doc: &TantivyDocument, field: Field) -> Option<usize> {
     match doc.get_first(field).map(|v| v.as_value()) {
         Some(ReferenceValue::Leaf(ReferenceValueLeaf::U64(v))) if v == u64::MAX => None,
@@ -756,14 +626,6 @@ fn parse_line_num(doc: &TantivyDocument, field: Field) -> Option<usize> {
     }
 }
 
-/// Parse an `.obs.json` file into `(episode_id, date, observations)`.
-///
-/// The `episode_id` and date are derived from the filename: `ep-NNN.obs.json`
-/// lives under `episodes/YYYY-MM/DD/`.
-///
-/// # Errors
-/// Returns an error if the file cannot be read or does not parse as an
-/// observation list.
 pub fn parse_obs_file(path: &Path) -> anyhow::Result<(String, String, Vec<Observation>)> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read {}", path.display()))?;
@@ -771,7 +633,6 @@ pub fn parse_obs_file(path: &Path) -> anyhow::Result<(String, String, Vec<Observ
     let observations: Vec<Observation> = serde_json::from_str(&content)
         .with_context(|| format!("failed to parse obs file at {}", path.display()))?;
 
-    // Extract episode_id from filename: ep-NNN.obs.json → ep-NNN
     let episode_id = path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -779,18 +640,12 @@ pub fn parse_obs_file(path: &Path) -> anyhow::Result<(String, String, Vec<Observ
         .unwrap_or("unknown")
         .to_string();
 
-    // Extract date from directory path: .../YYYY-MM/DD/... → YYYY-MM-DD
     let date = extract_date_from_path(path);
 
     Ok((episode_id, date, observations))
 }
 
-/// Extract a date string from an episode file path.
-///
-/// Expected path pattern: `.../episodes/YYYY-MM/DD/...`
-/// Returns `YYYY-MM-DD` or empty string if the pattern doesn't match.
 fn extract_date_from_path(path: &Path) -> String {
-    // Walk up from file: file → DD dir → YYYY-MM dir
     let dd = path
         .parent()
         .and_then(|p| p.file_name())
@@ -815,7 +670,6 @@ fn extract_date_from_path(path: &Path) -> String {
     }
 }
 
-/// Build the relative path of `file` with respect to `base`.
 fn make_relative(file: &Path, base: &Path) -> String {
     file.strip_prefix(base).map_or_else(
         |_| file.to_string_lossy().to_string(),
@@ -823,7 +677,6 @@ fn make_relative(file: &Path, base: &Path) -> String {
     )
 }
 
-/// Get the mtime of a file as an ISO-ish string, or empty on failure.
 fn file_mtime_str(path: &Path) -> String {
     match std::fs::metadata(path).and_then(|m| m.modified()) {
         Ok(t) => {
@@ -837,7 +690,6 @@ fn file_mtime_str(path: &Path) -> String {
     }
 }
 
-/// Recursively collect `.obs.json` and `.idx.jsonl` files with their mtimes.
 fn collect_indexable_files(
     dir: &Path,
     base: &Path,
@@ -865,14 +717,6 @@ fn collect_indexable_files(
     Ok(())
 }
 
-/// Warn about any episode transcripts whose persistence was interrupted.
-///
-/// The index only covers `.obs.json` and `.idx.jsonl` files, so a transcript
-/// left without them (a write cut short after the transcript landed) is
-/// silently unsearchable. Surfacing it here — every time the index is built —
-/// gives an operator or agent a chance to notice and recover it, instead of the
-/// episode vanishing without a trace. Reconciliation is read-only and never
-/// blocks indexing.
 fn report_interrupted_episodes(episodes_dir: &Path) {
     match crate::episode_store::find_interrupted_episodes(episodes_dir) {
         Ok(interrupted) if !interrupted.is_empty() => {
@@ -888,26 +732,14 @@ fn report_interrupted_episodes(episodes_dir: &Path) {
     }
 }
 
-// ── Hybrid searcher ─────────────────────────────────────────────────────────
-
-/// One index's ranked candidates from the hybrid pipeline.
 pub(crate) struct SideOutcome {
-    /// Results at or above the min-score threshold, decayed and sorted, capped at
-    /// the search limit.
     pub(crate) results: Vec<SearchResult>,
-    /// Candidates that scored below the min-score threshold and were dropped.
     pub(crate) below_threshold: usize,
-    /// Whether vector similarity contributed to this side's ranking.
     pub(crate) semantic: bool,
 }
 
-/// A vector store paired with the provider that embeds queries into it.
 pub(crate) type VectorPair<'a> = (&'a Arc<VectorStore>, &'a Arc<dyn EmbeddingProvider>);
 
-/// Run the hybrid pipeline against a single index: BM25, optional vector
-/// search, weighted merge, temporal decay, and `min_score`.
-///
-/// With no vector store or embedding provider it is BM25 alone.
 pub(crate) async fn search_side(
     bm25: &MemoryIndex,
     vector: Option<VectorPair<'_>>,
@@ -920,10 +752,8 @@ pub(crate) async fn search_side(
     let candidates = limit * cfg.candidate_multiplier;
     let bm25_results = bm25.search(query, candidates, filters)?;
 
-    // If no vector search available, use BM25 results directly
     let Some((vs, ep)) = vector else {
         tracing::trace!("vector search unavailable, using BM25-only search");
-        // BM25-only: apply temporal decay if enabled, re-sort, then truncate
         let mut results = bm25_results;
         if cfg.temporal_decay {
             let today = chrono::Utc::now().date_naive();
@@ -934,9 +764,6 @@ pub(crate) async fn search_side(
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
         }
-        // Apply min_score the same way merge_hybrid_results does (on normalized
-        // scores), so the setting has consistent meaning whether or not vector
-        // search ran.
         let scores: Vec<f32> = results.iter().map(|r| r.score).collect();
         let normalized = normalize_scores(&scores);
         let total = results.len();
@@ -955,7 +782,6 @@ pub(crate) async fn search_side(
         });
     };
 
-    // Embed the query
     let embed_response = ep
         .embed(&[query])
         .await
@@ -966,7 +792,6 @@ pub(crate) async fn search_side(
         .next()
         .ok_or_else(|| anyhow::anyhow!("embedding provider returned no embeddings"))?;
 
-    // Vector search (sync, so use spawn_blocking)
     let vs_clone = Arc::clone(vs);
     let vec_filters = VectorSearchFilters {
         date_from: filters.date_from.clone(),
@@ -981,11 +806,9 @@ pub(crate) async fn search_side(
     .await
     .context("vector search task failed")??;
 
-    // Merge results
     let (mut merged, below_threshold) =
         merge_hybrid_results(&bm25_results, &vec_results, cfg, min_score, candidates);
 
-    // Apply temporal decay after merge if enabled
     if cfg.temporal_decay {
         let today = chrono::Utc::now().date_naive();
         apply_temporal_decay(&mut merged, cfg.temporal_decay_half_life_days, today);
@@ -1004,13 +827,6 @@ pub(crate) async fn search_side(
     })
 }
 
-/// Orchestrates BM25 + vector search over an agent's memory index and the
-/// team wiki index, with score normalization and merging.
-///
-/// Each index runs the full pipeline separately with this searcher's
-/// settings; the two ranked lists are then merged by score and limited once.
-/// When no vector store or embedding provider is configured for an index,
-/// that index is BM25 only.
 pub struct HybridSearcher {
     bm25: Arc<MemoryIndex>,
     vector: Option<Arc<VectorStore>>,
@@ -1020,7 +836,6 @@ pub struct HybridSearcher {
 }
 
 impl HybridSearcher {
-    /// Create a new hybrid searcher over an agent's memory index.
     #[must_use]
     pub fn new(
         bm25: Arc<MemoryIndex>,
@@ -1037,18 +852,12 @@ impl HybridSearcher {
         }
     }
 
-    /// Also search the shared team wiki index. The handle may be shared with
-    /// other searchers; the index serializes its own writes.
     #[must_use]
     pub fn with_team_wiki(mut self, team_wiki: Arc<TeamWikiIndex>) -> Self {
         self.team_wiki = Some(team_wiki);
         self
     }
 
-    /// Replace the embedding provider used for hybrid vector search (for
-    /// example after a `providers.toml` reload swaps, rotates credentials on,
-    /// or removes `[models] embedding`). Passing `None` drops memory search to
-    /// BM25 full-text only.
     pub fn set_embedding_provider(&self, embedding: Option<Arc<dyn EmbeddingProvider>>) {
         *self
             .embedding
@@ -1056,8 +865,6 @@ impl HybridSearcher {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = embedding;
     }
 
-    /// Replace the hybrid search scoring and threshold configuration (for
-    /// example after a `config.toml` reload).
     pub fn update_config(&self, cfg: SearchConfig) {
         *self
             .cfg
@@ -1074,20 +881,6 @@ impl HybridSearcher {
         self.vector.clone().zip(embedding)
     }
 
-    /// Search using hybrid BM25 + vector scoring, or BM25-only fallback.
-    ///
-    /// The agent's memory index and the team wiki index are searched
-    /// separately, then merged by score with the limit applied once.
-    /// `source = wiki` searches only the team index; `observations` and
-    /// `episodes` only the agent's own.
-    ///
-    /// `min_score_override`, when given, replaces the configured
-    /// `[search].min_score` threshold for this call only — e.g. so a caller
-    /// that got no strong matches can retry with a lower bar to see the
-    /// weaker ones [`SearchOutcome::below_threshold`] reported.
-    ///
-    /// # Errors
-    /// Returns an error if BM25 search or embedding generation fails.
     #[tracing::instrument(skip_all, fields(limit, query))]
     pub async fn search(
         &self,
@@ -1128,7 +921,6 @@ impl HybridSearcher {
             semantic |= side.semantic;
         }
 
-        // Wiki pages belong to no episode, so an episode filter rules them out.
         if let Some(team_wiki) = &self.team_wiki
             && filters.source.is_none_or(|s| s == DocSource::Wiki)
             && filters.episode_ids.is_none()
@@ -1155,9 +947,6 @@ impl HybridSearcher {
     }
 }
 
-/// Min-max normalize a list of scores to [0, 1].
-///
-/// Single-element or empty inputs are handled: single → 1.0, empty → empty.
 fn normalize_scores(scores: &[f32]) -> Vec<f32> {
     if scores.is_empty() {
         return Vec::new();
@@ -1173,10 +962,6 @@ fn normalize_scores(scores: &[f32]) -> Vec<f32> {
     scores.iter().map(|s| (s - min) / range).collect()
 }
 
-/// Merge BM25 and vector results into hybrid-scored `SearchResult` values.
-///
-/// Returns the results at or above `min_score`, plus how many candidates
-/// scored below it and were dropped.
 fn merge_hybrid_results(
     bm25_results: &[SearchResult],
     vec_results: &[super::vector_store::VectorSearchResult],
@@ -1184,11 +969,9 @@ fn merge_hybrid_results(
     min_score: f32,
     limit: usize,
 ) -> (Vec<SearchResult>, usize) {
-    // Normalize BM25 scores
     let bm25_scores: Vec<f32> = bm25_results.iter().map(|r| r.score).collect();
     let norm_bm25 = normalize_scores(&bm25_scores);
 
-    // Convert vector distances to similarities and normalize
     let vec_similarities: Vec<f32> = vec_results
         .iter()
         .map(|r| {
@@ -1202,7 +985,6 @@ fn merge_hybrid_results(
         .collect();
     let norm_vec = normalize_scores(&vec_similarities);
 
-    // Build maps: doc_id → normalized score
     let mut bm25_map: HashMap<&str, (f32, &SearchResult)> = HashMap::new();
     for (i, result) in bm25_results.iter().enumerate() {
         if let Some(&norm) = norm_bm25.get(i) {
@@ -1218,7 +1000,6 @@ fn merge_hybrid_results(
         }
     }
 
-    // Collect all unique doc IDs
     let mut all_ids: Vec<&str> = Vec::new();
     for id in bm25_map.keys() {
         all_ids.push(id);
@@ -1229,7 +1010,6 @@ fn merge_hybrid_results(
         }
     }
 
-    // Compute hybrid scores
     #[expect(
         clippy::cast_possible_truncation,
         reason = "search weights are in [0.0, 1.0], safe to truncate to f32"
@@ -1253,7 +1033,6 @@ fn merge_hybrid_results(
             continue;
         }
 
-        // Build SearchResult from whichever source has the data
         let result = if let Some((_, bm25_r)) = bm25_map.get(id) {
             SearchResult {
                 score: hybrid,
@@ -1278,7 +1057,6 @@ fn merge_hybrid_results(
         scored.push(result);
     }
 
-    // Sort descending by hybrid score
     scored.sort_by(|a, b| {
         b.score
             .partial_cmp(&a.score)
@@ -1289,13 +1067,6 @@ fn merge_hybrid_results(
     (scored, below_threshold)
 }
 
-/// Apply exponential temporal decay to search result scores.
-///
-/// Each result's score is multiplied by `exp(-lambda * age_days)` where
-/// `lambda = ln(2) / half_life_days`. Results with unparseable dates are
-/// left unchanged. Wiki pages are exempt: they hold maintained knowledge whose
-/// age says nothing about whether it is still true (`stale_after` and the
-/// `wiki_lint` pulse handle that).
 fn apply_temporal_decay(
     results: &mut [SearchResult],
     half_life_days: f64,
@@ -1364,9 +1135,6 @@ mod tests {
         let (_dir, _index) = create_test_index();
     }
 
-    /// The startup path relies on a schema mismatch being a hard open failure,
-    /// so it can discard the index and rebuild from episode transcripts. If
-    /// tantivy ever starts tolerating a mismatch, that recovery goes unused.
     #[test]
     fn open_rejects_index_whose_stored_schema_differs() {
         let dir = tempfile::tempdir().unwrap();
@@ -1458,11 +1226,9 @@ mod tests {
         }];
         index.index_chunks(&chunks).unwrap();
 
-        // All results
         let all = index.search("rust memory", 10, &no_filters()).unwrap();
         assert!(all.len() >= 2, "should find both obs and chunk");
 
-        // Observations only
         let obs_only = index
             .search(
                 "rust memory",
@@ -1479,7 +1245,6 @@ mod tests {
                 .all(|r| r.source_type == DocSource::Observation)
         );
 
-        // Chunks only
         let chunk_only = index
             .search(
                 "rust memory",
@@ -1603,8 +1368,6 @@ mod tests {
         .unwrap();
         let index = MemoryIndex::open_or_create(&memory_dir.join(".index")).unwrap();
 
-        // The observer indexes the episode at runtime; a startup sync whose
-        // manifest lacks the file then indexes the same episode again.
         index
             .index_observations("ep-001", "2026-02-19", &obs)
             .unwrap();
@@ -1665,12 +1428,10 @@ mod tests {
         let day_dir = memory_dir.join("episodes/2026-02/19");
         std::fs::create_dir_all(&day_dir).unwrap();
 
-        // Write an obs.json file
         let obs = vec![sample_observation("workspace uses flat layout")];
         let obs_json = serde_json::to_string(&obs).unwrap();
         std::fs::write(day_dir.join("ep-001.obs.json"), &obs_json).unwrap();
 
-        // Write an idx.jsonl file
         let chunk = IndexChunk {
             chunk_id: "ep-001-c0".to_string(),
             episode_id: "ep-001".to_string(),
@@ -1701,7 +1462,6 @@ mod tests {
         let day_dir = memory_dir.join("episodes/2026-02/19");
         std::fs::create_dir_all(&day_dir).unwrap();
 
-        // A healthy episode with an indexable obs archive.
         let obs = vec![sample_observation("healthy searchable observation")];
         std::fs::write(
             day_dir.join("ep-001.obs.json"),
@@ -1709,8 +1469,6 @@ mod tests {
         )
         .unwrap();
 
-        // An interrupted episode: transcript only, no obs/idx/marker. It must
-        // not break the rebuild, and simply stays absent from the index.
         std::fs::write(
             day_dir.join("ep-002.jsonl"),
             "{\"type\":\"meta\",\"id\":\"ep-002\",\"date\":\"2026-02-19\"}\n",
@@ -1742,7 +1500,6 @@ mod tests {
         let day_dir = memory_dir.join("episodes/2026-02/19");
         std::fs::create_dir_all(&day_dir).unwrap();
 
-        // Write initial file
         let obs = vec![sample_observation("initial observation about workspace")];
         std::fs::write(
             day_dir.join("ep-001.obs.json"),
@@ -1753,7 +1510,6 @@ mod tests {
         let index_dir = memory_dir.join(".index");
         let index = MemoryIndex::open_or_create(&index_dir).unwrap();
 
-        // First sync with empty manifest
         let empty_manifest = IndexManifest::new();
         let (manifest, stats) = index
             .incremental_sync(&memory_dir, &empty_manifest)
@@ -1762,13 +1518,11 @@ mod tests {
         assert_eq!(stats.unchanged, 0);
         assert_eq!(manifest.files.len(), 1);
 
-        // Second sync with same manifest — nothing changed
         let (manifest2, stats2) = index.incremental_sync(&memory_dir, &manifest).unwrap();
         assert_eq!(stats2.unchanged, 1, "file should be unchanged");
         assert_eq!(stats2.added, 0);
         assert_eq!(manifest2.files.len(), 1);
 
-        // Add a new file
         let obs2 = vec![sample_observation("new observation about testing")];
         std::fs::write(
             day_dir.join("ep-002.obs.json"),
@@ -1781,7 +1535,6 @@ mod tests {
         assert_eq!(stats3.unchanged, 1, "old file unchanged");
         assert_eq!(manifest3.files.len(), 2);
 
-        // Search should find both
         let results = index.search("observation", 10, &no_filters()).unwrap();
         assert!(
             results.len() >= 2,
@@ -1810,7 +1563,6 @@ mod tests {
             .incremental_sync(&memory_dir, &IndexManifest::new())
             .unwrap();
 
-        // Delete the file from disk
         std::fs::remove_file(day_dir.join("ep-001.obs.json")).unwrap();
 
         let (manifest2, stats) = index.incremental_sync(&memory_dir, &manifest).unwrap();
@@ -1830,30 +1582,25 @@ mod tests {
 
         let obs_path = day_dir.join("ep-001.obs.json");
 
-        // Write initial content
         let obs1 = vec![sample_observation("original content about workspace")];
         std::fs::write(&obs_path, serde_json::to_string(&obs1).unwrap()).unwrap();
 
         let index_dir = memory_dir.join(".index");
         let index = MemoryIndex::open_or_create(&index_dir).unwrap();
 
-        // First sync
         let (manifest, stats) = index
             .incremental_sync(&memory_dir, &IndexManifest::new())
             .unwrap();
         assert_eq!(stats.added, 1);
 
-        // Verify original is searchable
         let before = index
             .search("original workspace", 5, &no_filters())
             .unwrap();
         assert!(!before.is_empty(), "should find original content");
 
-        // Write updated content to the file
         let obs2 = vec![sample_observation("updated content about testing")];
         std::fs::write(&obs_path, serde_json::to_string(&obs2).unwrap()).unwrap();
 
-        // Simulate stale mtime in manifest so incremental_sync detects the change
         let mut stale_manifest = manifest.clone();
         for entry in stale_manifest.files.values_mut() {
             entry.mtime = "1970-01-01T00:00:00".to_string();
@@ -1931,7 +1678,6 @@ mod tests {
     fn combined_filters() {
         let (_dir, index) = create_test_index();
 
-        // Index diverse data
         let obs1 = vec![sample_observation(
             "early residuum observation about search",
         )];
@@ -1946,7 +1692,6 @@ mod tests {
             .index_observations("ep-002", "2026-02-20", &obs2)
             .unwrap();
 
-        // Filter: after 2026-02-18
         let results = index
             .search(
                 "search",
@@ -2002,8 +1747,6 @@ mod tests {
         assert!(validate_date_filter("").is_err());
     }
 
-    // ── Normalize scores ─────────────────────────────────────────────────
-
     #[test]
     fn normalize_empty() {
         let result = normalize_scores(&[]);
@@ -2046,8 +1789,6 @@ mod tests {
             "equal values should all normalize to 1.0"
         );
     }
-
-    // ── Merge hybrid results ─────────────────────────────────────────────
 
     fn make_bm25_result(id: &str, score: f32) -> SearchResult {
         SearchResult {
@@ -2105,7 +1846,6 @@ mod tests {
         let cfg = test_search_config();
         let (merged, _) = merge_hybrid_results(&bm25, &vec_results, &cfg, 0.0, 10);
         assert_eq!(merged.len(), 2, "should return all vector results");
-        // x has smaller distance (0.1) → higher similarity → higher score
         assert_eq!(merged[0].id, "x", "closest vector should be first");
     }
 
@@ -2120,10 +1860,7 @@ mod tests {
         let cfg = test_search_config();
         let (merged, _) = merge_hybrid_results(&bm25, &vec_results, &cfg, 0.0, 10);
 
-        // "a" appears in both → hybrid score = text_w * norm_bm25 + vec_w * norm_vec
-        // "b" is bm25-only, "c" is vec-only
         assert_eq!(merged.len(), 3, "should have 3 unique docs");
-        // "a" should have the highest score since it appears in both
         assert_eq!(merged[0].id, "a", "overlapping doc should rank highest");
     }
 
@@ -2138,11 +1875,6 @@ mod tests {
         };
         let (merged, below_threshold) = merge_hybrid_results(&bm25, &vec_results, &cfg, 0.5, 10);
 
-        // With only BM25, scores are normalized. "a" → 1.0, "b" → 0.0
-        // hybrid("a") = 0.3 * 1.0 = 0.3 (below 0.5 threshold)
-        // hybrid("b") = 0.3 * 0.0 = 0.0 (below 0.5 threshold)
-        // Both below threshold because text_weight is only 0.3
-        // This is expected: without vector scores, max hybrid = text_weight * 1.0 = 0.3
         assert!(merged.is_empty(), "min_score filter should reduce results");
         assert_eq!(
             below_threshold, 2,
@@ -2194,11 +1926,6 @@ mod tests {
 
     #[test]
     fn hybrid_searcher_min_score_override_surfaces_weaker_matches() {
-        // A single-result search always normalizes to score 1.0 (see
-        // `normalize_scores`), so it can never itself be filtered by
-        // min_score. Use two observations with a clear relevance gap so the
-        // weaker one normalizes below the threshold while the stronger one
-        // doesn't.
         let (_dir, index) = create_test_index();
         let strong = sample_observation("rust ownership rust ownership rust ownership model");
         let weak = sample_observation("a passing, incidental mention of rust");
@@ -2229,7 +1956,6 @@ mod tests {
             "the filtered-out weaker match should be counted"
         );
 
-        // Overriding min_score for this call surfaces it.
         let relaxed = rt
             .block_on(searcher.search("rust ownership", 5, &no_filters(), Some(0.0)))
             .unwrap();
@@ -2239,8 +1965,6 @@ mod tests {
             "a lower min_score override should surface the weaker match too"
         );
     }
-
-    // ── Temporal decay tests ─────────────────────────────────────────────
 
     fn make_result(id: &str, date: &str, score: f32) -> SearchResult {
         SearchResult {
@@ -2303,7 +2027,6 @@ mod tests {
         let original_a = results[0].score;
         let original_b = results[1].score;
 
-        // decay is off — don't call apply_temporal_decay at all, verify scores unchanged
         assert!(
             (results[0].score - original_a).abs() < f32::EPSILON,
             "score a should be unchanged when decay is disabled"
@@ -2349,10 +2072,6 @@ mod tests {
         );
     }
 
-    // ── Merged agent-memory + team-wiki search ───────────────────────────
-
-    /// Two indexes: an agent's memory (three observations) and a team wiki
-    /// (three pages), all matching "cluster" with different strengths.
     async fn merged_fixture() -> (tempfile::TempDir, HybridSearcher) {
         let dir = tempfile::tempdir().unwrap();
         let index = MemoryIndex::open_or_create(&dir.path().join("memory-index")).unwrap();
@@ -2442,7 +2161,6 @@ mod tests {
     #[tokio::test]
     async fn min_score_applies_per_index_and_below_threshold_sums() {
         let (_dir, searcher) = merged_fixture().await;
-        // A threshold of 1.0 keeps only the best match of each index.
         let strict = search_source(&searcher, None, 10, Some(1.0)).await;
         assert_eq!(strict.results.len(), 2, "one survivor per index");
         assert_eq!(
@@ -2526,7 +2244,6 @@ mod tests {
         .unwrap();
         let memory = || Arc::new(MemoryIndex::empty().unwrap());
 
-        // Text-only memory, vector wiki: wiki search is semantic, memory search is not.
         let searcher = HybridSearcher::new(memory(), None, None, SearchConfig::default())
             .with_team_wiki(vectored_team);
         assert!(searcher.memory_vector().is_none());
@@ -2548,7 +2265,6 @@ mod tests {
         );
         assert!(search_source(&searcher, None, 5, Some(0.0)).await.semantic);
 
-        // Text-only on both sides.
         let text_only = HybridSearcher::new(memory(), None, None, SearchConfig::default())
             .with_team_wiki(text_only_team);
         assert!(text_only.memory_vector().is_none());
@@ -2591,9 +2307,6 @@ mod tests {
         );
     }
 
-    /// The reader shows a write as soon as the write returns, on a freshly
-    /// opened index and after each later commit. Many fresh indexes, because
-    /// a stray reload of an older `meta.json` lands only now and then.
     #[test]
     fn a_search_right_after_each_write_sees_it() {
         for round in 0..20 {
@@ -2669,8 +2382,6 @@ mod tests {
             "failing startup embedding provider should error before reload"
         );
 
-        // Removing the embedding provider on reload drops search to BM25-only
-        // without calling the old startup provider.
         searcher.set_embedding_provider(None);
         let bm25_only = searcher
             .search("rust ownership", 5, &no_filters(), None)
@@ -2679,8 +2390,6 @@ mod tests {
         assert!(!bm25_only.semantic);
         assert_eq!(bm25_only.results.len(), 2);
 
-        // Swapping in a working embedding provider and updating SearchConfig
-        // both take effect on the existing Arc<HybridSearcher>.
         searcher.set_embedding_provider(Some(Arc::new(WorkingEmbedder)));
         searcher.update_config(SearchConfig {
             min_score: 0.9,

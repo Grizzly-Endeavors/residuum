@@ -6,22 +6,14 @@
   import { fieldMark } from "./field-focus";
   import { fieldError, type SettingsScope } from "./sections";
 
-  // How hard a model thinks and how varied its replies are, for one role or
-  // for every model. The form keeps both as text: empty thinking is Default,
-  // and an empty temperature leaves it to whatever comes next.
-
   interface Props {
     scope: SettingsScope;
     thinking: string;
     temperature: string;
-    /** The fields these save to, for their problems and focus. */
     thinkingRef: FieldRef;
     temperatureRef: FieldRef;
-    /** What Default means here. */
     thinkingHint: string;
-    /** What an empty temperature means here. */
     temperatureHint: string;
-    /** The temperature used while the box is empty, when one is known. */
     temperatureFallback?: string;
   }
 
@@ -67,7 +59,6 @@
 </div>
 
 <style>
-  /* Side by side when both fit, the temperature under the thinking when they don't. */
   .model-tuning {
     display: flex;
     flex-wrap: wrap;
@@ -75,7 +66,6 @@
     container-type: inline-size;
   }
 
-  /* On a phone the five levels keep their touch height and fit one line. */
   @container (max-width: 400px) {
     .model-tuning-thinking :global(.ui-segment) {
       padding: 0 var(--space-10);

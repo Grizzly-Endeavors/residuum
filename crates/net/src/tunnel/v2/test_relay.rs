@@ -1,7 +1,3 @@
-//! A fake relay for tests: a loopback server speaking the tunnel protocol plus a TCP front door that carries raw connections to the
-//! connected instance as v2 streams, with the same credit rules as the real
-//! relay.
-
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -26,31 +22,22 @@ use residuum_core::util::spawn_in_span;
 const WINDOW: usize = 256 * 1024;
 const MAX_CHUNK: usize = 64 * 1024;
 
-/// How the fake relay answers `/tunnel/v2/register`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum V2Mode {
-    /// Speak tunnel v2.
     Serve,
-    /// Answer the upgrade with this HTTP status (404 for a relay without v2).
     Respond(u16),
 }
 
-/// What the fake relay does.
 #[derive(Clone)]
 pub(crate) struct FakeRelayConfig {
-    /// The bearer token instances must present.
     pub token: String,
     pub user: String,
     pub instance: String,
-    /// Host names announced in `connected` (and used by the front door).
     pub hosts: Hostnames,
     pub v2: V2Mode,
-    /// Answer every challenge claim with busy.
     pub claim_busy: bool,
-    /// What a grant request gets: the grant, or the refusal reason.
     pub grant: Result<String, String>,
     pub keepalive_interval_secs: u64,
-    /// The port the front door listens on; a free one when `None`.
     pub door_port: Option<u16>,
 }
 
@@ -70,13 +57,11 @@ impl Default for FakeRelayConfig {
     }
 }
 
-/// Browser-side state of one stream the front door carries.
 struct DoorStream {
     credit: Semaphore,
     to_browser: Mutex<Option<mpsc::UnboundedSender<Vec<u8>>>>,
 }
 
-/// One live v2 tunnel connection.
 struct Conn {
     out: mpsc::UnboundedSender<Message>,
     streams: Mutex<HashMap<Uuid, Arc<DoorStream>>>,
@@ -98,7 +83,6 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// A running fake relay. Dropping it stops the servers.
 pub(crate) struct FakeRelay {
     shared: Arc<Shared>,
     addr: SocketAddr,
@@ -115,7 +99,6 @@ impl Drop for FakeRelay {
 }
 
 impl FakeRelay {
-    /// Start the relay and its front door on free loopback ports.
     pub(crate) async fn start(config: FakeRelayConfig) -> Self {
         let shared = Arc::new(Shared {
             config,
@@ -150,37 +133,30 @@ impl FakeRelay {
         }
     }
 
-    /// The registration URL a tunnel client is configured with.
     pub(crate) fn ws_url(&self) -> String {
         format!("ws://{}/tunnel/v2/register", self.addr)
     }
 
-    /// The port the TCP front door listens on.
     pub(crate) fn front_door_port(&self) -> u16 {
         self.door_port
     }
 
-    /// How many v2 tunnels are connected right now.
     pub(crate) fn connected_instances(&self) -> usize {
         self.shared.live_v2.load(Ordering::SeqCst)
     }
 
-    /// How many v2 tunnels have ever connected.
     pub(crate) fn v2_connections(&self) -> usize {
         self.shared.v2_connections.load(Ordering::SeqCst)
     }
 
-    /// How many upgrade attempts reached the v2 endpoint (including refused).
     pub(crate) fn v2_attempts(&self) -> usize {
         self.shared.v2_attempts.load(Ordering::SeqCst)
     }
 
-    /// The capabilities headers v2 upgrades presented.
     pub(crate) fn capabilities_seen(&self) -> Vec<String> {
         lock(&self.shared.capabilities).clone()
     }
 
-    /// Wait for a received frame matching `matches`.
     pub(crate) async fn wait_frame(&self, matches: impl Fn(&V2Frame) -> bool) -> V2Frame {
         residuum_core::testing::wait::guarded(
             "a frame matching the test's expectation at the fake relay",
@@ -203,18 +179,15 @@ impl FakeRelay {
             .expect("no instance is connected to the fake relay")
     }
 
-    /// Send a control frame to the connected instance.
     pub(crate) fn send_frame(&self, frame: &V2Frame) {
         let json = serde_json::to_string(frame).expect("serialize frame");
         self.conn().out.send(Message::text(json)).ok();
     }
 
-    /// Send a raw binary message to the connected instance.
     pub(crate) fn send_binary(&self, data: Vec<u8>) {
         self.conn().out.send(Message::Binary(data.into())).ok();
     }
 
-    /// Open a stream without a browser behind it.
     pub(crate) fn open_raw_stream(&self, host: &str, peer_ip: &str) -> Uuid {
         let id = Uuid::new_v4();
         self.send_frame(&V2Frame::StreamOpen {
@@ -225,14 +198,12 @@ impl FakeRelay {
         id
     }
 
-    /// Send stream data (framed as the protocol requires).
     pub(crate) fn send_stream_data(&self, id: Uuid, payload: &[u8]) {
         let mut message = id.as_bytes().to_vec();
         message.extend_from_slice(payload);
         self.send_binary(message);
     }
 
-    /// Drop the connected instance's tunnel.
     pub(crate) fn drop_connection(&self) {
         self.conn().close.notify_one();
     }
@@ -345,8 +316,6 @@ fn handle_text(shared: &Shared, conn: &Arc<Conn>, text: &str) {
     };
     match &frame {
         V2Frame::StreamClose { stream_id, .. } => {
-            // Dropping the sender lets the pump deliver what is queued, then
-            // end the browser connection.
             if let Some(stream) = lock(&conn.streams).remove(stream_id) {
                 lock(&stream.to_browser).take();
             }
@@ -413,14 +382,10 @@ fn handle_binary(conn: &Conn, data: &[u8]) {
     }
 }
 
-/// Outcome of looking for a server name in buffered `ClientHello` bytes.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Sni {
-    /// More bytes are needed.
     Incomplete,
-    /// The hello names this host.
     Found(String),
-    /// Not a `ClientHello` with a server name.
     Invalid,
 }
 
@@ -444,7 +409,6 @@ impl<'a> Cursor<'a> {
     }
 }
 
-/// Find the SNI host in a TLS record holding a `ClientHello`.
 pub(crate) fn parse_sni(buf: &[u8]) -> Sni {
     let Some((header, rest)) = buf.split_first_chunk::<5>() else {
         return Sni::Incomplete;
@@ -491,8 +455,6 @@ pub(crate) fn parse_sni(buf: &[u8]) -> Sni {
     parsed.map_or(Sni::Invalid, Sni::Found)
 }
 
-/// A minimal `ClientHello` record naming `sni`, for tests that need bytes the
-/// front door accepts without running a TLS client.
 pub(crate) fn client_hello(sni: &str) -> Vec<u8> {
     let name = sni.as_bytes();
     let mut sni_ext = Vec::new();

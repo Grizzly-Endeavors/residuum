@@ -1,8 +1,3 @@
-//! In-memory setup job runner for Microsoft 365 Agents Toolkit integration.
-//!
-//! Manages phase execution, process streaming, interactive sign-in prompts,
-//! cancellation, retries, and cleanup per the Teams setup API contract.
-
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
@@ -30,24 +25,18 @@ use crate::teams::setup_types::{
 use residuum_config::paths::{agent_dir, hub_dir};
 use residuum_core::process::{create_argv_command, kill_process_tree_sync};
 
-/// Errors encountered when managing Teams setup jobs.
 #[derive(Debug, thiserror::Error)]
 pub enum SetupJobError {
-    /// A job is already active and running for this agent.
     #[error("job is already running for this agent")]
     Conflict(Box<TeamsSetupJob>),
-    /// No job exists for the specified agent.
     #[error("no setup job found for agent '{0}'")]
     NotFound(String),
-    /// Request validation failed.
     #[error("bad request: {0}")]
     BadRequest(String),
-    /// An internal execution failure occurred.
     #[error("internal error: {0}")]
     Internal(String),
 }
 
-/// Internal shared state for an agent's setup job.
 struct JobSession {
     agent: String,
     state: TeamsSetupState,
@@ -64,8 +53,6 @@ struct JobSession {
     form: TeamsSetupForm,
     active_cancel: CancellationToken,
     login_pid: Option<u32>,
-    /// `true` while no runner task drives the job; set to `false` when one is spawned and
-    /// back to `true` when it returns.
     runner_idle: watch::Sender<bool>,
 }
 
@@ -92,7 +79,6 @@ impl JobSession {
     }
 }
 
-/// Gateway-level manager holding one in-memory Teams setup job per agent.
 #[derive(Clone)]
 pub struct TeamsSetupJobManager {
     residuum_root: PathBuf,
@@ -103,7 +89,6 @@ pub struct TeamsSetupJobManager {
 static MANAGERS: LazyLock<std::sync::Mutex<HashMap<PathBuf, TeamsSetupJobManager>>> =
     LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
-/// Get or create a cached singleton `TeamsSetupJobManager` for the given residuum root.
 #[must_use]
 pub fn get_or_create_manager(residuum_root: &Path) -> TeamsSetupJobManager {
     let mut map = MANAGERS
@@ -114,7 +99,6 @@ pub fn get_or_create_manager(residuum_root: &Path) -> TeamsSetupJobManager {
         .clone()
 }
 
-/// Register a test manager with overrides for a specific residuum root.
 pub fn register_test_manager(residuum_root: &Path, manager: TeamsSetupJobManager) {
     let mut map = MANAGERS
         .lock()
@@ -123,7 +107,6 @@ pub fn register_test_manager(residuum_root: &Path, manager: TeamsSetupJobManager
 }
 
 impl TeamsSetupJobManager {
-    /// Create a new setup job manager.
     #[must_use]
     pub fn new(residuum_root: PathBuf) -> Self {
         Self {
@@ -133,7 +116,6 @@ impl TeamsSetupJobManager {
         }
     }
 
-    /// Create a new setup job manager with injected executable overrides (for testing).
     #[must_use]
     pub fn with_overrides(residuum_root: PathBuf, overrides: AtkRunnerOverrides) -> Self {
         Self {
@@ -143,12 +125,10 @@ impl TeamsSetupJobManager {
         }
     }
 
-    /// Retrieve prerequisite and context information for `agent`.
     pub async fn get_prereqs(&self, agent: &str) -> TeamsSetupPrereqs {
         detect_prereqs(&self.residuum_root, agent, self.overrides.as_ref()).await
     }
 
-    /// Inspect current setup job status for `agent`.
     pub async fn get_job(&self, agent: &str, log_since: Option<u64>) -> Option<TeamsSetupJob> {
         let session = {
             let guard = self.jobs.read().await;
@@ -158,11 +138,6 @@ impl TeamsSetupJobManager {
         Some(lock.to_external(log_since))
     }
 
-    /// Start a new setup job for `agent`.
-    ///
-    /// # Errors
-    /// Returns [`SetupJobError::Conflict`] if a job is already running, or
-    /// [`SetupJobError::BadRequest`] if input validation fails.
     pub async fn start_job(
         &self,
         agent: &str,
@@ -263,7 +238,6 @@ impl TeamsSetupJobManager {
             ));
         }
 
-        // Validate consent & replace prerequisites
         let prereqs = self.get_prereqs(agent).await;
         if !prereqs.atk.installed && !req.consent_install_cli {
             return Err(SetupJobError::BadRequest(
@@ -280,10 +254,6 @@ impl TeamsSetupJobManager {
         Ok(())
     }
 
-    /// Forward a pasted OAuth redirect URL to the waiting sign-in listener.
-    ///
-    /// # Errors
-    /// Returns [`SetupJobError::BadRequest`] if port doesn't match or listener fails.
     pub async fn forward_redirect(
         &self,
         agent: &str,
@@ -322,10 +292,6 @@ impl TeamsSetupJobManager {
         Ok(lock.to_external(None))
     }
 
-    /// Cancel a running or waiting setup job.
-    ///
-    /// # Errors
-    /// Returns [`SetupJobError::NotFound`] if no job exists for `agent`.
     pub async fn cancel_job(&self, agent: &str) -> Result<TeamsSetupJob, SetupJobError> {
         let session = {
             let guard = self.jobs.read().await;
@@ -349,11 +315,6 @@ impl TeamsSetupJobManager {
         Ok(lock.to_external(None))
     }
 
-    /// Retry a failed or cancelled setup job from the failed phase.
-    ///
-    /// # Errors
-    /// Returns [`SetupJobError::NotFound`] if no job exists for `agent`, or
-    /// [`SetupJobError::Conflict`] if the job is already running.
     pub async fn retry_job(&self, agent: &str) -> Result<TeamsSetupJob, SetupJobError> {
         let session = {
             let guard = self.jobs.read().await;
@@ -384,11 +345,6 @@ impl TeamsSetupJobManager {
         Ok(lock.to_external(None))
     }
 
-    /// Sideload the generated Teams app package into the user's tenant.
-    ///
-    /// # Errors
-    /// Returns [`SetupJobError::NotFound`] if no job exists for `agent`, or
-    /// [`SetupJobError::BadRequest`] if setup has not succeeded yet.
     pub async fn install_app(&self, agent: &str) -> Result<TeamsSetupJob, SetupJobError> {
         let session = {
             let guard = self.jobs.read().await;
@@ -472,10 +428,6 @@ impl TeamsSetupJobManager {
         Ok(result_lock.to_external(None))
     }
 
-    /// Return path to built `appPackage.residuum.zip`.
-    ///
-    /// # Errors
-    /// Returns [`SetupJobError::NotFound`] if the package zip file does not exist.
     pub fn package_path(&self, agent: &str) -> Result<PathBuf, SetupJobError> {
         let paths = resolve_atk_paths(&self.residuum_root, agent);
         if paths.package_zip.is_file() {
@@ -488,10 +440,6 @@ impl TeamsSetupJobManager {
         }
     }
 
-    /// Delete finished job from memory.
-    ///
-    /// # Errors
-    /// Returns [`SetupJobError::Conflict`] if the job is currently running.
     pub async fn delete_job(&self, agent: &str) -> Result<(), SetupJobError> {
         let mut guard = self.jobs.write().await;
         if let Some(session) = guard.get(agent) {
@@ -506,7 +454,6 @@ impl TeamsSetupJobManager {
         Ok(())
     }
 
-    /// Clean up local setup files, CLI installation, and/or Microsoft 365 sign-out.
     pub async fn cleanup(&self, agent: &str, req: CleanupRequest) -> CleanupResult {
         let mut removed = Vec::new();
         let mut failed = Vec::new();
@@ -598,8 +545,6 @@ impl TeamsSetupJobManager {
         CleanupResult { removed, failed }
     }
 
-    /// Spawn the runner task for a job whose `runner_idle` the caller has set to `false`,
-    /// and set it back to `true` when the runner returns.
     fn spawn_runner(
         &self,
         agent: &str,
@@ -616,7 +561,6 @@ impl TeamsSetupJobManager {
         });
     }
 
-    /// Background runner task driving the job through its phases.
     async fn drive_job(
         &self,
         agent: &str,
@@ -650,9 +594,6 @@ impl TeamsSetupJobManager {
                 TeamsSetupPhase::InstallApp => Ok(()),
             };
 
-            // A cancel during a step makes the step fail with its own message ("command
-            // execution was cancelled"). That message describes the stop, not a failure,
-            // so the job settles as cancelled instead of recording it.
             if cancel.is_cancelled() {
                 let mut lock = session.lock().await;
                 lock.state = TeamsSetupState::Cancelled;
@@ -736,8 +677,6 @@ impl TeamsSetupJobManager {
         session: &Arc<Mutex<JobSession>>,
         cancel: &CancellationToken,
     ) -> Result<(), SetupError> {
-        // The prerequisite probes run child processes, so they run outside the session lock:
-        // holding it would stall every status read of the job until they finish.
         let log = session.lock().await.log.clone();
         let prereqs = self.get_prereqs(agent).await;
 
@@ -1017,7 +956,6 @@ impl TeamsSetupJobManager {
         )
         .await;
 
-        // Read created resources from .env.residuum regardless of provision success or failure
         self.update_created_resources_from_disk(agent, session)
             .await;
 
@@ -1136,8 +1074,6 @@ impl TeamsSetupJobManager {
     }
 }
 
-/// Tell the user and the logs when provisioning will update a bot registration that is already
-/// recorded in the project instead of creating a new one.
 fn log_reused_bot(agent: &str, scaffolded: &ScaffoldAtkResult, log: &BoundedLog) {
     let Some(bot_id) = &scaffolded.reused_bot_id else {
         return;
@@ -1332,11 +1268,6 @@ TEAMS_APP_ID=app-mock-9999
 exit 0
 "#;
 
-    // The provisioning grandchild outlives the hang guard, so it is still there whenever
-    // the test looks: provisioning stays in flight until the test cancels it, and a cancel
-    // that fails to kill the tree can't pass because the grandchild exited on its own. If
-    // the test panics first, dropping the runtime drops the job's command, whose guard
-    // kills the tree.
     const SLOW_ATK_UNIX: &str = r#"#!/bin/sh
 cmd="$1"
 sub="$2"
@@ -1505,8 +1436,6 @@ if ($cmd -eq "provision") {
 exit 0
 "#;
 
-    /// The Windows `.cmd` shim answers `auth list` itself, with these `cmd` commands, so the
-    /// sign-in check never starts PowerShell. The `.ps1` script still handles the other commands.
     const WIN_SIGNED_IN_AUTH_LIST: &str =
         "echo Your Microsoft 365 account is: test@contoso.com. & exit /b 0";
     const WIN_SIGNED_OUT_AUTH_LIST: &str = "echo No account signed in. 1>&2 & exit /b 1";
@@ -1589,10 +1518,6 @@ exit 0
         let atk_path = bin_dir.join(format!("fake_atk{ext}"));
         make_fake_atk_script(&atk_path);
 
-        // No probe or sign-in check may time out in these tests: a timeout is a failure on
-        // elapsed time, and on a loaded runner it would send the job down another path. Each
-        // test waits for the process to exit instead, and `Duration::MAX` is a deadline no
-        // run reaches.
         let overrides = AtkRunnerOverrides {
             node_bin: Some(node_path),
             npm_bin: Some(npm_path),
@@ -1603,11 +1528,6 @@ exit 0
         (root, overrides)
     }
 
-    /// Wait for agent-1's job to be provisioning with the slow atk's grandchild running,
-    /// and return the grandchild's pid.
-    ///
-    /// A job that stops running first can never get there, so the wait fails at once with
-    /// the job's phase, error and log instead of sitting out the hang guard.
     async fn wait_for_provisioning_grandchild(
         mgr: &TeamsSetupJobManager,
         root: &Path,
@@ -1639,7 +1559,6 @@ exit 0
         .await
     }
 
-    /// Wait until the job's runner task has returned, and return the job as it settled.
     async fn wait_for_runner_to_settle(mgr: &TeamsSetupJobManager, agent: &str) -> TeamsSetupJob {
         let session = mgr
             .jobs
@@ -1653,7 +1572,6 @@ exit 0
         mgr.get_job(agent, None).await.expect("the job exists")
     }
 
-    /// Lay out the hub and agent config a job needs to run its steps.
     async fn write_job_config(root: &Path) {
         tokio::fs::create_dir_all(root.join("hub")).await.unwrap();
         tokio::fs::create_dir_all(root.join("agent-1"))
@@ -1670,9 +1588,6 @@ exit 0
         .unwrap();
     }
 
-    /// A fake npm that answers the `--version` probe at once, and for an install writes
-    /// `marker` and then runs for ten minutes. A cancel that fails to stop the install
-    /// leaves it running past the test.
     fn make_slow_npm_script(path: &Path, marker: &Path) {
         let unix = format!(
             "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo '10.2.4'; exit 0; fi\ntouch '{}'\nsleep 600\nexit 0\n",
@@ -1709,8 +1624,6 @@ exit 0
         let temp = tempfile::tempdir().unwrap();
         let (root, overrides) = setup_mock_env(&temp);
         let mgr = TeamsSetupJobManager::with_overrides(root, overrides);
-        // Unit tests have no tracing subscriber, so capture the reason
-        // `detect_tool` logs when it reports a tool as not found.
         let log = residuum_core::testing::log::EventLog::default();
         let prereqs = {
             let _guard = log.capture();
@@ -1742,7 +1655,6 @@ exit 0
         let (root, overrides) = setup_mock_env(&temp);
         let mgr = TeamsSetupJobManager::with_overrides(root.clone(), overrides);
 
-        // Create agent dir and hub config
         tokio::fs::create_dir_all(root.join("hub")).await.unwrap();
         tokio::fs::create_dir_all(root.join("agent-1"))
             .await
@@ -1761,7 +1673,6 @@ exit 0
         let started = mgr.start_job("agent-1", req.clone()).await.unwrap();
         assert_eq!(started.agent, "agent-1");
 
-        // Attempting to start second job while first is running returns Conflict
         let conflict = mgr.start_job("agent-1", req).await;
         assert!(matches!(conflict, Err(SetupJobError::Conflict(_))));
     }
@@ -1772,7 +1683,6 @@ exit 0
         let (root, overrides) = setup_mock_env(&temp);
         let mgr = TeamsSetupJobManager::with_overrides(root.clone(), overrides);
 
-        // Create agent dir and hub config
         tokio::fs::create_dir_all(root.join("hub")).await.unwrap();
         tokio::fs::create_dir_all(root.join("agent-1"))
             .await
@@ -1790,7 +1700,6 @@ exit 0
         let req = sample_start_form();
         let _ = mgr.start_job("agent-1", req).await.unwrap();
 
-        // Poll job until Succeeded
         let job = wait::until("the setup job to finish", || async {
             mgr.get_job("agent-1", None).await.filter(|job| {
                 job.state == TeamsSetupState::Succeeded || job.state == TeamsSetupState::Failed
@@ -1809,15 +1718,12 @@ exit 0
         assert_eq!(res.bot_id, "bot-mock-1234");
         assert_eq!(res.tenant_id, "tenant-mock-5678");
 
-        // Install app
         let install_res = mgr.install_app("agent-1").await.unwrap();
         assert!(install_res.app_installed);
 
-        // Package path
         let pkg_path = mgr.package_path("agent-1").unwrap();
         assert!(pkg_path.ends_with("appPackage.residuum.zip"));
 
-        // Delete job
         mgr.delete_job("agent-1").await.unwrap();
         assert!(mgr.get_job("agent-1", None).await.is_none());
     }
@@ -1827,7 +1733,6 @@ exit 0
         let temp = tempfile::tempdir().unwrap();
         let (root, mut overrides) = setup_mock_env(&temp);
 
-        // Slow provision script that spawns a grandchild process
         let ext = if cfg!(windows) { ".cmd" } else { "" };
         let slow_atk = root.join(format!("bin/slow_atk{ext}"));
         make_slow_atk_script(&slow_atk);
@@ -1858,7 +1763,6 @@ exit 0
         let cancelled = mgr.cancel_job("agent-1").await.unwrap();
         assert_eq!(cancelled.state, TeamsSetupState::Cancelled);
 
-        // The step fails with the cancel, and the job must still settle as cancelled.
         let settled = wait_for_runner_to_settle(&mgr, "agent-1").await;
         assert_eq!(settled.state, TeamsSetupState::Cancelled);
         assert_eq!(settled.phase, TeamsSetupPhase::Provision);
@@ -1868,7 +1772,6 @@ exit 0
             settled.error
         );
 
-        // Verify that the grandchild process tree is actually gone
         wait::until_true("the grandchild process tree to terminate", || {
             !residuum_core::process::is_process_running(pid)
         })
@@ -1884,8 +1787,6 @@ exit 0
         let temp = tempfile::tempdir().unwrap();
         let (root, mut overrides) = setup_mock_env(&temp);
 
-        // The atk path does not exist, so the prerequisite probe reports the CLI as missing
-        // and the job goes on to install it.
         overrides.atk_bin = Some(root.join("bin/missing_atk"));
         let ext = if cfg!(windows) { ".cmd" } else { "" };
         let marker = root.join("npm-started");
@@ -1943,7 +1844,6 @@ exit 0
         let req = sample_start_form();
         mgr.start_job("agent-1", req).await.unwrap();
 
-        // Wait until it reaches SignIn phase and WaitingForUser state
         let prompt = wait::until("the job to wait for sign-in", || async {
             let j = mgr.get_job("agent-1", None).await?;
             if j.phase == TeamsSetupPhase::SignIn && j.state == TeamsSetupState::WaitingForUser {
@@ -1955,7 +1855,6 @@ exit 0
         .await;
         let port = prompt.redirect_port;
 
-        // Port mismatch rejection
         let wrong_port_url = format!("http://localhost:{}/?code=test", port + 1);
         let err_port = mgr
             .forward_redirect("agent-1", &wrong_port_url)
@@ -1966,7 +1865,6 @@ exit 0
             SetupJobError::BadRequest(ref msg) if msg.contains("wrong port")
         ));
 
-        // Host mismatch rejection
         let err_host = mgr
             .forward_redirect("agent-1", "https://example.com:4321/?code=test")
             .await
@@ -1976,13 +1874,11 @@ exit 0
             SetupJobError::BadRequest(ref msg) if msg.contains("must be a localhost URL")
         ));
 
-        // Valid redirect forward to the fake listener
         let valid_url = format!("http://localhost:{port}/?code=valid-code-xyz");
         mgr.forward_redirect("agent-1", &valid_url)
             .await
             .expect("forward_redirect should succeed with matching port");
 
-        // The job should now advance past SignIn to Scaffold/Provision/Succeeded
         let advanced = wait::until("the job to advance past sign-in", || async {
             mgr.get_job("agent-1", None).await.filter(|j| {
                 j.phase != TeamsSetupPhase::SignIn || j.state == TeamsSetupState::Succeeded
@@ -2001,7 +1897,6 @@ exit 0
         let temp = tempfile::tempdir().unwrap();
         let (root, mut overrides) = setup_mock_env(&temp);
 
-        // Failing provision script that writes partial env file and exits with 1
         let ext = if cfg!(windows) { ".cmd" } else { "" };
         let fail_atk = root.join(format!("bin/fail_atk{ext}"));
         make_fail_atk_script(&fail_atk);
@@ -2025,7 +1920,6 @@ exit 0
         let req = sample_start_form();
         mgr.start_job("agent-1", req).await.unwrap();
 
-        // Wait for failure
         let job = wait::until("the job to fail", || async {
             mgr.get_job("agent-1", None)
                 .await
@@ -2036,12 +1930,10 @@ exit 0
         assert_eq!(job.created.bot_id.as_deref(), Some("partial-bot-id-4444"));
         assert!(job.error.is_some());
 
-        // Now fix the script and retry
         make_fake_atk_script(&fail_atk);
 
         mgr.retry_job("agent-1").await.unwrap();
 
-        // Wait for success
         let retried = wait::until("the retried job to succeed", || async {
             mgr.get_job("agent-1", None)
                 .await
@@ -2076,7 +1968,6 @@ exit 0
         .await
         .unwrap();
 
-        // First run: provisioning records a bot and then fails.
         mgr.start_job("agent-1", sample_start_form()).await.unwrap();
         let failed = wait::until("the first job to fail", || async {
             mgr.get_job("agent-1", None)
@@ -2090,12 +1981,9 @@ exit 0
         provisioned.push_str("TEAMS_APP_TENANT_ID=tenant-partial-5555\n");
         tokio::fs::write(&env_path, provisioned).await.unwrap();
 
-        // Start over: the leftover project files stay on disk.
         mgr.delete_job("agent-1").await.unwrap();
         assert!(mgr.get_job("agent-1", None).await.is_none());
 
-        // Second run: provisioning stays in flight, so the files on disk are what the
-        // scaffold step left behind.
         make_slow_atk_script(&atk);
         let mut req = sample_start_form();
         req.form.bot_name = "Renamed Bot".to_string();

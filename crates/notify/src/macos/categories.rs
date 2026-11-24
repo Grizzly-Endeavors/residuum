@@ -52,7 +52,6 @@ impl std::str::FromStr for MacosInterruptionLevel {
     }
 }
 
-/// Action buttons displayed on notification banners.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MacosNotificationAction {
     Open,
@@ -89,8 +88,6 @@ impl MacosNotificationAction {
 )]
 mod tests {
     use super::*;
-
-    // ── MacosInterruptionLevel tests ────────────────────────────────────
 
     #[test]
     fn interruption_level_serde_roundtrip() {
@@ -162,8 +159,6 @@ mod tests {
         assert!("".parse::<MacosInterruptionLevel>().is_err());
         assert!("ACTIVE".parse::<MacosInterruptionLevel>().is_err());
     }
-
-    // ── MacosNotificationAction tests ───────────────────────────────────
 
     #[test]
     fn action_identifiers() {

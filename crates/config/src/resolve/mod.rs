@@ -1,5 +1,3 @@
-//! Config resolution logic: maps raw TOML structs + env vars into validated Config.
-
 mod a2a;
 mod agent;
 mod background;
@@ -29,18 +27,6 @@ use super::deserialize::{AgentConfigFile, ProvidersFile};
 use super::model_catalog::ModelCatalog;
 use super::secrets::SecretStore;
 
-/// Load the secret store, degrading to an empty one (with a notice) if it
-/// can't be read or decrypted.
-///
-/// A missing or corrupt secret store only matters to entries that actually
-/// resolve a `secret:` reference — those already treat an unresolvable
-/// reference as "missing" via `resolve_secret_value`'s `None`, and degrade
-/// (or are skipped) through the same paths as any other missing required
-/// value. Everything else in config.toml and providers.toml never touches
-/// the store, so it must not fail the whole config load here.
-///
-/// The secret store is hub-level and shared by every agent, so `config_dir`
-/// here is always the *hub's* directory, never an agent's own `config/`.
 fn load_secrets_degraded(config_dir: &Path, notices: &mut Vec<String>) -> SecretStore {
     match SecretStore::load(config_dir) {
         Ok(store) => store,
@@ -57,20 +43,6 @@ fn load_secrets_degraded(config_dir: &Path, notices: &mut Vec<String>) -> Secret
     }
 }
 
-/// Build an agent's `Config` from its own config file, its providers file,
-/// and the hub config it belongs to.
-///
-/// `agent_dir` is the agent's workspace root (`~/.residuum/<name>`); the
-/// agent's own `config.toml`/`providers.toml` live in `agent_dir/config/`.
-/// Hub-owned values (timezone, gateway, cloud, tracing, the A2A listener's
-/// enablement/port/public URL, and the shared background session budget and
-/// hop limits) are copied in from `hub`; the agent's own file does not carry
-/// those sections.
-///
-/// # Errors
-/// Returns `FatalError::Config` if the model spec cannot be parsed, a
-/// background model tier can't be resolved, or `agent.max_tool_iterations`
-/// is set to `0`.
 #[tracing::instrument(skip_all, fields(agent = %agent_name, agent_dir = %agent_dir.display()))]
 pub fn from_file_and_env(
     file: Option<&AgentConfigFile>,
@@ -192,10 +164,6 @@ pub fn from_file_and_env(
     })
 }
 
-/// Expand `${ENV_VAR}` references in a token string.
-///
-/// Returns `Some(value)` if expansion succeeds or the string contains no `${...}`.
-/// Returns `None` if the referenced env var is not set.
 fn expand_env_token(raw: &str) -> Option<String> {
     match super::secrets::env_var_name(raw) {
         Some(var_name) => std::env::var(var_name).ok(),
@@ -203,10 +171,6 @@ fn expand_env_token(raw: &str) -> Option<String> {
     }
 }
 
-/// Resolve a secret reference. Supports three modes:
-/// - `${ENV_VAR}` → environment variable lookup
-/// - `secret:name` → encrypted secrets file lookup
-/// - Anything else → literal string passthrough
 pub(super) fn resolve_secret_value(raw: &str, secrets: &SecretStore) -> Option<String> {
     if let Some(name) = raw.strip_prefix("secret:") {
         return secrets.get(name).map(String::from);
@@ -214,7 +178,6 @@ pub(super) fn resolve_secret_value(raw: &str, secrets: &SecretStore) -> Option<S
     expand_env_token(raw)
 }
 
-/// Parse a thinking config string into a `ThinkingConfig`.
 fn parse_thinking_config(value: &str) -> Result<ThinkingConfig, FatalError> {
     match value.to_lowercase().as_str() {
         "off" | "false" => Ok(ThinkingConfig::Toggle(false)),
@@ -228,7 +191,6 @@ fn parse_thinking_config(value: &str) -> Result<ThinkingConfig, FatalError> {
     }
 }
 
-/// Fixtures for this crate's resolve tests.
 #[cfg(test)]
 mod test_helpers {
     pub(super) use crate::testing::{test_agent_dir, test_hub_config};
@@ -251,8 +213,6 @@ mod test_helpers {
         toml::from_str(toml).unwrap()
     }
 
-    /// Resolve an agent `Config` from raw TOML sources against a default
-    /// test hub config — the shape almost every resolve test needs.
     pub(super) fn resolve_test(
         cfg_toml: &str,
         providers_toml: &str,
@@ -260,8 +220,6 @@ mod test_helpers {
         resolve_test_with_hub(cfg_toml, providers_toml, &test_hub_config())
     }
 
-    /// [`resolve_test`], with an explicit hub config for tests that need to
-    /// vary hub-owned values.
     pub(super) fn resolve_test_with_hub(
         cfg_toml: &str,
         providers_toml: &str,
@@ -279,11 +237,6 @@ mod test_helpers {
     }
 }
 
-/// Agent-scoped environment variables the loader never reads. Each would
-/// apply the same value to every agent in the process (e.g. one Discord token
-/// for all), so an agent's values come only from its own
-/// `config.toml`/`providers.toml`. One that is set in the environment gets a
-/// notice at startup, see [`removed_agent_env_override_notices`].
 const REMOVED_AGENT_ENV_OVERRIDES: &[&str] = &[
     "RESIDUUM_WORKSPACE",
     "RESIDUUM_MODEL",
@@ -308,10 +261,6 @@ fn note_unusable_display_name(file: Option<&AgentConfigFile>, notices: &mut Vec<
     }
 }
 
-/// One notice (also logged at `warn`) per agent-scoped environment variable
-/// from `REMOVED_AGENT_ENV_OVERRIDES` that is set in the process
-/// environment. Called once at startup, not on config load, so a config
-/// reload does not repeat it.
 #[must_use]
 pub fn removed_agent_env_override_notices() -> Vec<String> {
     let mut notices = Vec::new();
@@ -347,8 +296,6 @@ mod tests {
     use super::super::types::A2aVisibility;
     use super::test_helpers::*;
     use super::*;
-
-    // ── Section-specific resolution ───────────────────────────────────────────
 
     #[test]
     fn resolve_tools_config_defaults_to_bin_dir() {
@@ -449,8 +396,6 @@ observer_threshold_tokens = 30000
         assert_eq!(cfg.background.hop_soft_limit, 2);
         assert_eq!(cfg.background.hop_hard_limit, 9);
 
-        // The agent's own [background] section cannot set these: an attempt
-        // to is an unknown-field parse error.
         assert!(toml::from_str::<AgentConfigFile>("[background]\nmax_concurrent = 99\n").is_err());
         assert!(toml::from_str::<AgentConfigFile>("[background]\nhop_soft_limit = 1\n").is_err());
     }
@@ -471,7 +416,6 @@ observer_threshold_tokens = 30000
         assert_eq!(cfg.gateway.port, 9001);
         assert_eq!(cfg.tracing.log_level, super::super::types::LogLevel::Trace);
 
-        // None of these are settable in the agent's own file.
         assert!(toml::from_str::<AgentConfigFile>("[gateway]\nport = 1\n").is_err());
         assert!(toml::from_str::<AgentConfigFile>("[cloud]\nenabled = true\n").is_err());
         assert!(toml::from_str::<AgentConfigFile>("[tracing]\nlog_level = \"info\"\n").is_err());
@@ -495,8 +439,6 @@ observer_threshold_tokens = 30000
         let _guard = ENV_MUTEX.lock().unwrap();
         // SAFETY: test-only, serialized by ENV_MUTEX.
         unsafe { std::env::set_var("RESIDUUM_MODEL", "openai/gpt-4o") };
-        // Every reload goes through this same loader, so two loads stand in
-        // for a startup followed by a reload.
         let first = resolve_test("", "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n").unwrap();
         let second =
             resolve_test("", "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n").unwrap();
@@ -815,7 +757,6 @@ format = "raw"
 
     #[test]
     fn webhooks_invalid_routing_is_skipped_with_notice() {
-        // Counts notices, so the env-override tests must not add extras.
         let _guard = ENV_MUTEX.lock().unwrap();
         let cfg_toml = r#"
 [webhooks.bad]
@@ -847,7 +788,6 @@ routing = "inbox"
 
     #[test]
     fn webhooks_empty_content_field_is_skipped_with_notice() {
-        // Counts notices, so the env-override tests must not add extras.
         let _guard = ENV_MUTEX.lock().unwrap();
         let cfg = resolve_test(
             "[webhooks.bad]\ncontent_fields = [\"valid\", \"\"]\n",
@@ -907,8 +847,6 @@ observer_force_threshold_tokens = 50000
         .unwrap();
         assert!(!cfg.pulse_enabled);
     }
-
-    // ── Agent abilities ──────────────────────────────────────────────────────
 
     #[test]
     fn agent_abilities_default_to_true() {
@@ -1003,8 +941,6 @@ observer_force_threshold_tokens = 50000
         );
     }
 
-    // ── Search config ─────────────────────────────────────────────────────
-
     #[test]
     fn search_config_defaults_when_absent() {
         let cfg = resolve_test("", "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n").unwrap();
@@ -1080,7 +1016,6 @@ candidate_multiplier = 8
 
     #[test]
     fn search_weights_single_override_keeps_other_default() {
-        // text_weight stays at its 0.3 default, so 0.3 / (0.3 + 0.3)
         assert_search_weights("vector_weight = 0.3\n", 0.5, 0.5);
     }
 
@@ -1110,8 +1045,6 @@ candidate_multiplier = 8
             "unknown field in [memory.search] should be rejected"
         );
     }
-
-    // ── Secret / env expansion ──────────────────────────────────────────────
 
     #[test]
     fn expand_env_token_literal() {
@@ -1184,25 +1117,19 @@ candidate_multiplier = 8
         );
     }
 
-    // ── Gateway config (hub-level resolution, tested directly) ────────────────
-
     #[test]
     fn gateway_config_defaults_and_env_override() {
         let _guard = ENV_MUTEX.lock().unwrap();
-        // Combined into one test to avoid env var races across parallel tests.
-        // SAFETY: test-only environment
         unsafe {
             std::env::remove_var("RESIDUUM_GATEWAY_BIND");
             std::env::remove_var("RESIDUUM_GATEWAY_PORT");
         }
 
-        // Defaults
         let cfg = gateway::resolve_gateway_config(None);
         assert_eq!(cfg.bind, "127.0.0.1", "default bind should be loopback");
         assert_eq!(cfg.port, 7700, "default port should be 7700");
         assert_eq!(cfg.addr(), "127.0.0.1:7700");
 
-        // Env overrides
         unsafe {
             std::env::set_var("RESIDUUM_GATEWAY_BIND", "0.0.0.0");
             std::env::set_var("RESIDUUM_GATEWAY_PORT", "8080");
@@ -1296,8 +1223,6 @@ candidate_multiplier = 8
         assert_eq!(cfg.telegram.map(|t| t.deliver_intermediate), Some(true));
     }
 
-    // ── Teams config ───────────────────────────────────────────────────────
-
     #[test]
     fn teams_section_resolves_with_defaults() {
         let cfg_toml = r#"
@@ -1347,7 +1272,6 @@ port = 8801
 
     #[test]
     fn teams_section_missing_required_field_disables_teams_with_notice() {
-        // Counts notices, so the env-override tests must not add extras.
         let _guard = ENV_MUTEX.lock().unwrap();
         for (missing, toml) in [
             (
@@ -1420,7 +1344,6 @@ app_password = "s"
 
     #[test]
     fn invalid_idle_channel_resolves_to_the_web_ui_with_notice() {
-        // Counts notices, so the env-override tests must not add extras.
         let _guard = ENV_MUTEX.lock().unwrap();
         let providers = "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n";
         for (named, toml) in [
@@ -1444,8 +1367,6 @@ app_password = "s"
             );
         }
     }
-
-    // ── A2A config: enabled/port/public_url are hub-owned, visibility is agent-owned ──
 
     #[test]
     fn a2a_absent_resolves_to_hub_defaults_and_public_visibility() {
@@ -1475,7 +1396,6 @@ app_password = "s"
             Some("https://example.com/a2a/laptop")
         );
 
-        // The agent's own [a2a] section cannot set these.
         assert!(toml::from_str::<AgentConfigFile>("[a2a]\nenabled = false\n").is_err());
         assert!(toml::from_str::<AgentConfigFile>("[a2a]\nport = 1\n").is_err());
     }
@@ -1492,7 +1412,6 @@ app_password = "s"
 
     #[test]
     fn a2a_invalid_visibility_falls_back_to_default_with_notice() {
-        // Counts notices, so the env-override tests must not add extras.
         let _guard = ENV_MUTEX.lock().unwrap();
         let cfg = resolve_test(
             "[a2a]\nvisibility = \"hidden\"\n",
@@ -1511,8 +1430,6 @@ app_password = "s"
             "notice should mention visibility: {notice}"
         );
     }
-
-    // ── Web search config ────────────────────────────────────────────────
 
     #[test]
     fn web_search_native_enabled_for_anthropic() {
@@ -1597,8 +1514,6 @@ main = "oai/gpt-4o"
         );
     }
 
-    // ── Session affinity ─────────────────────────────────────────────────
-
     #[test]
     fn session_affinity_is_scoped_per_role_and_stable() {
         let providers =
@@ -1642,8 +1557,6 @@ main = "oai/gpt-4o"
 
     #[test]
     fn session_affinity_key_is_pinned_across_toolchains() {
-        // The expected value is SHA-256 of the path bytes, truncated to 64 bits,
-        // so a Rust upgrade that changes std's hashing cannot move the key.
         assert_eq!(
             models::session_affinity_key(Path::new("/srv/residuum/workspace"), "main"),
             "residuum-main-47a4a67a92a2575c",
@@ -1764,7 +1677,6 @@ max_uses = 5
             cfg.web_search.standalone_backend.is_none(),
             "standalone should be None by default"
         );
-        // provider_native is auto-set for anthropic
         assert!(
             cfg.web_search.provider_native.is_some(),
             "native should be auto-set for anthropic"

@@ -13,7 +13,6 @@ function atPath(path: string): Diagnostic {
   return { severity: "error", message: "bad value", location: { kind: "path", path } };
 }
 
-/** Answer the repair routes: each file's text, and what validating it reports. */
 function serveRepair(
   validated: { providers?: ValidateResponse | "fail"; config?: ValidateResponse | "fail" },
   requests: string[] = [],

@@ -4,11 +4,6 @@
   import { remoteAccess, type RemoteAccessStore } from "../lib/remote-access.svelte";
   import { Menu, MenuItem, MenuSeparator, VisuallyHidden } from "../lib/ui";
 
-  // Which of the user's instances the shared address goes to, and a way to
-  // move it. It shows only when Residuum Cloud lists more than one instance.
-  // Names come from the relay and are drawn as text; an entry without a valid
-  // slug never reaches `instances`, so every row can act.
-
   interface Props {
     store?: RemoteAccessStore;
   }

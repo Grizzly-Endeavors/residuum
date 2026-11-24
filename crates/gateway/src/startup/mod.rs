@@ -1,5 +1,3 @@
-//! Gateway initialization: builds all subsystems before the event loop starts.
-
 mod memory;
 mod providers;
 mod tools;
@@ -39,13 +37,10 @@ use residuum_background::SpawnContext;
 use residuum_tools::main_tools::{self, ToolRegistryDeps};
 use tools::CreateAgentArgs;
 
-/// All subsystems initialized before the gateway event loop.
 pub(crate) struct GatewayComponents {
     pub layout: WorkspaceLayout,
     pub tz: chrono_tz::Tz,
     pub agent: Agent,
-    /// What main's registry injected into its tools at registration, for
-    /// the reloads that re-register one of them.
     pub tool_injections: RegistryInjections,
     pub observer: Observer,
     pub merge_writer: Arc<MemoryMergeWriter>,
@@ -67,50 +62,29 @@ pub(crate) struct GatewayComponents {
     pub agent_messenger: Arc<AgentMessenger>,
     pub conversation_router: Arc<ConversationRouter>,
     pub spawn_context: Arc<SpawnContext>,
-    /// How this agent's tools reach the hub, for the session tool factory a
-    /// config reload rebuilds.
     pub lifecycle: residuum_tools::LifecycleAccess,
     pub path_policy: residuum_tools::SharedPathPolicy,
-    /// The agent's Auto Mode, shared by main's tools and every session's.
     pub auto_mode: residuum_agent::auto_mode::SharedAutoMode,
-    /// The hub's team write coordinator, shared with every agent's file tools
-    /// and the web file API.
     pub team: TeamWriteCoordinator,
     pub output_topic_override_tx: tokio::sync::watch::Sender<Option<residuum_bus::EndpointName>>,
-    /// Remote A2A agents this instance's client can reach, loaded from
-    /// `config/a2a.json`.
     pub a2a_hub: Arc<residuum_a2a::A2aClientHub>,
-    /// Outbound A2A tasks this instance started on other agents.
     pub a2a_tracker: Arc<residuum_a2a::RemoteTaskTracker>,
-    /// Workspace and config checkpoint repositories.
     pub checkpoints: Arc<residuum_checkpoints::CheckpointEngine>,
-    /// Tracks the agent's own config-file writes so the reload each one
-    /// triggers can report back into its transcript.
     pub config_reload_tracker: residuum_tools::SharedConfigReloadTracker,
 }
 
-/// Bootstrap the workspace directory and return the layout and timezone.
-///
-/// # Errors
-/// Returns `FatalError` if workspace bootstrapping fails.
 pub(super) async fn init_workspace(
     cfg: &Config,
     team: &TeamWriteCoordinator,
 ) -> Result<(WorkspaceLayout, chrono_tz::Tz), FatalError> {
     let layout = WorkspaceLayout::new(&cfg.workspace_dir);
     let tz = cfg.timezone;
-    // USER.md is personalized once, at onboarding time
-    // (`hub::web::config::api_complete_setup`). Every later call here is
-    // idempotent (write-if-missing), apart from a `SOUL.md` that is still the
-    // bundled template: that one is named from `display_name`.
     let shown = shown_name(&cfg.config_dir, &cfg.agent_name).await;
     ensure_workspace_labeled(&layout, team, None, Some(cfg.timezone.name()), Some(&shown)).await?;
 
     Ok((layout, tz))
 }
 
-/// The name in `config_dir`'s `config.toml`, or `folder` when that name can't
-/// be read.
 async fn shown_name(config_dir: &std::path::Path, folder: &str) -> String {
     let path = config_dir.join("config.toml");
     match tokio::fs::read_to_string(&path).await {
@@ -126,13 +100,6 @@ async fn shown_name(config_dir: &std::path::Path, folder: &str) -> String {
     }
 }
 
-/// Open (or create) this agent's workspace and agent-config checkpoint
-/// repositories under `hub/checkpoints/agents/<name>/`, recording into the
-/// team and hub-config repositories every agent shares.
-///
-/// # Errors
-/// Returns `FatalError` if an agent checkpoint repository can't be opened or
-/// initialized.
 fn init_checkpoints(
     layout: &WorkspaceLayout,
     cfg: &Config,
@@ -158,10 +125,6 @@ fn init_checkpoints(
     })
 }
 
-/// Load identity files and build the shared HTTP client.
-///
-/// # Errors
-/// Returns `FatalError` if identity loading or HTTP client construction fails.
 pub(super) async fn init_identity_and_http(
     layout: &WorkspaceLayout,
     cfg: &Config,
@@ -175,11 +138,6 @@ pub(super) async fn init_identity_and_http(
     Ok((identity, http))
 }
 
-/// Build a fresh session observer from `[observer]` config, for
-/// `SpawnContext` at startup and on every config reload.
-///
-/// # Errors
-/// Returns `FatalError::Config` if the observer provider cannot be built.
 pub(crate) fn init_session_observer(
     cfg: &Config,
     tz: chrono_tz::Tz,
@@ -188,8 +146,6 @@ pub(crate) fn init_session_observer(
     memory::build_observer(cfg, tz, http, None)
 }
 
-/// Fold every degradation collected during startup into one grouped,
-/// plain-language notice, or `None` when nothing degraded.
 fn degradation_notice(degradations: &[String]) -> Option<String> {
     if degradations.is_empty() {
         return None;
@@ -202,12 +158,6 @@ fn degradation_notice(degradations: &[String]) -> Option<String> {
     ))
 }
 
-/// Load the scheduled action store and create the notification handle.
-///
-/// A stored action left over from before `agent: "main"` was removed, and a
-/// corrupt file moved aside, are both handled by `ActionStore::load` itself;
-/// this only raises the owner-facing notice for whatever it reports, once,
-/// at startup.
 async fn init_action_store(
     layout: &WorkspaceLayout,
     publisher: &residuum_bus::Publisher,
@@ -249,16 +199,6 @@ async fn init_action_store(
     (action_store, action_notify)
 }
 
-/// Scan for skills and return the shared state handle.
-///
-/// A directory `SkillIndex::scan` couldn't read is already skipped rather
-/// than failing the whole scan; this turns each skip into a degradation for
-/// the caller to report. A scan failure with no partial index at all (not
-/// currently possible, but the API still allows it) falls back to an empty
-/// index with a warning. Separately, publishes any notice the scan produced
-/// (a skill with an oversized description that loaded anyway, or a skill
-/// skipped for invalid frontmatter) so it reaches the user, not just the
-/// logs.
 async fn init_skills(
     cfg: &Config,
     degradations: &mut Vec<String>,
@@ -288,20 +228,6 @@ async fn init_skills(
     SkillState::new_shared(skill_index, cfg.skills.dirs.clone())
 }
 
-/// Build a session's own observer and the shared memory merge writer.
-///
-/// The session observer is independent from the main agent's own
-/// (`providers.observer`) so a session fork never contends with a main
-/// config-reload swap, but is built from the same `[observer]` config so
-/// extraction behaves identically — rebuilt fresh in `SpawnContext` on every
-/// config reload, matching the rest of it. The merge writer is shared with
-/// the main agent so episode numbering and log appends never race.
-///
-/// Degrades rather than failing startup: an unusable observer provider here
-/// falls back to [`Observer::disabled`] with a warning. The main agent's own
-/// observer build (in `providers::init_providers`) already surfaces a
-/// user-facing notice for the same underlying `[observer]` misconfiguration,
-/// so this one only logs.
 fn build_session_memory_components(
     cfg: &Config,
     tz: chrono_tz::Tz,
@@ -328,11 +254,6 @@ fn build_session_memory_components(
     (session_observer, merge_writer)
 }
 
-/// Inputs to [`build_startup_spawn_context`], gathered because
-/// `SpawnContext` and the session tool factory between them have this many
-/// independent dependencies (mirrors
-/// `reload::build_spawn_context`'s equivalent construction from a live
-/// `AgentRuntime`, which doesn't exist yet at startup).
 struct StartupSpawnContextInputs<'a> {
     cfg: &'a Config,
     hub_dir: &'a std::path::Path,
@@ -350,23 +271,11 @@ struct StartupSpawnContextInputs<'a> {
     mcp_registry: &'a SharedMcpRegistry,
     session_observer: &'a Arc<Observer>,
     merge_writer: &'a Arc<MemoryMergeWriter>,
-    /// Built alongside the session registry in `init_session_runtime`, since
-    /// the runtime itself now needs it too (to resume a run whose interrupt
-    /// channel still held messages at teardown) — reused here rather than
-    /// built a second time.
     messenger: &'a Arc<AgentMessenger>,
-    /// Shared tracing service, built alongside the main agent's feedback
-    /// tools — reused here so a session's own feedback tools register
-    /// against the same instance.
     tracing_service: &'a Arc<residuum_tracing_service::TracingService>,
-    /// Runtime client context snapshot, built alongside `tracing_service`.
     tracing_client_context: &'a Arc<residuum_tracing_service::ClientContext>,
-    /// The running build, for the session tools' feedback client context.
     build: residuum_core::build_info::BuildInfo,
-    /// Standalone web search backend config, mirroring `cfg.web_search.standalone_backend`.
     web_search_backend: Option<residuum_config::StandaloneBackendConfig>,
-    /// Main's tool `PATH`, write policy, and agent key store — shared, not
-    /// copied, so sessions see the same live state as main.
     tools_path: &'a SharedToolsPath,
     path_policy: &'a residuum_tools::SharedPathPolicy,
     auto_mode: &'a residuum_agent::auto_mode::SharedAutoMode,
@@ -376,12 +285,9 @@ struct StartupSpawnContextInputs<'a> {
     checkpoints: &'a Arc<residuum_checkpoints::CheckpointEngine>,
     lifecycle: &'a residuum_tools::LifecycleAccess,
     model_catalog: &'a residuum_config::SharedModelCatalog,
-    /// Every agent's mailbox, for the session tools' mail-aware inbox tools.
     mailboxes: &'a Arc<dyn residuum_workspace::inbox::mail::MailboxDirectory>,
 }
 
-/// Build the `SpawnContext` every session forks from, at startup, with the
-/// session tool factory that builds each fork's tools.
 fn build_startup_spawn_context(inputs: StartupSpawnContextInputs<'_>) -> Arc<SpawnContext> {
     let session_tools = Arc::new(residuum_tools::SessionTools {
         path_policy: Arc::clone(inputs.path_policy),
@@ -445,25 +351,6 @@ fn build_startup_spawn_context(inputs: StartupSpawnContextInputs<'_>) -> Arc<Spa
     })
 }
 
-/// Create the session registry, store, and messenger.
-///
-/// The runtime itself is built separately, by [`build_session_runtime`],
-/// once [`init_supporting_infra`] has produced the tracing service the
-/// runtime auto-reports unexpected turn failures through — that in turn
-/// needs this function's `agent_messenger` (for the A2A client), so the two
-/// can't be built in one pass.
-///
-/// At startup, on a background task so slow observer or reflector model
-/// calls never delay agent startup, the store's unfinished runs go through
-/// the full completion pipeline (skip check, final observation, merge) from
-/// their persisted transcripts: a run left live by a prior process exit is
-/// merged and marked interrupted, and a completed run whose merge was still
-/// pending is merged without being marked interrupted.
-///
-/// The registry itself loads its resume points from
-/// `layout.resume_points_json()`, so a message to a session that completed
-/// before a restart still resumes it with a pointer to its previous run's
-/// id, rather than starting a fresh session with no memory of it.
 async fn init_session_registry_and_messenger(
     cfg: &Config,
     layout: &WorkspaceLayout,
@@ -516,8 +403,6 @@ async fn init_session_registry_and_messenger(
     (registry, store, messenger, conversation_router)
 }
 
-/// Inputs to [`build_session_runtime`], gathered to keep the function under
-/// clippy's argument-count lint.
 struct SessionRuntimeInputs<'a> {
     cfg: &'a Config,
     publisher: &'a residuum_bus::Publisher,
@@ -530,9 +415,6 @@ struct SessionRuntimeInputs<'a> {
     session_budget: &'a Arc<tokio::sync::Semaphore>,
 }
 
-/// Build the session runtime, once the tracing service and its client
-/// context (from [`init_supporting_infra`]) are available — see
-/// [`init_session_registry_and_messenger`] for why this is a separate step.
 fn build_session_runtime(inputs: &SessionRuntimeInputs<'_>) -> Arc<SessionRuntime> {
     Arc::new(SessionRuntime::new(
         Arc::clone(inputs.registry),
@@ -550,7 +432,6 @@ fn build_session_runtime(inputs: &SessionRuntimeInputs<'_>) -> Arc<SessionRuntim
     ))
 }
 
-/// Load and connect workspace MCP servers.
 async fn init_mcp_servers(
     layout: &WorkspaceLayout,
     tools_path: SharedToolsPath,
@@ -594,9 +475,6 @@ async fn init_mcp_servers(
     mcp_registry
 }
 
-/// The MCP server entry for a standalone web search backend, or `None` for
-/// no backend or `"ollama"` (a native tool, not an MCP server — see
-/// `tools::registration::register_ollama_web_search_tool`).
 fn web_search_mcp_entry(
     backend: &residuum_config::StandaloneBackendConfig,
 ) -> Option<residuum_mcp::types::McpServerEntry> {
@@ -632,16 +510,6 @@ fn web_search_mcp_entry(
     }
 }
 
-/// Connect the standalone web search MCP server (Brave/Tavily) if
-/// configured, returning the connection report (empty when no backend is
-/// configured, or it names `"ollama"`).
-///
-/// Used at startup (`init_networking`) and, on a config reload that changes
-/// the standalone backend, by `gateway::reload::reload_web_search` — which
-/// disconnects whichever server was previously running first, since
-/// [`McpRegistry::connect_servers`](residuum_mcp::McpRegistry::connect_servers)
-/// skips a name that's already tracked, even if its entry (e.g. the API key)
-/// changed.
 pub(crate) async fn connect_web_search_mcp(
     cfg: &Config,
     mcp_registry: &SharedMcpRegistry,
@@ -666,13 +534,6 @@ pub(crate) async fn connect_web_search_mcp(
     report
 }
 
-/// The desired server list for an `mcp.json` reconcile: `servers` plus the
-/// standalone web search server `cfg` configures, if any.
-///
-/// The registry stops every running server missing from the list it is given.
-/// The web search server comes from `[web_search]`, not `mcp.json`, so leaving
-/// it out would stop it on every `mcp.json` edit with nothing to reconnect it.
-/// A server of the same name in `mcp.json` is kept in place of the built-in one.
 pub(crate) fn with_web_search_mcp_entry(
     mut servers: Vec<residuum_mcp::types::McpServerEntry>,
     cfg: &Config,
@@ -690,9 +551,6 @@ pub(crate) fn with_web_search_mcp_entry(
     servers
 }
 
-/// Build the A2A client hub and outbound task tracker: load `config/a2a.json`,
-/// resolve its agents' cards, resume watching any outbound tasks left open
-/// from a prior run, and start the hub's background card-refresh loop.
 async fn init_a2a_client(
     layout: &WorkspaceLayout,
     agent_keys: &residuum_config::agent_keys::SharedAgentKeys,
@@ -720,7 +578,6 @@ async fn init_a2a_client(
     (hub, tracker)
 }
 
-/// Load channel configs and build the endpoint registry.
 fn init_channels_and_registry(
     layout: &WorkspaceLayout,
     cfg: &Config,
@@ -742,8 +599,6 @@ fn init_channels_and_registry(
     (channel_configs, endpoint_registry)
 }
 
-/// The shared PATH, MCP registry, and endpoint/channel setup a fresh
-/// agent (or a config reload) needs before it can build tools.
 struct NetworkingComponents {
     tools_path: SharedToolsPath,
     agent_keys: residuum_config::agent_keys::SharedAgentKeys,
@@ -752,8 +607,6 @@ struct NetworkingComponents {
     endpoint_registry: EndpointRegistry,
 }
 
-/// Build the shared tools `PATH`, connect workspace MCP servers, and load
-/// the channel/endpoint registry. The agent key store is the hub's.
 async fn init_networking(
     cfg: &Config,
     agent_keys: residuum_config::agent_keys::SharedAgentKeys,
@@ -788,10 +641,6 @@ async fn init_networking(
     }
 }
 
-/// Spawn notify subscribers for each configured channel and the inbox.
-///
-/// Each channel subscribes to its `TopicId::Notification(name)` topic on the bus.
-/// The inbox subscribes to `TopicId::Inbox`.
 pub(crate) async fn spawn_notify_subscribers(
     bus_handle: &residuum_bus::BusHandle,
     channel_configs: &[residuum_config::ExternalChannelConfig],
@@ -807,7 +656,6 @@ pub(crate) async fn spawn_notify_subscribers(
 
     let mut handles = Vec::new();
 
-    // Spawn a subscriber for each external channel
     for (name, channel) in external_channels {
         let topic = topics::Notification(NotifyName::from(name.as_str()));
         match bus_handle.subscribe(topic).await {
@@ -823,7 +671,6 @@ pub(crate) async fn spawn_notify_subscribers(
         }
     }
 
-    // Spawn inbox subscriber
     let inbox_channel = InboxChannel::new(layout.agent_inbox_dir(), tz);
     match bus_handle.subscribe(topics::Inbox).await {
         Ok(subscriber) => {
@@ -842,9 +689,6 @@ pub(crate) async fn spawn_notify_subscribers(
     handles
 }
 
-/// Snapshot the agent's runtime client context, used by the bug-report tools
-/// and HTTP handlers. The tracing service itself is the hub's, shared by
-/// every agent.
 fn init_tracing_client_context(
     cfg: &Config,
     build: residuum_core::build_info::BuildInfo,
@@ -852,8 +696,6 @@ fn init_tracing_client_context(
     Arc::new(residuum_tracing_service::client_context::gather_for_bug_report(build, cfg))
 }
 
-/// Inputs to [`build_tools_and_agent`], gathered because building the tool
-/// registry and the agent that owns it needs this many independent pieces.
 struct ToolsAndAgentInputs<'a> {
     cfg: &'a Config,
     layout: &'a WorkspaceLayout,
@@ -864,23 +706,10 @@ struct ToolsAndAgentInputs<'a> {
     provider: Box<dyn residuum_inference::InferenceProvider>,
     options: residuum_inference::CompletionOptions,
     identity: IdentityFiles,
-    /// Main's current-turn hop counter — the same instance already threaded
-    /// into `tool_deps` for the `message_agent`/`subagent_spawn` tools.
     hop_counter: residuum_agent::HopCounter,
-    /// Collects a plain-language line for each degradation
-    /// `tools::create_agent` hits while loading observations, recent
-    /// context, or recent messages, folded into the same grouped
-    /// startup-degradation notice as every other subsystem.
     degradations: &'a mut Vec<String>,
 }
 
-/// Build the tool registry, reserve its names against MCP name collisions,
-/// and construct the agent from it.
-///
-/// Split out of `initialize` (which has this many independent subsystems to
-/// wire up already) so the tool/agent construction sequence reads as one
-/// step there. Takes `ToolRegistryDeps` by value (built by the caller) so it
-/// doesn't also need every one of its dependencies as a separate parameter.
 async fn build_tools_and_agent(
     inputs: ToolsAndAgentInputs<'_>,
 ) -> (
@@ -896,17 +725,12 @@ async fn build_tools_and_agent(
         &inputs.tool_deps,
     );
 
-    // Saved oversized tool results are kept for a week; clear the older
-    // ones in the background so startup never waits on the sweep.
     if let Some(store) = tools.result_store().cloned() {
         drop(residuum_core::util::spawn_in_span(async move {
             store.sweep_expired().await;
         }));
     }
 
-    // Reserve the built-in tool namespace so any MCP tool (workspace or web
-    // search) that reuses a built-in name is shadowed visibly instead of
-    // silently. See crates/mcp/src/CLAUDE.md.
     inputs
         .mcp_registry
         .write()
@@ -934,8 +758,6 @@ async fn build_tools_and_agent(
     (agent, tool_injections, output_topic_override_tx)
 }
 
-/// Inputs to [`build_main_agent`], gathered because building the main agent
-/// needs this many independent pieces.
 struct MainAgentInputs<'a> {
     cfg: &'a Config,
     hub_dir: &'a std::path::Path,
@@ -954,7 +776,6 @@ struct MainAgentInputs<'a> {
     session_registry: &'a Arc<SessionRegistry>,
     publisher: &'a residuum_bus::Publisher,
     tracing_service: &'a Arc<residuum_tracing_service::TracingService>,
-    /// The running build, for the feedback tools' client context.
     build: residuum_core::build_info::BuildInfo,
     tracing_client_context: &'a Arc<residuum_tracing_service::ClientContext>,
     agent_messenger: &'a Arc<AgentMessenger>,
@@ -963,18 +784,11 @@ struct MainAgentInputs<'a> {
     checkpoints: &'a Arc<residuum_checkpoints::CheckpointEngine>,
     lifecycle: &'a residuum_tools::LifecycleAccess,
     model_catalog: &'a residuum_config::SharedModelCatalog,
-    /// See `ToolRegistryDeps::mailboxes`.
     mailboxes: &'a Arc<dyn residuum_workspace::inbox::mail::MailboxDirectory>,
-    /// See `ToolsAndAgentInputs::degradations`.
     degradations: &'a mut Vec<String>,
-    /// See `ToolRegistryDeps::config_reload_tracker`.
     config_reload_tracker: &'a residuum_tools::SharedConfigReloadTracker,
 }
 
-/// Create main's hop counter and build the agent from it, wrapping
-/// [`build_tools_and_agent`]'s `ToolsAndAgentInputs`/`ToolRegistryDeps`
-/// assembly. Split out of `initialize` purely to keep that function's line
-/// count down.
 async fn build_main_agent(
     inputs: MainAgentInputs<'_>,
 ) -> (
@@ -982,9 +796,6 @@ async fn build_main_agent(
     RegistryInjections,
     tokio::sync::watch::Sender<Option<residuum_bus::EndpointName>>,
 ) {
-    // Main's current-turn hop counter, created once and shared between the
-    // `Agent` and the `message_agent`/`subagent_spawn` tools registered
-    // against it, so they always agree on the current turn's hop count.
     let hop_counter = residuum_agent::HopCounter::new(0);
 
     build_tools_and_agent(ToolsAndAgentInputs {
@@ -1027,10 +838,6 @@ async fn build_main_agent(
     .await
 }
 
-/// Inputs to [`build_spawn_context_and_agent`], gathered because it wraps
-/// both [`build_startup_spawn_context`] and [`build_main_agent`], which
-/// between them need this many independent pieces. Split out of
-/// [`initialize`] purely to keep that function's line count down.
 struct AgentInitInputs<'a> {
     cfg: &'a Config,
     hub_dir: &'a std::path::Path,
@@ -1038,7 +845,6 @@ struct AgentInitInputs<'a> {
     tz: chrono_tz::Tz,
     http_client: SharedHttpClient,
     mem: &'a memory::MemoryComponents,
-    /// The networking, path policy, Auto Mode, A2A and config-reload handles.
     infra: &'a SupportingInfra,
     session_runtime: &'a Arc<SessionRuntime>,
     session_registry: &'a Arc<SessionRegistry>,
@@ -1053,37 +859,26 @@ struct AgentInitInputs<'a> {
     build: residuum_core::build_info::BuildInfo,
     checkpoints: &'a Arc<residuum_checkpoints::CheckpointEngine>,
     directory: &'a residuum_background::team::DirectoryHandle,
-    /// The hub's late-bound handle to every agent's mailbox, for the
-    /// mail-aware inbox tools of main and every session.
     mailboxes: &'a residuum_workspace::inbox::mail::MailboxDirectoryHandle,
     identity: IdentityFiles,
     provider: Box<dyn residuum_inference::InferenceProvider>,
     options: residuum_inference::CompletionOptions,
-    /// See `ToolsAndAgentInputs::degradations`.
     degradations: &'a mut Vec<String>,
 }
 
-/// What [`build_spawn_context_and_agent`] builds.
 struct SpawnContextAndAgent {
     spawn_context: Arc<SpawnContext>,
-    /// How this agent's tools (main's and every session's) reach the hub,
-    /// kept for the session tool factory a config reload rebuilds.
     lifecycle: residuum_tools::LifecycleAccess,
     agent: Agent,
-    /// What main's registry injected into its tools at registration.
     tool_injections: RegistryInjections,
     output_topic_override_tx: tokio::sync::watch::Sender<Option<residuum_bus::EndpointName>>,
 }
 
-/// Build the `SpawnContext` every session forks from, and the main agent
-/// itself, from one bundle of inputs shared between the two.
 async fn build_spawn_context_and_agent(inputs: AgentInitInputs<'_>) -> SpawnContextAndAgent {
     let lifecycle = residuum_tools::LifecycleAccess::new(
         inputs.directory.clone(),
         inputs.cfg.agent_name.clone(),
     );
-    // One live catalog shared by every session and every tool that checks an
-    // explicit model; config reloads replace its contents in place.
     let model_catalog = inputs.cfg.model_catalog.clone().into_shared();
     let mailboxes: Arc<dyn residuum_workspace::inbox::mail::MailboxDirectory> =
         Arc::new(inputs.mailboxes.clone());
@@ -1163,7 +958,6 @@ async fn build_spawn_context_and_agent(inputs: AgentInitInputs<'_>) -> SpawnCont
     }
 }
 
-/// The shared path policy for file tools, with the config-derived write blocks.
 fn build_path_policy(
     cfg: &Config,
     layout: &WorkspaceLayout,
@@ -1176,30 +970,18 @@ fn build_path_policy(
     )
 }
 
-/// Publish the grouped startup-degradation notice, if anything degraded.
 async fn publish_degradation_notice(publisher: &residuum_bus::Publisher, degradations: &[String]) {
     if let Some(message) = degradation_notice(degradations) {
         residuum_bus::notice::publish_notice(publisher, message).await;
     }
 }
 
-/// Publish each of the agent's load notices individually — already
-/// complete, standalone sentences describing one agent config.toml/
-/// providers.toml entry that was skipped or degraded while loading (see
-/// `config::resolve` and `config::tolerant`) — as opposed to the subsystem
-/// `degradations` above, which get folded into one shorter grouped sentence.
-/// The hub's own load notices and the removed-override notices belong to the
-/// hub, which publishes them once for the whole process.
 async fn publish_load_notices(publisher: &residuum_bus::Publisher, cfg: &Config) {
     for notice in &cfg.load_notices {
         residuum_bus::notice::publish_notice(publisher, notice.clone()).await;
     }
 }
 
-/// Bootstrap the workspace, open the checkpoint repositories, and publish
-/// this config load's own notices — the first independent steps
-/// [`initialize`] needs before anything else can start. Split out purely to
-/// keep that function's line count down.
 async fn init_workspace_and_checkpoints(
     cfg: &Config,
     hub: &HubConfig,
@@ -1219,10 +1001,7 @@ async fn init_workspace_and_checkpoints(
     Ok((layout, tz, checkpoints))
 }
 
-/// Inputs to [`init_session_subsystems`], gathered because it wraps four
-/// independent build steps that between them need this many pieces.
 struct SessionSubsystemInputs<'a> {
-    /// The agent's handle on the hub's team router.
     team: TeamLink,
     cfg: &'a Config,
     layout: &'a WorkspaceLayout,
@@ -1235,17 +1014,6 @@ struct SessionSubsystemInputs<'a> {
     degradations: &'a mut Vec<String>,
 }
 
-/// The action store, skill index, session memory (a session's own observer
-/// and the shared merge writer), and session registry/store/messenger
-/// (registry, store, messenger, conversation router) — independent
-/// subsystems `initialize` needs before it can build supporting
-/// infrastructure and the agent itself. Bundled into a struct (rather than a
-/// tuple) so the call site stays short enough to keep `initialize`'s line
-/// count down.
-///
-/// The session runtime itself is not here — see
-/// [`init_session_registry_and_messenger`] for why it's built later, once
-/// supporting infra (including the tracing service) exists.
 struct SessionSubsystems {
     action_store: Arc<tokio::sync::Mutex<ActionStore>>,
     action_notify: Arc<tokio::sync::Notify>,
@@ -1258,8 +1026,6 @@ struct SessionSubsystems {
     conversation_router: Arc<ConversationRouter>,
 }
 
-/// Build [`SessionSubsystems`]. Split out of `initialize` purely to keep
-/// that function's line count down.
 async fn init_session_subsystems(inputs: SessionSubsystemInputs<'_>) -> SessionSubsystems {
     let (action_store, action_notify) =
         init_action_store(inputs.layout, inputs.publisher, inputs.degradations).await;
@@ -1298,11 +1064,6 @@ async fn init_session_subsystems(inputs: SessionSubsystemInputs<'_>) -> SessionS
     }
 }
 
-/// Networking layer, client context, path policy, A2A client, and the
-/// agent's config-reload tracker — independent pieces of supporting
-/// infrastructure `initialize` needs before it can build the agent itself.
-/// Bundled into a struct (rather than a tuple) so `init_supporting_infra`'s
-/// call site stays short enough to keep `initialize`'s line count down.
 struct SupportingInfra {
     net: NetworkingComponents,
     tracing_client_context: Arc<residuum_tracing_service::ClientContext>,
@@ -1313,8 +1074,6 @@ struct SupportingInfra {
     config_reload_tracker: residuum_tools::SharedConfigReloadTracker,
 }
 
-/// Build [`SupportingInfra`]. Split out of `initialize` purely to keep that
-/// function's line count down.
 async fn init_supporting_infra(
     cfg: &Config,
     hub: &HubConfig,
@@ -1352,8 +1111,6 @@ async fn init_supporting_infra(
     }
 }
 
-/// Services the agent shares with the rest of the hub, threaded into infra
-/// setup.
 struct SharedServices<'a> {
     checkpoints: &'a Arc<residuum_checkpoints::CheckpointEngine>,
     hub: &'a HubServices,
@@ -1368,10 +1125,6 @@ impl<'a> SharedServices<'a> {
     }
 }
 
-/// Build supporting infra and, once its client context exists, the session
-/// runtime that needs it — split out of `initialize` purely to keep that
-/// function's line count down. See [`init_session_registry_and_messenger`]
-/// for why the session runtime can't be built any earlier.
 async fn init_infra_and_session_runtime(
     cfg: &Config,
     hub: &HubConfig,
@@ -1404,15 +1157,6 @@ async fn init_infra_and_session_runtime(
     (infra, session_runtime)
 }
 
-/// Initialize all of one agent's subsystems from config, on the services the
-/// hub shares with every agent.
-///
-/// Delegates to `init_workspace`, `init_identity_and_http`, `providers::init_providers`,
-/// and `memory::init_memory` for the first stages, then wires up tools, the agent,
-/// and remaining subsystems.
-///
-/// # Errors
-/// Returns `FatalError` if any subsystem fails to initialize.
 pub(crate) async fn initialize(
     cfg: &Config,
     hub: &HubConfig,
@@ -1422,10 +1166,6 @@ pub(crate) async fn initialize(
     let (layout, tz, checkpoints) =
         init_workspace_and_checkpoints(cfg, hub, publisher, shared).await?;
 
-    // Collects a plain-language line for every subsystem that degrades
-    // along the way (rather than failing startup outright), so the whole
-    // batch can be reported to the user as one grouped notice once
-    // everything below has had its chance to add to it.
     let mut degradations: Vec<String> = Vec::new();
 
     let (identity, http) = init_identity_and_http(&layout, cfg).await?;

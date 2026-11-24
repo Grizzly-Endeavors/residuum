@@ -11,7 +11,6 @@ import {
 } from "./test-support";
 
 describe("isFileDataRoute", () => {
-  // The same paths the backend's dispatch tests check (`crates/hub/src/http/dispatch.rs`).
   it.each([
     "/chat/history",
     "/usage",
@@ -326,7 +325,6 @@ describe("stopped and failed agents over HTTP", () => {
     expect(config.body).toContain("[");
   });
 
-  // A mail attachment of a stopped agent opens in the file panel beside its thread.
   it.each(["drifter", "brittle"])(
     "reads, saves and checks %s's own workspace files, as the backend does for an agent that isn't running",
     async (agent) => {
@@ -355,7 +353,6 @@ describe("stopped and failed agents over HTTP", () => {
       expect((await fetchText(at(agent, "/workspace/file?path=SOUL.md"))).body).toBe(
         `# Soul of ${agent}\n`,
       );
-      // A stopped agent's write is to its own workspace and no one else's.
       expect((await fetchText(at("atlas", "/workspace/file?path=SOUL.md"))).body).toContain(
         "# Soul\n",
       );

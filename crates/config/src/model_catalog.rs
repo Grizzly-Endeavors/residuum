@@ -1,11 +1,3 @@
-//! Resolving one `provider/model` id into a [`ProviderSpec`].
-//!
-//! Every role in `[models]` and every `[background.models]` tier is resolved
-//! once, at config load. An explicit model id named by a pulse, a scheduled
-//! action, or a `subagent_spawn` call is resolved when its session starts,
-//! against the [`ModelCatalog`] built from the agent's current
-//! `providers.toml`, so a provider added later works without a restart.
-
 use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
@@ -16,22 +8,16 @@ use super::provider::{ImageInput, ModelSpec, ProviderKind, ProviderSpec};
 use super::secrets::SecretStore;
 use super::types::ModelSelector;
 
-/// One `[providers.<name>]` entry with its API key already resolved.
 #[derive(Clone, PartialEq)]
 pub(super) struct NamedProvider {
-    /// The entry's `type`, as written. Parsed when a model is resolved, so a
-    /// bad type is reported against the model id that names the entry.
     kind: String,
     url: Option<String>,
     api_key: Option<String>,
     keep_alive: Option<String>,
-    /// Each listed model's declared image input, keyed by model name.
     image_inputs: HashMap<String, ImageInput>,
 }
 
 impl NamedProvider {
-    /// Resolve an entry's API key (`${ENV}`, `secret:name`, or a literal) and
-    /// declared model inputs.
     pub(super) fn from_entry(entry: &ProviderEntryFile, secrets: &SecretStore) -> Self {
         let image_inputs = entry
             .models
@@ -60,10 +46,6 @@ impl NamedProvider {
         }
     }
 
-    /// The spec for `model_name` served by this entry, named `name`.
-    ///
-    /// # Errors
-    /// Returns a message if the entry's `type` is not a known provider type.
     pub(super) fn spec(&self, name: &str, model_name: &str) -> Result<ProviderSpec, String> {
         let kind = ProviderKind::from_str(&self.kind)
             .map_err(|e| format!("provider '{name}' has invalid type '{}': {e}", self.kind))?;
@@ -89,10 +71,6 @@ impl NamedProvider {
     }
 }
 
-/// Split a `provider_or_name/model` id on its first `/`.
-///
-/// # Errors
-/// Returns a message if there is no `/` or the model part is empty.
 pub(super) fn split_model_id(model_id: &str) -> Result<(&str, &str), String> {
     let (provider_part, model_name) = model_id
         .split_once('/')
@@ -103,12 +81,6 @@ pub(super) fn split_model_id(model_id: &str) -> Result<(&str, &str), String> {
     Ok((provider_part, model_name))
 }
 
-/// The spec for a model id whose provider part names a provider type
-/// (`anthropic`, `openai`, …) rather than a `[providers]` entry. The API key
-/// comes from that provider's environment variable.
-///
-/// # Errors
-/// Returns a message if `provider_part` is not a known provider type.
 pub(super) fn implicit_provider_spec(
     provider_part: &str,
     model_name: &str,
@@ -134,7 +106,6 @@ pub(super) fn implicit_provider_spec(
     })
 }
 
-/// Get the provider-specific API key from environment variables.
 pub(super) fn provider_api_key_env(kind: ProviderKind) -> Option<String> {
     match kind {
         ProviderKind::Anthropic => std::env::var("ANTHROPIC_API_KEY").ok(),
@@ -145,8 +116,6 @@ pub(super) fn provider_api_key_env(kind: ProviderKind) -> Option<String> {
     }
 }
 
-/// Providers that require a non-empty API key to build a client (matching
-/// `build_provider_client` in `residuum-inference`).
 const fn required_api_key(kind: ProviderKind) -> Option<(&'static str, &'static str)> {
     match kind {
         ProviderKind::Anthropic => Some(("anthropic", "ANTHROPIC_API_KEY")),
@@ -156,20 +125,13 @@ const fn required_api_key(kind: ProviderKind) -> Option<(&'static str, &'static 
     }
 }
 
-/// The providers an explicit `provider/model` id can name: this agent's
-/// `[providers]` entries, plus every provider type by name.
 #[derive(Clone, Default, PartialEq)]
 pub struct ModelCatalog {
     providers: HashMap<String, NamedProvider>,
-    /// Session-affinity key stamped on every spec this catalog resolves (see
-    /// [`ProviderSpec::session_affinity`]).
     session_affinity: Option<String>,
 }
 
 impl ModelCatalog {
-    /// Build the catalog from the agent's `[providers]` table. Every spec it
-    /// resolves carries the `bg_explicit` session-affinity key for
-    /// `workspace_dir`.
     pub(super) fn new(
         providers_map: Option<&HashMap<String, ProviderEntryFile>>,
         secrets: &SecretStore,
@@ -188,14 +150,11 @@ impl ModelCatalog {
         }
     }
 
-    /// Wrap this catalog for sharing (see [`SharedModelCatalog`]).
     #[must_use]
     pub fn into_shared(self) -> SharedModelCatalog {
         std::sync::Arc::new(tokio::sync::RwLock::new(self))
     }
 
-    /// Names of `[providers]` entries whose resolved API key changed between
-    /// `self` and `other` while their provider type and URL stayed the same.
     #[must_use]
     pub fn credential_changed_providers(&self, other: &Self) -> Vec<String> {
         let mut names: Vec<String> = self
@@ -213,13 +172,6 @@ impl ModelCatalog {
         names
     }
 
-    /// Check that `selector` can run: a tier always can, an explicit model
-    /// only when [`Self::resolve`] resolves it and any required provider API
-    /// key is present.
-    ///
-    /// # Errors
-    /// Returns a plain-language message naming the model and why it doesn't
-    /// resolve or cannot be built.
     pub fn check(&self, selector: &ModelSelector) -> Result<(), String> {
         match selector {
             ModelSelector::Tier(_) => Ok(()),
@@ -254,15 +206,6 @@ impl ModelCatalog {
         }
     }
 
-    /// Resolve an explicit `provider_or_name/model` id the same way
-    /// `providers.toml`'s `[models]` resolves one: a provider part that names
-    /// a `[providers]` entry uses that entry, anything else must be a
-    /// provider type.
-    ///
-    /// # Errors
-    /// Returns a plain-language message if the id is malformed, names neither
-    /// a `[providers]` entry nor a provider type, or names an entry whose
-    /// `type` is invalid.
     pub fn resolve(&self, model_id: &str) -> Result<ProviderSpec, String> {
         let (provider_part, model_name) = split_model_id(model_id)?;
         let mut spec = match self.providers.get(provider_part) {
@@ -274,9 +217,6 @@ impl ModelCatalog {
     }
 }
 
-/// The live [`ModelCatalog`], replaced in place on every config reload so
-/// the tools and sessions holding it resolve against the current
-/// `providers.toml`.
 pub type SharedModelCatalog = std::sync::Arc<tokio::sync::RwLock<ModelCatalog>>;
 
 impl fmt::Debug for ModelCatalog {

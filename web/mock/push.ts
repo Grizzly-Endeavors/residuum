@@ -11,23 +11,16 @@ import type { WebPushSubscription } from "../src/lib/generated/WebPushSubscripti
 import { json, readJsonObject, type JsonObject } from "./http";
 import { decodedParam, type Route, type RouteContext } from "./routes";
 
-/** A registered push device as the mock stores it: what the API shows, and the endpoint it is registered for. */
 export interface MockPushDevice {
   device: PushDevice;
   endpoint: string;
 }
 
-/**
- * The mock's VAPID public key: a real P-256 point (the sender key of
- * RFC 8291's example), so a browser can subscribe with it.
- */
 export const MOCK_VAPID_PUBLIC_KEY =
   "BP4z9KsN6nGRTbVYI_c7VJSPQTBtkgcy27mlmlMoZIIgDll6e3vCYLocInmYWAmS6TlzAC8wEqKK6PBru3jl7A8";
 
-/** The name a device gets when its registration gives none. */
 const UNNAMED_DEVICE = "Unnamed device";
 
-/** A new device receives inbox items and failures. */
 function defaultPreferences(): PushPreferences {
   return {
     inbox_item: true,
@@ -44,10 +37,8 @@ const PREFERENCE_NAMES = [
   "reply_while_away",
 ] as const;
 
-/** A request the mock refuses with `400`. */
 class BadRequest extends Error {}
 
-/** The backend's error for a body it can't use (`parse_body` in `crates/hub/src/http/lifecycle.rs`). */
 function badBody(reason: string): BadRequest {
   return new BadRequest(`the request body isn't valid for this route: ${reason}`);
 }
@@ -56,12 +47,10 @@ function isObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** The bytes of unpadded or padded base64url text, or `null` when it isn't that. */
 function base64urlBytes(text: string): Buffer | null {
   return /^[A-Za-z0-9_-]+={0,2}$/.test(text) ? Buffer.from(text, "base64url") : null;
 }
 
-/** Read the browser's subscription JSON and check it the way the backend does. */
 function parseSubscription(value: unknown): WebPushSubscription {
   if (!isObject(value)) throw badBody("missing field `subscription`");
   const { endpoint, keys } = value;
@@ -92,7 +81,6 @@ function parseSubscription(value: unknown): WebPushSubscription {
   return { endpoint, keys: { p256dh, auth } };
 }
 
-/** Read a label, which can't be blank. */
 function parseLabel(value: unknown): string | undefined {
   if (value === undefined || value === null) return undefined;
   if (typeof value !== "string") throw badBody("invalid type for `label`: expected a string");
@@ -101,7 +89,6 @@ function parseLabel(value: unknown): string | undefined {
   return label;
 }
 
-/** Read some of a device's preferences. */
 function parsePreferencesPatch(value: unknown): PushPreferencesPatch | undefined {
   if (value === undefined || value === null) return undefined;
   if (!isObject(value)) throw badBody("invalid type for `preferences`: expected a map");
@@ -124,7 +111,6 @@ function patched(
   return { ...current, ...patch };
 }
 
-/** The JSON body of the request, or `null` after answering `400`. */
 async function bodyOr400(ctx: RouteContext): Promise<JsonObject | null> {
   try {
     return await readJsonObject(ctx.req);
@@ -136,7 +122,6 @@ async function bodyOr400(ctx: RouteContext): Promise<JsonObject | null> {
   }
 }
 
-/** Run a handler body, answering `400` for a request it refuses. */
 async function refusing(ctx: RouteContext, handle: () => Promise<void> | void): Promise<void> {
   try {
     await handle();
@@ -146,7 +131,6 @@ async function refusing(ctx: RouteContext, handle: () => Promise<void> | void): 
   }
 }
 
-/** The device the route's capture names, or `null` after answering `404`. */
 function namedDevice(ctx: RouteContext): MockPushDevice | null {
   const id = decodedParam(ctx, 0);
   const found = ctx.state.pushDevices.find((entry) => entry.device.id === id);
@@ -157,19 +141,16 @@ function namedDevice(ctx: RouteContext): MockPushDevice | null {
   return found;
 }
 
-/** `GET /api/hub/push/key`. */
 function publicKey(ctx: RouteContext): void {
   json(ctx.res, 200, { public_key: MOCK_VAPID_PUBLIC_KEY } satisfies PushKeyResponse);
 }
 
-/** `GET /api/hub/push/devices`: the devices, oldest first. */
 function listDevices(ctx: RouteContext): void {
   json(ctx.res, 200, {
     devices: ctx.state.pushDevices.map((entry) => entry.device),
   } satisfies PushDeviceList);
 }
 
-/** `PUT /api/hub/push/devices`: register a device, or update the one registered for the same endpoint. */
 async function putDevice(ctx: RouteContext): Promise<void> {
   await refusing(ctx, async () => {
     const body = await bodyOr400(ctx);
@@ -199,7 +180,6 @@ async function putDevice(ctx: RouteContext): Promise<void> {
   });
 }
 
-/** `PATCH /api/hub/push/devices/{id}`: change a label and/or preferences. */
 async function patchDevice(ctx: RouteContext): Promise<void> {
   await refusing(ctx, async () => {
     const body = await bodyOr400(ctx);
@@ -219,7 +199,6 @@ async function patchDevice(ctx: RouteContext): Promise<void> {
   });
 }
 
-/** `DELETE /api/hub/push/devices/{id}`. */
 function deleteDevice(ctx: RouteContext): void {
   const entry = namedDevice(ctx);
   if (entry === null) return;
@@ -228,7 +207,6 @@ function deleteDevice(ctx: RouteContext): void {
   ctx.res.end();
 }
 
-/** `POST /api/hub/push/devices/{id}/test`: the push service always accepts the notification. */
 function testDevice(ctx: RouteContext): void {
   const entry = namedDevice(ctx);
   if (entry === null) return;
@@ -238,7 +216,6 @@ function testDevice(ctx: RouteContext): void {
 
 const DEVICE_ROUTE = "^/api/push/devices/([^/]+)";
 
-/** The Web Push routes, in the unscoped `/api/...` spelling of the hub's `/api/hub/push/...`. */
 export const pushRoutes: readonly Route[] = [
   { method: "GET", pattern: "/api/push/key", handler: publicKey },
   { method: "GET", pattern: "/api/push/devices", handler: listDevices },

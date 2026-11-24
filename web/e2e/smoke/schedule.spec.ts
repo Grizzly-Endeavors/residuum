@@ -2,13 +2,6 @@ import type { Locator, Page } from "@playwright/test";
 import { expectNoAxeViolations } from "../support/axe";
 import { expect, test } from "../support/fixtures";
 
-/**
- * An agent's Schedule: its pulses and scheduled actions. The scenario gives
- * atlas three pulses (Inbox check on, Nightly review paused, Legacy identity
- * failed to load) and two actions (Weekly digest, Review open prs); drifter
- * is stopped and has never run, and gets the same schedule once started.
- */
-
 function pulses(page: Page): Locator {
   return page.getByRole("region", { name: "Pulses" });
 }
@@ -45,7 +38,6 @@ test("a pulse's switch pauses and resumes it", async ({ page }) => {
   await expect(toggle).toHaveAttribute("aria-checked", "false");
   await expect(inbox.getByText("Paused")).toBeVisible();
 
-  // The change was saved, not just shown.
   await page.reload();
   await expect(toggle).toHaveAttribute("aria-checked", "false");
 
@@ -91,14 +83,12 @@ test("a stopped agent's Schedule offers Start, and loads once it runs", async ({
   await expect(page.getByText(/Couldn't load the schedule/)).toHaveCount(0);
   await expectNoAxeViolations(page);
 
-  // An agent the mock starts for the first time gets the sample schedule.
   await page.getByRole("button", { name: "Start drifter" }).click();
   await expect(row(pulses(page), "Inbox check")).toBeVisible();
   await expect(row(actions(page), "Weekly digest")).toBeVisible();
   await expect(page.getByRole("heading", { name: "drifter is stopped" })).toHaveCount(0);
 });
 
-/** Wait until the page has atlas's socket open, so the frames the mock sends reach it. */
 async function socketOpen(page: Page): Promise<void> {
   await expect
     .poll(async () => {
@@ -158,7 +148,6 @@ test("an edit to HEARTBEAT.yml reloads the Schedule", async ({ page, mock }) => 
   await expect(row(pulses(page), "Inbox check")).toBeVisible();
   const before = loads;
 
-  // The watch goes out once the socket opens, so edit until a change lands.
   let edit = 0;
   await expect
     .poll(async () => {

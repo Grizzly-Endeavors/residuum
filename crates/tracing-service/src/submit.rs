@@ -23,20 +23,8 @@ use super::{
 /// expansion and the JSON envelope under the relay's 8 MB body limit.
 const PAYLOAD_BUDGET_BYTES: usize = 4 * 1024 * 1024;
 
-/// Per-submission HTTP timeout. Matches the existing CLI bug-report timeout.
 const SUBMISSION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// Submit a bug report to `{endpoint}/api/v1/bug-report`.
-///
-/// Forces sanitization on the snapshot regardless of the runtime
-/// `sanitize_content` toggle, trims the OTLP batch to stay under the
-/// payload budget, encodes to protobuf, and base64-wraps the payload
-/// before posting.
-///
-/// # Errors
-/// Returns an error if the request fails to send, the upstream returns
-/// a non-2xx status, or the response body doesn't decode into a
-/// [`SubmissionReceipt`].
 pub(super) async fn submit_bug_report(
     endpoint: &str,
     report: BugReport,
@@ -59,12 +47,6 @@ pub(super) async fn submit_bug_report(
     post_for_receipt(&url, &body).await
 }
 
-/// Submit a feedback message to `{endpoint}/api/v1/feedback`.
-///
-/// # Errors
-/// Returns an error if the request fails to send, the upstream returns
-/// a non-2xx status, or the response body doesn't decode into a
-/// [`SubmissionReceipt`].
 pub(super) async fn submit_feedback(
     endpoint: &str,
     feedback: Feedback,
@@ -80,7 +62,6 @@ pub(super) async fn submit_feedback(
     post_for_receipt(&url, &body).await
 }
 
-/// Sanitize, convert, trim, and OTLP-protobuf-encode the span buffer.
 fn encode_spans_for_submission(spans: Vec<CompletedSpan>) -> Vec<u8> {
     let mut spans = spans;
     if spans.is_empty() {
@@ -95,10 +76,6 @@ fn encode_spans_for_submission(spans: Vec<CompletedSpan>) -> Vec<u8> {
     otel::encode_otlp_protobuf(trimmed)
 }
 
-/// Trim spans from the front of the batch (oldest first) until the
-/// encoded OTLP payload fits within [`PAYLOAD_BUDGET_BYTES`].
-///
-/// Returns the kept spans. Logs a warning when any are dropped.
 fn trim_spans_to_budget(mut spans: Vec<SpanData>) -> Vec<SpanData> {
     if spans.is_empty() {
         return spans;
@@ -107,8 +84,6 @@ fn trim_spans_to_budget(mut spans: Vec<SpanData>) -> Vec<SpanData> {
     let original_count = spans.len();
     let mut encoded_size = otel::encode_otlp_protobuf(spans.clone()).len();
 
-    // Iteratively drop the oldest 25% (or 1) until under budget. Capped
-    // to avoid pathological runaway on huge buffers.
     for _ in 0_i32..16_i32 {
         if encoded_size <= PAYLOAD_BUDGET_BYTES {
             break;
@@ -133,7 +108,6 @@ fn trim_spans_to_budget(mut spans: Vec<SpanData>) -> Vec<SpanData> {
     spans
 }
 
-/// Build a reqwest client with the standard submission timeout.
 fn build_client() -> Result<reqwest::Client> {
     reqwest::Client::builder()
         .timeout(SUBMISSION_TIMEOUT)
@@ -141,10 +115,6 @@ fn build_client() -> Result<reqwest::Client> {
         .context("failed to build HTTP client for feedback submission")
 }
 
-/// POST a JSON body and decode the response as a [`SubmissionReceipt`].
-///
-/// Maps non-2xx responses to descriptive errors. For 429, the
-/// upstream's `Retry-After` header is included verbatim in the message.
 async fn post_for_receipt<B: Serialize>(url: &str, body: &B) -> Result<SubmissionReceipt> {
     let client = build_client()?;
     let resp = client
@@ -277,7 +247,6 @@ mod tests {
             json.get("category").is_none(),
             "category must be omitted when None"
         );
-        // Feedback client carries version only — no other fields leak through.
         assert_eq!(json["client"].as_object().unwrap().len(), 1);
         assert_eq!(json["client"]["version"], "v2026.04.16");
     }

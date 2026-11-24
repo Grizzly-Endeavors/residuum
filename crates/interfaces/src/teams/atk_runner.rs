@@ -1,8 +1,3 @@
-//! Microsoft 365 Agents Toolkit (ATK) process runner and streaming execution layer.
-//!
-//! Provides bounded log capture with monotonic sequence numbers, process-group isolated
-//! execution, prerequisite detection, non-interactive sign-in detection, and login URL parsing.
-
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -26,16 +21,13 @@ use residuum_core::process::{
 };
 use residuum_core::util::FatalError;
 
-/// Default capacity for bounded execution log (1000 lines).
 pub const DEFAULT_LOG_CAPACITY: usize = 1000;
 
 /// Documentation URL for the manual Teams setup walkthrough.
 pub const MANUAL_GUIDE_URL: &str = "https://residuum.dev/docs/guides/teams-setup";
 
-/// Minimum supported Node.js version constant.
 pub const MIN_NODE_VERSION: &str = "12.0.0";
 
-/// Thread-safe bounded log buffer with monotonically increasing sequence numbers.
 #[derive(Debug, Clone)]
 pub struct BoundedLog {
     max_lines: usize,
@@ -50,7 +42,6 @@ impl Default for BoundedLog {
 }
 
 impl BoundedLog {
-    /// Create a new bounded log buffer with the given capacity.
     #[must_use]
     pub fn new(max_lines: usize) -> Self {
         Self {
@@ -60,7 +51,6 @@ impl BoundedLog {
         }
     }
 
-    /// Append a new line to the log buffer, returning the recorded entry.
     #[expect(
         clippy::must_use_candidate,
         reason = "push returns LogLine for convenience but is primarily called for side-effects"
@@ -84,7 +74,6 @@ impl BoundedLog {
         line
     }
 
-    /// Retrieve all log entries with sequence number strictly greater than `log_since`.
     #[must_use]
     pub fn lines_since(&self, log_since: u64) -> Vec<LogLine> {
         let Ok(lock) = self.entries.lock() else {
@@ -96,7 +85,6 @@ impl BoundedLog {
             .collect()
     }
 
-    /// Retrieve the most recent `n` log lines.
     #[must_use]
     pub fn tail(&self, n: usize) -> Vec<LogLine> {
         let Ok(lock) = self.entries.lock() else {
@@ -106,14 +94,12 @@ impl BoundedLog {
         lock.iter().skip(start).cloned().collect()
     }
 
-    /// Return the sequence number of the most recently written line, or 0 if empty.
     #[must_use]
     pub fn last_seq(&self) -> u64 {
         self.next_seq.load(Ordering::SeqCst).saturating_sub(1)
     }
 }
 
-/// Strip ANSI escape codes from output text.
 #[must_use]
 pub fn strip_ansi_codes(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
@@ -132,11 +118,6 @@ pub fn strip_ansi_codes(input: &str) -> String {
     out
 }
 
-/// Parse Microsoft 365 sign-in URL and redirect port from interactive CLI output.
-///
-/// Looks for lines matching:
-/// `Log in to your Microsoft 365 account - opening default web browser at <url>`
-/// and extracts `redirect_uri` port parameter.
 #[must_use]
 pub fn parse_login_url_and_port(line: &str) -> Option<(String, u16)> {
     const MARKER: &str = "opening default web browser at";
@@ -187,7 +168,6 @@ fn extract_port_from_redirect_str(s: &str) -> Option<u16> {
     None
 }
 
-/// Map npm CLI installation errors into plain-language, actionable explanations.
 #[must_use]
 pub fn map_npm_error(stderr_text: &str, exit_code: Option<i32>) -> String {
     let lower = stderr_text.to_ascii_lowercase();
@@ -213,7 +193,6 @@ pub fn map_npm_error(stderr_text: &str, exit_code: Option<i32>) -> String {
     }
 }
 
-/// Map ATK app installation / sideloading errors into plain-language explanations.
 #[must_use]
 pub fn map_install_app_error(output_text: &str) -> String {
     let lower = output_text.to_ascii_lowercase();
@@ -252,41 +231,27 @@ pub fn map_provision_error(exit_code: Option<i32>, output_text: &str) -> String 
     }
 }
 
-/// Timeout for each `--version` probe in [`detect_prereqs`].
 pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Timeout for the `atk auth list m365` sign-in check in [`check_signed_in`].
 pub(crate) const SIGN_IN_CHECK_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// Optional path and timeout overrides for injected test executables without global PATH modification.
 #[derive(Debug, Clone)]
 pub struct AtkRunnerOverrides {
-    /// Injected path for `node`.
     pub node_bin: Option<PathBuf>,
-    /// Injected path for `npm`.
     pub npm_bin: Option<PathBuf>,
-    /// Injected path for `atk`.
     pub atk_bin: Option<PathBuf>,
-    /// Timeout for each `--version` probe.
     pub probe_timeout: Duration,
-    /// Timeout for the `atk auth list m365` sign-in check.
     pub sign_in_check_timeout: Duration,
 }
 
-/// Result of a streaming process execution.
 #[derive(Debug, Clone)]
 pub struct ProcessOutput {
-    /// Process exit code if terminated normally.
     pub exit_code: Option<i32>,
-    /// Whether the process exited with code 0.
     pub success: bool,
-    /// Complete captured standard output.
     pub stdout: String,
-    /// Complete captured standard error.
     pub stderr: String,
 }
 
-/// Errors occurring during process execution.
 #[derive(Debug, thiserror::Error)]
 pub enum RunnerError {
     #[error("command execution timed out after {0:?}")]
@@ -299,11 +264,6 @@ pub enum RunnerError {
     Io(#[from] std::io::Error),
 }
 
-/// Execute a command with line-by-line streaming into a [`BoundedLog`], timeout, and cancellation.
-///
-/// # Errors
-/// Returns [`RunnerError::TimedOut`] if the duration elapses, [`RunnerError::Cancelled`] if the token fires,
-/// or [`RunnerError::SpawnFailed`] if launching fails.
 pub async fn run_command_streaming(
     program: &Path,
     args: &[&str],
@@ -403,9 +363,6 @@ async fn detect_tool(bin: &Path, timeout: Duration, cancel: &CancellationToken) 
                 path: Some(bin.display().to_string()),
             };
         }
-        // Not installed is an expected answer; anything else means the tool
-        // may be there but couldn't be checked, which reads the same to the
-        // user, so the log says which it was.
         Err(RunnerError::SpawnFailed(_, e)) if e.kind() == std::io::ErrorKind::NotFound => {
             tracing::debug!(bin = %bin.display(), "tool is not installed");
         }
@@ -432,7 +389,6 @@ async fn detect_tool(bin: &Path, timeout: Duration, cancel: &CancellationToken) 
     }
 }
 
-/// Detect environment prerequisites for Teams setup.
 pub async fn detect_prereqs(
     residuum_root: &Path,
     agent_name: &str,
@@ -441,7 +397,6 @@ pub async fn detect_prereqs(
     let cancel = CancellationToken::new();
     let timeout = overrides.map_or(PROBE_TIMEOUT, |o| o.probe_timeout);
 
-    // 1. Detect node
     let default_node = if cfg!(windows) {
         Path::new("node.exe")
     } else {
@@ -452,7 +407,6 @@ pub async fn detect_prereqs(
         .unwrap_or(default_node);
     let node_status = detect_tool(node_bin, timeout, &cancel).await;
 
-    // 2. Detect npm
     let default_npm = if cfg!(windows) {
         Path::new("npm.cmd")
     } else {
@@ -463,7 +417,6 @@ pub async fn detect_prereqs(
         .unwrap_or(default_npm);
     let npm_status = detect_tool(npm_bin, timeout, &cancel).await;
 
-    // 3. Detect atk
     let paths = resolve_atk_paths(residuum_root, agent_name);
     let install_dir = hub_dir(residuum_root)
         .join("tools")
@@ -502,10 +455,8 @@ pub async fn detect_prereqs(
         }
     };
 
-    // 4. Check if teams is already configured for this agent
     let teams_already_configured = is_teams_configured_for_agent(residuum_root, agent_name).await;
 
-    // 5. Derive suggested cloud endpoint
     let suggested = derive_cloud_teams_endpoint(residuum_root, agent_name).await;
     let suggested_endpoint_source = suggested
         .as_ref()
@@ -541,7 +492,6 @@ async fn is_teams_configured_for_agent(residuum_root: &Path, agent_name: &str) -
     content.contains("[teams]")
 }
 
-/// Check if the user is already signed in to Microsoft 365 via `atk auth list m365`, waiting at most `timeout`.
 pub async fn check_signed_in(
     atk_bin: &Path,
     log: &BoundedLog,
@@ -567,10 +517,6 @@ pub async fn check_signed_in(
     }
 }
 
-/// Install the pinned Microsoft 365 Agents Toolkit CLI into `install_dir` using npm.
-///
-/// # Errors
-/// Returns [`SetupError`] if npm fails or the install command exits with an error.
 pub async fn install_cli(
     install_dir: &Path,
     npm_bin: &Path,
@@ -640,11 +586,6 @@ pub async fn install_cli(
     }
 }
 
-/// Forward a pasted OAuth redirect URL to the local ATK listener, validating that the URL's port
-/// matches `expected_port`.
-///
-/// # Errors
-/// Returns [`FatalError::Config`] if port mismatch or network forward fails.
 pub async fn forward_redirect_with_port_check(
     url_str: &str,
     expected_port: u16,
@@ -674,16 +615,9 @@ pub async fn forward_redirect_with_port_check(
     forward_redirect(url_str).await
 }
 
-/// Detached agent-path login helper management.
 pub struct AgentLoginManager;
 
 impl AgentLoginManager {
-    /// Start `atk auth login m365` detached, waiting until the sign-in URL appears.
-    ///
-    /// Writes PID to `<project_dir>/atk-login.pid` and logs output to `<project_dir>/atk-login.log`.
-    ///
-    /// # Errors
-    /// Returns [`FatalError::Config`] if spawning fails, child dies early, or URL cannot be extracted.
     pub async fn start(
         residuum_root: &Path,
         agent_name: &str,
@@ -696,13 +630,11 @@ impl AgentLoginManager {
         let pid_path = paths.project_dir.join("atk-login.pid");
         let log_path = paths.project_dir.join("atk-login.log");
 
-        // Clean up stale pid if not running
         if pid_path.exists() {
             if let Ok(pid_str) = tokio::fs::read_to_string(&pid_path).await
                 && let Ok(pid) = pid_str.trim().parse::<u32>()
                 && is_process_running(pid)
             {
-                // Check if URL is already available in log
                 if let Ok(content) = tokio::fs::read_to_string(&log_path).await {
                     for line in content.lines() {
                         if let Some((url, port)) = parse_login_url_and_port(line) {
@@ -750,7 +682,6 @@ impl AgentLoginManager {
             .await
             .map_err(|e| FatalError::Config(format!("failed to write pid file: {e}")))?;
 
-        // Poll log file for login URL up to 30 seconds
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         while tokio::time::Instant::now() < deadline {
             if !is_process_running(pid) {
@@ -778,7 +709,6 @@ impl AgentLoginManager {
         ))
     }
 
-    /// Check the status of detached login for an agent.
     pub async fn status(residuum_root: &Path, agent_name: &str) -> String {
         let paths = resolve_atk_paths(residuum_root, agent_name);
         let pid_path = paths.project_dir.join("atk-login.pid");
@@ -807,7 +737,6 @@ impl AgentLoginManager {
             return format!("running (pid {pid}), waiting for login URL");
         }
 
-        // Process is not running; check if signed in or failed
         let dummy_log = BoundedLog::new(10);
         let cancel = CancellationToken::new();
         if check_signed_in(&paths.atk_bin, &dummy_log, &cancel, SIGN_IN_CHECK_TIMEOUT).await {
@@ -825,10 +754,6 @@ impl AgentLoginManager {
         format!("failed (process exited)\nLog tail:\n{tail}")
     }
 
-    /// Cancel a running detached login process for an agent.
-    ///
-    /// # Errors
-    /// Returns [`FatalError`] if cancellation fails.
     pub async fn cancel(residuum_root: &Path, agent_name: &str) -> Result<bool, FatalError> {
         let paths = resolve_atk_paths(residuum_root, agent_name);
         let pid_path = paths.project_dir.join("atk-login.pid");
@@ -871,13 +796,11 @@ mod tests {
         let l3 = log.push(LogStream::Stderr, "line 3".to_string());
         assert_eq!(l3.seq, 3);
 
-        // Lines since seq 1
         let since1 = log.lines_since(1);
         assert_eq!(since1.len(), 2);
         assert_eq!(since1.first().map(|l| l.text.as_str()), Some("line 2"));
         assert_eq!(since1.get(1).map(|l| l.text.as_str()), Some("line 3"));
 
-        // Bounded capacity: line 4 evicts line 1
         let l4 = log.push(LogStream::Stdout, "line 4".to_string());
         assert_eq!(l4.seq, 4);
 
@@ -962,13 +885,11 @@ mod tests {
 
     #[tokio::test]
     async fn forward_redirect_with_port_check_validates() {
-        // Wrong port rejected
         let err = forward_redirect_with_port_check("http://localhost:3000/?code=123", 4000)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("wrong port"));
 
-        // Non-localhost rejected
         let err_host = forward_redirect_with_port_check("http://example.com:3000/?code=123", 3000)
             .await
             .unwrap_err();

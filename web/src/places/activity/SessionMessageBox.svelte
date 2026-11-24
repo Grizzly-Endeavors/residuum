@@ -6,24 +6,13 @@
   import { Icon } from "../../lib/icons";
   import { IconButton } from "../../lib/ui";
 
-  // A session's message box, on the frame the chat's composer uses
-  // (`ComposerFrame`): a box that grows with its text, Enter to send (a new
-  // line on a touch screen, where only the send button sends), the
-  // session's own actions under `/` when it has any, and the reason under it
-  // while nothing can be sent. A line naming one of those actions runs it;
-  // anything else goes to `onsend`.
-
   interface Props {
     value: string;
-    /** The box's name, such as "Message this session". */
     label: string;
     placeholder: string;
-    /** The send button's name. */
     sendLabel: string;
     sending: boolean;
-    /** Why nothing can be sent now, such as "Start atlas first.", or null when it can. */
     blocked: string | null;
-    /** The session's actions under `/`; without any the box has no menu. */
     actions?: readonly AppAction[];
     onsend: () => void;
   }

@@ -1,10 +1,3 @@
-//! Persistence for recent (unobserved) messages across restarts.
-//!
-//! Messages accumulate in `recent_messages.json` until the observer
-//! threshold is reached and an episode is created, at which point the
-//! messages that episode covered are removed from the file. Messages
-//! appended while the observer was running stay for the next cycle.
-
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex, PoisonError, Weak};
@@ -17,37 +10,18 @@ use anyhow::Context;
 use crate::types::Visibility;
 use residuum_inference::Message;
 
-/// A persisted message with observation metadata.
-///
-/// Wraps a [`Message`] with the context needed for the observer to derive
-/// observation metadata (visibility) without requiring the agent to
-/// re-examine the conversation on startup.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecentMessage {
-    /// The underlying conversation message.
     #[serde(flatten)]
     pub message: Message,
-    /// When this message was recorded.
     #[serde(with = "residuum_core::time::minute_format")]
     pub timestamp: NaiveDateTime,
-    /// Whether this message came from a user-visible or background turn.
     #[serde(default)]
     pub visibility: Visibility,
-    /// The correlation id of the turn that produced this message (the same
-    /// id sent as `reply_to` on `turn_started`/`turn_ended`), so the web
-    /// client can associate history entries with a live turn. `None` for
-    /// messages synthesized from an episode or session transcript, where no
-    /// turn id was recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_id: Option<String>,
 }
 
-/// Load recent messages from disk.
-///
-/// Returns an empty vec if the file does not exist.
-///
-/// # Errors
-/// Returns an error if the file exists but cannot be read or parsed.
 pub async fn load_recent_messages(path: &Path) -> anyhow::Result<Vec<RecentMessage>> {
     match tokio::fs::read_to_string(path).await {
         Ok(contents) if contents.trim().is_empty() => Ok(Vec::new()),
@@ -61,22 +35,11 @@ pub async fn load_recent_messages(path: &Path) -> anyhow::Result<Vec<RecentMessa
     }
 }
 
-/// Result of loading recent messages for agent restore.
 pub struct AgentRestore {
-    /// Plain conversation messages (metadata stripped).
     pub messages: Vec<Message>,
-    /// Timestamp of the last user-visible, user-role message (if any).
     pub last_user_message_at: Option<NaiveDateTime>,
 }
 
-/// Load recent messages for agent restore, extracting the last user timestamp.
-///
-/// Returns plain [`Message`] values for the agent's history, plus the
-/// timestamp of the most recent user-visible user message so the agent
-/// can seed its time context across restarts.
-///
-/// # Errors
-/// Returns an error if the file exists but cannot be read or parsed.
 pub async fn load_messages_for_agent(path: &Path) -> anyhow::Result<AgentRestore> {
     let recent = load_recent_messages(path).await?;
 
@@ -96,10 +59,6 @@ pub async fn load_messages_for_agent(path: &Path) -> anyhow::Result<AgentRestore
     })
 }
 
-/// Save recent messages to disk atomically (temp file + rename).
-///
-/// # Errors
-/// Returns an error if the file cannot be written.
 async fn save_recent_messages(path: &Path, messages: &[RecentMessage]) -> anyhow::Result<()> {
     let json =
         serde_json::to_string_pretty(messages).context("failed to serialize recent messages")?;
@@ -107,14 +66,6 @@ async fn save_recent_messages(path: &Path, messages: &[RecentMessage]) -> anyhow
     residuum_core::util::fs::atomic_write(path, &json).await
 }
 
-/// The lock serializing every read-modify-write of the recent-messages file
-/// at `path`. The main loop appends after each turn while the background
-/// observer (the gateway's `post_turn` worker) removes the messages it just
-/// observed; two rewrites interleaving would silently drop whichever landed
-/// first.
-///
-/// One lock per file, so an agent waiting on its own rewrite never holds up
-/// another agent's: every agent has its own recent-messages file.
 fn rewrite_lock(path: &Path) -> Arc<tokio::sync::Mutex<()>> {
     static LOCKS: LazyLock<Mutex<HashMap<PathBuf, Weak<tokio::sync::Mutex<()>>>>> =
         LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -122,22 +73,12 @@ fn rewrite_lock(path: &Path) -> Arc<tokio::sync::Mutex<()>> {
     if let Some(lock) = locks.get(path).and_then(Weak::upgrade) {
         return lock;
     }
-    // Locks nobody holds any more are dropped as new ones are made.
     locks.retain(|_, lock| lock.strong_count() > 0);
     let lock = Arc::new(tokio::sync::Mutex::new(()));
     locks.insert(path.to_path_buf(), Arc::downgrade(&lock));
     lock
 }
 
-/// Append messages to the recent messages file, wrapping each with metadata.
-///
-/// Loads existing messages, extends with new wrapped messages, and saves atomically.
-/// The `tz` parameter determines the timezone used for the message timestamp.
-/// `turn_id` is the correlation id of the turn that produced these messages
-/// (see [`RecentMessage::turn_id`]), or `None` if they weren't produced by a turn.
-///
-/// # Errors
-/// Returns an error if loading or saving fails.
 pub async fn append_recent_messages(
     path: &Path,
     new_messages: &[Message],
@@ -161,12 +102,6 @@ pub async fn append_recent_messages(
     save_recent_messages(path, &existing).await
 }
 
-/// Remove the first `observed` messages — the ones an observation cycle
-/// loaded and just turned into an episode — keeping anything appended after
-/// that cycle loaded the file.
-///
-/// # Errors
-/// Returns an error if the file cannot be read or written.
 pub async fn remove_observed_recent_messages(path: &Path, observed: usize) -> anyhow::Result<()> {
     let lock = rewrite_lock(path);
     let _guard = lock.lock().await;
@@ -192,7 +127,6 @@ mod tests {
         let held = rewrite_lock(&scout);
         let _scout_rewrite = held.lock().await;
 
-        // Another agent's file rewrites while scout's is locked.
         residuum_core::testing::wait::guarded(
             "atlas's rewrite to finish while scout's lock is held",
             append_recent_messages(
@@ -245,7 +179,6 @@ mod tests {
         assert_eq!(sender.category, "spawned");
         assert_eq!(sender.run_id.as_deref(), Some("run-a"));
 
-        // History written without the field still loads.
         let legacy = r#"[{"role":"user","content":"hi","timestamp":"2026-09-20T12:00","visibility":"user"}]"#;
         tokio::fs::write(&path, legacy).await.unwrap();
         let legacy_loaded = load_recent_messages(&path).await.unwrap();
@@ -256,7 +189,6 @@ mod tests {
             None
         );
 
-        // A sender written without a run id loads with none.
         let no_run = r#"[{"role":"user","content":"done","timestamp":"2026-09-20T12:00","visibility":"background","agent_sender":{"address":"spawned-a","category":"spawned"}}]"#;
         tokio::fs::write(&path, no_run).await.unwrap();
         let no_run_loaded = load_recent_messages(&path).await.unwrap();
@@ -289,7 +221,6 @@ mod tests {
             "turn_id should round-trip through save/load"
         );
 
-        // History written before the field existed still loads, as None.
         let legacy = r#"[{"role":"user","content":"hi","timestamp":"2026-09-20T12:00","visibility":"user"}]"#;
         tokio::fs::write(&path, legacy).await.unwrap();
         let legacy_loaded = load_recent_messages(&path).await.unwrap();
@@ -316,7 +247,6 @@ mod tests {
         assert_eq!(message.status_line.as_deref(), Some(line));
         assert_eq!(message.content, "hi", "the line is not part of the text");
 
-        // History written without the field still loads, with no line.
         let legacy = r#"[{"role":"user","content":"hi","timestamp":"2026-09-20T12:00","visibility":"user"}]"#;
         tokio::fs::write(&path, legacy).await.unwrap();
         let legacy_loaded = load_messages_for_agent(&path).await.unwrap();
@@ -440,7 +370,6 @@ mod tests {
         .unwrap();
         let observed = load_recent_messages(&path).await.unwrap().len();
 
-        // A turn ends while the observer's LLM call is in flight.
         append_recent_messages(
             &path,
             &[sample_message("arrived-later")],
@@ -589,7 +518,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("recent_messages.json");
 
-        // First: a real user message
         append_recent_messages(
             &path,
             &[sample_message("real user msg")],
@@ -600,7 +528,6 @@ mod tests {
         .await
         .unwrap();
 
-        // Second: a background system turn (uses user role internally)
         append_recent_messages(
             &path,
             &[sample_message("heartbeat prompt")],
@@ -613,8 +540,6 @@ mod tests {
 
         let restore = load_messages_for_agent(&path).await.unwrap();
         assert_eq!(restore.messages.len(), 2);
-        // The timestamp should come from the first (user-visible) message,
-        // not the second (background) message
         let all = load_recent_messages(&path).await.unwrap();
         let expected_ts = all.first().map(|rm| rm.timestamp);
         assert_eq!(

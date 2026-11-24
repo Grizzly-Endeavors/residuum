@@ -9,14 +9,11 @@
     label: string;
     value?: string;
     options?: readonly Choice[];
-    /** When set, rendered after `options` as `optgroup`s. */
     groups?: readonly ChoiceGroup[];
-    /** Shown while nothing is chosen (value ""); it can't be chosen back. */
     placeholder?: string;
     hint?: string;
     error?: string;
     labelHidden?: boolean;
-    /** The options are still coming: the select is disabled and says so. */
     loading?: boolean;
     element?: HTMLSelectElement;
   }

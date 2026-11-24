@@ -2,12 +2,6 @@
   import { IconButton, ModalLayer, VisuallyHidden } from "../lib/ui";
   import type { ViewerImage } from "./image-viewer";
 
-  // A picture from the conversation at full size, in a modal layer: it fits the
-  // view with its alt text above it. With more than one picture (a message's
-  // images), the arrow keys and the buttons beside the title move between
-  // them, wrapping at either end, and the layer says which one is showing.
-  // `index` is the picture showing, or null while closed.
-
   interface Props {
     images: readonly ViewerImage[];
     index: number | null;
@@ -100,7 +94,6 @@
     font-variant-numeric: tabular-nums;
   }
 
-  /* A well the picture sits in, so a small one still has a card around it. The view less the layer's margin and the head is the most it can have. */
   .viewer-stage {
     --viewer-room: calc(
       100dvh - var(--space-32) - var(--space-48) - var(--safe-top) - var(--safe-bottom)
@@ -114,7 +107,6 @@
     background: var(--color-stone-2);
   }
 
-  /* A set of pictures keeps one frame, so the buttons stay where they are as the pictures change. */
   .viewer-stage[data-fixed] {
     height: var(--viewer-room);
   }

@@ -15,13 +15,8 @@
   import { agentActions } from "./agent-actions.svelte";
   import { STATE_WORDS } from "./home-model";
 
-  // A board row's "…" menu: open the agent's chat, start, stop or restart it,
-  // Start automatically, its settings, and delete it. The heading names the
-  // agent's state, which is why an action it can't take is unavailable.
-
   interface Props {
     agent: AgentSummary;
-    /** The state the row shows, stopping included. */
     state: StatusDotState;
     working: boolean;
   }

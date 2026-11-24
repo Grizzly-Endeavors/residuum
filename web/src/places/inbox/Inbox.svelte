@@ -13,35 +13,20 @@
   import MailThreadRow from "./MailThreadRow.svelte";
   import { emptyListText, FOLDERS, panelOfThread } from "./mail-model";
 
-  // The Inbox: mail between the user and their agents, one folder at a time
-  // (Inbox, Sent, Archived), for every agent or one. The list sits beside the
-  // open thread or New message while there is room for both, and gives way to
-  // it when there isn't. The folder, the filter, the open thread and the New
-  // message live in the URL. Opening a thread or a New message from the list
-  // pushes, so Back closes it; switching threads, folders and the filter
-  // replace. A file panel that shows one of the open thread's attachments
-  // belongs to the thread and closes with it. Focus follows what opens: the
-  // pane's heading when the list made way for it or a message was sent, the
-  // row (or the list) when it closes.
-
   let { place }: { place: InboxPlace } = $props();
 
   const ALL = "";
   const folder = $derived(place.folder);
   const agent = $derived(place.agent);
   const composing = $derived(place.compose !== null);
-  /** The New message's recipients as text, so a place rebuilt with the same ones leaves the draft alone. */
   const composeTo = $derived(place.compose === null ? null : place.compose.to.join(","));
-  /** The ref of the open thread; a New message closes it. */
   const ref = $derived(place.compose === null ? place.thread : null);
   const itemOpen = $derived(composing || ref !== null);
   const missing = $derived(ref !== null && mail.openRef === ref && mail.threadStatus === "missing");
-  /** The open thread's own id once loaded, else the ref it was asked for by. */
   const openId = $derived(
     mail.thread !== null && mail.openRef === ref ? mail.thread.thread_id : ref,
   );
 
-  /** Unread items, for everyone or for the filtered agent, from the overview. */
   const unread = $derived(
     agent === null ? overview.inboxUnread : (overview.overviewOf(agent)?.inbox_unread ?? 0),
   );
@@ -63,7 +48,6 @@
   let listElement = $state<HTMLElement>();
   let paneElement = $state<HTMLElement>();
 
-  /** The clock relative times read, moving each half minute. */
   let now = $state(Date.now());
   $effect(() => {
     const timer = window.setInterval(() => {
@@ -72,32 +56,25 @@
     return () => window.clearInterval(timer);
   });
 
-  // The list follows the folder and the filter, and is fetched each time the Inbox opens.
   $effect(() => {
     const list = { folder, agent };
     untrack(() => void mail.show(list));
   });
 
-  // New mail arrives as the overview's counts change.
   $effect(() => {
     const counts = overview.unreadCounts();
     untrack(() => {
       mail.followCounts(counts);
     });
   });
-  // Leaving the Inbox ends what it held open. The guard has been answered by
-  // then, so an unsent New message goes with it rather than greeting the next one.
   $effect(() => () => {
     mail.leave();
     mail.close();
     mail.discardNewMessage();
   });
 
-  // Leaving with an unsent New message, or closing the page with an unsent
-  // reply, asks first.
   $effect(() => router.guard.register((target) => mail.draftLoss(target)));
 
-  // The thread in the URL is open, from here or from a link.
   $effect(() => {
     const opened = ref;
     untrack(() => {
@@ -106,10 +83,6 @@
     });
   });
 
-  // A New message in the URL is the store's draft; one that closes without
-  // sending (Cancel, Back, or leaving once the guard was answered) is dropped.
-  // A New message for other agents while one is open reaches the store too,
-  // which adds them to a draft with content and re-addresses an empty one.
   $effect(() => {
     const recipients = composeTo;
     untrack(() => {
@@ -123,7 +96,6 @@
     if (outcome.status !== "shown") return;
     const current = router.place;
     if (current.kind !== "inbox" || current.compose !== null || current.thread !== asked) return;
-    // Any message's ref opens its thread; the address names the thread itself.
     if (outcome.threadId !== asked) {
       const panel = router.panel;
       void router.replacePlace(
@@ -139,13 +111,11 @@
     return `mail-row-${threadId}`;
   }
 
-  /** The panel to carry along when the open thread changes: any but one of its attachments. */
   function panelKept(): PlaceExtras {
     const panel = router.panel;
     return panel === null || panelOfThread(mail.thread, panel) ? {} : { panel };
   }
 
-  /** A plain click opens the place in the app; one asking for a new tab is left to the browser. */
   function followsInPlace(event: MouseEvent): boolean {
     if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) {
       return false;
@@ -194,7 +164,6 @@
     void router.replacePlace(listPlace(next), panelKept());
   }
 
-  /** Back to the list, closing the panel when it shows one of the thread's attachments. */
   async function backToList(): Promise<void> {
     const left = openId;
     if (panelOfThread(mail.thread, router.panel) && !(await router.closePanel())) return;
@@ -204,7 +173,6 @@
     (row ?? listElement)?.focus();
   }
 
-  /** The message went: open its thread in Sent, where focus lands on its heading. */
   async function sent(threadId: string): Promise<void> {
     const moved = await router.replacePlace(
       { ...place, folder: "sent", thread: threadId, compose: null },
@@ -213,15 +181,12 @@
     if (moved) await focusPane();
   }
 
-  /** Focus is owed to the pane's heading: something opened or replaced what it shows. */
   let focusOwed = false;
 
-  /** The list has made way for the pane (below the split width one shows at a time). */
   function listHidden(): boolean {
     return listElement !== undefined && getComputedStyle(listElement).display === "none";
   }
 
-  /** Nothing the user chose holds focus: it was dropped, is in the pane already, or is in a list now hidden. */
   function focusIsLoose(): boolean {
     const active = document.activeElement;
     if (active === null || active === document.body) return true;
@@ -229,21 +194,12 @@
     return listElement?.contains(active) === true && listHidden();
   }
 
-  /**
-   * Move focus into the pane: to the open item's heading (the subject, or
-   * "New message"), and until a thread has loaded to its named region.
-   */
   async function focusPane(): Promise<void> {
     focusOwed = true;
     await tick();
     settleFocus(true);
   }
 
-  /**
-   * Pay the focus owed: at once for the action that owes it, and again as
-   * the pane's content arrives, unless the user has moved focus elsewhere
-   * by then.
-   */
   function settleFocus(atOnce = false): void {
     if (!itemOpen) focusOwed = false;
     if (!focusOwed || paneElement === undefined) return;
@@ -261,7 +217,6 @@
     if (missing || mail.threadStatus === "error") focusOwed = false;
   }
 
-  // A thread's heading arrives after the thread loads.
   $effect(() => {
     void mail.thread;
     void mail.threadStatus;
@@ -271,16 +226,11 @@
     });
   });
 
-  /** When the list made way for what opened, focus follows it there instead of being dropped. */
   async function focusPaneWhenAlone(): Promise<void> {
     await tick();
     if (listHidden()) await focusPane();
   }
 
-  /**
-   * Page older threads in. The button leaves with the last page, so when it
-   * had focus, the first new row takes it (the list, if there is none).
-   */
   async function showOlder(event: MouseEvent & { currentTarget: HTMLElement }): Promise<void> {
     const button = event.currentTarget;
     const focused = button === document.activeElement;
@@ -592,7 +542,6 @@
     }
   }
 
-  /* With the list beside the thread or New message, the list is the way back. */
   @container mail (min-width: 780px) {
     .mail :global(.mail-back) {
       display: none;

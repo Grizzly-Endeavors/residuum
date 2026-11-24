@@ -36,21 +36,14 @@ use residuum_workspace::inbox::mail::{
     SendMailError, ThreadFilter, ThreadUpdateError, UserMailSource,
 };
 
-/// How many threads a page holds when the request names no limit.
 pub const DEFAULT_PAGE_SIZE: usize = 50;
 
-/// The most threads a page holds; a larger limit is treated as this.
 pub const MAX_PAGE_SIZE: usize = 200;
 
-/// What the mail routes read and tell.
 #[derive(Clone)]
 pub(super) struct MailState {
-    /// Where the agents' files are.
     pub directory: Arc<dyn AgentDirectory>,
-    /// Told when the hub changes an agent's messages, so its unread count is
-    /// read again.
     pub overview: Arc<TeamOverview>,
-    /// The staged files a send or reply attaches.
     pub uploads: UploadStore,
 }
 
@@ -60,7 +53,6 @@ impl MailState {
     }
 }
 
-/// The thread list, a thread, its actions, and send.
 pub(super) fn routes(state: MailState) -> Router {
     Router::new()
         .route("/api/hub/mail/threads", get(list_threads))
@@ -82,8 +74,6 @@ pub(super) fn routes(state: MailState) -> Router {
         .with_state(state)
 }
 
-/// The query of `GET /api/hub/mail/threads`, kept as text so a value that
-/// can't be used is answered with a JSON error that says which one.
 #[derive(Deserialize)]
 struct ListParams {
     folder: Option<String>,
@@ -92,7 +82,6 @@ struct ListParams {
     limit: Option<String>,
 }
 
-/// A usable list request.
 struct ListQuery {
     filter: ThreadFilter,
     before: Option<MailCursor>,
@@ -146,7 +135,6 @@ impl ListParams {
     }
 }
 
-/// `GET /api/hub/mail/threads` — one page of threads, newest first.
 async fn list_threads(
     State(state): State<MailState>,
     params: Result<Query<ListParams>, QueryRejection>,
@@ -180,8 +168,6 @@ async fn list_threads(
     .into_response()
 }
 
-/// A request the routes refuse: the status and the plain message the user
-/// sees as `{ "error": message }`.
 struct Refusal {
     status: StatusCode,
     message: String,
@@ -195,7 +181,6 @@ impl Refusal {
         }
     }
 
-    /// The `404` for a ref that names no message.
     fn no_message(raw: &str) -> Self {
         Self::new(
             StatusCode::NOT_FOUND,
@@ -210,13 +195,10 @@ impl IntoResponse for Refusal {
     }
 }
 
-/// The message ref in a path; one that doesn't parse names no message.
 fn message_ref(raw: &str) -> Result<InboxRef, Refusal> {
     InboxRef::parse(raw).map_err(|_unparsed| Refusal::no_message(raw))
 }
 
-/// The thread of `index` holding the message `item`, which the path named as
-/// `raw`.
 fn thread_of<'a>(
     index: &'a MailIndex,
     item: &InboxRef,
@@ -227,7 +209,6 @@ fn thread_of<'a>(
         .ok_or_else(|| Refusal::no_message(raw))
 }
 
-/// `GET /api/hub/mail/threads/{ref}` — the whole thread holding the message.
 async fn get_thread(
     State(state): State<MailState>,
     Path(raw): Path<String>,
@@ -238,7 +219,6 @@ async fn get_thread(
     Ok(Json(MailThread::of(thread)))
 }
 
-/// Which thread change a route makes.
 #[derive(Clone, Copy)]
 enum ThreadChange {
     Read,
@@ -256,8 +236,6 @@ impl ThreadChange {
     }
 }
 
-/// Make `change` to the thread holding the message `raw` names, then count
-/// again the unread messages of every agent that wrote in it.
 async fn change_thread(
     state: &MailState,
     raw: &str,
@@ -272,8 +250,6 @@ async fn change_thread(
         ThreadChange::Archive => domain::archive_thread(&mailboxes, thread).await,
         ThreadChange::Restore => domain::restore_thread(&mailboxes, thread).await,
     };
-    // Some messages may have changed even when others failed, so the counts
-    // are read again either way.
     let writers: BTreeSet<&str> = thread
         .messages()
         .filter_map(|message| match &message.from {
@@ -299,7 +275,6 @@ async fn change_thread(
     }
 }
 
-/// `POST /api/hub/mail/threads/{ref}/read`.
 async fn read_thread(
     State(state): State<MailState>,
     Path(raw): Path<String>,
@@ -307,7 +282,6 @@ async fn read_thread(
     change_thread(&state, &raw, ThreadChange::Read).await
 }
 
-/// `POST /api/hub/mail/threads/{ref}/archive`.
 async fn archive_thread(
     State(state): State<MailState>,
     Path(raw): Path<String>,
@@ -315,7 +289,6 @@ async fn archive_thread(
     change_thread(&state, &raw, ThreadChange::Archive).await
 }
 
-/// `POST /api/hub/mail/threads/{ref}/restore`.
 async fn restore_thread(
     State(state): State<MailState>,
     Path(raw): Path<String>,
@@ -323,7 +296,6 @@ async fn restore_thread(
     change_thread(&state, &raw, ThreadChange::Restore).await
 }
 
-/// The body of `POST /api/hub/mail/send`.
 #[derive(Deserialize)]
 struct SendRequest {
     to: Vec<String>,
@@ -334,7 +306,6 @@ struct SendRequest {
     attachments: Vec<String>,
 }
 
-/// The body of `POST /api/hub/mail/threads/{ref}/reply`.
 #[derive(Deserialize)]
 struct ReplyRequest {
     body: String,
@@ -342,7 +313,6 @@ struct ReplyRequest {
     attachments: Vec<String>,
 }
 
-/// The request body, or the `400` that says why it can't be read.
 fn request_body<T>(request: Result<Json<T>, JsonRejection>) -> Result<T, Refusal> {
     request.map(|Json(body)| body).map_err(|rejection| {
         Refusal::new(
@@ -352,7 +322,6 @@ fn request_body<T>(request: Result<Json<T>, JsonRejection>) -> Result<T, Refusal
     })
 }
 
-/// The staged files `ids` name, in order, each once.
 async fn staged_files(uploads: &UploadStore, ids: &[String]) -> Result<Vec<PathBuf>, Refusal> {
     let mut seen = BTreeSet::new();
     let mut files = Vec::new();
@@ -382,8 +351,6 @@ async fn staged_files(uploads: &UploadStore, ids: &[String]) -> Result<Vec<PathB
     Ok(files)
 }
 
-/// Remove the staged uploads a sent message copied. One that can't be removed
-/// is logged; the store drops it when it expires.
 async fn consume_uploads(uploads: &UploadStore, ids: &[String]) {
     let unique: BTreeSet<&str> = ids.iter().map(String::as_str).collect();
     for id in unique {
@@ -393,7 +360,6 @@ async fn consume_uploads(uploads: &UploadStore, ids: &[String]) {
     }
 }
 
-/// Send `mail`, and consume the uploads `upload_ids` once it went.
 async fn send_and_consume(
     state: &MailState,
     mail: OutgoingMail,
@@ -432,7 +398,6 @@ fn send_refusal(error: &SendMailError) -> Refusal {
     }
 }
 
-/// `POST /api/hub/mail/send` — a new message to one or more agents.
 async fn send(
     State(state): State<MailState>,
     request: Result<Json<SendRequest>, JsonRejection>,
@@ -448,20 +413,16 @@ async fn send(
         attachments,
     };
     let sent = send_and_consume(&state, mail, &request.attachments).await?;
-    // A message that answers nothing starts its own thread.
     Ok(Json(MailSendResponse {
         thread_id: sent.message.to_string(),
     }))
 }
 
-/// `POST /api/hub/mail/threads/{ref}/reply` — the reply-all to the thread
-/// holding the message, answering its latest message.
 async fn reply_to_thread(
     State(state): State<MailState>,
     Path(raw): Path<String>,
     request: Result<Json<ReplyRequest>, JsonRejection>,
 ) -> Result<Json<MailReplyResponse>, Refusal> {
-    // An unknown thread answers 404 before the body is looked at.
     let item = message_ref(&raw)?;
     let before = MailIndex::load(&state.mailboxes()).await;
     let thread = thread_of(&before, &item, &raw)?;

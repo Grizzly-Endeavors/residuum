@@ -43,24 +43,12 @@ import { byName } from "./util";
 import { writeFile } from "./workspace-tree";
 import { MOCK_TIMEZONE } from "./zone";
 
-/** The shape agent key names and A2A caller key names both take. */
 const KEY_NAME = /^[a-z][a-z0-9_]{0,63}$/;
 
-/** Below this many characters an agent key's value is stored with a warning. */
 const SHORT_KEY_VALUE = 8;
 
 const VALID: ValidateResponse = { valid: true };
 
-/**
- * Merge a JSON diff (the shape the Settings form's diff builders in
- * `lib/settings-toml.ts` send) into a plain object in place — the mock's
- * stand-in for the real backend's `toml_edit`/JSON-merge patching
- * (`crates/config/src/patch.rs`, `crates/workspace/src/mcp_patch.rs`). Comment
- * preservation doesn't apply here (mock state is never a real file with
- * comments), but the merge semantics match: `null` removes a key, a nested
- * object recurses, and `{"$inline": {...}}` sets the key to that inner
- * object directly.
- */
 function applyJsonPatch(target: JsonObject, diff: JsonObject): void {
   for (const [key, val] of Object.entries(diff)) {
     if (val === null) {
@@ -84,8 +72,6 @@ function applyJsonPatch(target: JsonObject, diff: JsonObject): void {
     }
   }
 }
-
-// ─── Status & system ───────────────────────────────────────────────────────────
 
 const systemRoutes: readonly Route[] = [
   {
@@ -116,7 +102,6 @@ const systemRoutes: readonly Route[] = [
     method: "POST",
     pattern: "/api/tracing/bug-report",
     handler: async ({ req, res, state }) => {
-      // Drain the body so the dev server can inspect it if asked.
       await readBody(req);
       json(res, 200, {
         public_id: "RR-MOCK-BUG-01",
@@ -137,11 +122,8 @@ const systemRoutes: readonly Route[] = [
   },
 ];
 
-// ─── Config documents ──────────────────────────────────────────────────────────
-
 type TomlDocument = "configToml" | "hubConfigToml" | "providersToml";
 
-/** Why the backend would refuse a patched document, as its validation words it; null when it wouldn't. */
 function patchProblem(field: TomlDocument, doc: JsonObject): string | null {
   const agent = field === "configToml" ? doc.agent : undefined;
   const limit =
@@ -158,12 +140,6 @@ const repoOf = (field: TomlDocument): RepoKind =>
 const fileOf = (field: TomlDocument): string =>
   field === "providersToml" ? "providers.toml" : "config.toml";
 
-/**
- * Read, replace, patch and validate one TOML document kept in the state.
- * `afterWrite` runs once a write has been answered, as the hub reloads after
- * its own config changes. `check` finds the problems in text that parses,
- * which a validate and a raw save report besides syntax errors.
- */
 function tomlDocumentRoutes(
   prefix: string,
   field: TomlDocument,
@@ -183,7 +159,6 @@ function tomlDocumentRoutes(
       pattern: `${prefix}/raw`,
       handler: async (ctx) => {
         const body = await readBody(ctx.req);
-        // A raw save is checkpointed and always written, with its problems reported.
         checkpointBeforeAction(ctx.state, repoOf(field), `raw write ${fileOf(field)}`);
         ctx.state[field] = body;
         json(ctx.res, 200, validation("toml", body, check));
@@ -207,7 +182,6 @@ function tomlDocumentRoutes(
           } satisfies ValidateResponse);
           return;
         }
-        // The backend checkpoints the file before it writes, and answers with the checkpoint for Undo.
         const checkpoint = checkpointBeforeAction(state, repoOf(field), `patch ${fileOf(field)}`);
         state[field] = stringifyToml(doc);
         json(ctx.res, 200, { ...VALID, checkpoint_id: checkpoint } satisfies ValidateResponse);
@@ -224,12 +198,10 @@ function tomlDocumentRoutes(
   ];
 }
 
-/** The agent's `mcp.json`, or the empty document the backend serves when there is none. */
 function mcpJsonOf(state: MockState): string {
   return state.workspaceFileContents[MCP_JSON] ?? '{"mcpServers":{}}';
 }
 
-/** Write `mcp.json`, checkpointing the workspace first as the backend does, and answer with the checkpoint for Undo. */
 function writeMcpJson(
   ctx: RouteContext,
   content: string,
@@ -253,7 +225,6 @@ const mcpRoutes: readonly Route[] = [
     method: "PUT",
     pattern: "/api/mcp/raw",
     handler: async (ctx) => {
-      // A raw save is always written, with its problems reported.
       const body = await readBody(ctx.req);
       writeMcpJson(ctx, body, "raw write mcp.json", validation("json", body));
     },
@@ -294,7 +265,6 @@ const providerRoutes: readonly Route[] = [
       const body = await readJsonObject(req);
       const provider = (stringField(body, "provider") ?? "").toLowerCase();
 
-      // Match against known provider types
       let providerType = provider;
       for (const key of Object.keys(PROVIDER_MODELS)) {
         if (provider.includes(key)) {
@@ -313,7 +283,6 @@ const providerRoutes: readonly Route[] = [
   },
 ];
 
-/** The models each decision model provider offers in the mock. */
 const SYSTEM_ONE_MODELS: Readonly<
   Record<string, readonly { id: string; description: string | null }[]>
 > = {
@@ -374,9 +343,6 @@ const systemOneRoutes: readonly Route[] = [
   },
 ];
 
-// ─── Setup ─────────────────────────────────────────────────────────────────────
-
-/** Finish first-run setup: create the first agent from the wizard's files. */
 async function completeSetup({ req, res, hub, state }: RouteContext): Promise<void> {
   const body = await readJsonObject(req);
   const name = stringField(body, "agent_name") ?? "";
@@ -389,8 +355,6 @@ async function completeSetup({ req, res, hub, state }: RouteContext): Promise<vo
     } satisfies ValidateResponse);
     return;
   }
-  // Setup only creates the first agent (`refuse_when_agents_exist`).
-  // Compare the folder the name would get, before a suffix is tried.
   const canonical = canonicalAgentName(name) ?? name;
   const base = slugBase(canonical);
   if (hub.agents.size > 0) {
@@ -420,8 +384,6 @@ async function completeSetup({ req, res, hub, state }: RouteContext): Promise<vo
   state.mode = "running";
   json(res, 200, { valid: true, diagnostics: [] } satisfies ValidateResponse);
 }
-
-// ─── Agent keys ────────────────────────────────────────────────────────────────
 
 const agentKeyRoutes: readonly Route[] = [
   {
@@ -459,7 +421,6 @@ const agentKeyRoutes: readonly Route[] = [
       json(res, 200, {
         name,
         env_var: name.toUpperCase(),
-        // A short value is stored, with a note that hiding it from output is unreliable.
         ...(value.length < SHORT_KEY_VALUE
           ? { warning: "This value is short, so redacting it from output is unreliable." }
           : {}),
@@ -482,9 +443,6 @@ const agentKeyRoutes: readonly Route[] = [
   },
 ];
 
-// ─── A2A ───────────────────────────────────────────────────────────────────────
-
-/** Answer a stop or stop-watching request for one outbound task. */
 function closeOutboundTask(ctx: RouteContext): void {
   const { res, state } = ctx;
   const taskId = ctx.params[0] ?? "";
@@ -515,10 +473,8 @@ function closeOutboundTask(ctx: RouteContext): void {
   json(res, 200, closed);
 }
 
-/** The port of the mock's A2A listener. */
 const A2A_PORT = 7702;
 
-/** The cards the mock's remote agents answer with. An agent not here is still being checked. */
 const REMOTE_CARDS: Readonly<Record<string, A2aAgentCard>> = {
   "research-buddy": {
     name: "Research Buddy",
@@ -527,7 +483,6 @@ const REMOTE_CARDS: Readonly<Record<string, A2aAgentCard>> = {
   },
 };
 
-/** The agents `config/a2a.json` lists, as the running agent reports them; none when it doesn't parse, as the loader skips it. */
 function listedRemoteAgents(raw: string): A2aRemoteAgent[] {
   let agents: JsonObject = {};
   try {
@@ -558,7 +513,6 @@ const a2aRoutes: readonly Route[] = [
     method: "GET",
     pattern: "/api/a2a/status",
     handler: ({ res, state, hub }) => {
-      // The mock has no relay and no address of the user's own: the agent is reachable locally.
       json(res, 200, {
         enabled: true,
         port: A2A_PORT,
@@ -667,7 +621,6 @@ const a2aRoutes: readonly Route[] = [
     method: "GET",
     pattern: "/api/a2a/agents/raw",
     handler: ({ res, state }) => {
-      // The backend serves the file as it is, labeled JSON.
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(state.a2aAgentsJson);
     },
@@ -681,8 +634,6 @@ const a2aRoutes: readonly Route[] = [
     },
   },
 ];
-
-// ─── Secrets ───────────────────────────────────────────────────────────────────
 
 const secretRoutes: readonly Route[] = [
   {
@@ -712,12 +663,6 @@ const secretRoutes: readonly Route[] = [
   },
 ];
 
-/**
- * Status, config documents, providers, MCP, setup completion, agent keys,
- * A2A, secrets and tracing, in the unscoped `/api/...` spelling. Agent
- * requests run against that agent's state; hub requests (`/api/hub/config/...`,
- * secrets) against the hub's.
- */
 export const configRoutes: readonly Route[] = [
   ...systemRoutes,
   ...tomlDocumentRoutes("/api/config", "configToml"),

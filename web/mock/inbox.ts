@@ -3,19 +3,11 @@ import { decodedParam, type Route, type RouteContext } from "./routes";
 import type { MockState, UserInboxAttachment, UserInboxItem } from "./state";
 import { removePath, writeFile } from "./workspace-tree";
 
-/**
- * An agent's inbox attachments: where each is stored and served. An agent's
- * items to the user are in `state.inboxItems` and its archive in
- * `state.inboxArchive`; the mail routes list them as threads.
- */
-
-/** A 1x1 PNG: what an image attachment serves. */
 export const PNG_PIXEL = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
   "base64",
 );
 
-/** A value as one segment of a URL path: every byte but RFC 3986's unreserved characters percent-encoded, as the backend does. */
 function pathSegment(value: string): string {
   return encodeURIComponent(value).replace(
     /[!'()*]/g,
@@ -23,11 +15,6 @@ function pathSegment(value: string): string {
   );
 }
 
-/**
- * Where an item's attachment is served. The two inboxes are separate id
- * spaces, so an item you sent to an agent has its own route: a message from an
- * agent and your message to an agent can share an id.
- */
 export function attachmentUrl(agent: string, side: InboxSide, id: string, index: number): string {
   const owner = pathSegment(agent);
   const item = pathSegment(id);
@@ -36,7 +23,6 @@ export function attachmentUrl(agent: string, side: InboxSide, id: string, index:
     : `/api/agents/${owner}/inbox/agent/${item}/attachments/${String(index)}`;
 }
 
-/** The content types the backend names a file's type by, from its extension. */
 const MIME_TYPES: Readonly<Record<string, string>> = {
   md: "text/markdown",
   txt: "text/plain",
@@ -53,26 +39,21 @@ const MIME_TYPES: Readonly<Record<string, string>> = {
   zip: "application/zip",
 };
 
-/** The type of a file by its extension, as the backend detects it. */
 export function mimeTypeOf(filename: string): string {
   const extension = filename.slice(filename.lastIndexOf(".") + 1).toLowerCase();
   return MIME_TYPES[extension] ?? "application/octet-stream";
 }
 
-/** Whether a file of this type is kept as text in the workspace, where the file panel can open it. */
 function isText(mimeType: string): boolean {
   return mimeType.startsWith("text/") || mimeType === "application/json";
 }
 
-/** Which of an agent's two inbox directories an attachment is in: `user` holds what the agent sent the user, `agent` what was sent to the agent. */
 export type InboxSide = "user" | "agent";
 
-/** The directory holding an item's attachment files in the agent's workspace; archiving an item moves it under `archive/`. */
 function attachmentDirectory(side: InboxSide, id: string, archived: boolean): string {
   return `${archived ? "archive/" : ""}inbox/${side}/attachments/${id}`;
 }
 
-/** Where an item's attachment is in the agent's workspace, active or archived. */
 export function attachmentPath(
   side: InboxSide,
   id: string,
@@ -82,11 +63,6 @@ export function attachmentPath(
   return `${attachmentDirectory(side, id, archived)}/${filename}`;
 }
 
-/**
- * Keep a file as an item's attachment: a text file is a workspace file, so the
- * file panel opens it by `attachmentPath`; any other kind is held by its bytes.
- * The attachment's `url` is filled in when the item is listed.
- */
 export function storeAttachment(
   state: MockState,
   side: InboxSide,
@@ -102,13 +78,11 @@ export function storeAttachment(
   return { filename, mime_type: mimeType, size: bytes.length, url: "" };
 }
 
-/** What an attachment nobody stored serves: a stand-in of the attachment's type. */
 function standInBody(attachment: Pick<UserInboxAttachment, "filename" | "mime_type">): Buffer {
   if (attachment.mime_type === "image/png") return PNG_PIXEL;
   return Buffer.from(`Mock attachment: ${attachment.filename}\n`);
 }
 
-/** What an attachment serves: the file as it was stored, else a stand-in. */
 function attachmentBody(
   state: MockState,
   side: InboxSide,
@@ -122,16 +96,11 @@ function attachmentBody(
   return state.attachmentBytes.get(path) ?? standInBody(attachment);
 }
 
-/**
- * An attachment of a new item that nobody stored a file for, sized as the
- * stand-in it serves. Its `url` is filled in when the item is listed.
- */
 export function mockAttachment(filename: string, mimeType: string): UserInboxAttachment {
   const size = standInBody({ filename, mime_type: mimeType }).length;
   return { filename, mime_type: mimeType, size, url: "" };
 }
 
-/** Put an attachment made by `mockAttachment` in the workspace, where the file panel opens a text one by its path. */
 export function keepStandIn(
   state: MockState,
   side: InboxSide,
@@ -146,11 +115,6 @@ export function keepStandIn(
   );
 }
 
-/**
- * Move the files of an agent's item to the archive or back, the way archiving
- * an item moves its attachment directory, so the path an archived item's
- * attachments report is where the file panel finds them.
- */
 export function moveAttachments(state: MockState, item: UserInboxItem, toArchive: boolean): void {
   let moved = false;
   for (const { filename } of item.attachments) {
@@ -171,17 +135,11 @@ export function moveAttachments(state: MockState, item: UserInboxItem, toArchive
   if (moved) removePath(state, attachmentDirectory("user", item.id, !toArchive));
 }
 
-/** The attachments of an item and whether it is archived, found by id in the inbox the side names. */
 interface FoundAttachments {
   attachments: readonly UserInboxAttachment[];
   archived: boolean;
 }
 
-/**
- * The item `id` an agent sent the user, in the inbox or else the archive, so
- * a link outlives archiving. Only that inbox: a message you sent the agent can
- * have the same id and is served by its own route.
- */
 function userItemAttachments(state: MockState, id: string): FoundAttachments | undefined {
   const active = state.inboxItems.find((item) => item.id === id);
   if (active !== undefined) return { attachments: active.attachments, archived: false };
@@ -189,7 +147,6 @@ function userItemAttachments(state: MockState, id: string): FoundAttachments | u
   return archived === undefined ? undefined : { attachments: archived.attachments, archived: true };
 }
 
-/** The item `id` in the agent's own inbox, such as a message you sent it. */
 function agentItemAttachments(state: MockState, id: string): FoundAttachments | undefined {
   const received = state.agentInbox.find((item) => item.id === id);
   return received?.attachments === undefined
@@ -197,17 +154,11 @@ function agentItemAttachments(state: MockState, id: string): FoundAttachments | 
     : { attachments: received.attachments, archived: false };
 }
 
-/** The item id a route names: the backend takes it with or without `.json`. */
 function itemId(ctx: RouteContext): string {
   const id = decodedParam(ctx, 0);
   return id.endsWith(".json") ? id.slice(0, -".json".length) : id;
 }
 
-/**
- * Serve attachment `index` of the item a route names, found by `find` in the
- * one inbox the route is for. A file that is gone answers `404` with the
- * message the backend gives.
- */
 function serveAttachment(
   ctx: RouteContext,
   find: (state: MockState, id: string) => FoundAttachments | undefined,
@@ -230,7 +181,6 @@ function serveAttachment(
     return;
   }
   const body = attachmentBody(ctx.state, side, id, attachment, found.archived);
-  // A quote or backslash would end the header's quoted filename early.
   const filename = attachment.filename.replace(/["\\]/g, "");
   ctx.res.writeHead(200, {
     "Content-Type": attachment.mime_type,
@@ -240,7 +190,6 @@ function serveAttachment(
   ctx.res.end(body);
 }
 
-/** The attachment routes, in the unscoped `/api/...` spelling. */
 export const inboxRoutes: readonly Route[] = [
   {
     method: "GET",

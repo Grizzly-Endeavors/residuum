@@ -1,42 +1,26 @@
-//! Endpoint capability flags for the bus.
-
-// ---------------------------------------------------------------------------
-// EndpointCapabilities
-// ---------------------------------------------------------------------------
-
-/// Bitfield describing what an endpoint can do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EndpointCapabilities(u8);
 
 impl EndpointCapabilities {
-    /// Bidirectional conversation.
     pub const INTERACTIVE: Self = Self(0b0001);
-    /// Output-only push (notifications).
     pub const NOTIFY_ONLY: Self = Self(0b0100);
 
-    /// No capabilities set.
     #[must_use]
     pub const fn empty() -> Self {
         Self(0)
     }
 
-    /// Combine two capability sets.
     #[cfg(test)]
     #[must_use]
     pub(crate) const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }
 
-    /// Check whether all bits in `other` are present in `self`.
     #[must_use]
     pub const fn contains(self, other: Self) -> bool {
         (self.0 & other.0) == other.0
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

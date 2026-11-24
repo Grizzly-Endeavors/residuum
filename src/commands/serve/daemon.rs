@@ -1,12 +1,7 @@
-//! Daemon spawning for the gateway.
-
 use residuum::util::FatalError;
 
 use super::ServeArgs;
 
-/// Build the `residuum serve --foreground` arguments for the daemon child,
-/// forwarding everything from the original invocation except a redundant
-/// `serve`/`--foreground`.
 fn build_child_args(raw: &[String]) -> Vec<String> {
     let mut child_args = vec!["serve".to_string(), "--foreground".to_string()];
     let skip = if raw.get(1).is_some_and(|a| a == "serve") {
@@ -22,19 +17,6 @@ fn build_child_args(raw: &[String]) -> Vec<String> {
     child_args
 }
 
-/// Spawn the hub as a background daemon process.
-///
-/// Launches `residuum serve --foreground` as a detached child and waits for
-/// it to report itself healthy (its HTTP listener bound and every autostart
-/// agent started or recorded as failed — see `hub::run_hub`) before
-/// reporting success, so a later init failure is caught here instead of
-/// being reported as "started" and then exiting silently. Prints a
-/// first-launch welcome message if no config exists yet.
-///
-/// # Errors
-///
-/// Returns `FatalError` if the child process cannot be spawned, exits
-/// before becoming healthy, or does not become healthy within the timeout.
 #[tracing::instrument(skip_all)]
 pub(crate) fn run_serve_command(args: &ServeArgs) -> Result<(), FatalError> {
     use residuum::daemon::read_pid_file;
@@ -46,7 +28,6 @@ pub(crate) fn run_serve_command(args: &ServeArgs) -> Result<(), FatalError> {
     let pid_path = residuum::config::HubPaths::new(&hub_dir).pid_file();
     let label = "gateway";
 
-    // Check for an already-running instance via file lock (primary detection)
     if residuum::daemon::is_pid_locked(&pid_path)? {
         let pid_msg = residuum::daemon::read_pid_file(&pid_path)
             .map_or_else(|_| String::new(), |pid| format!(" (pid {pid})"));
@@ -54,35 +35,21 @@ pub(crate) fn run_serve_command(args: &ServeArgs) -> Result<(), FatalError> {
         return Ok(());
     }
 
-    // Clean up stale PID file if lock was not held
     if pid_path.exists()
         && let Err(e) = residuum::daemon::remove_pid_file(&pid_path)
     {
         tracing::warn!(error = %e, "failed to clean stale pid file");
     }
 
-    // Resolve gateway address from config or defaults
     let gateway_addr = super::super::resolve_gateway_addr(&residuum_root);
 
-    // Detect whether the child will enter setup mode (no agent exists yet)
     let has_agents = !residuum::config::discover_agents(&residuum_root)?.is_empty();
     let needs_setup = args.setup || !has_agents;
 
-    // Catch an invalid hub config here, where the user can see the error.
-    // The child takes its PID lock before loading config, so the startup poll
-    // below would report success before the child exits. A live config that
-    // fails to load is only blocked here when there's no last-known-good
-    // copy either — the child falls back to one and keeps running, same as
-    // `run_serve_foreground_inner`'s check. A missing timezone is allowed
-    // when no agent exists: the setup wizard asks for one. `--setup` serves
-    // a throwaway directory, so the real hub config isn't what the child
-    // loads. An agent's own broken config doesn't stop the hub: that agent
-    // starts `failed` and the rest run.
     if !args.setup {
         super::startup_config::ensure_hub_config_loads_or_has_fallback(&residuum_root, &hub_dir)?;
     }
 
-    // First-launch welcome (or --setup which mimics it)
     if needs_setup {
         println!("welcome to residuum!");
         println!();
@@ -92,28 +59,19 @@ pub(crate) fn run_serve_command(args: &ServeArgs) -> Result<(), FatalError> {
         println!();
     }
 
-    // Build child args: forward original args plus --foreground.
-    // We use std::env::args() rather than reconstructing from the parsed
-    // struct to preserve flag formatting across the process boundary.
     let exe = std::env::current_exe()
         .map_err(|e| FatalError::Gateway(format!("failed to determine current executable: {e}")))?;
 
     let raw_args: Vec<String> = std::env::args().collect();
     let child_args = build_child_args(&raw_args);
 
-    // A previous attempt's readiness/error markers must not leak into this
-    // one's poll below.
     residuum::daemon::remove_ready_file(&hub_dir);
     residuum::daemon::clear_startup_error(&hub_dir);
 
     let mut child = residuum::daemon::spawn_gateway_process(&exe, &child_args, &hub_dir)
         .map_err(|e| FatalError::Gateway(format!("failed to spawn daemon process: {e}")))?;
 
-    // When setup is needed, the setup wizard runs before the gateway and
-    // no PID file is written until setup completes. Just verify the child
-    // is alive and direct the user to the web UI.
     if needs_setup {
-        // Brief pause to catch immediate crashes
         std::thread::sleep(std::time::Duration::from_millis(500));
         match child.try_wait() {
             Ok(Some(status)) => {
@@ -138,11 +96,6 @@ pub(crate) fn run_serve_command(args: &ServeArgs) -> Result<(), FatalError> {
         }
     }
 
-    // Wait for the daemon to report itself healthy: its HTTP listener bound
-    // and every autostart agent started or recorded as failed (see
-    // `hub::run_hub`). Reaching the PID lock
-    // alone isn't enough — a later init failure would otherwise be reported
-    // as "started" and then exit silently.
     let ready_path = residuum::daemon::ready_file_path(&hub_dir);
     let outcome = residuum::daemon::wait_for_ready(
         &ready_path,
@@ -178,8 +131,6 @@ pub(crate) fn run_serve_command(args: &ServeArgs) -> Result<(), FatalError> {
     }
 }
 
-/// Print why startup failed, preferring the plain-language error the
-/// process itself recorded over a generic message.
 fn report_startup_failure(config_dir: &std::path::Path, label: &str, generic_reason: &str) {
     match residuum::daemon::read_startup_error(config_dir) {
         Some(reason) => println!("residuum: {label} failed to start: {reason}"),

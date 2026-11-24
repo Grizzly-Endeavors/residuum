@@ -63,7 +63,6 @@ const digest: ActionInfo = {
   current_run: null,
 };
 
-/** A fire of a pulse in flight, running its task scripts. */
 function scriptRun(fireId: string, startedAt = soon(-1)): ScheduledCurrentRun {
   return {
     fire_id: fireId,
@@ -75,14 +74,12 @@ function scriptRun(fireId: string, startedAt = soon(-1)): ScheduledCurrentRun {
   };
 }
 
-/** The list row of the pulse titled `title`, found by its switch. */
 function rowOf(title: string): HTMLElement {
   const row = screen.getByRole("switch", { name: title }).closest("li");
   if (row === null) throw new Error(`no row for ${title}`);
   return row;
 }
 
-/** Take over the agent socket's frames, so a test can send the place one. */
 function captureFrames(): { emit: (msg: ServerMessage) => void } {
   const listeners = new Set<(msg: ServerMessage, agent: string | null) => void>();
   vi.spyOn(ws, "onFrame").mockImplementation((listener) => {
@@ -96,7 +93,6 @@ function captureFrames(): { emit: (msg: ServerMessage) => void } {
   };
 }
 
-/** Answer the schedule routes with `pulses` and `actions`; `fail` answers them with a fault. */
 function serveSchedule(
   pulses: PulseInfo[],
   actions: ActionInfo[],
@@ -294,7 +290,6 @@ describe("Schedule", () => {
     expect(requests).toContain("/api/agents/atlas/scheduled/pulses/disk_watch/fires/fire-1/stop");
     expect(stop).toHaveAttribute("aria-busy", "true");
 
-    // The fire ends as stopped, on the server and in the frame that says so.
     const stopped = { status: "cancelled", at: soon(0), error: null } as const;
     pulses[0] = pulse("disk_watch", { last_outcome: stopped });
     frames.emit({
@@ -339,7 +334,6 @@ describe("Schedule", () => {
     expect(requests).toContain("/api/agents/atlas/sessions/scheduled-3/stop");
     expect(stop).toHaveAttribute("aria-busy", "true");
 
-    // A load that still shows the run keeps Stop busy.
     await user.click(screen.getByRole("button", { name: "Reload the schedule" }));
     await settle();
     expect(screen.getByRole("button", { name: "Stop Weekly digest" })).toHaveAttribute(
@@ -347,7 +341,6 @@ describe("Schedule", () => {
       "true",
     );
 
-    // The session ends, and the load its frame starts no longer has the run.
     actions[0] = digest;
     frames.emit({
       type: "session_completed",
@@ -377,7 +370,6 @@ describe("Schedule", () => {
     const requests = serveSchedule(
       [
         pulse("disk_watch", { current_run: overlapping("fire-1") }),
-        // An earlier run no fire tracks has no fire to stop.
         pulse("inbox_check", { current_run: overlapping(null) }),
       ],
       [],

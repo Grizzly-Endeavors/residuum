@@ -8,40 +8,4 @@ import type { NoticeLevel } from "./NoticeLevel";
  * Hub-level events, published on the hub bus and sent over `/api/hub/ws`
  * (one frame each, tagged by `type`).
  */
-export type HubEvent = { "type": "agent_state", agent: AgentSummary, } | { "type": "agent_stopping", name: string, } | { "type": "agent_created", agent: AgentSummary, by: Actor, } | { "type": "agent_restored", agent: AgentSummary, by: Actor, } | { "type": "agent_deleted", name: string, by: Actor, } | { "type": "agent_activity", name: string, 
-/**
- * A main turn is in progress.
- */
-busy: boolean, 
-/**
- * When the current main turn began, while `busy`.
- */
-busy_since: string | null, 
-/**
- * Main-conversation messages no web client has shown yet.
- */
-unread: number, 
-/**
- * A graceful restart is queued and will run as soon as the current main
- * turn finishes.
- */
-restart_pending?: boolean, } | { "type": "notice", level: NoticeLevel, message: string, agent?: string, 
-/**
- * What the notice reports, when the web words it itself; `message`
- * is then the detail behind that wording.
- */
-kind?: HubNoticeKind, } | { "type": "hub_config_reloaded", 
-/**
- * The file loaded, so the running config now matches it. False when
- * the load failed and the previous config stays in effect.
- */
-ok: boolean, 
-/**
- * The loaded config differs from the one that was running.
- */
-changed: boolean, 
-/**
- * The hub's own account of the outcome: what changed, or why the
- * reload failed. Null when nothing changed.
- */
-message: string | null, };
+export type HubEvent = { "type": "agent_state", agent: AgentSummary, } | { "type": "agent_stopping", name: string, } | { "type": "agent_created", agent: AgentSummary, by: Actor, } | { "type": "agent_restored", agent: AgentSummary, by: Actor, } | { "type": "agent_deleted", name: string, by: Actor, } | { "type": "agent_activity", name: string, busy: boolean, busy_since: string | null, unread: number, restart_pending?: boolean, } | { "type": "notice", level: NoticeLevel, message: string, agent?: string, kind?: HubNoticeKind, } | { "type": "hub_config_reloaded", ok: boolean, changed: boolean, message: string | null, };

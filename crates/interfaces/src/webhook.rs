@@ -1,8 +1,3 @@
-//! Webhook interface adapter — accepts HTTP POST requests and routes them to the agent.
-//!
-//! Each named webhook (`/webhook/{name}`) has its own secret, format, and content
-//! field extraction config. Unknown names return 404.
-
 use std::collections::HashMap;
 
 use axum::body::Bytes;
@@ -12,16 +7,11 @@ use axum::response::IntoResponse;
 
 use residuum_config::{WebhookFormat, WebhookRouting};
 
-/// Per-webhook endpoint configuration (built from `WebhookEntry` at startup).
 #[derive(Clone, Debug)]
 pub struct WebhookEndpointState {
-    /// Optional bearer token for authentication.
     pub secret: Option<String>,
-    /// Payload extraction format.
     pub format: WebhookFormat,
-    /// JSON dot-path fields to extract (only used with `Parsed` format).
     pub content_fields: Option<Vec<String>>,
-    /// Routing destination for this webhook.
     pub routing: WebhookRouting,
 }
 
@@ -36,15 +26,10 @@ impl From<&residuum_config::WebhookEntry> for WebhookEndpointState {
     }
 }
 
-/// The named webhooks the server currently accepts.
-///
-/// Shared between the running HTTP server and the gateway runtime, so a
-/// config reload swaps the set in place without rebinding the listener.
 #[derive(Clone, Default)]
 pub struct WebhookTable(std::sync::Arc<std::sync::RwLock<HashMap<String, WebhookEndpointState>>>);
 
 impl WebhookTable {
-    /// Build a table from the resolved `[webhooks.*]` config.
     #[must_use]
     pub fn from_config(webhooks: &HashMap<String, residuum_config::WebhookEntry>) -> Self {
         let table = Self::default();
@@ -52,7 +37,6 @@ impl WebhookTable {
         table
     }
 
-    /// Replace every webhook with the resolved `[webhooks.*]` config.
     pub fn replace_from_config(&self, webhooks: &HashMap<String, residuum_config::WebhookEntry>) {
         let fresh = webhooks
             .iter()
@@ -65,7 +49,6 @@ impl WebhookTable {
     }
 
     fn get(&self, name: &str) -> Option<WebhookEndpointState> {
-        // The lock guards plain owned data; a poisoned lock still holds a whole map.
         self.0
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -80,29 +63,13 @@ impl From<HashMap<String, WebhookEndpointState>> for WebhookTable {
     }
 }
 
-/// Shared state for the webhook handler — holds all named webhook configs.
 #[derive(Clone)]
 pub struct WebhookState {
-    /// Publisher for sending events onto the bus.
     pub publisher: residuum_bus::Publisher,
-    /// Named webhook endpoint configurations.
     pub webhooks: WebhookTable,
-    /// Timezone for inbox item timestamps.
     pub tz: chrono_tz::Tz,
 }
 
-/// Axum handler for `POST /webhook/{name}`.
-///
-/// Looks up the named webhook config, validates auth, extracts content per the
-/// webhook's format / content-fields settings, and publishes a `NotificationEvent`.
-///
-/// Returns:
-/// - 202 on success
-/// - 404 if `name` doesn't match a configured webhook
-/// - 401 if the bearer token is missing or doesn't match the configured secret
-/// - 400 if the request body is empty, isn't valid JSON (when `content_fields` is
-///   configured), or matches none of the configured `content_fields`
-/// - 503 if the request was valid but publishing to the internal event bus failed
 #[tracing::instrument(skip_all, fields(webhook = %name, content_length = body.len()))]
 pub async fn webhook_handler(
     State(state): State<WebhookState>,
@@ -116,7 +83,6 @@ pub async fn webhook_handler(
 
     tracing::debug!(webhook = %name, content_length = body.len(), "webhook request received");
 
-    // Validate bearer token if secret is configured
     if let Some(ref expected) = endpoint.secret {
         let auth = headers
             .get("authorization")
@@ -133,7 +99,6 @@ pub async fn webhook_handler(
         }
     }
 
-    // Extract content based on format
     let content = match endpoint.format {
         WebhookFormat::Raw => match String::from_utf8(body.to_vec()) {
             Ok(text) if !text.trim().is_empty() => text,
@@ -172,8 +137,6 @@ pub async fn webhook_handler(
     route_webhook_content(&state, &name, &endpoint.routing, content).await
 }
 
-/// Deliver an extracted webhook payload per its configured routing: straight
-/// to the inbox, or as a spawn request that forks an `external` session.
 async fn route_webhook_content(
     state: &WebhookState,
     name: &str,
@@ -243,28 +206,17 @@ async fn route_webhook_content(
     (StatusCode::ACCEPTED, String::new())
 }
 
-/// Why parsed-content extraction failed, so the handler can report a precise cause.
 enum ContentExtractionError {
-    /// The body (or, without `content_fields`, the JSON `content` field and the plain-text
-    /// fallback) was empty.
     EmptyBody,
-    /// `content_fields` were configured but the body was not valid JSON.
     InvalidJson,
-    /// `content_fields` were configured and the body was valid JSON, but none of the
-    /// configured dot-paths matched.
     NoContentFieldsMatched,
 }
 
-/// Extract content from the body using parsed format rules.
-///
-/// - With `content_fields`: parse JSON, extract each dot-path, join with `\n\n`
-/// - Without `content_fields`: extract `"content"` field from JSON, fallback to plain text
 fn extract_parsed_content(
     body: &[u8],
     content_fields: Option<&[String]>,
 ) -> Result<String, ContentExtractionError> {
     if let Some(fields) = content_fields {
-        // Must be JSON when content_fields are specified
         let json: serde_json::Value = serde_json::from_slice(body).map_err(|e| {
             tracing::debug!(error = %e, "webhook body is not valid JSON");
             ContentExtractionError::InvalidJson
@@ -278,14 +230,12 @@ fn extract_parsed_content(
         }
         Ok(parts.join("\n\n"))
     } else {
-        // Default: try JSON { "content": "..." }, fallback to plain text
         if let Ok(json) = serde_json::from_slice::<serde_json::Value>(body)
             && let Some(content) = json.get("content").and_then(|v| v.as_str())
             && !content.trim().is_empty()
         {
             return Ok(content.to_string());
         }
-        // Fallback to plain text
         let text = String::from_utf8(body.to_vec()).map_err(|e| {
             tracing::debug!(error = %e, "webhook body is not valid UTF-8");
             ContentExtractionError::EmptyBody
@@ -297,9 +247,6 @@ fn extract_parsed_content(
     }
 }
 
-/// Walk a dot-separated JSON path and stringify the leaf value.
-///
-/// Primitives are converted to text, objects/arrays are serialized as JSON.
 fn extract_json_field(value: &serde_json::Value, path: &str) -> Option<String> {
     let mut current = value;
     for segment in path.split('.') {
@@ -625,7 +572,6 @@ mod tests {
         webhooks.insert("private".to_string(), parsed_endpoint(Some("tok123")));
         let (app, _sub) = make_app(webhooks).await;
 
-        // Public should accept without auth
         let pub_req = Request::builder()
             .method("POST")
             .uri("/webhook/public")
@@ -634,7 +580,6 @@ mod tests {
         let pub_resp = app.clone().oneshot(pub_req).await.unwrap();
         assert_eq!(pub_resp.status(), StatusCode::ACCEPTED);
 
-        // Private should reject without auth
         let priv_req = Request::builder()
             .method("POST")
             .uri("/webhook/private")

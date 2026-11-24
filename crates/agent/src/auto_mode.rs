@@ -1,13 +1,3 @@
-//! Auto Mode: plain-language rules a decision model checks every tool call
-//! against before it runs.
-//!
-//! Each call becomes one System 1 request: the call (and the latest thing the
-//! user asked for) is the state, and every rule is a yes/no question asked in
-//! parallel. A call matching a deny rule, and no allow rule, is blocked; the
-//! agent gets a tool result naming the rule and keeps going. When the decision
-//! model can't answer, the call runs unchecked and the hub's System 1 status
-//! (one Home notice) is the only signal.
-
 use std::collections::BTreeMap;
 use std::sync::{Arc, PoisonError, RwLock};
 
@@ -20,25 +10,17 @@ use residuum_inference::system_one::{
 };
 use residuum_inference::{AttemptOutcome, AttemptUsage, ToolCall, UsageComponent, UsageRecorder};
 
-/// Longest tool-call argument text sent to the decision model. Its context
-/// is 32k tokens for the state plus the longest question; a call larger than
-/// this is judged on its start.
 const MAX_ARGUMENT_CHARS: usize = 8_000;
 
-/// Longest user request sent alongside the call.
 const MAX_USER_REQUEST_CHARS: usize = 2_000;
 
-/// One agent's Auto Mode: its rules and the shared decision model. Shared by
-/// the agent and its sessions, so a config reload reaches both.
 pub struct AutoModeGate {
     agent: String,
     config: RwLock<AutoModeConfig>,
     system_one: Arc<SystemOneService>,
-    /// The agent's usage records, which every decision-model call goes into.
     usage: UsageRecorder,
 }
 
-/// A handle to an agent's [`AutoModeGate`].
 pub type SharedAutoMode = Arc<AutoModeGate>;
 
 impl AutoModeGate {
@@ -57,7 +39,6 @@ impl AutoModeGate {
         })
     }
 
-    /// Take a reloaded `[auto_mode]`.
     pub fn set_config(&self, config: AutoModeConfig) {
         *self.config.write().unwrap_or_else(PoisonError::into_inner) = config;
     }
@@ -69,8 +50,6 @@ impl AutoModeGate {
             .clone()
     }
 
-    /// Check `call` against the rules. `None` when Auto Mode is off or has
-    /// no deny rules, so nothing was checked.
     pub async fn check(
         &self,
         call: &ToolCall,
@@ -92,8 +71,6 @@ impl AutoModeGate {
         Some(verdict)
     }
 
-    /// Record one decision-model call. Nothing is recorded when no decision
-    /// model is set up, since no request was sent.
     async fn record_usage(&self, result: &Result<SystemOneResponse, SystemOneError>) {
         if matches!(result, Err(SystemOneError::NotConfigured)) {
             return;
@@ -129,8 +106,6 @@ impl AutoModeGate {
     }
 }
 
-/// The usage a decision-model response reported; `None` when it reported
-/// neither count.
 fn reported_usage(response: &SystemOneResponse) -> Option<residuum_inference::Usage> {
     let usage = response.usage;
     (usage.input_tokens.is_some() || usage.output_tokens.is_some()).then(|| usage.to_usage())
@@ -153,8 +128,6 @@ fn log_verdict(tool_name: &str, verdict: &AutoModeVerdict) {
             output_tokens = verdict.output_tokens,
             "auto mode allowed a tool call"
         ),
-        // The service's own status carries the outage; one log per call
-        // would repeat it for every tool call until it's back.
         AutoModeDecision::Unchecked => tracing::debug!(
             tool_name,
             reason = verdict.reason.as_deref(),
@@ -163,8 +136,6 @@ fn log_verdict(tool_name: &str, verdict: &AutoModeVerdict) {
     }
 }
 
-/// The text of the most recent user message, for judging rules about what
-/// the user asked for.
 #[must_use]
 pub fn latest_user_request(messages: &[residuum_inference::Message]) -> Option<&str> {
     messages
@@ -225,8 +196,6 @@ fn rule_questions(config: &AutoModeConfig) -> BTreeMap<String, Question> {
     deny.chain(allow).collect()
 }
 
-/// The highest-probability rule in `rules` at or above `threshold`, and the
-/// highest probability seen; `Err` when an answer is missing.
 fn strongest_match<'a>(
     rules: &'a [String],
     prefix: &str,

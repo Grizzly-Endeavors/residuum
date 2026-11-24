@@ -1,5 +1,4 @@
 <script lang="ts">
-  // Decorative: the control or text beside a spinner says what is loading.
   let { size = 12 }: { size?: number } = $props();
 </script>
 

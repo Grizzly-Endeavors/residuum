@@ -32,7 +32,6 @@ function serve(): void {
   });
 }
 
-/** Where the router would go: a place, with or without a file in the panel. */
 function at(place: AppLocation["place"], path?: string, agent: string | null = null): AppLocation {
   return {
     place,
@@ -41,7 +40,6 @@ function at(place: AppLocation["place"], path?: string, agent: string | null = n
   };
 }
 
-/** Markdown opens rendered; Edit switches to the editor. */
 async function openEditor(name = "plan.md"): Promise<HTMLElement> {
   await userEvent.click(await screen.findByRole("button", { name: "Edit" }));
   return screen.findByRole("textbox", { name: `Contents of ${name}` });

@@ -1,14 +1,3 @@
-//! The remote-access manager: it decides, for each tunnel v2 session, whether
-//! this install may serve remotely and walks it there: verify the identity the
-//! relay announces, enroll with the pin service, wait for the DNS record that
-//! lets this instance's account issue certificates, order the certificate, and
-//! keep it renewed.
-//!
-//! The manager implements `SessionHandler`, so the tunnel client calls it
-//! for every connect, stream and disconnect. It owns every trust decision:
-//! nothing the relay sends is believed beyond what it can prove (see
-//! `super::identity`).
-
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -50,31 +39,21 @@ use crate::tunnel::v2::{
 };
 use residuum_config::RemoteAccessSettings;
 
-/// The most characters of an instance's display name kept from the relay.
 const MAX_INSTANCE_NAME: usize = 64;
 /// How long the DNS record for the account may take to show up publicly.
 const CAA_WAIT: Duration = Duration::from_mins(10);
 const CAA_POLL: Duration = Duration::from_secs(10);
-/// How often the pin set is read to look for accounts nobody here agreed to.
 const PIN_CHECK_INTERVAL: Duration = Duration::from_hours(1);
-/// How often the pin set is read while this instance waits on its own reset by
-/// email, so the new recovery code shows soon after the reset takes effect.
 const RESET_CHECK_INTERVAL: Duration = Duration::from_mins(5);
-/// How long after asking for a reset by email its absence from the pin
-/// service's answer is not yet taken to mean it never happened: the answer may
-/// have been read just before the request committed.
 const RESET_VISIBILITY_GRACE_SECS: i64 = 300;
-/// How often a waiting join or a healthy certificate is looked at again.
 const NEEDS_JOIN_RECHECK: Duration = Duration::from_mins(5);
 const ARI_RECHECK: Duration = Duration::from_hours(6);
 const MAX_RETRY: Duration = Duration::from_mins(15);
 const CLAIM_ATTEMPTS: u32 = 12;
 const CLAIM_RETRY: Duration = Duration::from_secs(5);
 
-/// Where plain-language warnings for the person go.
 pub type Notifier = Arc<dyn Fn(String) + Send + Sync>;
 
-/// Everything the manager is built from.
 pub(crate) struct RemoteAccessInputs {
     pub(crate) settings: RemoteAccessSettings,
     pub(crate) hub_dir: PathBuf,
@@ -84,15 +63,10 @@ pub(crate) struct RemoteAccessInputs {
     pub(crate) pairing: DevicePairing,
     pub(crate) tunnel_status: Arc<watch::Sender<TunnelStatus>>,
     pub(crate) status: Arc<watch::Sender<RemoteAccessStatus>>,
-    /// The web origin of the relay `[cloud] relay_url` names, for the status.
     pub(crate) relay_origin: Option<String>,
     pub(crate) notify: Notifier,
-    /// The keys of joined siblings, shared with the A2A listener.
     pub(crate) siblings: Arc<SiblingKeys>,
-    /// Where sibling discovery hears about the directory and the joined siblings.
     pub(crate) discovery: DiscoverySender,
-    /// How join requests reach a sibling. `None` uses HTTPS to the sibling's
-    /// derived host.
     pub(crate) sibling_channel: Option<Arc<dyn SiblingChannel>>,
 }
 
@@ -100,7 +74,6 @@ struct Session {
     link: RelayLink,
     user: String,
     slug: String,
-    /// What lets this connection see private agents in the apex directory.
     directory_token: String,
     task: JoinHandle<()>,
 }
@@ -121,27 +94,19 @@ struct Inner {
     tunnel_status: Arc<watch::Sender<TunnelStatus>>,
     notify: Notifier,
     session: Mutex<Option<Session>>,
-    /// Wakes the session's driver early: a retry or a finished reset.
     kick: Notify,
     alerted_pins: Mutex<HashSet<String>>,
     siblings: SiblingService,
     discovery: DiscoverySender,
-    /// The join this instance started, while it runs.
     join_task: Mutex<Option<JoinHandle<()>>>,
 }
 
-/// Remote access for this install.
 #[derive(Clone)]
 pub(crate) struct RemoteAccess {
     inner: Arc<Inner>,
 }
 
 impl RemoteAccess {
-    /// Open the stored state and build the engine. Nothing is served until a
-    /// session connects and its identity checks out.
-    ///
-    /// # Errors
-    /// Returns an error if the pin service client can't be built.
     pub(crate) fn new(inputs: RemoteAccessInputs) -> anyhow::Result<Self> {
         let RemoteAccessInputs {
             settings,
@@ -212,11 +177,7 @@ impl RemoteAccess {
         Ok(Self { inner })
     }
 
-    /// Start the work that doesn't depend on a session: the pairing identity
-    /// and the hourly look at the pin service.
     pub(crate) fn start_background(&self) {
-        // Weak, so a manager that has been replaced (the tunnel restarted)
-        // lets its watcher end instead of living on.
         let inner = Arc::downgrade(&self.inner);
         residuum_core::util::spawn_monitored("remote-access-pins", async move {
             if let Some(strong) = inner.upgrade()
@@ -238,22 +199,14 @@ impl RemoteAccess {
         });
     }
 
-    /// The recovery code waiting to be saved, if any. A code made for a reset
-    /// by email isn't the recovery code until the reset takes effect, so it
-    /// isn't offered before.
     pub(crate) fn pending_recovery_code(&self) -> Option<String> {
         self.inner.savable_recovery_code()
     }
 
-    /// Ask the session's driver to look again now.
     pub(crate) fn retry_now(&self) {
         self.inner.kick.notify_one();
     }
 
-    /// The person has saved the recovery code; forget it.
-    ///
-    /// # Errors
-    /// Returns an error if the change couldn't be saved.
     pub(crate) async fn acknowledge_recovery_code(&self) -> anyhow::Result<()> {
         if self.inner.store.email_reset().is_some() {
             anyhow::bail!(
@@ -267,8 +220,6 @@ impl RemoteAccess {
         Ok(())
     }
 
-    /// The join requests waiting for a decision, with `instances` (the
-    /// relay's list) as the hint for each.
     pub(crate) fn pending_joins(&self, instances: &[InstanceInfo]) -> Vec<PendingJoinInfo> {
         self.inner.pending_joins(instances)
     }
@@ -293,73 +244,46 @@ impl RemoteAccess {
         self.inner.activate_instance(slug)
     }
 
-    /// Replace every pin with this instance's account, proving ownership with
-    /// the recovery code. Returns the new recovery code.
-    ///
-    /// # Errors
-    /// Returns a plain-language reason the reset didn't happen.
     pub(crate) async fn reset_pins(&self, recovery_code: &str) -> Result<(), ResetError> {
         self.inner.reset_pins(recovery_code.trim()).await
     }
 
-    /// Ask the pin service to email the user a link that replaces every pin
-    /// with this instance's account. Returns the masked address it went to.
-    ///
-    /// # Errors
-    /// Returns a plain-language reason the email wasn't sent.
     pub(crate) async fn email_reset(&self) -> Result<String, ResetError> {
         self.inner.email_reset().await
     }
 
-    /// Cancel the reset by email that is waiting to take effect.
     pub(crate) async fn cancel_reset(&self) -> Result<(), ActionError> {
         self.inner.cancel_reset().await
     }
 }
 
-/// Why a pin reset didn't happen.
 #[derive(Debug, thiserror::Error)]
 pub enum ResetError {
-    /// The input isn't acceptable; the message says why.
     #[error("{0}")]
     Invalid(String),
-    /// The relay isn't connected on the secure tunnel.
     #[error("Residuum Cloud isn't connected on the secure tunnel right now. Try again once it is.")]
     NotConnected,
-    /// The grant or the pin service refused, or failed.
     #[error("{0}")]
     Failed(String),
 }
 
-/// Why a sibling, pin or instance action didn't happen.
 #[derive(Debug, thiserror::Error)]
 pub enum ActionError {
-    /// The input isn't acceptable; the message says why.
     #[error("{0}")]
     Invalid(String),
-    /// The relay isn't connected on the secure tunnel.
     #[error("Residuum Cloud isn't connected on the secure tunnel right now. Try again once it is.")]
     NotConnected,
-    /// The action was refused or failed; the message says why.
     #[error("{0}")]
     Failed(String),
 }
 
-/// What it means that the pin service no longer lists a reset this install asked for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UnlistedReset {
-    /// This account replaced every pin.
     TookEffect,
-    /// It was cancelled or expired.
     Gone,
-    /// The request may have committed after the answer was read.
     NotYetVisible,
 }
 
-/// Decide what became of a reset the pin service doesn't list. The only
-/// evidence it took effect is this account being the sole pin; a lone pinned
-/// instance that asked while already pinned needs the pin service's own
-/// effective time to tell it from a cancelled or expired reset.
 fn unlisted_reset_outcome(record: &EmailReset, sole_own_pin: bool, now: i64) -> UnlistedReset {
     let took_effect = sole_own_pin
         && match record.effective_at {
@@ -377,7 +301,6 @@ fn unlisted_reset_outcome(record: &EmailReset, sole_own_pin: bool, now: i64) -> 
     }
 }
 
-/// A time in unix seconds as the person reads it.
 fn format_time(unix_seconds: i64) -> String {
     chrono::DateTime::from_timestamp(unix_seconds, 0).map_or_else(
         || "an unknown time".to_string(),
@@ -385,7 +308,6 @@ fn format_time(unix_seconds: i64) -> String {
     )
 }
 
-/// What to tell the person when the pin service refused or failed a reset by email.
 fn email_reset_failure(error: &PinError) -> String {
     match error {
         PinError::Rejected { status: 409, message } if message.contains("already pending") => {
@@ -409,8 +331,6 @@ fn email_reset_failure(error: &PinError) -> String {
     }
 }
 
-/// Whether a pin of `slug` may be removed from the UI: not this instance's own,
-/// and the relay's list (when known) doesn't include its instance.
 fn is_removable(own: bool, slug: &str, instances: &[InstanceInfo]) -> bool {
     !own && !instances.is_empty() && !instances.iter().any(|i| i.slug == slug)
 }
@@ -420,7 +340,6 @@ impl Inner {
         self.session.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Load what an earlier run stored: the identity, and the certificate.
     fn load_stored(&self) {
         if let Some(identity) = self.store.identity() {
             self.apply_identity_sync(&identity);
@@ -506,7 +425,6 @@ impl Inner {
         });
     }
 
-    /// The ACME account, created on first use.
     async fn account(&self) -> anyhow::Result<Arc<AcmeAccount>> {
         let mut guard = self.account.lock().await;
         if let Some(account) = guard.as_ref() {
@@ -517,10 +435,6 @@ impl Inner {
         Ok(account)
     }
 
-    // ── Pins ─────────────────────────────────────────────────────────
-
-    /// Read the pin set for the stored identity and update the status and
-    /// the alerts.
     async fn refresh_pins(&self) {
         let Some(identity) = self.store.identity() else {
             return;
@@ -570,8 +484,6 @@ impl Inner {
         }
         self.status.send_modify(|status| status.pins = infos);
     }
-
-    // ── Sessions ─────────────────────────────────────────────────────
 
     fn start_session(
         self: &Arc<Self>,
@@ -630,7 +542,6 @@ impl Inner {
     }
 
     fn fail(&self, message: String) {
-        // A valid certificate keeps serving through a failed renewal.
         let still_served = self
             .cert_store
             .load()
@@ -645,8 +556,6 @@ impl Inner {
         }
     }
 
-    /// One pass: make sure this instance is pinned and has a current
-    /// certificate. Returns how long to wait before looking again.
     async fn advance(&self, link: &RelayLink, user: &str, slug: &str) -> anyhow::Result<Duration> {
         let account = self
             .account()
@@ -713,11 +622,6 @@ impl Inner {
         Ok(())
     }
 
-    /// A pending recovery code belongs to an enrollment that happened. When
-    /// the pin set shows it didn't, the code protects nothing. The code of a
-    /// reset by email waiting to take effect is kept: the pin set doesn't show
-    /// that account until the reset does, and `track_email_reset` decides when
-    /// that code is no longer wanted.
     async fn discard_unused_recovery_code(&self, pins: &[Pin], account: &AcmeAccount) {
         if self.store.pending_recovery_code().is_some()
             && self.store.email_reset().is_none()
@@ -743,8 +647,6 @@ impl Inner {
             Some("Setting up this instance's certificate account.".to_string()),
         );
         let recovery_code = generate_recovery_code()?;
-        // Saved before the request, so a crash after the pin service commits
-        // can't leave an enrollment whose recovery code was never kept.
         self.store
             .set_pending_recovery_code(Some(recovery_code.clone()))
             .await
@@ -978,10 +880,6 @@ impl Inner {
             .send_modify(|status| status.recovery_code_pending = false);
     }
 
-    // ── Reset by email ───────────────────────────────────────────────
-
-    /// The pending recovery code, unless it belongs to a reset by email that
-    /// hasn't taken effect: until then the old recovery code is the valid one.
     fn savable_recovery_code(&self) -> Option<String> {
         if self.store.email_reset().is_some() {
             return None;
@@ -995,8 +893,6 @@ impl Inner {
             .send_modify(|status| status.recovery_code_pending = pending);
     }
 
-    /// Record what the pin service reports: the pins, and the reset by email
-    /// waiting to take effect.
     async fn observe_pin_state(&self, state: &PinState) {
         self.record_pins(&state.pins).await;
         self.track_pending_reset(state).await;
@@ -1036,8 +932,6 @@ impl Inner {
         self.settle_email_reset(state, own.as_deref(), pinned).await;
     }
 
-    /// Tell the person, once per reset and state, that another instance asked
-    /// to take over the address.
     fn alert_foreign_reset(&self, reset: &PendingReset) {
         let key = format!("reset:{}:{}", reset.account_uri, reset.confirmed);
         let first_time = self
@@ -1061,9 +955,6 @@ impl Inner {
         ));
     }
 
-    /// Work out what became of a reset by email this install asked for, once
-    /// the pin service stops listing it: it took effect, or it was cancelled or
-    /// expired. Until then the code made for it is kept out of sight.
     async fn settle_email_reset(&self, state: &PinState, own: Option<&str>, pinned: bool) {
         let Some(record) = self.store.email_reset() else {
             return;
@@ -1146,8 +1037,6 @@ impl Inner {
         let previous_code = self.store.pending_recovery_code();
         let previous_reset = self.store.email_reset();
         let was_pinned = self.status.borrow().pins.iter().any(|pin| pin.own);
-        // Saved before the request, so a reset that is confirmed later always
-        // finds its recovery code here.
         self.store
             .set_recovery_state(
                 Some(new_code.clone()),
@@ -1176,8 +1065,6 @@ impl Inner {
                 Ok(masked)
             }
             Err(e) => {
-                // Whatever was waiting before the request is still what the
-                // pin service holds, so it goes back rather than being lost.
                 if let Err(restore) = self
                     .store
                     .set_recovery_state(previous_code, previous_reset)
@@ -1251,9 +1138,6 @@ impl Inner {
         }
     }
 
-    // ── Siblings, pins and instances ─────────────────────────────────
-
-    /// Begin taking join requests: this instance is pinned and knows who it is.
     fn open_for_joins(&self, user: &str, slug: &str, account: &Arc<AcmeAccount>) {
         self.siblings.host.set_context(Some(Arc::new(HostContext {
             user: user.to_string(),
@@ -1277,8 +1161,6 @@ impl Inner {
         self.status.send_modify(|status| status.siblings = joined);
     }
 
-    /// Tell sibling discovery where the directory is and whom to call, while
-    /// the secure tunnel is connected and this install has an identity.
     fn publish_discovery(&self) {
         let token = self
             .lock_session()
@@ -1328,7 +1210,6 @@ impl Inner {
             .collect()
     }
 
-    /// The user, slug and display name this instance joins as.
     fn joining_as(&self) -> Result<(String, String, String), ActionError> {
         let (user, slug) = if let Some(identity) = self.store.identity() {
             (identity.user, identity.slug)
@@ -1564,8 +1445,6 @@ impl Inner {
         Ok(())
     }
 
-    /// Keep the relay's list of instances for the switcher, dropping any
-    /// entry whose slug isn't one the relay could have issued.
     fn set_instances(&self, instances: Vec<InstanceSummary>) {
         let kept: Vec<InstanceInfo> = instances
             .into_iter()
@@ -1592,8 +1471,6 @@ impl Inner {
     }
 }
 
-/// A relay-supplied name as plain text of reasonable length; the slug stands
-/// in for an empty one.
 fn clean_display_name(name: &str, slug: &str) -> String {
     let cleaned: String = name
         .chars()
@@ -1735,7 +1612,6 @@ mod tests {
             clean_display_name(&"x".repeat(200), "d").chars().count(),
             64
         );
-        // Markup is text for the UI to escape, not something to strip here.
         assert_eq!(clean_display_name("<b>x</b>", "d"), "<b>x</b>");
     }
 
@@ -1746,12 +1622,10 @@ mod tests {
             effective_at,
             was_pinned,
         };
-        // An install that wasn't pinned and now is the only pin got the address.
         assert_eq!(
             unlisted_reset_outcome(&asked(None, false), true, 1_010),
             UnlistedReset::TookEffect
         );
-        // Other pins remain: it didn't happen, once the request had time to show.
         assert_eq!(
             unlisted_reset_outcome(&asked(None, false), false, 1_010),
             UnlistedReset::NotYetVisible
@@ -1764,7 +1638,6 @@ mod tests {
             ),
             UnlistedReset::Gone
         );
-        // A lone pinned instance needs the effective time to have passed.
         assert_eq!(
             unlisted_reset_outcome(
                 &asked(None, true),

@@ -3,11 +3,6 @@ import { toast } from "./toast.svelte";
 import { notifyWithUndo } from "./undo";
 import { waitFor } from "../test/wait";
 
-/**
- * The checkpoint id the delete/revoke response handed back for the action.
- * A later checkpoint (`newer-cp`) lands before Undo is clicked; listing the
- * repo would now return that newer id first.
- */
 const ACTION_CHECKPOINT = "action-cp";
 const NEWER_CHECKPOINT = "newer-cp";
 
@@ -35,8 +30,6 @@ describe("toast undo targets the action's own checkpoint", () => {
       vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
         const url = requestUrl(input);
         const method = init?.method ?? "GET";
-        // The listing of the newest checkpoint, which a click-time lookup would
-        // restore from. A checkpoint taken after the action is now first.
         if (method === "GET" && url.startsWith("/api/hub/checkpoints?")) {
           return jsonResponse({
             items: [

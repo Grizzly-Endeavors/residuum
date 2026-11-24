@@ -5,7 +5,6 @@ import type { MockState } from "./state";
 
 type TomlTable = Record<string, unknown>;
 
-/** The config the hub is running on, or an empty one when the file can't be read as TOML. */
 function parseOrEmpty(toml: string): TomlTable {
   try {
     return parseToml(toml);
@@ -14,19 +13,12 @@ function parseOrEmpty(toml: string): TomlTable {
   }
 }
 
-/** The top-level sections whose settings differ, in name order. */
 function changedSections(before: TomlTable, after: TomlTable): string[] {
   return [...new Set([...Object.keys(before), ...Object.keys(after)])]
     .filter((name) => !isDeepStrictEqual(before[name], after[name]))
     .sort();
 }
 
-/**
- * The hub's config reload (`reload` in `crates/hub/src/runtime.rs`): it compares the
- * file with the config it is running on, tells hub clients how that went in a
- * `hub_config_reloaded` frame, and keeps the running config when the file
- * can't be read.
- */
 export function createHubConfigReloader(
   hubState: MockState,
   broadcast: (frame: HubServerMessage) => void,

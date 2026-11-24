@@ -1,17 +1,12 @@
-//! MCP server configuration types.
-
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-/// Transport type for MCP server connections.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum McpTransport {
-    /// Stdio transport: spawn a child process and communicate over stdin/stdout.
     #[default]
     Stdio,
-    /// HTTP transport: connect to a remote MCP server over Streamable HTTP.
     Http,
 }
 
@@ -25,33 +20,18 @@ impl McpTransport {
     }
 }
 
-/// MCP server entry loaded from `mcp.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpServerEntry {
-    /// Server name.
     pub name: String,
-    /// Command (stdio) or URL (http) for the server.
     pub command: String,
-    /// Command-line arguments (only used for stdio transport).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
-    /// Environment variables to pass to the server process (only used for stdio transport).
-    /// Values support `${agent-key:<name>}` references, resolved from the agent
-    /// key store at connect time.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
-    /// Transport type (defaults to stdio).
     #[serde(default, skip_serializing_if = "McpTransport::is_default")]
     pub transport: McpTransport,
-    /// HTTP headers to send with requests (only used for http transport).
-    /// Header values support `${VAR}` and `${VAR:-default}` env var interpolation
-    /// and `${agent-key:<name>}` agent key references, all expanded at connect
-    /// time.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub headers: BTreeMap<String, String>,
-    /// Optional per-server timeout (seconds) for tool calls to this server.
-    /// `None` (the default) means a call runs until it finishes or the user
-    /// or agent stops the turn — there is no automatic cutoff.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u64>,
 }

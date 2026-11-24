@@ -3,9 +3,6 @@
   import type { FlagKey } from "./config-keys";
   import { fieldError, type SettingsScope } from "./sections";
 
-  // An on or off setting in the scope's `config.toml` form, as a row: what it
-  // does on the left, the switch at the end.
-
   interface Props {
     scope: SettingsScope;
     field: FlagKey;

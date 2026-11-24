@@ -50,33 +50,20 @@ use residuum_protocol::{
 };
 use residuum_skills::SharedSkillState;
 
-/// Completed runs per page when the request doesn't say.
 const DEFAULT_PAGE_SIZE: usize = 50;
 
-/// Shared state for the sessions API.
 #[derive(Clone)]
 pub(crate) struct SessionsApiState {
-    /// Live sessions.
     pub registry: Arc<SessionRegistry>,
-    /// Every run's durable record.
     pub store: Arc<SessionStore>,
-    /// Timezone transcript timestamps are rendered in, matching chat history.
     pub tz: chrono_tz::Tz,
-    /// Delivers messages to sessions, as the owner's messages from a session panel go.
     pub messenger: Arc<AgentMessenger>,
-    /// Publishes spawn requests for sessions an artifact starts.
     pub publisher: Publisher,
-    /// The skill index, to refuse a start naming a skill that doesn't exist.
     pub skill_state: SharedSkillState,
-    /// The live model catalog, to refuse a start naming an explicit model
-    /// whose provider isn't configured.
     pub models: residuum_config::SharedModelCatalog,
-    /// Main's saved conversation (`recent_messages.json`), which a fork
-    /// starts from.
     pub main_conversation: std::path::PathBuf,
 }
 
-/// Build the sessions API router.
 pub(crate) fn sessions_api_router(state: SessionsApiState) -> axum::Router {
     use axum::routing::{get, post};
     axum::Router::new()
@@ -96,25 +83,18 @@ pub(crate) fn sessions_api_router(state: SessionsApiState) -> axum::Router {
         .with_state(state)
 }
 
-/// An API failure: a status code and a plain-language explanation.
 type ApiError = (StatusCode, String);
 
-/// Query parameters for `GET /api/agents/{name}/sessions`.
 #[derive(Debug, Deserialize)]
 pub(crate) struct SessionListQuery {
-    /// Only sessions in this category (`scheduled`, `external`, `spawned`).
     #[serde(default)]
     category: Option<SessionCategory>,
-    /// Only runs of the session at this address.
     #[serde(default)]
     address: Option<String>,
-    /// Only sessions this workbench artifact started.
     #[serde(default)]
     artifact: Option<String>,
-    /// Continue after a previous page: its `next_cursor`.
     #[serde(default)]
     before: Option<String>,
-    /// Completed runs per page (at least 1, default 50). No upper cap.
     #[serde(default)]
     limit: Option<usize>,
 }
@@ -162,14 +142,11 @@ pub(crate) async fn api_sessions_list(
             "artifact must be an artifact name, like \"wiki-graph\"".to_string(),
         ));
     }
-    // Store records don't keep the trigger: an artifact session's category
-    // plus its `artifact:<name>` source label identify it exactly.
     let artifact_label = artifact.map(|name| artifact_sender_address(name).to_string());
     let category = match (artifact, query.category) {
         (None, category) => category,
         (Some(_), None | Some(SessionCategory::Artifact)) => Some(SessionCategory::Artifact),
         (Some(_), Some(_)) => {
-            // Only `artifact` sessions have an artifact trigger.
             return Ok(Json(SessionListResponse {
                 live: Vec::new(),
                 completed: Vec::new(),
@@ -226,10 +203,8 @@ pub(crate) async fn api_sessions_list(
     }))
 }
 
-/// `GET /api/agents/{name}/sessions/runs/{run_id}/transcript` response.
 #[derive(Debug, Serialize)]
 pub(crate) struct SessionTranscriptResponse {
-    /// The run, with its current state when it is still live.
     session: SessionSummary,
     /// Its transcript so far, in the same shape `GET /api/agents/{name}/chat/history`
     /// returns. Runs don't record per-message times, so every message
@@ -294,8 +269,6 @@ pub(crate) async fn api_session_transcript(
     Ok(Json(SessionTranscriptResponse { session, messages }))
 }
 
-/// Body of an error from the start, stop, and message endpoints. `code` is
-/// the WebSocket session command's error code, where one applies.
 #[derive(Debug, Serialize)]
 struct CommandErrorBody {
     error: String,
@@ -303,7 +276,6 @@ struct CommandErrorBody {
     code: Option<SessionCommandErrorCode>,
 }
 
-/// A JSON error response with no session command code.
 fn json_error(status: StatusCode, message: impl Into<String>) -> Response {
     (
         status,
@@ -315,7 +287,6 @@ fn json_error(status: StatusCode, message: impl Into<String>) -> Response {
         .into_response()
 }
 
-/// The HTTP status a session command failure answers with.
 fn command_error_status(code: SessionCommandErrorCode) -> StatusCode {
     match code {
         SessionCommandErrorCode::InvalidRequest => StatusCode::BAD_REQUEST,
@@ -327,7 +298,6 @@ fn command_error_status(code: SessionCommandErrorCode) -> StatusCode {
     }
 }
 
-/// A session command failure as `{ error, code }` with the status per code.
 fn command_error_response(e: SessionCommandError) -> Response {
     (
         command_error_status(e.code),
@@ -339,22 +309,16 @@ fn command_error_response(e: SessionCommandError) -> Response {
         .into_response()
 }
 
-/// `POST /api/agents/{name}/sessions` request body.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SessionStartRequest {
-    /// The session's task.
     prompt: String,
-    /// Extra context the session reads before the task.
     #[serde(default)]
     context: Option<String>,
-    /// Skill to activate for the session.
     #[serde(default)]
     skill: Option<String>,
-    /// Model tier: `small`, `medium` (default), or `large`.
     #[serde(default)]
     model: Option<String>,
-    /// Start from the main conversation (`/multitask`). The owner's only.
     #[serde(default)]
     fork: bool,
 }
@@ -362,8 +326,6 @@ pub(crate) struct SessionStartRequest {
 /// `POST /api/agents/{name}/sessions` response.
 #[derive(Debug, Serialize)]
 pub(crate) struct SessionStartResponse {
-    /// The new session's address. Its run id arrives in the
-    /// `session_started` frame for this address.
     address: String,
 }
 
@@ -480,8 +442,6 @@ pub(crate) async fn api_session_start(
         .into_response()
 }
 
-/// Start the owner's own session for [`api_session_start`]: a clean one, or a
-/// fork of the main conversation.
 async fn start_owner_session(
     state: &SessionsApiState,
     body: SessionStartRequest,
@@ -547,8 +507,6 @@ async fn start_owner_session(
         .into_response()
 }
 
-/// Refuse a skill name the session couldn't activate, before the fork would
-/// fail on it.
 async fn check_skill(skill_state: &SharedSkillState, skill: &str) -> Result<(), String> {
     if skill.eq_ignore_ascii_case("main") {
         return Err(
@@ -576,8 +534,6 @@ async fn check_skill(skill_state: &SharedSkillState, skill: &str) -> Result<(), 
     ))
 }
 
-/// The context an artifact session reads before its task: who started it and
-/// where its responses go, then whatever context the artifact supplied.
 fn artifact_session_context(artifact: &str, extra: Option<&str>) -> String {
     let framing = format!(
         "[This session was started by the workbench artifact \"{artifact}\". Your responses \
@@ -589,10 +545,8 @@ fn artifact_session_context(artifact: &str, extra: Option<&str>) -> String {
     }
 }
 
-/// `POST /api/agents/{name}/sessions/{address}/stop` response.
 #[derive(Debug, Serialize)]
 pub(crate) struct SessionStopResponse {
-    /// The session being stopped.
     address: String,
 }
 
@@ -613,25 +567,17 @@ pub(crate) async fn api_session_stop(
     }
 }
 
-/// `POST /api/agents/{name}/sessions/{address}/messages` request body.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SessionMessageRequest {
-    /// The message's id, when the client chose one. The session's
-    /// `session_user_message` frame carries it when the session reads the
-    /// message.
     #[serde(default)]
     id: Option<String>,
-    /// The message text.
     content: String,
 }
 
-/// `POST /api/agents/{name}/sessions/{address}/messages` response.
 #[derive(Debug, Serialize)]
 pub(crate) struct SessionMessageResponse {
-    /// The message's id: the client's, or a fresh one when it sent none.
     id: String,
-    /// Where the message landed.
     outcome: SessionDeliveryOutcome,
 }
 
@@ -717,8 +663,6 @@ mod tests {
         }
     }
 
-    /// What a test's [`SessionsApiState`] needs kept alive: its store's
-    /// directory and the bus its publisher and messenger use.
     struct Fixture {
         _dir: tempfile::TempDir,
         bus: residuum_bus::BusHandle,
@@ -790,8 +734,6 @@ mod tests {
     #[tokio::test]
     async fn lists_live_and_completed_runs_newest_first() {
         let (state, _dir) = state();
-        // Completed runs across two days, including one run left `running`
-        // on disk (live) that must not show up as completed.
         complete(
             &state,
             &info("spawned-a-0001", "run-a", EventTrigger::Agent, 0),
@@ -943,7 +885,6 @@ mod tests {
         let (state, _dir) = state();
         let zero = list(&state, None, None, Some(0)).await.unwrap_err();
         assert_eq!(zero.0, StatusCode::BAD_REQUEST);
-        // A limit above the old 200 ceiling is honoured, not rejected.
         let huge = list(&state, None, None, Some(500)).await.unwrap();
         assert!(huge.completed.len() <= 500);
         let bad_cursor = list(&state, None, Some("../../etc".to_string()), None)
@@ -1129,8 +1070,6 @@ mod tests {
         assert_eq!(missing.0, StatusCode::NOT_FOUND);
     }
 
-    // ── Artifact sessions: start, stop, message, filter ──────────────────
-
     use axum::body::Body;
     use axum::http::{HeaderValue, Request};
     use tower::ServiceExt;
@@ -1138,14 +1077,12 @@ mod tests {
     use residuum_background::registry::ResumePoint;
     use residuum_bus::interrupt::Interrupt;
 
-    /// A response's status and JSON body.
     struct Answer {
         status: StatusCode,
         body: serde_json::Value,
     }
 
     impl Answer {
-        /// A top-level string field of the body, or `""` when absent.
         fn text(&self, key: &str) -> &str {
             self.body
                 .get(key)
@@ -1661,7 +1598,6 @@ mod tests {
         assert_eq!(bad_identity.status, StatusCode::BAD_REQUEST);
         assert_eq!(bad_identity.text("code"), "invalid_request");
 
-        // A live session whose interrupt channel is full is busy.
         let _rx = state
             .registry
             .register(

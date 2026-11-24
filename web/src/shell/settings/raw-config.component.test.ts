@@ -18,10 +18,6 @@ import SettingsModal from "../SettingsModal.svelte";
 import { conflictQuestion } from "./changed-on-disk.svelte";
 import { waitFor } from "../../test/wait";
 
-// The Raw config section in the Settings modal: problems found as the text is
-// typed, Save and Discard, the lock in both directions, and a file that
-// changed on disk under a draft.
-
 const BROKEN = "timeout_secs = 30\nmodel = \n";
 const PROBLEM = {
   severity: "error",

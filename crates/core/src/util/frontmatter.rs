@@ -1,21 +1,6 @@
-//! Shared parsing for `---`-delimited YAML frontmatter and kebab-case name validation.
-//!
-//! Used by skill (`SKILL.md`) files, which pair a frontmatter block with a
-//! body and use kebab-case names.
-
 use anyhow::Context;
 use serde::de::DeserializeOwned;
 
-/// Parse a file with `---`-delimited YAML frontmatter into the deserialized
-/// frontmatter and the trimmed body that follows it.
-///
-/// `label` identifies the file kind in error messages (e.g. `"SKILL.md"`),
-/// producing messages like `"{label} missing frontmatter
-/// delimiter '---'"` and `"failed to parse {label} frontmatter"`.
-///
-/// # Errors
-/// Returns an error if the opening or closing `---` delimiter is missing, or
-/// if the frontmatter YAML fails to deserialize into `T`.
 pub fn parse_frontmatter_md<T>(content: &str, label: &str) -> anyhow::Result<(T, String)>
 where
     T: DeserializeOwned,
@@ -38,14 +23,6 @@ where
     Ok((frontmatter, body))
 }
 
-/// Validate a kebab-case name: 1-64 chars, lowercase alphanumeric + hyphens,
-/// no leading/trailing/consecutive hyphens.
-///
-/// `kind` identifies what's being validated in error messages (e.g.
-/// `"skill name"`).
-///
-/// # Errors
-/// Returns an error if the name violates any of the above rules.
 pub fn validate_kebab_name(name: &str, kind: &str) -> anyhow::Result<()> {
     if name.is_empty() || name.len() > 64 {
         anyhow::bail!(

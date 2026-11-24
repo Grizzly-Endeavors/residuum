@@ -3,16 +3,9 @@
   import { hub } from "../../lib/hub.svelte";
   import { Banner, Button } from "../../lib/ui";
 
-  // A part of a section that needs its agent running: its
-  // agent-to-agent status, its card, whether remote agents can be reached.
-  // While the agent isn't running the part says so, with Start, and the rest
-  // of the section, which is backed by files, stays editable.
-
   interface Props {
     agent: string;
-    /** What the part shows, for the notice: "its status and card". */
     subject?: string;
-    /** The part itself, drawn once the agent runs. */
     children?: Snippet;
   }
 

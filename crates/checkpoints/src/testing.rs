@@ -1,20 +1,7 @@
-//! Test fixtures for code that needs a checkpoint engine. Behind
-//! `test-support`, and compiled for this crate's own tests.
-
 use std::sync::Arc;
 
 use crate::CheckpointEngine;
 
-/// A throwaway checkpoint engine backed by a fresh temp directory, for
-/// tests that need a `CheckpointEngine` to satisfy a constructor but don't
-/// exercise checkpointing behavior themselves. The temp directory's guard
-/// lives inside the returned engine, so it's cleaned up when the last `Arc`
-/// reference to the engine drops.
-///
-/// # Panics
-///
-/// Panics when the temporary directory or the checkpoint repositories inside
-/// it cannot be created.
 #[must_use]
 #[expect(
     clippy::expect_used,

@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { router } from "../lib/router.svelte";
 import { INBOX } from "../lib/routes";

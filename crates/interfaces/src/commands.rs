@@ -1,17 +1,6 @@
-//! Data-driven slash command registry shared across interfaces.
-//!
-//! Provides a shared command registry used by Discord, Telegram, and any future
-//! interfaces. `execute_command` resolves a command by name and returns a
-//! `CommandResult` combining response text with any side effect the interface
-//! handler must apply.
-
-/// Metadata about any command, for cross-channel registration.
 pub struct CommandInfo {
-    /// The primary command name (e.g. "help", "observe").
     pub name: &'static str,
-    /// Human-readable help text.
     pub help: &'static str,
-    /// Whether the command takes a text argument.
     pub takes_arg: bool,
     /// Whether that argument must be given (e.g. `/inbox <text>`) or may be
     /// omitted (e.g. `/stop [name]`, which falls back to the current turn).
@@ -21,53 +10,28 @@ pub struct CommandInfo {
     pub arg_required: bool,
 }
 
-/// Context for executing a command from any interface.
 #[derive(Default)]
 pub struct CommandContext<'a> {
-    /// Connection URL (for status display).
     pub url: &'a str,
-    /// Whether verbose mode is enabled.
     pub verbose: bool,
 }
 
-/// Result of executing a command through the shared registry.
 pub struct CommandResult {
-    /// Text response to display to the user.
     pub response: String,
-    /// Optional side effect the channel handler must apply.
     pub side_effect: Option<CommandSideEffect>,
 }
 
-/// Side effects that interface handlers must apply after a command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandSideEffect {
-    /// Reload server configuration.
     Reload,
-    /// Add text to the agent's inbox.
     InboxAdd(String),
-    /// Dispatch a named server command.
     ServerCommand {
-        /// Command name.
         name: &'static str,
-        /// Optional argument text.
         args: Option<String>,
     },
-    /// Stop the currently running agent turn, if any.
-    ///
-    /// Kept separate from `ServerCommand` because a stop must reach a turn
-    /// while it's running; `ServerCommand` only gets processed between
-    /// turns (see `dispatch_stop_request`).
     Stop,
-    /// Stop a named session the way the web UI's stop button does — `/stop <name>`.
-    /// Kept separate from `Stop` (plain `/stop`, which targets the current
-    /// turn: main, or this conversation's own session) since this always
-    /// names its target explicitly rather than resolving one from the
-    /// conversation the command was typed in.
     StopSession(String),
-    /// List every live session (running, idle, or forking) — `/sessions`.
     ListSessions,
-    /// Fork the main conversation into a session that works on the given
-    /// task — `/multitask <task>`.
     Multitask(String),
 }
 
@@ -79,8 +43,6 @@ struct CommandDef {
     effect: fn(arg: Option<&str>, url: &str, verbose: bool) -> CommandResult,
 }
 
-/// Build a `CommandResult` for a command that dispatches a named server command
-/// with no arguments and no local state to report.
 fn server_command_result(name: &'static str) -> CommandResult {
     CommandResult {
         response: format!("{name} triggered."),
@@ -200,11 +162,6 @@ static COMMANDS: &[CommandDef] = &[
     },
 ];
 
-/// Execute a command by name with optional arguments.
-///
-/// Separates the response text from the side effect so that each channel
-/// (Discord, Telegram) only needs to handle transport-specific actions.
-/// Unknown commands return an error response with no side effect.
 #[must_use]
 pub fn execute_command(name: &str, args: Option<&str>, ctx: &CommandContext<'_>) -> CommandResult {
     for def in COMMANDS {
@@ -219,9 +176,6 @@ pub fn execute_command(name: &str, args: Option<&str>, ctx: &CommandContext<'_>)
     }
 }
 
-/// Iterate over all commands in the registry.
-///
-/// Used by interfaces that want to register the full command set.
 pub fn all_commands() -> impl Iterator<Item = CommandInfo> {
     COMMANDS.iter().map(|def| CommandInfo {
         name: def
@@ -235,7 +189,6 @@ pub fn all_commands() -> impl Iterator<Item = CommandInfo> {
     })
 }
 
-/// Build the `/help` response text.
 fn help_text() -> String {
     let mut lines = vec!["Available commands:".to_string()];
     for def in COMMANDS {

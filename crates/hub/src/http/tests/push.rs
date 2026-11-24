@@ -1,14 +1,9 @@
-//! Tests for `/api/hub/push/...`, against a push service in the harness's hub
-//! directory and a fake push endpoint.
-
 use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::*;
 use crate::push::{PushDevice, PutPushDeviceRequest, WebPushSubscription};
 
-/// A well-formed subscription body for `endpoint`. The key is the hub's own
-/// public key, which is a valid P-256 point.
 async fn subscription(h: &Harness, endpoint: &str) -> Value {
     let (_status, key) = h.call(Method::GET, "/api/hub/push/key", None).await;
     json!({
@@ -41,7 +36,6 @@ async fn the_key_route_returns_the_base64url_public_key_and_creates_the_key_file
     let reply = h.get_expect("/api/hub/push/key", StatusCode::OK).await;
 
     let public_key = reply["public_key"].as_str().unwrap();
-    // 65 bytes of base64url without padding is 87 characters.
     assert_eq!(public_key.len(), 87, "{public_key}");
     assert!(
         public_key
@@ -286,8 +280,6 @@ async fn delete_answers_204_and_then_404() {
     .await;
 }
 
-/// Register a device whose push endpoint is `server`, which the route's own
-/// validation refuses (it is plain http), through the service instead.
 async fn register_local(h: &Harness, server: &MockServer) -> PushDevice {
     let key = crate::push::PushService::public_key(&h.push).await.unwrap();
     h.push
@@ -384,8 +376,6 @@ async fn a_damaged_devices_file_answers_500_with_a_message_and_is_left_alone() {
 
 #[tokio::test]
 async fn the_push_routes_stay_open_over_the_tunnel() {
-    // A phone on the relay manages its own notifications, so unlike shutdown
-    // and disconnect these routes accept tunnelled requests.
     let h = Harness::new();
     for (method, uri) in [
         (Method::GET, "/api/hub/push/key"),

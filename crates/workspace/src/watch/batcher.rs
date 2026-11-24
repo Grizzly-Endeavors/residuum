@@ -1,11 +1,3 @@
-//! Debouncing: raw notifications coalesce into one batch until the workspace
-//! has been quiet for [`QUIET_PERIOD`], or [`MAX_BATCH_DELAY`] after the
-//! batch's first notification while writes continue.
-//!
-//! Kept free of the OS watcher and the filesystem: the caller passes the
-//! current time in, and resolving a batch takes a function that reports what
-//! is at a path now, so timing and resolution are testable on their own.
-
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -13,38 +5,27 @@ use tokio::time::Instant;
 
 use residuum_bus::workspace_change::{WorkspaceChange, WorkspaceChangeKind};
 
-/// A batch is flushed once no notification has arrived for this long.
 pub(super) const QUIET_PERIOD: Duration = Duration::from_millis(300);
 
-/// A batch is flushed this long after its first notification, even while
-/// notifications keep arriving.
 pub(super) const MAX_BATCH_DELAY: Duration = Duration::from_secs(2);
 
-/// A burst touching more distinct paths than this becomes a resync: listing
-/// them all would cost more than every watcher reloading.
 pub(super) const MAX_PENDING_PATHS: usize = 10_000;
 
-/// How one raw notification touched a path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum RawOp {
-    /// Created, or renamed into place.
     Appeared,
-    /// Deleted, or renamed away.
     Vanished,
     /// Renamed, without saying which side (macOS reports renames this way).
     Renamed,
-    /// Content or metadata changed.
     Changed,
 }
 
-/// One workspace-relative path a notification touched.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct RawChange {
     pub path: String,
     pub op: RawOp,
 }
 
-/// What is at a workspace path when a batch is resolved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PathState {
     Missing,
@@ -52,27 +33,18 @@ pub(super) enum PathState {
     Directory,
 }
 
-/// Everything a batch saw for one path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct PathHistory {
-    /// The batch's first operation on the path, which says whether the path
-    /// existed before the batch.
     first: RawOp,
-    /// Whether every operation only changed content or metadata.
     only_changed: bool,
 }
 
-/// A batch ready to resolve and publish.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum ReadyBatch {
-    /// Notifications were lost: watchers must resync, and the batch's own
-    /// changes are dropped.
     EventsLost,
-    /// The touched paths, sorted.
     Paths(Vec<(String, PathHistory)>),
 }
 
-/// Accumulates raw changes until the batch is due.
 #[derive(Debug, Default)]
 pub(super) struct ChangeBatcher {
     pending: HashMap<String, PathHistory>,
@@ -82,7 +54,6 @@ pub(super) struct ChangeBatcher {
 }
 
 impl ChangeBatcher {
-    /// Record a raw change seen at `now`.
     pub fn record(&mut self, change: RawChange, now: Instant) {
         self.touch(now);
         if self.events_lost {
@@ -101,7 +72,6 @@ impl ChangeBatcher {
         }
     }
 
-    /// Record that notifications were lost (an OS queue overflow or rescan).
     pub fn record_events_lost(&mut self, now: Instant) {
         self.touch(now);
         self.events_lost = true;
@@ -113,15 +83,12 @@ impl ChangeBatcher {
         self.last_at = Some(now);
     }
 
-    /// When the pending batch is due, or `None` when nothing is pending.
     pub fn deadline(&self) -> Option<Instant> {
         let first = self.first_at?;
         let last = self.last_at.unwrap_or(first);
         Some((last + QUIET_PERIOD).min(first + MAX_BATCH_DELAY))
     }
 
-    /// Take the pending batch and start a new one. `None` when nothing was
-    /// recorded.
     pub fn take(&mut self) -> Option<ReadyBatch> {
         self.first_at.take()?;
         self.last_at = None;
@@ -135,9 +102,6 @@ impl ChangeBatcher {
     }
 }
 
-/// Resolve each touched path to one change, from what the batch saw and what
-/// is at the path now. A directory whose only change was its own metadata
-/// produces nothing: its children report the real changes.
 pub(super) fn resolve_changes(
     paths: Vec<(String, PathHistory)>,
     state_of: impl Fn(&str) -> PathState,
@@ -220,7 +184,6 @@ mod tests {
                 t0 + ms(i * 10),
             );
         }
-        // Quiet period runs from the last write, well before the 2 s cap.
         assert_eq!(batcher.deadline(), Some(t0 + ms(190) + QUIET_PERIOD));
 
         let batch = batcher.take().unwrap();

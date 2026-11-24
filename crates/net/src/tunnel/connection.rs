@@ -1,5 +1,3 @@
-//! Core tunnel connection logic with automatic reconnection.
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,21 +11,16 @@ use super::v2::frames::AgentInfo;
 use super::v2::{self, ConnectOutcome, SessionEnd, SessionHandler};
 use residuum_config::CloudConfig;
 
-/// Header listing optional features this tunnel client supports.
 const CAPABILITIES_HEADER: &str = "x-residuum-capabilities";
 
 /// Capability: this client speaks tunnel v2 and terminates TLS itself. The
 /// relay refuses registration without it.
 const TLS_PASSTHROUGH_CAPABILITY: &str = "tls-passthrough";
 
-/// Minimum backoff duration between reconnection attempts.
 const MIN_BACKOFF: Duration = Duration::from_secs(1);
 
-/// Maximum backoff duration between reconnection attempts.
 pub(super) const MAX_BACKOFF: Duration = Duration::from_mins(1);
 
-/// Calculate the next backoff duration by doubling the current value, capped at
-/// [`MAX_BACKOFF`], with random jitter (0.5x–1.5x) to avoid thundering herd.
 #[must_use]
 fn next_backoff(current: Duration) -> Duration {
     let doubled = current.saturating_mul(2);
@@ -36,16 +29,6 @@ fn next_backoff(current: Duration) -> Duration {
     base.mul_f64(jitter)
 }
 
-/// Start the tunnel client, maintaining a persistent connection to the cloud
-/// relay with exponential backoff reconnection.
-///
-/// `handler` decides whether to trust the relay and receives the browser
-/// streams the relay hands over. `agents_rx` carries the hub's full agent
-/// list. It is sent to the relay after every (re)connect and again on every
-/// change.
-///
-/// Runs until the shutdown signal is received. Transient connection errors are
-/// logged and retried automatically.
 #[tracing::instrument(skip_all, fields(relay_url = %cfg.relay_url))]
 pub(crate) async fn start_tunnel(
     cfg: CloudConfig,
@@ -64,9 +47,6 @@ pub(crate) async fn start_tunnel(
             return;
         }
 
-        // A refused token stays refused while the same token is retried, so
-        // the status keeps saying why nothing connects. A started tunnel may
-        // carry a new token, so its first attempt always reads as connecting.
         status_tx.send_if_modified(|status| {
             if !first_attempt && *status == TunnelStatus::Refused {
                 return false;
@@ -95,18 +75,13 @@ pub(crate) async fn start_tunnel(
     }
 }
 
-/// What to do after one connection attempt.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum Step {
-    /// Shutdown was requested and handled.
     Done,
-    /// The session ended after a successful connection; reconnect now.
     Reconnect,
-    /// Wait (the given time, or the current backoff) and try again.
     Wait(Option<Duration>),
 }
 
-/// Sleep for `wait`, or until shutdown is requested.
 async fn sleep_unless_shutdown(wait: Duration, shutdown_rx: &mut watch::Receiver<bool>) {
     tokio::select! {
         () = tokio::time::sleep(wait) => {}
@@ -114,14 +89,12 @@ async fn sleep_unless_shutdown(wait: Duration, shutdown_rx: &mut watch::Receiver
     }
 }
 
-/// What one attempt on the relay's registration endpoint needs to know.
 pub(super) struct Attempt<'a> {
     pub(super) cfg: &'a CloudConfig,
     pub(super) handler: &'a Arc<dyn SessionHandler>,
 }
 
 impl Attempt<'_> {
-    /// Connect once and run the session until it ends.
     pub(super) async fn run(
         &self,
         agents_rx: &mut watch::Receiver<Vec<AgentInfo>>,
@@ -156,7 +129,6 @@ impl Attempt<'_> {
                 return Step::Wait(None);
             }
             ConnectOutcome::Unauthorized(status) => {
-                // Logged once per refusal, not on every retry of the same token.
                 if *status_tx.borrow() == TunnelStatus::Refused {
                     debug!(status, "the relay still refuses this install's token");
                 } else {
@@ -202,7 +174,6 @@ impl Attempt<'_> {
     }
 }
 
-/// Build the upgrade request for the registration endpoint at `url`.
 fn build_request(cfg: &CloudConfig, url: &str) -> Result<ws_http::Request<()>, ws_http::Error> {
     let host = url::Url::parse(url)
         .ok()
@@ -254,7 +225,6 @@ mod tests {
     fn backoff_doubles_with_jitter() {
         let current = Duration::from_secs(2);
         let next = next_backoff(current);
-        // Doubled = 4s, jitter range 0.5..1.5 → result in 2s..6s
         assert!(
             next >= Duration::from_secs(2) && next <= Duration::from_secs(6),
             "backoff from 2s should be in 2s..6s (4s ± jitter), got {next:?}"
@@ -265,7 +235,6 @@ mod tests {
     fn backoff_caps_at_max_with_jitter() {
         let current = Duration::from_secs(45);
         let next = next_backoff(current);
-        // Base is capped at MAX_BACKOFF (60s), jitter range → 30s..90s
         let min_with_jitter = MAX_BACKOFF.mul_f64(0.5);
         let max_with_jitter = MAX_BACKOFF.mul_f64(1.5);
         assert!(

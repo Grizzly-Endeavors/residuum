@@ -2,13 +2,6 @@ import type { Page } from "@playwright/test";
 import { expect, test } from "../support/fixtures";
 import { expectPaletteOpen } from "../support/lazy";
 
-/**
- * What the page says when the agent reloads its settings: nothing, for the
- * reload the model control asks for (its popover already says a change applies
- * from the next reply), and plain words for a reload the user asked for.
- */
-
-/** The frames the agent's socket delivers, by type, so a spec can tell a message has arrived. */
 function watchAgentFrames(page: Page): string[] {
   const seen: string[] = [];
   page.on("websocket", (socket) => {
@@ -30,7 +23,6 @@ test("changing the model reloads the agent without announcing it", async ({ page
   await chooser.getByRole("button", { name: "Claude Haiku 4.5" }).click();
   await expect(page.getByRole("button", { name: /^Model: Claude Haiku 4\.5/ })).toBeAttached();
 
-  // The agent has said it is reloading and how that went, and the page has said neither.
   await expect
     .poll(() => frames.some((frame) => /^notice: Configuration reloaded/.test(frame)))
     .toBe(true);

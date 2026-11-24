@@ -1,9 +1,5 @@
-/**
- * The harness's own guarantees: what every spec relies on without saying so.
- */
 import { expect, test } from "../support/fixtures";
 
-// The second test only proves the reset if it runs after the first.
 test.describe("the mock is reset before each test", () => {
   test.describe.configure({ mode: "serial" });
 
@@ -60,7 +56,6 @@ test("manual time holds the mock still until the spec moves it, and steps until 
   const stopping = page.getByRole("region", { name: "Stopping atlas" });
   await expect(stopping).toBeVisible();
 
-  // The stop's wind-down waits on simulated time, which a move of none doesn't pass.
   expect(await mock.advance(0)).toMatchObject({ fired: 0 });
   await expect(stopping).toBeVisible();
 

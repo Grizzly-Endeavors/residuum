@@ -2,16 +2,10 @@
   import { notifyStagedRemoval } from "../../lib/form-undo";
   import { Button, EmptyState, IconButton, TextField } from "../../lib/ui";
 
-  // A list of folders in a config form, with a box to add another. Removing
-  // one is a staged change like any other edit: nothing is written until the
-  // scope saves, and Discard or the toast's Undo brings it back.
-
   interface Props {
     paths: string[];
-    /** Names the box for a new folder, for assistive technology: "Skill folder to add". */
     addLabel: string;
     placeholder: string;
-    /** The line shown while the list is empty. */
     empty: string;
     error?: string;
   }

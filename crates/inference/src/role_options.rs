@@ -1,11 +1,7 @@
-//! Per-role completion options resolved from the agent's global settings.
-
 use residuum_config::Config;
 
 use super::{CacheHints, CacheRetention, CompletionOptions};
 
-/// Build `CompletionOptions` for a named role, applying per-role overrides
-/// over the global defaults.
 #[must_use]
 pub fn completion_options_for_role(cfg: &Config, role: &str) -> CompletionOptions {
     let ov = cfg.role_overrides.get(role);
@@ -17,9 +13,6 @@ pub fn completion_options_for_role(cfg: &Config, role: &str) -> CompletionOption
     }
 }
 
-/// `CompletionOptions` for the agent's main conversation: the `main` role's,
-/// keyed to that conversation. Each turn chooses its own retention (see
-/// `residuum_agent::Agent`); this one is a default.
 #[must_use]
 pub fn main_conversation_options(cfg: &Config) -> CompletionOptions {
     CompletionOptions {

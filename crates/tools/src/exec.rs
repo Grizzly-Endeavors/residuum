@@ -1,5 +1,3 @@
-//! Shell command execution tool for the agent.
-
 use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -23,57 +21,28 @@ use residuum_core::process::{
 use residuum_inference::ToolDefinition;
 use residuum_inference::{ToolError, ToolResult};
 
-/// Maximum size of the output shown from one command, notes included.
 const MAX_OUTPUT_BYTES: usize = crate::PAGE_BUDGET;
 
-/// Most of stderr shown, as its tail. Stderr is what a failing command says
-/// last and most plainly, so it gets a quarter of the cap.
 const STDERR_BUDGET_BYTES: usize = MAX_OUTPUT_BYTES / 4;
 
-/// Space held back from the cap for the section labels and the omission notes
-/// that surround the shown streams.
 const NOTE_RESERVE_BYTES: usize = 256;
 
-/// Default command timeout in seconds.
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
 
-/// Tool that executes shell commands.
 pub struct ExecTool {
-    /// Effective `PATH` (tool dirs prepended) applied to spawned children.
-    /// `None` leaves the inherited process `PATH` untouched. Read per call so
-    /// config reloads take effect without rebuilding the tool.
     tools_path: Option<SharedToolsPath>,
-    /// Agent key store backing the `keys` and `store_output_as` parameters.
-    /// `None` makes both parameters fail with an explanation.
     agent_keys: Option<SharedAgentKeys>,
-    /// Checkpoint engine, checkpointed before `store_output_as` mints a new
-    /// agent key. `None` means minting isn't checkpointed.
     checkpoints: Option<Arc<CheckpointEngine>>,
-    /// Publishes a notice when `store_output_as` overwrites a key the user
-    /// created. `None` (e.g. in tests) means the overwrite still happens but
-    /// goes unannounced.
     publisher: Option<Publisher>,
-    /// The agent's workspace root. Every spawned command starts here
-    /// (`Command::current_dir`) rather than inheriting the process's current
-    /// directory, which is shared across every agent hosted in the same
-    /// process.
     workspace_root: PathBuf,
 }
 
-/// Where a minted key goes: the `store_output_as` parameter.
 struct StoreTarget {
     name: String,
     description: Option<String>,
 }
 
 impl ExecTool {
-    /// Create an exec tool.
-    ///
-    /// Pass the shared tools-`PATH` handle to prepend the configured tool
-    /// directories to spawned commands' `PATH`; pass `None` to inherit the
-    /// process `PATH` unchanged. Pass the agent key store to enable the
-    /// `keys` and `store_output_as` parameters. Every spawned command starts
-    /// in `workspace_root`.
     #[must_use]
     pub fn new(
         tools_path: Option<SharedToolsPath>,
@@ -90,8 +59,6 @@ impl ExecTool {
         }
     }
 
-    /// Publish a notice naming the key whenever `store_output_as` overwrites
-    /// a key the user created.
     #[must_use]
     pub fn with_publisher(mut self, publisher: Publisher) -> Self {
         self.publisher = Some(publisher);
@@ -118,7 +85,6 @@ impl ExecTool {
         }
     }
 
-    /// Resolve `keys` to `(env var, value)` pairs, failing on any unknown name.
     async fn resolve_keys(&self, names: &[String]) -> Result<Vec<(String, String)>, ToolResult> {
         if names.is_empty() {
             return Ok(Vec::new());
@@ -152,11 +118,6 @@ impl ExecTool {
             .collect())
     }
 
-    /// Refuse a `store_output_as` target before running anything, so a
-    /// minting command isn't run only to have its output discarded — a bad
-    /// name is the only thing that still fails here. The agent may
-    /// overwrite a key the user created (checkpointed and reported to the
-    /// user; see [`Self::store_output`]).
     async fn check_store_target(&self, target: &StoreTarget) -> Result<(), ToolResult> {
         validate_name(&target.name)
             .map_err(|e| ToolResult::error(format!("{e}. Nothing was run.")))?;
@@ -164,10 +125,7 @@ impl ExecTool {
         Ok(())
     }
 
-    /// Store a finished command's stdout as a key and report the outcome,
-    /// never returning the stdout itself.
     async fn store_output(&self, target: &StoreTarget, output: &CapturedOutput) -> ToolResult {
-        // Captured whole for a store, so the head is the entire stdout.
         let stdout = String::from_utf8_lossy(&output.stdout.head);
         let value = stdout.trim_end_matches(['\r', '\n']);
         let stderr = self
@@ -196,10 +154,6 @@ impl ExecTool {
             return ToolResult::error("agent keys are not available in this context");
         };
 
-        // Read before the write to know whether this overwrites a key the
-        // user created — that's the only case worth telling the user
-        // about; a failed snapshot just means the notice is skipped, not
-        // that the mint itself fails.
         let overwrites_user_key = keys
             .snapshot()
             .await
@@ -258,14 +212,6 @@ impl ExecTool {
         }
     }
 
-    /// Build the message for a command that timed out or was cancelled:
-    /// `reason` plus whatever stdout/stderr it had already produced.
-    ///
-    /// When `store_output_as` was requested, stdout is discarded rather than
-    /// shown — mirroring `store_output`'s failure path, stdout is never
-    /// revealed once `store_output_as` is on the call, success or not — and
-    /// the partial stdout is still folded into the redactor as a would-be
-    /// secret value so it can't leak through stderr either.
     async fn captured_output_message(
         &self,
         reason: &str,
@@ -347,8 +293,6 @@ impl Tool for ExecTool {
     }
 
     async fn execute(&self, arguments: Value) -> Result<ToolResult, ToolError> {
-        // No caller-supplied cancellation: an inert token that is never
-        // cancelled behaves exactly like the old, non-racing `execute()`.
         self.execute_cancellable(arguments, &CancellationToken::new())
             .await
     }
@@ -402,8 +346,6 @@ impl Tool for ExecTool {
             cmd.env(var, value);
         }
 
-        // A store keeps stdout whole; otherwise stdout keeps its head and tail,
-        // since a failing command's end is shown and its start gives context.
         let stdout_capture = if store_target.is_some() {
             Capture::All
         } else {
@@ -494,9 +436,6 @@ fn exit_code_label(output: &CapturedOutput) -> String {
         .map_or_else(|| "unknown".to_string(), |c| c.to_string())
 }
 
-/// Build the message for a timed-out or cancelled command that has no
-/// `store_output_as`: `reason` plus whatever stdout/stderr it produced
-/// before it ended, labelled as partial rather than final.
 fn format_captured_output(reason: &str, output: &CapturedOutput) -> String {
     let (stdout, stderr) = shown_streams(&output.stdout, &output.stderr, true);
 
@@ -512,7 +451,6 @@ fn format_captured_output(reason: &str, output: &CapturedOutput) -> String {
     text
 }
 
-/// Append a labelled stderr block to `message` when there is any.
 fn with_stderr(message: String, stderr: &str) -> String {
     if stderr.is_empty() {
         return message;
@@ -520,16 +458,10 @@ fn with_stderr(message: String, stderr: &str) -> String {
     format!("{message}\nSTDERR:\n{stderr}")
 }
 
-/// The text of stderr as a result shows it, before any redaction.
 fn shown_stderr(stderr: &Captured) -> String {
     shape_stream("stderr", stderr, 0, STDERR_BUDGET_BYTES)
 }
 
-/// The text of each stream a result shows, within the output cap.
-///
-/// stderr shows its tail. stdout takes the rest of the cap: its head alone
-/// when the command succeeded, and its head plus tail when it failed, with
-/// the head getting a quarter of stdout's share.
 fn shown_streams(stdout: &Captured, stderr: &Captured, failed: bool) -> (String, String) {
     let stderr_text = shown_stderr(stderr);
     let stdout_budget = MAX_OUTPUT_BYTES.saturating_sub(NOTE_RESERVE_BYTES + stderr_text.len());
@@ -542,14 +474,6 @@ fn shown_streams(stdout: &Captured, stderr: &Captured, failed: bool) -> (String,
     (shape_stream("stdout", stdout, head, tail), stderr_text)
 }
 
-/// A stream as shown: its first `head` bytes and last `tail` bytes, with a
-/// note between them saying how many bytes were left out.
-///
-/// The kept bytes are one ordered stream: a capture fills its head before its
-/// tail, so a stream shorter than the capture's head has an empty tail, and
-/// the shown end is taken from wherever the stream ends. When the capture
-/// dropped bytes, a side shorter than its budget lends what it doesn't use to
-/// the other.
 fn shape_stream(name: &str, stream: &Captured, head: usize, tail: usize) -> String {
     let joined;
     let (shown_head, shown_tail): (&[u8], &[u8]) = if stream.omitted == 0 {
@@ -587,7 +511,6 @@ fn suffix(bytes: &[u8], len: usize) -> &[u8] {
         .unwrap_or(bytes)
 }
 
-/// Combine stdout and stderr into the tool result for a normal run.
 fn format_output(output: &CapturedOutput) -> ToolResult {
     let failed = !output.status.success();
     let (mut result_text, stderr) = shown_streams(&output.stdout, &output.stderr, failed);
@@ -620,8 +543,6 @@ mod tests {
     #[cfg(unix)]
     use residuum_core::testing::wait;
 
-    /// A workspace root for tests that don't care where commands start —
-    /// the system temp dir, which always exists.
     fn workspace_root() -> PathBuf {
         std::env::temp_dir()
     }
@@ -647,7 +568,6 @@ mod tests {
         std::fs::remove_file(&link).ok();
         std::os::unix::fs::symlink("/bin/sh", &link).unwrap();
 
-        // Effective PATH = tools dir prepended to the inherited PATH.
         let mut parts = vec![dir.clone()];
         if let Some(inherited) = std::env::var_os("PATH") {
             parts.extend(std::env::split_paths(&inherited));
@@ -655,7 +575,6 @@ mod tests {
         let path = std::env::join_paths(parts).unwrap();
         let handle: SharedToolsPath = std::sync::Arc::new(tokio::sync::RwLock::new(Some(path)));
 
-        // With the handle, the bare binary name resolves.
         let tool = ExecTool::new(Some(handle), None, None, workspace_root());
         let result = tool
             .execute(
@@ -674,7 +593,6 @@ mod tests {
             result.output
         );
 
-        // Without the handle, the same bare name is not on PATH → fails.
         let bare = ExecTool::new(None, None, None, workspace_root());
         let missing = bare
             .execute(
@@ -709,9 +627,6 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn exec_starts_in_the_workspace_root_not_the_process_cwd() {
-        // The process's own current directory here is whatever `cargo test`
-        // was invoked from, not this tempdir — so the command only sees
-        // this directory if `current_dir` is set explicitly.
         let dir = tempfile::tempdir().unwrap();
         let expected = tokio::fs::canonicalize(dir.path()).await.unwrap();
 
@@ -774,9 +689,6 @@ mod tests {
         );
     }
 
-    /// Poll (rather than sleep a guessed duration) until `pid` no longer
-    /// exists, or fail after a bound — proving the process was actually
-    /// killed, not merely abandoned.
     #[cfg(unix)]
     async fn wait_for_pid_to_die(pid: i32) {
         let Ok(pid_u32) = u32::try_from(pid) else {
@@ -868,10 +780,6 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn exec_future_dropped_before_completion_kills_grandchildren() {
-        // Regression test for the drop-guard: dropping the turn future
-        // (simulated here with `select!` dropping the losing branch) must
-        // still kill the whole process tree, not just the immediate shell
-        // that `kill_on_drop` alone would reach.
         let dir = tempfile::tempdir().unwrap();
         let pid_path = dir.path().join("grandchild-pid");
         let tool = ExecTool::new(None, None, None, workspace_root());
@@ -907,7 +815,6 @@ mod tests {
             .await
             .unwrap();
 
-        // The command succeeds (exit code 0) even with stderr output
         assert!(!result.is_error, "stderr-only with exit 0 is success");
         assert!(
             result.output.contains("STDERR"),
@@ -927,8 +834,6 @@ mod tests {
             "command should succeed: {}",
             result.output
         );
-        // cmd's echo prints the quotes; sh's removes them. Either way the
-        // double space inside the quotes must survive.
         assert!(
             result.output.contains("hello  world"),
             "got: {}",
@@ -1038,7 +943,6 @@ mod tests {
         );
     }
 
-    /// At least `bytes` bytes of numbered lines, ending in a newline.
     fn numbered_lines(bytes: usize) -> Vec<u8> {
         use std::fmt::Write as _;
         let mut text = String::new();
@@ -1050,8 +954,6 @@ mod tests {
         text.into_bytes()
     }
 
-    /// `stream` as exec's stdout capture keeps it: the head fills first, then
-    /// the tail holds the latest bytes and anything between is dropped.
     fn as_stdout_capture(stream: &[u8]) -> Captured {
         let head = prefix(stream, MAX_OUTPUT_BYTES);
         let rest = stream.get(head.len()..).unwrap_or_default();
@@ -1064,14 +966,10 @@ mod tests {
         format!("{}\n", text.trim_end().lines().last().unwrap())
     }
 
-    /// The budget `shown_streams` gives stdout when stderr is empty.
     const STDOUT_BUDGET: usize = MAX_OUTPUT_BYTES - NOTE_RESERVE_BYTES;
 
     #[test]
     fn a_failing_commands_stdout_keeps_its_end_in_every_size_range() {
-        // Shorter than the capture's head (the tail is empty), between one
-        // and two capture windows (nothing dropped), and longer than both
-        // (the capture dropped its middle).
         for size in [MAX_OUTPUT_BYTES - 20, 60_000, 150_000] {
             let stream = numbered_lines(size);
             let (shown, _) = shown_streams(&as_stdout_capture(&stream), &Captured::default(), true);
@@ -1172,8 +1070,6 @@ mod tests {
     #[tokio::test]
     async fn exec_failing_command_with_mid_sized_stdout_keeps_its_end() {
         let tool = ExecTool::new(None, None, None, workspace_root());
-        // About 60 KB of stdout: more than the cap, less than the capture's
-        // head and tail together.
         let result = tool
             .execute(serde_json::json!({ "command": "seq 1 11000; exit 1" }))
             .await
@@ -1466,11 +1362,6 @@ mod tests {
                 )
                 .unwrap(),
             );
-            // A first write with nothing preexisting has nothing to
-            // checkpoint (the pre-write snapshot would be empty either way),
-            // so store a first key without an engine attached, then attach
-            // one and store a second key -- that second write's pre-write
-            // checkpoint has real prior state (the first key) to capture.
             keys.set("first", "value-one-abc123", None, KeyCreator::Agent)
                 .await
                 .unwrap();

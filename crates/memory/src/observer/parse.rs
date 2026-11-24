@@ -1,5 +1,3 @@
-//! Response parsing for the observer LLM output.
-
 use chrono::NaiveDateTime;
 use chrono_tz::Tz;
 use serde::Deserialize;
@@ -8,14 +6,12 @@ use crate::types::Visibility;
 use residuum_core::time::now_local;
 use residuum_inference::InferenceResponse;
 
-/// Typed response from structured output mode.
 #[derive(Deserialize)]
 struct ObserverJsonResponse {
     observations: Vec<ObservationItem>,
     narrative: String,
 }
 
-/// Single observation item within the typed response.
 #[derive(Deserialize)]
 struct ObservationItem {
     content: String,
@@ -23,26 +19,17 @@ struct ObservationItem {
     visibility: Visibility,
 }
 
-/// Intermediate extraction result from the observer LLM response.
 pub(super) struct ObserverExtraction {
     pub(super) content: String,
     pub(super) timestamp: NaiveDateTime,
     pub(super) visibility: Visibility,
 }
 
-/// Combined parse result: extractions plus optional narrative.
 pub(super) struct ObserverParseResult {
     pub(super) extractions: Vec<ObserverExtraction>,
     pub(super) narrative: Option<String>,
 }
 
-/// Parse the model's JSON response into extractions and an optional narrative.
-///
-/// Tries typed deserialization first (structured output path), then falls back
-/// to `Value`-based parsing for legacy bare arrays and Ollama fallback.
-///
-/// # Errors
-/// Returns an error if the response cannot be parsed or the observations are empty.
 pub(super) fn parse_observer_response(
     response: &InferenceResponse,
     tz: Tz,
@@ -50,7 +37,6 @@ pub(super) fn parse_observer_response(
     let content = response.content.trim();
     let json_str = residuum_inference::strip_code_fences(content);
 
-    // Fast path: try typed deserialization (structured output)
     if let Ok(typed) = serde_json::from_str::<ObserverJsonResponse>(json_str) {
         let extractions = typed_items_to_extractions(&typed.observations, tz);
 
@@ -70,7 +56,6 @@ pub(super) fn parse_observer_response(
         });
     }
 
-    // Fallback: Value-based parsing for legacy bare arrays and malformed objects
     tracing::debug!("observer structured output failed, falling back to value-based parsing");
     let value: serde_json::Value = serde_json::from_str(json_str).map_err(|e| {
         anyhow::anyhow!("failed to parse observer response as JSON: {e}\nresponse: {content}")
@@ -112,7 +97,6 @@ pub(super) fn parse_observer_response(
     })
 }
 
-/// Convert typed `ObservationItem`s to `ObserverExtraction`s.
 fn typed_items_to_extractions(items: &[ObservationItem], tz: Tz) -> Vec<ObserverExtraction> {
     items
         .iter()
@@ -135,7 +119,6 @@ fn typed_items_to_extractions(items: &[ObservationItem], tz: Tz) -> Vec<Observer
         .collect()
 }
 
-/// Parse individual observation items from a JSON array.
 pub(super) fn parse_extraction_items(
     items: &[serde_json::Value],
     tz: Tz,

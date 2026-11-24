@@ -7,10 +7,6 @@
   import { Button, confirmations } from "../../lib/ui";
   import type { RemoteAct } from "./remote-access-act";
 
-  // The instances that have joined this one, and the certificate accounts of
-  // instances that no longer exist in Residuum Cloud, which can be removed.
-  // Names are text from the relay and are never drawn as markup.
-
   interface Props {
     siblings: readonly SiblingInfo[];
     pins: readonly PinInfo[];
@@ -20,7 +16,6 @@
 
   let { siblings, pins, busy, act }: Props = $props();
 
-  /** Siblings with a usable slug, one row each. */
   const joined = $derived([
     ...new Map(withValidSlugs(siblings).map((sibling) => [sibling.slug, sibling])).values(),
   ]);

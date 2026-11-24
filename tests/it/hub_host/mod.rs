@@ -51,49 +51,34 @@ use residuum_core::testing::gate::Gate;
 use residuum_core::testing::ports::reserve_port;
 use residuum_core::testing::wait;
 
-/// A hub over a temp residuum root with running-capable agents, each talking
-/// to its own mock model server that answers "<name> here".
 pub(crate) struct Fixture {
     pub(crate) root: tempfile::TempDir,
     pub(crate) host: Arc<AgentHost>,
     pub(crate) services: HubServices,
     addr: String,
     mocks: BTreeMap<String, MockServer>,
-    /// The gated proxy each agent's model calls go through, in front of its
-    /// mock server; holding it keeps it serving.
     models: BTreeMap<String, GatedModel>,
     http: reqwest::Client,
-    /// What the hub's recorder has written since the fixture was built.
     team_events: Arc<TeamEventLog>,
     _recorder: TeamEventRecorder,
-    /// What Home shows about each agent, with frames gathered for
-    /// `OVERVIEW_WINDOW` so a test needn't wait a second for one.
     overview: Arc<TeamOverview>,
     _overview_tracker: OverviewTracker,
-    /// Web Push notifications for what the agents do, over `services.push`.
     _push_triggers: PushTriggers,
-    /// What the triggers decided about each thing they read, from the start.
     push_decisions: tokio::sync::broadcast::Sender<residuum::hub::push::TriggerDecision>,
-    /// The notices about push delivery that the triggers passed on.
     push_notices: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
-/// How long the fixture's overview gathers an agent's changes into a frame.
 const OVERVIEW_WINDOW: Duration = Duration::from_millis(150);
 
-/// The string at `key` of a JSON object.
 fn str_at<'a>(value: &'a Value, key: &str) -> &'a str {
     value.get(key).and_then(Value::as_str).unwrap()
 }
 
-/// The array at `key` of a JSON object.
 fn array_at<'a>(value: &'a Value, key: &str) -> &'a Vec<Value> {
     value.get(key).and_then(Value::as_array).unwrap()
 }
 
 impl Fixture {
-    /// Build a hub with the agents `names` on disk (not started yet).
-    /// `hub_toml` is appended to the hub config after the timezone.
     pub(crate) async fn new(names: &[&str], hub_toml: &str) -> Self {
         let root = tempfile::tempdir().unwrap();
         let hub_dir = root.path().join("hub");
@@ -185,7 +170,6 @@ impl Fixture {
         }
     }
 
-    /// The gate every model call from the agent `name` waits at.
     fn gate(&self, name: &str) -> &Gate {
         self.models
             .get(name)
@@ -205,7 +189,6 @@ impl Fixture {
         )
     }
 
-    /// Send `text` to the agent over its WebSocket and return its reply.
     async fn chat(&self, name: &str, text: &str) -> String {
         let (mut ws, _) =
             tokio_tungstenite::connect_async(format!("ws://{}/api/agents/{name}/ws", self.addr))
@@ -216,11 +199,7 @@ impl Fixture {
         ))
         .await
         .unwrap();
-        // Stays connected until the turn ends, as a page open on the chat
-        // does, so the turn counts the reply as seen.
         wait::guarded("the agent's reply and the end of its turn", async {
-            // `(turn id, reply)` once the reply arrives; a `turn_ended` of
-            // another turn that was still finishing is not this one's.
             let mut reply: Option<(String, String)> = None;
             while let Some(frame) = ws.next().await {
                 let WsMessage::Text(raw) = frame.unwrap() else {
@@ -249,7 +228,6 @@ impl Fixture {
         .await
     }
 
-    /// Start an artifact session in the agent and return its address.
     async fn start_session(&self, name: &str, prompt: &str) -> String {
         let response = self
             .http
@@ -268,7 +246,6 @@ impl Fixture {
         str_at(&body, "address").to_string()
     }
 
-    /// The `(live states, completed count)` of the agent's sessions.
     async fn sessions(&self, name: &str) -> (Vec<String>, usize) {
         let (status, body) = self.get(&format!("/api/agents/{name}/sessions")).await;
         assert_eq!(status, 200, "{body}");
@@ -280,9 +257,6 @@ impl Fixture {
         (live, array_at(&value, "completed").len())
     }
 
-    /// Send `name` a request on a repair route that logs, an unauthenticated
-    /// webhook delivery, and an A2A message. Their handlers, and the tasks
-    /// they spawn, are outside the agent's running router.
     async fn exercise_repair_webhook_and_a2a_routes(&self, name: &str) {
         let rejected = self
             .http
@@ -337,10 +311,6 @@ impl Fixture {
         self.host.summary(name).unwrap().state
     }
 
-    /// Wait until the running agent's file watcher is placed. The agent's
-    /// runtime places it on its own task, after the agent is already
-    /// reported running, and a file that changes before then is never
-    /// reported to anyone.
     async fn wait_for_file_watcher(&self, name: &str) {
         let mut health = self
             .host
@@ -356,12 +326,6 @@ impl Fixture {
         );
     }
 
-    /// Wait until a chat turn has a workspace checkpoint in the agent's
-    /// history. The turn's start and end checkpoints are recorded in the
-    /// background, and each records only when the workspace differs from the
-    /// last checkpoint. When both run late, the first records everything the
-    /// turn changed and the second finds nothing to record, so which of them
-    /// reaches the history, and whether both do, depends on scheduling.
     async fn wait_for_a_turn_checkpoint(&self, name: &str) {
         wait::until("a checkpoint of the turn to be recorded", || async {
             let (_, history) = self
@@ -377,8 +341,6 @@ impl Fixture {
         .await;
     }
 
-    /// Wait until the running agent has no checkpoint still being written,
-    /// as its status reports.
     async fn wait_for_checkpoints_to_settle(&self, name: &str) {
         wait::until("the agent's checkpoints to finish", || async {
             let (_, status) = self.get(&format!("/api/agents/{name}/status")).await;
@@ -388,10 +350,6 @@ impl Fixture {
         .await;
     }
 
-    /// Replace the agent's workspace checkpoint repository with a plain
-    /// file, so that opening it fails. Call it once no checkpoint is being
-    /// written: the agent is stopped, which waits for them, or
-    /// [`Self::wait_for_checkpoints_to_settle`] has returned.
     fn make_checkpoints_unopenable(&self, name: &str) {
         let repo = residuum::checkpoints::agent_repos_dir(
             &residuum::config::HubPaths::new(&self.services.hub_dir).checkpoints_dir(),
@@ -402,9 +360,6 @@ impl Fixture {
         std::fs::write(&repo, "not a repository").unwrap();
     }
 
-    /// Write a user-inbox item named `id` into the agent's workspace.
-    /// Write `body` to `relative` in the agent's workspace, which is its
-    /// directory.
     fn add_workspace_file(&self, name: &str, relative: &str, body: &str) {
         let path = self.root.path().join(name).join(relative);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -427,15 +382,12 @@ impl Fixture {
             .expect("the fixture has a mock model for every agent")
     }
 
-    /// `GET /api/hub/agents`, parsed.
     async fn listing(&self) -> Value {
         let (status, body) = self.get("/api/hub/agents").await;
         assert_eq!(status, 200, "{body}");
         serde_json::from_str(&body).unwrap()
     }
 
-    /// Send "ping" to the agent over a WebSocket that stays open, so the turn
-    /// it starts has a client to show its reply to.
     async fn start_a_turn(
         &self,
         name: &str,
@@ -463,8 +415,6 @@ impl Fixture {
     }
 }
 
-/// The item files in a started agent's user inbox. An empty list means the
-/// hub wrote nothing there, since the directory itself must exist.
 pub(crate) fn user_inbox_files(hub: &Fixture, agent: &str) -> Vec<std::path::PathBuf> {
     let inbox = WorkspaceLayout::new(hub.root.path().join(agent)).user_inbox_dir();
     assert!(inbox.is_dir(), "{agent} has a user inbox");
@@ -483,7 +433,6 @@ pub(crate) fn drain_events(rx: &mut broadcast::Receiver<HubEvent>) -> Vec<HubEve
     events
 }
 
-/// The `(agent, state)` of every `agent_state` event in `events`.
 fn state_changes(events: &[HubEvent]) -> Vec<(String, AgentState)> {
     events
         .iter()
@@ -516,9 +465,6 @@ async fn each_agent_serves_its_own_routes_with_separate_memory_and_sessions() {
     assert_eq!(hub.chat("scout", "hello scout").await, "scout here");
     assert_eq!(hub.chat("atlas", "hello atlas").await, "atlas here");
 
-    // Memory is per agent: each history holds only its own conversation.
-    // The reply is published before the turn is persisted, so wait for each
-    // conversation to reach its history.
     let history_with = |name: &'static str, needle: &'static str| {
         let hub = &hub;
         async move {
@@ -545,7 +491,6 @@ async fn each_agent_serves_its_own_routes_with_separate_memory_and_sessions() {
         assert!(recent.is_file(), "{name} keeps its own recent messages");
     }
 
-    // Sessions are per agent too.
     hub.start_session("scout", "look something up").await;
     wait::until("scout's session to finish its turn", || async {
         (hub.sessions("scout").await.0 == ["idle"]).then_some(())
@@ -571,7 +516,6 @@ async fn an_unknown_agent_is_404_and_a_stopped_one_is_409_except_for_repair_rout
     assert_eq!(str_at(&value, "state"), "stopped");
     assert_eq!(str_at(&value, "error"), "scout is stopped");
 
-    // The config route still answers, so a stopped agent can be repaired.
     let (repair_status, repair_body) = hub.get("/api/agents/scout/config/raw").await;
     assert_eq!(repair_status, 200, "{repair_body}");
 }
@@ -627,8 +571,6 @@ async fn a_stopped_agent_serves_what_it_kept_and_only_status_needs_it_running() 
     assert_eq!(a2a_status, 200, "{a2a}");
     assert_eq!(a2a, r#"{"agents":{}}"#);
 
-    // `status` describes the running process, and the other live routes
-    // stay refused.
     for route in ["status", "sessions", "a2a/agents"] {
         let (refused_status, refused) = hub.get(&format!("/api/agents/scout/{route}")).await;
         assert_eq!(refused_status, 409, "{route}: {refused}");
@@ -636,7 +578,6 @@ async fn a_stopped_agent_serves_what_it_kept_and_only_status_needs_it_running() 
         assert_eq!(str_at(&value, "state"), "stopped", "{route}");
     }
 
-    // Starting it again serves the same files through the same routes.
     hub.host.start("scout").await.unwrap();
     assert_eq!(hub.get("/api/hub/mail/threads?agent=scout").await.0, 200);
     let (status_status, status_body) = hub.get("/api/agents/scout/status").await;
@@ -646,7 +587,6 @@ async fn a_stopped_agent_serves_what_it_kept_and_only_status_needs_it_running() 
 #[tokio::test]
 async fn a_saved_token_link_serves_from_the_running_agent_and_after_it_stops() {
     let hub = Fixture::new(&["scout"], "").await;
-    // A file outside the workspace, linked before the agent last stopped.
     let outside = hub.root.path().join("outside");
     std::fs::create_dir_all(&outside).unwrap();
     let report = outside.join("report.txt");
@@ -677,8 +617,6 @@ async fn a_saved_token_link_serves_from_the_running_agent_and_after_it_stops() {
     assert_eq!(hub.get("/api/agents/scout/files/not-a-token").await.0, 404);
 }
 
-/// Assert that the agent's history, usage, mail, and raw A2A settings
-/// answer with what is on disk.
 async fn assert_file_routes_answer(hub: &Fixture, name: &str) {
     let (history_status, history) = hub.get(&format!("/api/agents/{name}/chat/history")).await;
     assert_eq!(history_status, 200, "{history}");
@@ -720,15 +658,12 @@ async fn a_stopped_agents_history_and_inbox_answer_when_its_checkpoint_repositor
     hub.add_workspace_file("scout", "notes/plan.md", "the plan");
     hub.make_checkpoints_unopenable("scout");
 
-    // The repair routes open the repositories, which shows they can't be
-    // opened.
     let (repair_status, repair_body) = hub.get("/api/agents/scout/workspace/files").await;
     assert_eq!(repair_status, 500, "{repair_body}");
     assert!(repair_body.contains("checkpoint history"), "{repair_body}");
 
     assert_file_routes_answer(&hub, "scout").await;
 
-    // Saving the A2A settings goes ahead without a checkpoint.
     let saved = r#"{"agents":{}}"#;
     let response = hub
         .http
@@ -763,8 +698,6 @@ async fn a_running_agents_history_and_inbox_do_not_open_its_checkpoint_repositor
     hub.add_workspace_file("scout", "notes/plan.md", "the plan");
     hub.make_checkpoints_unopenable("scout");
 
-    // A route that opens the repositories now fails, so the file routes
-    // answering means they never tried.
     let (repair_status, repair_body) = hub.get("/api/agents/scout/workspace/files").await;
     assert_eq!(repair_status, 500, "{repair_body}");
 
@@ -854,8 +787,6 @@ async fn starting_publishes_starting_then_running_in_order() {
 #[tokio::test]
 async fn a_panic_in_one_agents_loop_fails_only_that_agent() {
     let hub = Fixture::new(&["atlas", "scout"], "").await;
-    // Point the hub's bug reports at a mock, so the automatic report for the
-    // crash can be seen arriving.
     let reports = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/api/v1/bug-report"))
@@ -877,7 +808,6 @@ async fn a_panic_in_one_agents_loop_fails_only_that_agent() {
     let mut events = hub.host.subscribe();
 
     let command_tx = {
-        // The panic hook is a server command; send it over the WebSocket.
         let (mut ws, _) =
             tokio_tungstenite::connect_async(format!("ws://{}/api/agents/scout/ws", hub.addr))
                 .await
@@ -926,7 +856,6 @@ async fn a_panic_in_one_agents_loop_fails_only_that_agent() {
             .contains(&("scout".to_string(), AgentState::Failed)),
         "the failure is published on the hub bus"
     );
-    // The failure was also auto-reported, naming the agent.
     wait::until("the automatic bug report", || async {
         let received = reports.received_requests().await.unwrap_or_default();
         received
@@ -940,7 +869,6 @@ async fn a_panic_in_one_agents_loop_fails_only_that_agent() {
         "the hub leaves nothing about the failure in scout's inbox"
     );
 
-    // A failed agent restarts only when someone restarts it.
     hub.host.restart("scout").await.unwrap();
     assert_eq!(hub.chat("scout", "recovered?").await, "scout here");
 }
@@ -951,7 +879,6 @@ async fn sessions_from_both_agents_queue_on_the_one_shared_budget() {
     assert_eq!(hub.services.session_budget.available_permits(), 1);
     hub.host.start_autostart().await;
 
-    // The single permit is taken, so neither agent's session can run.
     let held = Arc::clone(&hub.services.session_budget)
         .acquire_owned()
         .await
@@ -1024,7 +951,6 @@ async fn patch_persists_to_the_config_and_reloads_the_agent() {
         )),
         "the change is published"
     );
-    // The write was checkpointed in the agent's own config repository.
     let (_, status) = hub.get("/api/agents/scout/status").await;
     let status: Value = serde_json::from_str(&status).unwrap();
     let count = status
@@ -1067,7 +993,6 @@ async fn patching_a_stopped_agent_writes_its_config_without_starting_it() {
 
     assert!(!summary.autostart);
     assert_eq!(summary.state, AgentState::Stopped);
-    // Not autostarted any more.
     hub.host.start_autostart().await;
     assert_eq!(hub.state_of("scout"), AgentState::Stopped);
 }
@@ -1075,8 +1000,6 @@ async fn patching_a_stopped_agent_writes_its_config_without_starting_it() {
 #[tokio::test]
 async fn unread_counts_messages_while_no_client_is_connected_and_resets_on_connect() {
     let hub = Fixture::new(&["scout"], "").await;
-    // The model holds its reply until the client has left, so the reply is
-    // published while no client is connected.
     hub.gate("scout").close();
     hub.host.start("scout").await.unwrap();
     let mut events = hub.host.subscribe();
@@ -1105,7 +1028,6 @@ async fn unread_counts_messages_while_no_client_is_connected_and_resets_on_conne
     })
     .await;
 
-    // A client connecting resets it.
     let (_ws, _) =
         tokio_tungstenite::connect_async(format!("ws://{}/api/agents/scout/ws", hub.addr))
             .await
@@ -1141,8 +1063,6 @@ async fn unread_counts_messages_while_no_client_is_connected_and_resets_on_conne
 #[tokio::test]
 async fn the_listing_and_the_hub_snapshot_show_a_turn_in_progress_and_then_its_end() {
     let hub = Fixture::new(&["scout"], "").await;
-    // The model holds its reply, so the turn is still running when the
-    // listing is read.
     hub.gate("scout").close();
     hub.host.start("scout").await.unwrap();
     let idle = json!({ "busy": false, "busy_since": null, "unread": 0 });
@@ -1184,10 +1104,6 @@ async fn the_listing_and_snapshot_show_an_agent_as_stopping_from_the_stop_reques
     hub.host.start_autostart().await;
     assert_eq!(hub.listing().await.get("stopping"), Some(&json!([])));
 
-    // A real stop over a running agent is over in a few milliseconds, too soon
-    // to read the listing in the middle of. Raise the flag the stop raises
-    // first, and leave it raised, to look at the agent for as long as a slow
-    // stop would take.
     let stop_requested = hub
         .host
         .slot("scout")
@@ -1228,7 +1144,6 @@ async fn the_listing_and_snapshot_show_an_agent_as_stopping_from_the_stop_reques
 #[tokio::test]
 async fn stopping_an_agent_records_its_live_sessions_as_interrupted() {
     let hub = Fixture::new(&["scout"], "").await;
-    // The session's model call is held, so the stop lands mid-call.
     hub.gate("scout").close();
     hub.host.start("scout").await.unwrap();
     hub.start_session("scout", "a long task").await;
@@ -1257,22 +1172,17 @@ async fn stopping_an_agent_records_its_live_sessions_as_interrupted() {
     assert_eq!(outcome, Some("cancelled"), "the run was stopped, not lost");
 }
 
-/// Collects, for each event, its target and whether it or any span around it
-/// carries an `agent` field.
 #[derive(Clone, Default)]
 struct AgentFieldCapture {
     events: Arc<std::sync::Mutex<Vec<CapturedEvent>>>,
 }
 
-/// One captured log event.
 #[derive(Debug, Clone)]
 struct CapturedEvent {
     target: String,
     agent: Option<String>,
     message: String,
-    /// The `task` field of the monitored task the event ran in, if any.
     task: Option<String>,
-    /// The names of the spans around the event, outermost first.
     spans: Vec<String>,
 }
 
@@ -1371,10 +1281,7 @@ where
     }
 }
 
-/// Hub-level code logs about the process as a whole, not on an agent's
-/// behalf; everything else that logs during an agent's life must say whose.
 fn is_hub_level(event: &CapturedEvent) -> bool {
-    // These hub modules run on an agent's behalf, so their lines must carry its `agent` field.
     const AGENT_CHECKED_HUB_MODULES: &[&str] = &[
         "residuum_hub::web",
         "residuum_hub::file_server",
@@ -1400,10 +1307,6 @@ fn is_hub_level(event: &CapturedEvent) -> bool {
         || event.spans.iter().any(|span| span == "team_feed")
 }
 
-/// The test binary run as a child process, so the scenario below has the whole
-/// process's tracing to itself: a subscriber installed for one test thread
-/// shares callsite bookkeeping with the tests running beside it, which makes
-/// span capture unreliable there.
 #[test]
 fn every_log_line_an_agent_produces_carries_its_agent_field() {
     let output = std::process::Command::new(std::env::current_exe().unwrap())
@@ -1423,8 +1326,6 @@ fn every_log_line_an_agent_produces_carries_its_agent_field() {
     );
 }
 
-/// Start two agents, chat with both, and stop them, then check every log
-/// line the agents produced names its agent. Run by the test above.
 #[test]
 #[ignore = "run by every_log_line_an_agent_produces_carries_its_agent_field in its own process"]
 fn agent_log_lines_scenario() {
@@ -1447,7 +1348,6 @@ fn agent_log_lines_scenario() {
             "[webhooks.deploy]\nsecret = \"s3cret\"\n",
         )
         .unwrap();
-        // Building the hub is the hub's own doing; what follows is the agents'.
         capture.events.lock().unwrap().clear();
 
         hub.host.start_autostart().await;
@@ -1556,7 +1456,6 @@ pub(crate) fn create_request(name: &str, description: Option<&str>) -> CreateAge
     }
 }
 
-/// Whether any request the model server got so far mentions `needle`.
 pub(crate) async fn model_was_told(server: &MockServer, needle: &str) -> bool {
     server
         .received_requests()
@@ -1595,8 +1494,6 @@ async fn creating_an_agent_writes_it_starts_it_and_briefs_it() {
     assert_eq!(hub.host.list().len(), 2);
     assert_eq!(hub.chat("nova", "hello nova").await, "scout here");
 
-    // The description reached the new agent's main conversation as its first
-    // message, so it can write its own notes.
     wait::until("the description to reach the model", || async {
         model_was_told(hub.mock("scout"), "keeps the wiki tidy")
             .await
@@ -1776,7 +1673,6 @@ async fn deleting_an_agent_stops_it_and_keeps_its_history_for_a_restore() {
         "the deletion is published with who did it"
     );
 
-    // The agent's checkpoint history outlived it, so it restores by name.
     let listed = hub.host.list_deleted().await.unwrap();
     assert_eq!(listed.len(), 1);
     let deleted_scout = listed.first().unwrap();
@@ -1816,8 +1712,6 @@ async fn two_agents_cannot_hold_the_same_teams_port() {
         )
         .unwrap();
     }
-    // `hub.host.start` binds the teams listener on `port`; drop the
-    // reservation right before so no other test process can take it first.
     drop(reservation);
 
     hub.host.start("atlas").await.unwrap();
@@ -1877,7 +1771,6 @@ async fn an_agent_with_a_broken_config_fails_alone_with_a_plain_message() {
     );
 }
 
-/// Read frames from `ws` until one of type `frame_type` satisfies `matches`.
 async fn frame_where(
     ws: &mut tokio_tungstenite::WebSocketStream<
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
@@ -1928,11 +1821,6 @@ async fn one_team_change_feed_serves_every_agent_and_the_artifact_reload_watcher
         *health != WatchHealth::Starting
     })
     .await;
-    // The feed watches a directory that appears after it started once it
-    // sees the directory appear, and a file written into it before then is
-    // never reported. The agents' bootstrap creates `team/wiki`, so wait for
-    // the feed to report whichever of the two directories appeared after it
-    // started, whoever created them.
     let mut feed = hub
         .services
         .team_feed
@@ -1975,8 +1863,6 @@ async fn one_team_change_feed_serves_every_agent_and_the_artifact_reload_watcher
         ))
         .await
         .unwrap();
-        // The socket handles its messages in order, so the pong says the
-        // watch is in place.
         ws.send(WsMessage::text(json!({ "type": "ping" }).to_string()))
             .await
             .unwrap();
@@ -2000,9 +1886,6 @@ async fn one_team_change_feed_serves_every_agent_and_the_artifact_reload_watcher
     }
 }
 
-// ─── Lifecycle races and fail-closed settings ─────────────────────────
-
-/// Answers an embeddings request with one fixed vector per input text.
 struct EmbedReply;
 
 impl wiremock::Respond for EmbedReply {
@@ -2055,16 +1938,11 @@ async fn racing_starts_restarts_and_a_delete_never_resurrect_the_agent() {
             residuum::hub::testing::write_agent(hub.root.path(), "bob", &model_url);
             hub.host.adopt("bob");
         }
-        // Odd rounds start with a broken model config, so the racing starts
-        // fail and go through the failure path.
         if round % 2 == 1 {
             std::fs::write(providers_path(&hub, "bob"), "not valid toml [[[").unwrap();
         }
         let slot = hub.host.slot("bob").unwrap();
 
-        // The delete queues on the agent's lock behind the first restart,
-        // and every later operation queues behind the delete already holding
-        // the agent's slot.
         let mut ops = vec![spawn_restart(&hub.host)];
         let deleter = Arc::clone(&hub.host);
         let delete =
@@ -2085,11 +1963,6 @@ async fn racing_starts_restarts_and_a_delete_never_resurrect_the_agent() {
             }
         }
 
-        // The delete is the one operation that has to succeed: it is the first
-        // to ask for the agent's lock after the restart, and nothing else
-        // deletes. Where a program with a file open can make the directory
-        // refuse to move, it waits for the program (a delete that failed would
-        // leave the directory behind and look like a resurrection).
         let delete_result = delete.await.unwrap();
         assert!(
             delete_result.is_ok(),
@@ -2228,9 +2101,6 @@ async fn agents_starting_at_once_cannot_both_take_a_teams_port() {
     for name in names {
         std::fs::write(config_path(&hub, name), teams_config(port)).unwrap();
     }
-    // The agents below race each other, not this reservation, to bind
-    // `port`; drop it first so none of them collides with another test
-    // process instead.
     drop(reservation);
 
     let starts = names.map(|name| {
@@ -2250,7 +2120,6 @@ async fn agents_starting_at_once_cannot_both_take_a_teams_port() {
         .find(|name| hub.state_of(name) == AgentState::Running)
         .unwrap();
 
-    // Stopping releases the port for the next agent.
     hub.host.stop(holder).await.unwrap();
     let next = names
         .into_iter()
@@ -2360,23 +2229,17 @@ async fn the_team_wiki_follows_the_agents_embedding_model() {
     )
     .unwrap();
 
-    // The hub opened text-only; the first agent that configures an embedding
-    // model starts and the shared index gains vectors.
     hub.host.start("atlas").await.unwrap();
     wait::until("the team wiki to gain vectors", || {
         std::future::ready(hub.services.team_wiki.has_vector().then_some(()))
     })
     .await;
 
-    // Removing the model drops the index back to text only.
     std::fs::write(providers_path(&hub, "atlas"), providers("")).unwrap();
     hub.host.refresh_team_embedding().await;
     assert!(!hub.services.team_wiki.has_vector());
 }
 
-// ─── Teamwork messaging ───────────────────────────────────────────────
-
-/// The `(role, content)` of the last chat message in a model request.
 fn last_chat_message(request: &wiremock::Request) -> (String, String) {
     let body: Value = serde_json::from_slice(&request.body).unwrap_or_default();
     let last = body
@@ -2394,7 +2257,6 @@ fn last_chat_message(request: &wiremock::Request) -> (String, String) {
     (text("role"), text("content"))
 }
 
-/// A model reply that calls `tool` with `arguments`.
 fn tool_call_reply(tool: &str, arguments: &Value) -> ResponseTemplate {
     static NEXT_CALL: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let id = NEXT_CALL.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -2411,9 +2273,6 @@ fn tool_call_reply(tool: &str, arguments: &Value) -> ResponseTemplate {
     }))
 }
 
-/// Script the model behind `server`: `script` sees the role and content of
-/// the last chat message and returns a tool call to make, or `None` to
-/// answer with `fallback` text.
 async fn mount_script<F>(server: &MockServer, fallback: &str, script: F)
 where
     F: Fn(&str, &str) -> Option<(&'static str, Value)> + Send + Sync + 'static,
@@ -2435,7 +2294,6 @@ where
         .await;
 }
 
-/// The address a teammate message tells its receiver to reply to.
 fn reply_address(message: &str) -> String {
     let (_, rest) = message
         .split_once("to=\"")
@@ -2451,14 +2309,12 @@ fn is_teammate_message_with(role: &str, content: &str, needle: &str) -> bool {
     role == "user" && content.contains("[Message from teammate ") && content.contains(needle)
 }
 
-/// Start `names`, in order.
 async fn start_all(hub: &Fixture, names: &[&str]) {
     for name in names {
         hub.host.start(name).await.unwrap();
     }
 }
 
-/// Write beta's role page, so teammates see a role line for it.
 fn write_beta_role(hub: &Fixture) {
     let team = hub.host.team_paths();
     std::fs::create_dir_all(team.wiki_dir().join("agents")).unwrap();
@@ -2517,8 +2373,6 @@ async fn a_teammate_message_is_attributed_and_the_reply_finds_its_way_back() {
 #[tokio::test]
 async fn a_message_sent_during_the_final_model_call_gets_its_own_reply() {
     let hub = Fixture::new(&["alpha"], "").await;
-    // The first turn's only (and therefore last) model call is held, so the
-    // second message lands while it is still running.
     hub.gate("alpha").close();
     start_all(&hub, &["alpha"]).await;
 
@@ -2537,9 +2391,6 @@ async fn a_message_sent_during_the_final_model_call_gets_its_own_reply() {
     ))
     .await
     .unwrap();
-    // The socket answers a ping only after the frames before it, so the pong
-    // shows the second message was handled, and the barrier shows it has
-    // reached the agent's bus subscribers before the held call goes on.
     ws.send(WsMessage::text(json!({ "type": "ping" }).to_string()))
         .await
         .unwrap();
@@ -2688,11 +2539,6 @@ async fn a_two_agent_loop_hits_the_hard_hop_limit_and_the_refusal_is_seen() {
             || model_was_told(hub.mock("beta"), soft_note).await,
         "the soft limit asked a receiver to reply only if needed"
     );
-    // Stopping both agents ends whatever the loop still had in flight, so the
-    // requests they made are final. Each delivered message is one turn, and
-    // the hard limit refuses the message that would be hop `HARD_LIMIT`, so
-    // at most `HARD_LIMIT` turns start, and a turn makes at most two model
-    // calls: the tool call and the follow-up that reads its result.
     hub.host.stop("alpha").await.unwrap();
     hub.host.stop("beta").await.unwrap();
     let requests = hub.mock("alpha").received_requests().await.unwrap().len()
@@ -2745,7 +2591,6 @@ async fn messaging_a_stopped_or_unknown_teammate_is_a_tool_error_and_queues_noth
         "an unknown name lists the teammates"
     );
 
-    // Starting beta later delivers nothing from before: it was never queued.
     hub.host.start("beta").await.unwrap();
     hub.chat("alpha", "to-no-session").await;
     assert!(
@@ -2864,8 +2709,6 @@ async fn the_team_router_never_reaches_a_stopped_or_deleted_teammate() {
     assert!(link.teammates().is_empty(), "the roster drops it");
 }
 
-/// Waits until the relay-facing list satisfies `check`, so a test doesn't
-/// depend on how the settle window lines up with the lifecycle call.
 async fn relay_list_where(
     rx: &mut tokio::sync::watch::Receiver<Vec<residuum_net::tunnel::AgentInfo>>,
     check: impl Fn(&[residuum_net::tunnel::AgentInfo]) -> bool,
@@ -2888,7 +2731,6 @@ async fn the_relay_agent_list_follows_every_lifecycle_and_visibility_change() {
         list.iter().find(|a| a.name == name).map(|a| a.a2a_enabled)
     };
 
-    // Nothing runs yet: both agents are listed but can't answer.
     let initial = relay_list_where(&mut rx, |list| list.len() == 2).await;
     assert!(initial.iter().all(|a| !a.a2a_enabled));
 
@@ -2996,16 +2838,12 @@ async fn dropping_a_start_or_restart_future_mid_launch_does_not_wedge_the_agent_
     host.discover().unwrap();
     let mut events = host.subscribe();
 
-    // Start the agent and drop the caller's future as soon as `launcher.start`
-    // is reached (simulating an HTTP client timeout or disconnect mid-start).
     tokio::select! {
         res = host.start("atlas") => panic!("start should be held at the launch gate, got {res:?}"),
         () = launch_gate.until_held(1) => {}
     }
     assert_eq!(host.summary("atlas").unwrap().state, AgentState::Starting);
 
-    // Release the gate; the host-owned lifecycle task finishes attaching the
-    // started agent instead of leaving the slot wedged in `Starting`.
     launch_gate.open_all();
     wait::guarded("atlas to finish starting after caller dropped", async {
         loop {
@@ -3025,7 +2863,6 @@ async fn dropping_a_start_or_restart_future_mid_launch_does_not_wedge_the_agent_
         "slot should hold the running agent control"
     );
 
-    // Now test dropping a `restart` future mid-launch as well.
     launch_gate.close();
     tokio::select! {
         res = host.restart("atlas") => panic!("restart should be held at the launch gate, got {res:?}"),
@@ -3061,7 +2898,6 @@ async fn restart_while_turn_in_flight_defers_until_turn_completes_and_force_rest
     let mut ws = hub.start_a_turn("scout").await;
     hub.gate("scout").until_held(1).await;
 
-    // Request a graceful restart over HTTP while the turn is in flight.
     let resp = hub
         .http
         .post(hub.url("/api/hub/agents/scout/restart"))
@@ -3074,12 +2910,9 @@ async fn restart_while_turn_in_flight_defers_until_turn_completes_and_force_rest
     assert!(hub.activity_of("scout").restart_pending);
     assert_eq!(hub.state_of("scout"), AgentState::Running);
 
-    // A second graceful restart while already pending coalesces cleanly.
     hub.host.restart("scout").await.unwrap();
     assert!(hub.activity_of("scout").restart_pending);
 
-    // Let the in-flight turn finish; the client receives the response and turn_ended
-    // before the deferred restart stops and restarts the agent.
     hub.gate("scout").open_all();
     let reply = wait::guarded("the in-flight turn's reply before restart", async {
         let mut content = None;
@@ -3105,7 +2938,6 @@ async fn restart_while_turn_in_flight_defers_until_turn_completes_and_force_rest
     .await;
     assert_eq!(reply, "scout here");
 
-    // Now the deferred restart runs: wait for AgentStopping followed by Running.
     wait::guarded("the deferred restart to stop and restart scout", async {
         let mut saw_stopping = false;
         loop {
@@ -3138,8 +2970,6 @@ async fn restart_while_turn_in_flight_defers_until_turn_completes_and_force_rest
         "scout here"
     );
 
-    // Now hold another turn at the gate and verify `?force=true` restarts immediately
-    // without waiting for the gate to open.
     hub.gate("scout").close();
     let _ws2 = hub.start_a_turn("scout").await;
     hub.gate("scout").until_held(1).await;
@@ -3173,8 +3003,6 @@ async fn graceful_restart_escalates_when_wait_timeout_expires() {
     hub.host.restart("scout").await.unwrap();
     assert!(hub.activity_of("scout").restart_pending);
 
-    // Without opening the gate, the bounded wait expires, publishes a Warn notice,
-    // and restarts the agent anyway.
     wait::guarded(
         "the graceful restart timeout to warn and restart scout",
         async {

@@ -1,6 +1,3 @@
-//! The team event log: a bounded, in-memory list of what happened across the
-//! team since the hub started.
-
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -8,47 +5,28 @@ use tokio::sync::broadcast;
 
 use super::event::{NewTeamEvent, TeamEvent, TeamEventLevel, TeamEventPage};
 
-/// How many entries the log holds.
 pub const LOG_CAPACITY: usize = 500;
 
-/// How many of the newest `warn` and `error` entries survive eviction, so a
-/// run of routine entries can't push a failure out of the log.
 pub const PROTECTED_ENTRIES: usize = 100;
 
-/// How many entries a page holds when the request names no limit.
 pub const DEFAULT_PAGE_SIZE: usize = 50;
 
-/// The most entries a page holds; a larger limit is treated as this.
 pub const MAX_PAGE_SIZE: usize = 200;
 
-/// How many new entries a subscriber can fall behind by before it is told it
-/// lost some.
 const NEW_ENTRY_CAPACITY: usize = 256;
 
-/// Which entries a page holds. Both bounds are exclusive, and either may be
-/// given alone or together.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PageQuery {
-    /// Only entries with a lower id: older ones.
     pub before: Option<u64>,
-    /// Only entries with a higher id: newer ones.
     pub after: Option<u64>,
-    /// How many entries at most; [`DEFAULT_PAGE_SIZE`] when `None`.
     pub limit: Option<usize>,
 }
 
 struct Entries {
     next_id: u64,
-    /// Oldest first, so ids increase along the list.
     list: VecDeque<TeamEvent>,
 }
 
-/// What has happened across the team since this hub process started.
-///
-/// Holds up to [`LOG_CAPACITY`] entries and starts empty on every boot, so
-/// the `hub_started` entry marks where a process began. When the log is full
-/// the oldest entry that is not protected is evicted, whatever its level; the
-/// newest [`PROTECTED_ENTRIES`] `warn` and `error` entries are protected.
 pub struct TeamEventLog {
     boot_id: String,
     entries: Mutex<Entries>,
@@ -56,7 +34,6 @@ pub struct TeamEventLog {
 }
 
 impl TeamEventLog {
-    /// An empty log for the hub process identified by `boot_id`.
     #[must_use]
     pub fn new(boot_id: impl Into<String>) -> Arc<Self> {
         let (new_entries, _first_receiver) = broadcast::channel(NEW_ENTRY_CAPACITY);
@@ -70,22 +47,14 @@ impl TeamEventLog {
         })
     }
 
-    /// The id of the hub process this log belongs to. Every hub socket sends
-    /// it first as `hub_boot`, and every page and frame of the log carries it.
     #[must_use]
     pub fn boot_id(&self) -> &str {
         &self.boot_id
     }
 
-    /// Add an entry, evicting the oldest unprotected one when the log is
-    /// full, and announce it to every subscriber. Returns the entry as
-    /// stored.
     pub fn record(&self, new: NewTeamEvent) -> TeamEvent {
         let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
         if entries.list.len() >= LOG_CAPACITY {
-            // With at most `PROTECTED_ENTRIES` protected entries among
-            // `LOG_CAPACITY` there is always one to evict; the front is only
-            // a fallback that keeps the bound if those constants change.
             let evicted = oldest_unprotected(&entries.list).unwrap_or(0);
             entries.list.remove(evicted);
         }
@@ -100,26 +69,15 @@ impl TeamEventLog {
         };
         entries.next_id += 1;
         entries.list.push_back(event.clone());
-        // Sent under the lock so subscribers see entries in id order. Nobody
-        // listening is the normal state until a client opens the hub socket.
         self.new_entries.send(event.clone()).ok();
         event
     }
 
-    /// Subscribe to every entry recorded from now on.
-    ///
-    /// A receiver that falls more than 256 entries behind gets
-    /// [`broadcast::error::RecvError::Lagged`] with the number it missed, and
-    /// can read them back with [`Self::page`].
     #[must_use]
     pub fn subscribe(&self) -> broadcast::Receiver<TeamEvent> {
         self.new_entries.subscribe()
     }
 
-    /// One page of entries, newest first: those newer than `query.after` and
-    /// older than `query.before`, at most `query.limit` of them. When more
-    /// match than fit, `next_before` is the id of the page's oldest entry, to
-    /// pass as `before` with the same `after` for the rest.
     #[must_use]
     pub fn page(&self, query: &PageQuery) -> TeamEventPage {
         let limit = query
@@ -150,9 +108,6 @@ impl TeamEventLog {
     }
 }
 
-/// The position of the oldest entry that eviction may remove: any `info`
-/// entry, and any `warn` or `error` entry older than the newest
-/// [`PROTECTED_ENTRIES`] of them.
 fn oldest_unprotected(list: &VecDeque<TeamEvent>) -> Option<usize> {
     let protected_from = list
         .iter()
@@ -215,8 +170,6 @@ mod tests {
     #[test]
     fn a_full_log_drops_routine_entries_before_failures() {
         let log = TeamEventLog::new("boot");
-        // 50 errors fit inside the protected 100, so they outlive the
-        // routine entries that arrive after them.
         for _ in 0..50 {
             log.record(entry(TeamEventLevel::Error, "failed"));
         }
@@ -236,7 +189,6 @@ mod tests {
         );
     }
 
-    /// Every entry in the log, oldest first, read the way a client pages.
     fn every_entry(log: &TeamEventLog) -> Vec<TeamEvent> {
         let mut all = Vec::new();
         let mut before = None;
@@ -259,8 +211,6 @@ mod tests {
     #[test]
     fn eviction_keeps_the_newest_hundred_warnings_and_errors() {
         let log = TeamEventLog::new("boot");
-        // 150 failures arrive first, alternating warn and error, then enough
-        // routine entries to push the log through its capacity twice.
         for n in 0..150 {
             let level = if n % 2 == 0 {
                 TeamEventLevel::Warn
@@ -302,7 +252,6 @@ mod tests {
                 .any(|event| event.id == first_problem.id),
             "the log is full and the problem is still there"
         );
-        // A hundred newer problems take over the protection.
         for n in 0..PROTECTED_ENTRIES {
             log.record(entry(TeamEventLevel::Warn, &format!("newer {n}")));
         }
@@ -429,8 +378,6 @@ mod tests {
         for n in 0..LOG_CAPACITY + 20 {
             log.record(info(&format!("routine {n}")));
         }
-        // Id 1 is an error and stays; the 21 oldest infos after it were
-        // evicted, so the ids along the log have a gap after 1.
         let all = every_entry(&log);
         assert_eq!(all.first().unwrap().id, 1);
         assert!(

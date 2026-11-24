@@ -1,19 +1,8 @@
-//! Prompt construction for the reflector LLM call.
-
 use residuum_inference::Message;
 
-/// User-customizable content guidance — default when `memory/REFLECTOR.md` is absent.
-///
-/// Embedded from the same asset the workspace bootstrap writes to disk, so the
-/// fallback and the bundled file cannot drift. The format spec is always appended by code.
 pub(super) const REFLECTION_CONTENT_PROMPT: &str =
     include_str!("../../../../assets/workspace-bootstrap/memory/REFLECTOR.md");
 
-/// Output format spec — always appended by code, never stored in editable files.
-///
-/// This is injected unconditionally so editing `REFLECTOR.md` cannot break JSON parsing.
-/// The structural JSON requirements are enforced by the model's structured output mode
-/// (JSON schema), so this spec focuses on semantic field guidance only.
 pub(super) const REFLECTION_FORMAT_SPEC: &str = r#"For each observation:
 - "content" (string): the merged observation as a complete, self-contained sentence
 - "timestamp": timestamp at minute precision (YYYY-MM-DDTHH:MM) — use the most recent timestamp from the source observations being merged
@@ -48,10 +37,6 @@ pub(super) fn reflector_response_schema() -> serde_json::Value {
     })
 }
 
-/// Build the reflection prompt with the serialized observation list.
-///
-/// Injects the format spec alongside user-customizable content guidance so the
-/// format requirement cannot be lost by editing the disk file.
 pub(super) fn build_reflection_prompt(
     serialized_observations: &str,
     content_guidance: &str,

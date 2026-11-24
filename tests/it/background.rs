@@ -22,8 +22,6 @@ use residuum::bus::{EventTrigger, NotificationEvent, SessionAddress, spawn_broke
 use residuum::notify::channels::InboxChannel;
 use residuum::notify::subscriber::run_notify_subscriber;
 
-// ── Result routing to inbox via bus subscriber ────────────────────
-
 #[tokio::test]
 async fn result_routes_to_inbox_via_bus() {
     let dir = tempdir().unwrap();
@@ -63,11 +61,8 @@ async fn result_routes_to_inbox_via_bus() {
     })
     .await;
 
-    // Abort the subscriber loop
     loop_task.abort();
 }
-
-// ── Session registry discovery surface ──────────────────────────────
 
 #[tokio::test]
 async fn stopping_an_unknown_address_reports_not_found() {
@@ -81,8 +76,6 @@ async fn a_freshly_constructed_registry_has_no_live_sessions() {
     assert!(registry.list_live().is_empty());
     assert!(registry.subagent_snapshot().is_empty());
 }
-
-// ── Pulse execution builds correct structure ──────────────────────
 
 #[test]
 fn build_pulse_execution_creates_correct_structure() {

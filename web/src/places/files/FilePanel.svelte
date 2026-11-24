@@ -13,43 +13,28 @@
   import { panelFileSource, sameSource } from "./file-source";
   import TextEditor from "./TextEditor.svelte";
 
-  // A file in the context panel, from the Files places' trees and from
-  // `panel=file:` and `panel=agent-file:` links: the editor with live
-  // validation, Save and Discard, the save conflict, and the file's history. A
-  // Markdown or plain text file shows rendered until Edit opens the editor,
-  // and the rendered view shows the buffer's text, edits included, with the
-  // file's problems in a banner that opens the editor. Unsaved edits are asked
-  // about before anything closes the panel or shows another file.
-
   interface Props {
-    /** The open file, which outlives this view while the panel stays open. */
     buffer: FileBuffer;
-    /** The path the URL names. */
     path: string;
-    /** The URL names the file's agent (`panel=agent-file:`), so links in the file open as that agent's files. */
     agentNamed?: boolean;
   }
 
   let { buffer, path, agentNamed = false }: Props = $props();
 
-  /** How long after the last keystroke the text is checked: long enough not to fire on every character. */
   const VALIDATE_DEBOUNCE_MS = 500;
 
   const source = $derived(buffer.source);
   let historyOpen = $state(false);
 
-  /** How a file that reads before it edits is shown: Markdown formatted, plain text as written. */
   const renderMode = $derived.by((): "markdown" | "text" | null => {
     if (/\.md$/i.test(buffer.path)) return "markdown";
     return /\.txt$/i.test(buffer.path) ? "text" : null;
   });
   const rendered = $derived(renderMode !== null && !buffer.editing);
-  /** Live updates are off for the file's agent, so the file may change without this view hearing. */
   let followOff = $state(false);
 
   const inFolder = $derived(buffer.path.includes("/"));
 
-  // Show the URL's file. A rename moved the buffer to its new path first, so the edits stay.
   $effect(() => {
     if (path !== buffer.path) void buffer.open(path);
   });
@@ -61,7 +46,6 @@
     };
   });
 
-  // Leaving with unsaved edits asks first, unless where the user is going shows this same file.
   $effect(() =>
     router.guard.register((target) => {
       if (!buffer.dirty) return null;
@@ -73,10 +57,6 @@
     }),
   );
 
-  // Follow the file on disk: through the agent's socket, or the hub's team
-  // watch for the team's folder. An agent's file is followed while the agent
-  // runs, whichever agent the app is on; a stopped agent's file is read and
-  // saved all the same. After a resync or a reconnect, read it again.
   $effect(() => {
     const prefix = source.scope === "team" ? `team/${buffer.path}` : buffer.path;
     followOff = false;
@@ -97,7 +77,6 @@
     return () => owner?.release();
   });
 
-  // A config file also changes through Settings and the composer's controls.
   $effect(() => {
     const file = buffer.configFile;
     if (file === null) return;
@@ -113,9 +92,6 @@
     return () => window.clearTimeout(timer);
   });
 
-  // Ctrl or Cmd+S saves the open file while it has edits, in either view and
-  // from anywhere in the app's window (the header's Edit button included), with
-  // the same save as the Save button. Without edits the browser keeps its own.
   function saveOnShortcut(event: KeyboardEvent): void {
     if (!buffer.dirty || !(event.metaKey || event.ctrlKey) || event.key !== "s") return;
     event.preventDefault();

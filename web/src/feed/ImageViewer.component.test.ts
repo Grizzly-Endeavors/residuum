@@ -8,8 +8,6 @@ import type { FeedItem } from "../lib/types";
 import FeedItemView from "./FeedItemView.svelte";
 import { waitFor } from "../test/wait";
 
-// A picture from the conversation, opened full size in a modal layer.
-
 class NoObserver {
   observe(): void {}
   unobserve(): void {}
@@ -33,7 +31,6 @@ const THREE = [
 const opener = (n: number): HTMLElement =>
   screen.getByRole("button", { name: `View full size: Attached image ${String(n)}` });
 
-/** The picture the viewer shows. */
 const shown = (): HTMLElement => screen.getByRole("dialog").querySelector("img") as HTMLElement;
 
 beforeEach(() => {
@@ -44,8 +41,6 @@ beforeEach(() => {
   vi.stubGlobal("ResizeObserver", NoObserver);
 });
 
-// Unmounting closes what a test left open, and that goes back in the history:
-// let it land before the next test opens anything.
 afterEach(async () => {
   cleanup();
   await waitFor(() => {

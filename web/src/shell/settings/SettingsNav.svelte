@@ -14,16 +14,9 @@
   import { IconButton, SelectField, StatusDot, VisuallyHidden } from "../../lib/ui";
   import type { SettingsScope } from "./sections";
 
-  // The modal's side: the scope picker ("All agents" first, then each agent
-  // with its state), what the scope affects, and the scope's sections with
-  // the Advanced group under a heading. On a phone it is its own screen.
-
   interface Props {
-    /** The scope token the URL names: an agent, or `_all`. */
     scopeId: string;
-    /** The section shown, marked current. */
     current: SectionId | null;
-    /** The loaded scope, whose save problems mark their sections. */
     scope: SettingsScope | null;
     onsection: (section: SectionId) => void;
     onscope: (scopeId: string) => void;

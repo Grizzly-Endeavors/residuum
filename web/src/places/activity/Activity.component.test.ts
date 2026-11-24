@@ -93,7 +93,6 @@ afterEach(() => {
   setViewedAgent(null);
 });
 
-/** atlas's Activity, with its sessions store holding `live`, `finished` and `outbound`. */
 async function showAtlas(
   live: SessionSummary[],
   finished: SessionSummary[] = [],

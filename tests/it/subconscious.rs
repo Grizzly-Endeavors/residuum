@@ -20,7 +20,6 @@ use residuum::inference::{
 };
 use residuum::subconscious::{EvalPhase, FindingKind, Severity, Subconscious, SubconsciousConfig};
 
-/// Mock provider returning a fixed response; records whether it was called.
 struct CountingProvider {
     response: String,
     calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
@@ -47,9 +46,6 @@ fn http() -> SharedHttpClient {
     SharedHttpClient::new(&HttpClientConfig::default()).unwrap()
 }
 
-/// Write an agent's `config/config.toml` and `config/providers.toml`
-/// under `dir` (the agent directory), plus a hub config beside it, and
-/// load the resulting agent `Config`.
 fn load_agent(dir: &std::path::Path, config_toml: &str) -> Config {
     let hub_dir = dir.join("hub");
     std::fs::create_dir_all(&hub_dir).unwrap();
@@ -156,9 +152,6 @@ async fn disabled_instance_never_calls_provider() {
     let dir = tempfile::tempdir().unwrap();
     let layout = WorkspaceLayout::new(dir.path());
 
-    // A disabled instance uses a NullProvider that errors if called; the
-    // empty-transcript short-circuit and the caller's enabled() gate keep it
-    // from ever running. Here we assert the disabled state directly.
     let sub = Subconscious::disabled(layout);
     assert!(
         !sub.enabled(),

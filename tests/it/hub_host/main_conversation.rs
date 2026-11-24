@@ -1,6 +1,3 @@
-//! The main conversation as a web client sees it, against a real hub: every
-//! main-agent turn reaches an open WebSocket in order, whichever endpoint
-//! started it, and a person's message is announced wherever it enters.
 #![expect(
     clippy::tests_outside_test_module,
     reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
@@ -21,8 +18,6 @@ use residuum::inference::MessageSender;
 type AgentSocket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
-/// Open the agent's WebSocket with tool frames on, and wait until the server
-/// has subscribed it to the bus: it answers a ping only once it has.
 async fn connect(hub: &Fixture, name: &str) -> AgentSocket {
     let (mut ws, _) =
         tokio_tungstenite::connect_async(format!("ws://{}/api/agents/{name}/ws", hub.addr))
@@ -55,8 +50,6 @@ async fn next_frame(ws: &mut AgentSocket) -> Value {
     .await
 }
 
-/// Every frame up to and including the `turn_ended` of the turn named
-/// `turn_id`, or of the next turn to end when `turn_id` is `None`.
 async fn frames_until_turn_ends(ws: &mut AgentSocket, turn_id: Option<&str>) -> Vec<Value> {
     let mut frames = Vec::new();
     loop {
@@ -70,9 +63,6 @@ async fn frames_until_turn_ends(ws: &mut AgentSocket, turn_id: Option<&str>) -> 
     }
 }
 
-/// Assert the `type` of each frame, without the usage ticks that come and go
-/// with each model call. A failure shows every frame, so an unexpected one is
-/// seen with its payload.
 fn assert_kinds(frames: &[Value], expected: &[&str], context: &str) {
     let kinds: Vec<&str> = frames
         .iter()
@@ -89,7 +79,6 @@ fn frame_of<'a>(frames: &'a [Value], kind: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("no {kind} frame in {frames:?}"))
 }
 
-/// The owner's direct message to the agent on Telegram.
 fn telegram_message(id: &str, content: &str) -> MessageEvent {
     MessageEvent {
         id: id.to_string(),
@@ -120,7 +109,6 @@ async fn deliver(hub: &Fixture, agent: &str, message: MessageEvent) {
         .unwrap();
 }
 
-/// A teammate's message to `agent`, which starts a background turn.
 async fn message_from_teammate(hub: &Fixture, agent: &str, text: &str) {
     use residuum::background::team::{TeamLink, parse_team_address};
 
@@ -195,9 +183,6 @@ async fn a_message_from_the_web_starts_its_own_turn_and_is_echoed_under_its_id()
     assert_eq!(str_at(frame_of(&frames, "response"), "endpoint"), "ws");
 }
 
-/// A model that asks for one tool call, then answers. The agent's model
-/// calls go through the hub's gate, so a test holds this call to look at the
-/// turn while it runs.
 async fn script_one_tool_call_then_a_reply(hub: &Fixture, agent: &str) {
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
@@ -241,16 +226,12 @@ async fn a_web_message_sent_during_a_telegram_turn_joins_it_and_the_web_sees_it_
             break;
         }
     }
-    // The turn is held in its first model call: this message is folded in at
-    // the next checkpoint instead of starting a turn of its own.
     hub.gate("scout").until_held(1).await;
     send(
         &mut ws,
         json!({ "type": "send_message", "id": "web-2", "content": "and the inbox" }),
     )
     .await;
-    // The socket answers a ping only after the frames before it, so the pong
-    // shows the message was handled.
     send(&mut ws, json!({ "type": "ping" })).await;
     loop {
         let frame = next_frame(&mut ws).await;
@@ -259,8 +240,6 @@ async fn a_web_message_sent_during_a_telegram_turn_joins_it_and_the_web_sees_it_
         }
         frames.push(frame);
     }
-    // The turn announces the message as waiting before it can read it; the
-    // held call goes on only after that, so the frames come in one order.
     while !frames
         .iter()
         .any(|frame| str_at(frame, "type") == "message_queued")
@@ -310,7 +289,6 @@ async fn a_web_message_sent_during_a_telegram_turn_joins_it_and_the_web_sees_it_
 async fn a_background_turn_is_announced_with_its_visibility_live_and_in_history() {
     let hub = Fixture::new(&["scout"], "").await;
     hub.host.start("scout").await.unwrap();
-    // The owner's last endpoint is the web, where background replies follow.
     assert_eq!(hub.chat("scout", "hello").await, "scout here");
     let mut ws = connect(&hub, "scout").await;
 
@@ -345,8 +323,6 @@ async fn a_background_turn_is_announced_with_its_visibility_live_and_in_history(
         str_at(announced, "content").ends_with("status check"),
         "{announced}"
     );
-    // The turn is written to history before `turn_ended` goes out, so a page
-    // that reloads history on `turn_ended` finds it there.
     let (status, body) = hub.get("/api/agents/scout/chat/history").await;
     assert_eq!(status, 200, "{body}");
     let history: Value = serde_json::from_str(&body).unwrap();
@@ -428,8 +404,6 @@ async fn a_sessions_message_to_main_is_announced_with_its_run_ahead_of_the_turn_
     );
 }
 
-/// Have the agent's next `times` model calls fail, as a model that refuses
-/// the request does; calls after them get the usual reply.
 async fn script_failures(hub: &Fixture, agent: &str, times: u64) {
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
@@ -442,8 +416,6 @@ async fn script_failures(hub: &Fixture, agent: &str, times: u64) {
         .await;
 }
 
-/// Every frame until the turn `turn_id` has both ended and reported its
-/// failure, which arrive on separate topics in either order.
 async fn frames_until_turn_fails(ws: &mut AgentSocket, turn_id: &str) -> Vec<Value> {
     let mut frames = Vec::new();
     let (mut ended, mut failed) = (false, false);
@@ -460,7 +432,6 @@ async fn frames_until_turn_fails(ws: &mut AgentSocket, turn_id: &str) -> Vec<Val
     frames
 }
 
-/// Send `send_message` and wait for its turn to fail.
 async fn send_a_failing_message(ws: &mut AgentSocket, id: &str, content: &str) {
     send(
         ws,
@@ -474,7 +445,6 @@ async fn retry(ws: &mut AgentSocket, id: &str) {
     send(ws, json!({ "type": "retry_turn", "id": id })).await;
 }
 
-/// The next `retry_refused` frame, skipping the frames before it.
 async fn next_refusal(ws: &mut AgentSocket) -> Value {
     loop {
         let frame = next_frame(ws).await;
@@ -484,8 +454,6 @@ async fn next_refusal(ws: &mut AgentSocket) -> Value {
     }
 }
 
-/// The user messages a model request carried (excluding mid-turn `System: `
-/// notes converted to the `"user"` wire role).
 fn user_messages_sent(request: &wiremock::Request) -> Vec<Value> {
     let body: Value = serde_json::from_slice(&request.body).unwrap();
     array_at(&body, "messages")
@@ -633,8 +601,6 @@ async fn a_retry_sent_while_a_turn_runs_is_refused_without_waiting_for_it() {
     .await;
     hub.gate("scout").until_held(1).await;
     retry(&mut ws, "web-1").await;
-    // The running turn is held at its model call, so the refusal comes
-    // while it runs, not after it.
     let refusal = next_refusal(&mut ws).await;
     assert_eq!(str_at(&refusal, "id"), "web-1");
 

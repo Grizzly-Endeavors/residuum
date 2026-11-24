@@ -35,8 +35,6 @@ if [ "$#" -eq 0 ]; then
     exit 2
 fi
 
-# Inside the new namespaces, as their root: bring loopback up, then drop back to
-# the caller's uid and gid. The probe below runs this same path with `true`.
 if [ "$1" = "--inside" ]; then
     uid="$2"
     gid="$3"
@@ -54,7 +52,6 @@ on_host_network() {
     exec "$@"
 }
 
-# Prints why the namespace can't be made, or nothing when it can.
 namespace_problem() {
     if [ "$(uname -s)" != "Linux" ]; then
         echo "network namespaces are Linux only, and this is $(uname -s)"
@@ -107,12 +104,6 @@ trap stop_bridge EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# Each connection to the socket gets its own connection to the container's port;
-# either side closing or failing closes the other. The bridge prints `listening`
-# on stdout once its server is listening, which is the only wait here: if it exits
-# first, stdout reaches end-of-file and the read below fails. Its stdin is a pipe
-# this script holds open, so the bridge also exits when the script dies without
-# running its trap (SIGKILL), since the pipe then reaches end-of-file.
 coproc BRIDGE {
     node -e '
 const net = require("node:net");
@@ -143,7 +134,5 @@ if ! read -r -u "${BRIDGE[0]}" _; then
     exit 1
 fi
 
-# Not `exec`: the trap has to outlive the command to stop the bridge. The command
-# doesn't get the pipe's write end, so only this script holds the bridge's stdin open.
 bridge_stdin="${BRIDGE[1]}"
 E2E_CONTAINER_WS="ws+unix://$socket:/" "${enter[@]}" "$@" {bridge_stdin}>&-

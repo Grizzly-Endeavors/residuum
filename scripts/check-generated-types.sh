@@ -1,13 +1,4 @@
 #!/usr/bin/env bash
-# Fails when the TypeScript protocol types in web/src/lib/generated differ from
-# what the Rust types generate. CI runs this, pre-push runs it, and `just
-# types-check` runs it locally. Fix a failure with `just types`, then commit the
-# result.
-#
-# The comparison is the fresh export against the index, so stage regenerated
-# files before running it locally. The export goes to a scratch directory and
-# the index is read with git's plumbing, so the check never writes to the
-# checkout's files or its index. pre-push runs it in whichever tree it checks.
 set -euo pipefail
 
 dir=web/src/lib/generated
@@ -16,14 +7,9 @@ trap 'rm -rf "$work"' EXIT
 
 scripts/export-generated-types.sh "$work/generated"
 
-# The index's copies of the directory. checkout-index with a prefix writes them
-# out without touching the index or the working tree.
 mkdir -p "$work/index/$dir"
 git ls-files -z -- "$dir" | git checkout-index --prefix="$work/index/" -z --stdin
 
-# Only the files ts-rs writes are compared. protocol.ts is the hand-written
-# barrel, and the directory also holds data files ts-rs never writes; neither
-# carries ts-rs's header, so both sides drop them.
 for side in "$work/index/$dir" "$work/generated"; do
     for file in "$side"/*; do
         [ -f "$file" ] || continue

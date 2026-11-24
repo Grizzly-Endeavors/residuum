@@ -25,33 +25,22 @@
   import SettingsGroup from "./SettingsGroup.svelte";
   import SettingsSection from "./SettingsSection.svelte";
 
-  // Residuum Cloud: the tunnel's state and what can be done in each. Connect,
-  // Cancel, Reconnect and Disconnect act at once (`CloudConnection`); the
-  // relay address and removing the account are staged in the
-  // hub's config with the rest of the install-wide settings.
-
   let { scope, section }: AllSectionProps = $props();
 
   const cloud = new CloudConnection();
   onMount(() => cloud.follow());
 
-  // A tab the sign-in callback handed here. A sign-in that was saved needs no
-  // word of its own: the status shows the tunnel connecting, then the result.
   let handoffError = $state(handoffProblem(takeCloudHandoff()));
 
   const status = $derived(cloud.status);
   const phase = $derived(status === null ? null : phaseOf(status));
   const viaTunnel = $derived(status?.viewed_via_tunnel === true);
-  /** What switching the tunnel off is called: disconnecting a connection, cancelling one that is starting. */
   const stopped = $derived(phase === "connected" ? "disconnected" : "cancelled");
 
   const baseline = $derived(scope.configFile.baseline);
-  /** The saved account was removed in the form, and the removal isn't saved yet. */
   const removing = $derived(baseline.cloud_token !== "" && scope.config.cloud_token === "");
   const relayUnsaved = $derived(scope.config.cloud_relay_url !== baseline.cloud_relay_url);
-  // The sign-in page sends the browser back to the gateway's port as it is now, so the saved one; the relay is the one being typed.
   const signIn = $derived(signInTarget(scope.config.cloud_relay_url, baseline.gateway_port));
-  // The account the saved token belongs to is on the saved relay.
   const account = $derived(accountTarget(baseline.cloud_relay_url));
 
   let tokenOpen = $state(false);

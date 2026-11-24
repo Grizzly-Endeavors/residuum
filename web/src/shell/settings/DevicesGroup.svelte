@@ -17,20 +17,12 @@
   import KeyList from "./KeyList.svelte";
   import SettingsGroup from "./SettingsGroup.svelte";
 
-  // Who can reach this install through Residuum Cloud: the paired browsers, the
-  // browsers waiting for an answer, and the recovery codes. The first browser is
-  // paired from the machine Residuum runs on, with a link made here. Everything
-  // acts at once through the hub's own endpoints and has no part in the save bar.
-  // Waiting requests are polled for while the group is open, so an approval
-  // can happen as soon as a browser asks.
-
   const POLL_MS = 4000;
 
   let listing = $state.raw<DeviceListResponse | null>(null);
   let loadError = $state("");
   let busy = $state<string | null>(null);
 
-  /** The link and codes a dialog shows once. */
   let shown = $state<{
     link: PairLinkResponse | null;
     codes: readonly string[] | null;
@@ -352,7 +344,6 @@
     width: 220px;
     height: 220px;
     border-radius: var(--corner-sm);
-    /* A QR code needs a light ground in either theme to scan. */
     background: var(--color-on-accent);
   }
 

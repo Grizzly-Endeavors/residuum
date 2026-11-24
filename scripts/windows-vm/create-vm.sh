@@ -1,12 +1,4 @@
 #!/usr/bin/env bash
-# Create the Windows test VM end to end: unattended Windows install, SSH
-# access, toolchain provisioning, and a "provisioned" snapshot to reset to.
-#
-#   scripts/windows-vm/create-vm.sh                    # full create (needs KVM)
-#   scripts/windows-vm/create-vm.sh --answer-iso-only FILE
-#                                                      # build only the answer ISO
-#
-# See docs/runbooks/windows-harness.md.
 set -euo pipefail
 
 # shellcheck source=scripts/windows-vm/common.sh
@@ -14,9 +6,6 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 INSTALL_TIMEOUT_SECS=5400
 
-# Build the answer ISO: autounattend.xml, the first-logon script, the SSH
-# public key, and the account password. Windows setup finds autounattend.xml
-# at the root of any attached CD.
 build_answer_iso() {
     local out="$1" password="$2" pubkey="$3"
     local staging
@@ -49,8 +38,6 @@ done
 mkdir -p "$VM_DIR"
 chmod 700 "$VM_DIR"
 
-# The sparse disk grows to about 30 GiB by the end of provisioning, and a full
-# filesystem mid-install surfaces in the guest as a disk error.
 free_gib=$(( $(df --output=avail -k "$VM_DIR" | tail -1) / 1024 / 1024 ))
 [ "$free_gib" -ge 40 ] || die "only ${free_gib} GiB free for $VM_DIR; the VM needs at least 40 GiB. Set RESIDUUM_WINVM_DIR to a larger filesystem (not a tmpfs such as /tmp)."
 

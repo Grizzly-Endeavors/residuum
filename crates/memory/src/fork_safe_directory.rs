@@ -24,8 +24,6 @@ use tantivy::directory::{
     WatchHandle, WritePtr,
 };
 
-/// An `MmapDirectory` that releases its lock files explicitly when a lock is
-/// dropped, so child processes spawned meanwhile never keep a lock held.
 #[derive(Clone, Debug)]
 pub(crate) struct ForkSafeMmapDirectory {
     inner: MmapDirectory,
@@ -33,10 +31,6 @@ pub(crate) struct ForkSafeMmapDirectory {
 }
 
 impl ForkSafeMmapDirectory {
-    /// Open the directory at `root`, which must already exist.
-    ///
-    /// # Errors
-    /// Returns an error if `root` does not exist or is not a directory.
     pub(crate) fn open(root: &Path) -> Result<Self, OpenDirectoryError> {
         Ok(Self {
             inner: MmapDirectory::open(root)?,
@@ -45,16 +39,12 @@ impl ForkSafeMmapDirectory {
     }
 }
 
-/// A held lock file, unlocked explicitly before the file is closed.
 struct ExplicitlyReleasedLock {
     file: File,
     path: PathBuf,
 }
 
 impl ExplicitlyReleasedLock {
-    /// Lock the file at `path`, creating it when missing. A blocking lock
-    /// waits for the current holder to release it; a non-blocking one fails
-    /// with `LockBusy` while it is held.
     fn acquire(path: PathBuf, blocking: bool) -> Result<Self, LockError> {
         let file = OpenOptions::new()
             .write(true)
@@ -146,8 +136,6 @@ mod tests {
             INDEX_WRITER_LOCK.is_blocking,
         )
         .unwrap();
-        // A duplicate of the locked file shares its open file description,
-        // as the copy a forked child inherits does until it execs.
         let inherited_copy = held.file.try_clone().unwrap();
         drop(held);
 

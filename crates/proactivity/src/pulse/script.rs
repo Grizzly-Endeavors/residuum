@@ -1,13 +1,3 @@
-//! Pulse task scripts.
-//!
-//! A task's `script` runs when its pulse fires, from the agent's workspace
-//! root with the same shell and `PATH` as the agent's own `exec` tool. Its
-//! stdout either joins the task's prompt before the session starts, or, for
-//! a `script_only` pulse, becomes the pulse's result with no session at all
-//! (see `script_only_result`). A script that exits non-zero, runs past its
-//! timeout, or can't be run is reported, never dropped: the run comes
-//! back as [`ScriptRun::Failed`] carrying the cause and the tail of stderr.
-
 use std::path::PathBuf;
 
 use tokio_util::sync::CancellationToken;
@@ -22,61 +12,37 @@ use residuum_config::SharedToolsPath;
 use residuum_config::agent_keys::SharedAgentKeys;
 use residuum_core::process::{Capture, RunOutcome, run_with_timeout_and_cancel, shell_command};
 
-/// How much of a failed script's stderr is kept: its last 2 KiB, where the
-/// error that ended it usually is.
 const STDERR_TAIL_BYTES: usize = 2 * 1024;
 
-/// Where a pulse's scripts run and what they run with: the agent's
-/// workspace root and tools `PATH`, the same as its `exec` tool.
 #[derive(Clone)]
 pub struct ScriptEnv {
-    /// Every script starts here.
     pub workspace_root: PathBuf,
-    /// The agent's tools `PATH`, read live at spawn time.
     pub tools_path: SharedToolsPath,
-    /// Agent-key values are redacted from script output before it reaches a
-    /// prompt, the inbox, or a notice, as they are from `exec` output.
     pub agent_keys: SharedAgentKeys,
 }
 
-/// What one task's script produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScriptRun {
-    /// The script exited 0. `stdout` is cut to the task's
-    /// `script_max_output_kb`, with a marker saying so when it was.
     Succeeded { stdout: String },
-    /// The script exited non-zero, timed out, or couldn't be run.
     Failed(ScriptFailure),
 }
 
-/// A script that didn't finish cleanly.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScriptFailure {
-    /// The command that was run.
     pub script: String,
-    /// What went wrong.
     pub cause: ScriptFailureCause,
-    /// Whatever the script printed to stdout before it failed, cut like a
-    /// successful run's.
     pub stdout: String,
-    /// The last part of what it printed to stderr.
     pub stderr_tail: String,
 }
 
-/// Why a script failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScriptFailureCause {
-    /// It exited with a non-zero code, or (`None`) was ended by a signal.
     Exited { code: Option<i32> },
-    /// It ran past its timeout and its process tree was killed.
     TimedOut { secs: u64 },
-    /// The shell couldn't be started, or its exit status or output couldn't
-    /// be read.
     RunFailed { error: String },
 }
 
 impl ScriptFailure {
-    /// Plain-language account of the failure, worded to follow "the script".
     #[must_use]
     pub fn reason(&self) -> String {
         match &self.cause {
@@ -91,8 +57,6 @@ impl ScriptFailure {
         }
     }
 
-    /// The technical record of the failure: the command, how it ended, and
-    /// the tail of its stderr.
     #[must_use]
     pub fn details(&self) -> String {
         let ending = match &self.cause {
@@ -114,12 +78,6 @@ impl ScriptFailure {
     }
 }
 
-/// Run every task script in `pulse`, in task order, returning one entry per
-/// task (`None` for a task with no script).
-///
-/// Returns `None` when `cancel` fires (the agent is stopping): the running
-/// script's process tree has been killed and nothing should be delivered
-/// for this fire.
 pub async fn run_pulse_scripts(
     pulse: &PulseDef,
     env: &ScriptEnv,
@@ -136,7 +94,6 @@ pub async fn run_pulse_scripts(
     Some(runs)
 }
 
-/// Run one task's script. `None` when `cancel` fired mid-run.
 async fn run_task_script(
     pulse_name: &str,
     task: &PulseTask,
@@ -225,8 +182,6 @@ async fn run_task_script(
     Some(run)
 }
 
-/// Decode stdout, keeping at most `max` bytes and saying so when more was
-/// printed.
 fn capped_stdout(bytes: &[u8], max: usize) -> String {
     if bytes.len() <= max {
         return String::from_utf8_lossy(bytes).into_owned();
@@ -239,8 +194,6 @@ fn capped_stdout(bytes: &[u8], max: usize) -> String {
     )
 }
 
-/// The last [`STDERR_TAIL_BYTES`] of stderr, trimmed, starting at a line
-/// boundary when the cut lands mid-line.
 fn stderr_tail(bytes: &[u8]) -> String {
     let text = String::from_utf8_lossy(bytes);
     let text = text.trim();
@@ -253,8 +206,6 @@ fn stderr_tail(bytes: &[u8]) -> String {
     format!("…\n{tail}")
 }
 
-/// The section a task's script adds to its prompt in a pulse that runs a
-/// session.
 #[must_use]
 pub(crate) fn prompt_section(run: &ScriptRun) -> String {
     match run {
@@ -285,18 +236,6 @@ pub(crate) fn prompt_section(run: &ScriptRun) -> String {
     }
 }
 
-/// Build the result a `script_only` pulse files, from its tasks' script
-/// runs (`runs` lines up with `pulse.tasks`).
-///
-/// A task whose script printed nothing (or ended with `HEARTBEAT_OK`)
-/// contributes nothing; when every task is like that, the result is
-/// `Silent`, the same as a session that answered `HEARTBEAT_OK`. Otherwise
-/// the output is the result's summary as printed — a single task's output
-/// on its own, several tasks' each under its task's name — and the result
-/// is `Urgent` when any task's output ends with `HEARTBEAT_URGENT`,
-/// `Normal` otherwise. A failed script makes the whole result `Failed`
-/// (never `Silent`), naming each failure in plain language, with what the
-/// script printed and the tail of its stderr in the summary.
 #[must_use]
 pub fn script_only_result(
     pulse: &PulseDef,
@@ -329,9 +268,6 @@ pub fn script_only_result(
             .map(|(name, text)| format!("### {name}\n{text}"))
             .collect(),
     };
-    // The notification router appends the failure reason itself ("This run
-    // failed: ..."), so a single task's failure carries only what the
-    // script printed; with several tasks, each failure names its task.
     for (name, failure) in &failures {
         let mut lines = Vec::new();
         if !single_task {
@@ -452,8 +388,6 @@ mod tests {
         })
     }
 
-    // ── running ──────────────────────────────────────────────────────────
-
     #[tokio::test]
     async fn script_stdout_is_captured() {
         let dir = tempfile::tempdir().unwrap();
@@ -504,7 +438,6 @@ mod tests {
     #[tokio::test]
     async fn stdout_past_the_cap_is_cut_with_a_marker() {
         let dir = tempfile::tempdir().unwrap();
-        // 3000 bytes of output against a 1 KiB cap.
         let command = if cfg!(windows) {
             "powershell -NoProfile -Command \"'x' * 3000\""
         } else {
@@ -581,8 +514,6 @@ mod tests {
     #[tokio::test]
     async fn the_stderr_tail_is_the_end_of_long_error_output() {
         let dir = tempfile::tempdir().unwrap();
-        // 100 KB of noise on stderr, past the 64 KiB stdout cap, then the
-        // line that explains the failure.
         let t = task(
             "t",
             "head -c 100000 /dev/zero | tr '\\0' 'n' 1>&2; echo; echo final error 1>&2; exit 1",
@@ -599,10 +530,6 @@ mod tests {
         assert!(failure.stderr_tail.len() <= STDERR_TAIL_BYTES + 4);
     }
 
-    // A script that leaves a background process holding its output still
-    // stops at its timeout. The clock is paused once the shell has been
-    // reaped, leaving only the pipes to wait on, so tokio jumps straight to
-    // the deadline.
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn a_background_child_holding_the_output_still_times_out() {
@@ -705,8 +632,6 @@ mod tests {
         assert!(tail.starts_with('…'));
     }
 
-    // ── prompt mode ──────────────────────────────────────────────────────
-
     #[test]
     fn prompt_section_carries_the_output() {
         let section = prompt_section(&ScriptRun::Succeeded {
@@ -730,8 +655,6 @@ mod tests {
         assert!(section.contains("exited with code 2"), "{section}");
         assert!(section.contains("no such host"), "{section}");
     }
-
-    // ── script-only results ──────────────────────────────────────────────
 
     #[test]
     fn empty_output_is_silent() {

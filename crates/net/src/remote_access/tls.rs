@@ -1,5 +1,3 @@
-//! Certificate bundles and the TLS certificate resolver for remote access.
-
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, PoisonError, RwLock};
@@ -15,18 +13,12 @@ use serde::{Deserialize, Serialize};
 use super::challenge::{ACME_TLS_ALPN, KEY_AUTHORIZATION_DIGEST_LEN, acme_identifier_certificate};
 use super::types::normalize_host;
 
-/// An issued certificate chain with its private key and the names it covers.
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct CertBundle {
-    /// Leaf first, then intermediates, PEM encoded.
     pub chain_pem: String,
-    /// PKCS#8 private key of the leaf, PEM encoded.
     pub key_pem: String,
-    /// Start of the leaf's validity.
     pub not_before: DateTime<Utc>,
-    /// End of the leaf's validity.
     pub not_after: DateTime<Utc>,
-    /// DNS names the certificate was ordered for.
     pub names: Vec<String>,
 }
 
@@ -41,13 +33,11 @@ impl fmt::Debug for CertBundle {
 }
 
 impl CertBundle {
-    /// When to start renewing: with one third of the lifetime left.
     pub(crate) fn renew_at(&self) -> DateTime<Utc> {
         self.not_after - (self.not_after - self.not_before) / 3
     }
 }
 
-/// Validity window of the first (leaf) certificate in a PEM chain.
 pub(crate) fn leaf_validity(chain_pem: &str) -> anyhow::Result<(DateTime<Utc>, DateTime<Utc>)> {
     let leaf = CertificateDer::pem_slice_iter(chain_pem.as_bytes())
         .next()
@@ -68,19 +58,15 @@ pub(crate) fn leaf_validity(chain_pem: &str) -> anyhow::Result<(DateTime<Utc>, D
 
 struct ServingCertificate {
     certified: Arc<CertifiedKey>,
-    /// Normalized names the certificate may be served for.
     names: Vec<String>,
 }
 
 #[derive(Default)]
 struct ResolverState {
     certificate: Option<ServingCertificate>,
-    /// Normalized name to its TLS-ALPN-01 answer.
     challenges: HashMap<String, Arc<CertifiedKey>>,
 }
 
-/// Picks the certificate for each TLS handshake: the instance certificate for
-/// its own names, or the TLS-ALPN-01 answer when a CA asks for it.
 pub(crate) struct CertResolver {
     state: RwLock<ResolverState>,
 }
@@ -94,17 +80,12 @@ impl fmt::Debug for CertResolver {
 }
 
 impl CertResolver {
-    /// A resolver with no certificate yet; handshakes fail until one is set.
     pub(crate) fn new() -> Arc<Self> {
         Arc::new(Self {
             state: RwLock::new(ResolverState::default()),
         })
     }
 
-    /// Serve `bundle` from now on, for exactly the names it lists.
-    ///
-    /// # Errors
-    /// Returns an error if the chain or key cannot be parsed or do not belong together.
     pub(crate) fn set_certificate(&self, bundle: &CertBundle) -> anyhow::Result<()> {
         let chain = CertificateDer::pem_slice_iter(bundle.chain_pem.as_bytes())
             .collect::<Result<Vec<_>, _>>()
@@ -130,15 +111,10 @@ impl CertResolver {
         Ok(())
     }
 
-    /// Whether an instance certificate has been set.
     pub(crate) fn has_certificate(&self) -> bool {
         self.read().certificate.is_some()
     }
 
-    /// Answer TLS-ALPN-01 handshakes for `name` with a certificate carrying `key_authorization_digest`.
-    ///
-    /// # Errors
-    /// Returns an error if the challenge certificate cannot be generated.
     pub(crate) fn set_challenge(
         &self,
         name: &str,
@@ -151,16 +127,10 @@ impl CertResolver {
         Ok(())
     }
 
-    /// Stop answering TLS-ALPN-01 handshakes for `name`.
     pub(crate) fn clear_challenge(&self, name: &str) {
         self.write().challenges.remove(&normalize_host(name));
     }
 
-    /// Server configuration that resolves certificates through this resolver:
-    /// ALPN `h2`, `http/1.1` and `acme-tls/1`, TLS 1.2 and 1.3, no client auth.
-    ///
-    /// # Errors
-    /// Returns an error if the TLS protocol versions are not supported by the crypto provider.
     pub(crate) fn server_config(self: &Arc<Self>) -> anyhow::Result<Arc<rustls::ServerConfig>> {
         let provider = Arc::new(rustls::crypto::ring::default_provider());
         let mut config = rustls::ServerConfig::builder_with_provider(provider)
@@ -190,7 +160,6 @@ impl CertResolver {
     }
 
     fn read(&self) -> std::sync::RwLockReadGuard<'_, ResolverState> {
-        // The state is replaced whole, so a poisoned lock still holds consistent data.
         self.state.read().unwrap_or_else(PoisonError::into_inner)
     }
 
@@ -246,7 +215,6 @@ mod tests {
         assert!(!format!("{bundle:?}").contains("SECRET"));
     }
 
-    /// A self-signed certificate for `names`, standing in for an issued one.
     pub(crate) fn test_bundle(names: &[&str]) -> CertBundle {
         let key = rcgen::KeyPair::generate().unwrap();
         let params = rcgen::CertificateParams::new(
@@ -351,7 +319,6 @@ mod tests {
             .unwrap();
         assert!(Arc::ptr_eq(&normal, &still_normal));
 
-        // A challenge on another name does not leak into this one.
         resolver.set_challenge("b.example.test", [8; 32]).unwrap();
         let other = resolver
             .select_certificate(Some("b.example.test"), true)
@@ -397,7 +364,6 @@ mod tests {
         assert!(Arc::ptr_eq(&normal, &after));
     }
 
-    /// Verifier that accepts any certificate: these tests inspect what the server sent.
     #[derive(Debug)]
     struct AcceptAny;
 
@@ -438,8 +404,6 @@ mod tests {
         }
     }
 
-    /// Handshake against `resolver` over an in-memory pipe and return the
-    /// leaf certificate the server presented plus the negotiated ALPN protocol.
     async fn handshake(
         resolver: &Arc<CertResolver>,
         sni: &str,

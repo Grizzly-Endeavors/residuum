@@ -1,9 +1,3 @@
-//! A2A web API endpoints of the running agent: the client-side "remote
-//! agents" status (`GET /api/agents/{name}/a2a/agents`), the Activity's tasks
-//! sent to remote agents (`GET /api/agents/{name}/a2a/outbound` and the stop
-//! endpoints under it), and the Agent-to-agent settings'
-//! `GET /api/agents/{name}/a2a/status` and `GET /api/agents/{name}/a2a/card`.
-
 use std::path::Path as FsPath;
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,14 +17,12 @@ use residuum_protocol::OutboundA2aTaskSummary;
 
 use residuum_hub::web::ConfigApiState;
 
-/// Shared state for `GET /api/agents/{name}/a2a/agents` and the outbound-task endpoints.
 #[derive(Clone)]
 pub(crate) struct A2aAgentsStatusState {
     pub hub: Arc<A2aClientHub>,
     pub tracker: Arc<RemoteTaskTracker>,
 }
 
-/// Build the remote-agents status and outbound-task API router.
 pub(crate) fn a2a_agents_status_router(state: A2aAgentsStatusState) -> axum::Router {
     axum::Router::new()
         .route("/api/a2a/agents", axum::routing::get(api_a2a_agents_list))
@@ -49,10 +41,6 @@ pub(crate) fn a2a_agents_status_router(state: A2aAgentsStatusState) -> axum::Rou
         .with_state(state)
 }
 
-/// Error body for the outbound-task endpoints: a message for the user and a
-/// machine-readable `code` (`not_open`, or `unreachable` when the agent
-/// couldn't be reached to cancel the task — the web UI then offers
-/// stop-watching instead).
 #[derive(Debug, Serialize)]
 pub(crate) struct OutboundTaskError {
     error: String,
@@ -69,8 +57,6 @@ fn outbound_not_open(task_id: &str) -> (StatusCode, Json<OutboundTaskError>) {
     )
 }
 
-/// `GET /api/agents/{name}/a2a/outbound` — every open task sent to a remote agent, newest
-/// first.
 pub(crate) async fn api_a2a_outbound_list(
     State(state): State<A2aAgentsStatusState>,
 ) -> Json<Vec<OutboundA2aTaskSummary>> {
@@ -125,14 +111,12 @@ pub(crate) async fn api_a2a_outbound_stop_watching(
         .ok_or_else(|| outbound_not_open(&task_id))
 }
 
-/// One skill on a remote agent's card, in the shape the web UI wants.
 #[derive(Serialize)]
 pub(crate) struct A2aAgentSkillView {
     id: String,
     name: String,
 }
 
-/// One remote agent's card, in the shape the web UI wants.
 #[derive(Serialize)]
 pub(crate) struct A2aAgentCardView {
     name: String,
@@ -140,9 +124,6 @@ pub(crate) struct A2aAgentCardView {
     skills: Vec<A2aAgentSkillView>,
 }
 
-/// One entry in `GET /api/agents/{name}/a2a/agents`. `error` and `card` are always present
-/// (as `null` when absent) rather than omitted, matching the web UI's
-/// `string | null` / `Card | null` contract.
 #[derive(Serialize)]
 pub(crate) struct A2aAgentView {
     name: String,
@@ -186,7 +167,6 @@ impl From<AgentSnapshot> for A2aAgentView {
     }
 }
 
-/// `GET /api/agents/{name}/a2a/agents` — every registered remote agent's live status.
 pub(crate) async fn api_a2a_agents_list(
     State(state): State<A2aAgentsStatusState>,
 ) -> Json<Vec<A2aAgentView>> {
@@ -194,11 +174,6 @@ pub(crate) async fn api_a2a_agents_list(
     Json(agents.into_iter().map(A2aAgentView::from).collect())
 }
 
-/// `[a2a]` settings as currently written in `config.toml`, resolved with the
-/// same defaults config's a2a resolution (`crates/config/src/resolve/a2a.rs`) uses. Parsed
-/// standalone from the raw file — rather than through `Config::load_at`, which
-/// validates the whole config — so an unrelated broken section elsewhere in
-/// `config.toml` never breaks this status check.
 struct A2aStatusConfig {
     enabled: bool,
     port: u16,
@@ -219,11 +194,6 @@ impl Default for A2aStatusConfig {
     }
 }
 
-/// Read the A2A settings the status endpoints report: the listener's
-/// `enabled`/`port`/`public_url` and the gateway bind from the hub config,
-/// and this agent's `visibility` from its own config. Reads the raw TOML
-/// rather than a resolved config so a file that fails full validation still
-/// reports what it does say.
 fn read_a2a_status_config(hub_dir: &FsPath, agent_config_dir: &FsPath) -> A2aStatusConfig {
     let default = A2aStatusConfig::default();
     let read_table = |path: std::path::PathBuf| {
@@ -277,9 +247,6 @@ fn read_a2a_status_config(hub_dir: &FsPath, agent_config_dir: &FsPath) -> A2aSta
 }
 
 impl A2aStatusConfig {
-    /// The `A2aConfig` shape [`CardRuntime::from_config`] expects, so the
-    /// status/card endpoints compute the base URL exactly the way the running
-    /// listener does.
     fn as_a2a_config(&self) -> A2aConfig {
         A2aConfig {
             enabled: self.enabled,
@@ -290,10 +257,6 @@ impl A2aStatusConfig {
     }
 }
 
-/// Whether something currently answers the A2A listener's health-check path
-/// on loopback. A direct probe rather than reading in-process adapter state,
-/// so this endpoint needs no wiring into the gateway's adapter lifecycle — it
-/// answers the same question an outside caller would get.
 async fn probe_listener_running(port: u16) -> bool {
     let Ok(client) = reqwest::Client::builder()
         .timeout(Duration::from_millis(500))
@@ -308,9 +271,6 @@ async fn probe_listener_running(port: u16) -> bool {
         .is_ok()
 }
 
-/// Plain-language explanation of a broken workspace agent-card file, for the
-/// Agent-to-agent settings — never the raw `CardError` display, which names internal
-/// error kinds a non-technical user has no use for.
 fn plain_card_error(e: &CardError) -> String {
     match e {
         CardError::Read { path, .. } => format!(
@@ -326,7 +286,6 @@ fn plain_card_error(e: &CardError) -> String {
     }
 }
 
-/// What [`api_a2a_status`] reports about how far the agent can be reached.
 fn relay_access_note(has_own_address: bool, relay_connected: bool) -> &'static str {
     match (relay_connected, has_own_address) {
         (true, true) => {
@@ -344,36 +303,25 @@ fn relay_access_note(has_own_address: bool, relay_connected: bool) -> &'static s
     }
 }
 
-/// Response body for `GET /api/agents/{name}/a2a/status`.
 #[derive(Serialize)]
 pub(super) struct A2aStatusResponse {
     enabled: bool,
     port: u16,
     visibility: &'static str,
-    /// The address other agents reach this one at from outside this machine:
-    /// under the user's own `[a2a] public_url` when set, otherwise through
-    /// the relay while the tunnel is connected, otherwise `None`.
     public_url: Option<String>,
-    /// This agent's address on the local A2A listener.
     local_url: String,
-    /// Whether other Residuum installs can reach this agent through the relay
-    /// right now: A2A is enabled and the tunnel is connected.
     relay_access: bool,
-    /// Plain-language statement of how far the agent can be reached.
     relay_access_note: &'static str,
     listener_running: bool,
     card_error: Option<String>,
 }
 
-/// State for the Agent-to-agent settings' status and card endpoints: the agent's
-/// config and the relay tunnel's status.
 #[derive(Clone)]
 pub(crate) struct A2aStatusState {
     pub config: ConfigApiState,
     pub tunnel_status_rx: tokio::sync::watch::Receiver<TunnelStatus>,
 }
 
-/// Build the router for the Agent-to-agent settings' status and card endpoints.
 pub(crate) fn a2a_status_router(state: A2aStatusState) -> axum::Router {
     axum::Router::new()
         .route("/api/a2a/status", axum::routing::get(api_a2a_status))
@@ -381,14 +329,6 @@ pub(crate) fn a2a_status_router(state: A2aStatusState) -> axum::Router {
         .with_state(state)
 }
 
-/// `GET /api/agents/{name}/a2a/status` — whether A2A is on, how other agents can reach it,
-/// and whether the listener or the workspace agent card currently have a
-/// problem.
-///
-/// `public_url` is the agent's address under the configured `[a2a]
-/// public_url` when set, else its instance address (`{instance origin}/a2a/{name}`)
-/// while the tunnel is connected, and `null` otherwise; `local_url` is the
-/// address on the local listener.
 pub(super) async fn api_a2a_status(State(state): State<A2aStatusState>) -> Json<A2aStatusResponse> {
     let config = &state.config;
     let cfg = read_a2a_status_config(&config.hub_dir, &config.config_dir);
@@ -427,9 +367,6 @@ pub(super) async fn api_a2a_status(State(state): State<A2aStatusState>) -> Json<
     })
 }
 
-/// `GET /api/agents/{name}/a2a/card` — the Agent Card as the listener would currently serve
-/// it, or a `503` with a plain-language error if the workspace
-/// `agent-card.json` file is invalid.
 pub(super) async fn api_a2a_card(
     State(state): State<A2aStatusState>,
 ) -> Result<Json<a2a::AgentCard>, (StatusCode, String)> {
@@ -487,8 +424,6 @@ mod tests {
             checkpoints: residuum_checkpoints::testing::test_engine(),
         }
     }
-
-    // ── Remote agents ────────────────────────────────────────────────
 
     async fn agents_state(hub: &Arc<A2aClientHub>, dir: &FsPath) -> A2aAgentsStatusState {
         let bus = residuum_bus::spawn_broker();
@@ -641,8 +576,6 @@ mod tests {
         assert_eq!(status.port, DEFAULT_A2A_PORT);
         assert_eq!(status.visibility, "public");
         assert_eq!(status.public_url, None);
-        // `listener_running` is left unasserted: it probes the real default
-        // port, which any Residuum running on this machine may hold.
         assert!(
             status.card_error.is_some(),
             "a missing agent card file should surface as an error, not silently succeed"
@@ -720,9 +653,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let reservation = reserve_port();
         let port = reservation.port();
-        // Nothing listens on `port`: if the handler probed it anyway despite
-        // `enabled = false`, it would (correctly) report `false` too, so this
-        // only exercises the disabled branch's own reported fields.
         write_config(
             dir.path(),
             &format!("[a2a]\nenabled = false\nport = {port}\n"),

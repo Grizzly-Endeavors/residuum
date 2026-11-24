@@ -1,10 +1,7 @@
-/** The sample artifact's name, which is its file's name in the team workbench folder. */
 export const MOCK_WORKBENCH_ARTIFACT_NAME = "tip-splitter";
 
-/** The agent the sample artifact's model calls and sessions run on. */
 const ARTIFACT_AGENT = "atlas";
 
-/** The sample artifact: a tip splitter that exercises `residuum.ask` and `residuum.sessions.start`. */
 export const MOCK_WORKBENCH_ARTIFACT = `<!doctype html>
 <html><head><title>Tip Splitter</title>
 <style>
@@ -23,7 +20,6 @@ export const MOCK_WORKBENCH_ARTIFACT = `<!doctype html>
   <button id="burst">Fire 3 calls at once</button>
   <button id="spawn">Start a background session</button>
   <script>
-    // Model calls and sessions run on one agent's models, so each names it.
     const agent = ${JSON.stringify(ARTIFACT_AGENT)};
     const each = document.getElementById("each");
     const update = () => {
@@ -39,7 +35,6 @@ export const MOCK_WORKBENCH_ARTIFACT = `<!doctype html>
         .then((r) => alert(r.content))
         .catch((e) => alert(e.message)),
     );
-    // For trying a burst of model calls: three in flight at once.
     document.getElementById("burst").addEventListener("click", () => {
       for (let i = 0; i < 3; i++) {
         residuum
@@ -47,7 +42,6 @@ export const MOCK_WORKBENCH_ARTIFACT = `<!doctype html>
           .catch(() => {});
       }
     });
-    // For trying a page's sessions: they show on its Workbench row, with Stop.
     document.getElementById("spawn").addEventListener("click", () =>
       residuum.sessions
         .start({

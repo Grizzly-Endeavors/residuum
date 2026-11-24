@@ -1,9 +1,3 @@
-// ── Workspace watch paths (client side) ─────────────────────────────
-//
-// How a watched path prefix is spelled and matched, the way the gateway and
-// the hub do it. The socket's watch set itself is kept by the watch registry
-// (`watch-registry.ts`).
-
 import type { WorkspaceChange } from "./types";
 
 /**
@@ -35,7 +29,6 @@ export function normalizeTeamWatchPrefix(prefix: string): string | null {
   return normalized === "team" || normalized.startsWith("team/") ? normalized : null;
 }
 
-/** Whether `path` is `ancestor` or lies under it, by whole path segments. */
 function isWithin(path: string, ancestor: string): boolean {
   return (
     ancestor === "" ||
@@ -44,16 +37,10 @@ function isWithin(path: string, ancestor: string): boolean {
   );
 }
 
-/**
- * Whether a change at `path` concerns `prefix`, matching the gateway: the
- * prefix itself, anything under it (so `wiki` never matches `wikipedia`), or
- * a directory containing it.
- */
 export function changeMatchesPrefix(path: string, prefix: string): boolean {
   return isWithin(path, prefix) || isWithin(prefix, path);
 }
 
-/** The changes that concern any of `prefixes`. */
 export function changesUnder(
   changes: WorkspaceChange[],
   prefixes: readonly string[],

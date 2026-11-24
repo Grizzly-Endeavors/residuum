@@ -11,48 +11,36 @@ use serde::{Deserialize, Serialize};
 use residuum_memory::search::{HybridSearcher, SearchFilters, validate_date_filter};
 use residuum_memory::types::DocSource;
 
-/// Fewest results a caller may ask for.
 const MIN_LIMIT: usize = 1;
 
-/// Results per page when the request doesn't say.
 const DEFAULT_LIMIT: usize = 10;
 
-/// Shared state for the memory search API.
 #[derive(Clone)]
 pub(crate) struct MemoryApiState {
     pub hybrid_searcher: Arc<HybridSearcher>,
 }
 
-/// Build the memory search API router.
 pub(crate) fn memory_api_router(state: MemoryApiState) -> axum::Router {
     axum::Router::new()
         .route("/api/memory/search", axum::routing::get(api_memory_search))
         .with_state(state)
 }
 
-/// Query parameters for `GET /api/agents/{name}/memory/search`.
 #[derive(Debug, Deserialize)]
 pub(super) struct MemorySearchQuery {
-    /// The search query. Blank answers `400`.
     q: String,
-    /// Results to return, floored at 1 (default 10). No upper cap.
     #[serde(default)]
     limit: Option<usize>,
-    /// `"observations"`, `"episodes"`, or `"wiki"`. Omit to search all three.
     #[serde(default)]
     source: Option<String>,
-    /// Inclusive lower date bound (`YYYY-MM-DD`).
     #[serde(default)]
     date_from: Option<String>,
-    /// Inclusive upper date bound (`YYYY-MM-DD`).
     #[serde(default)]
     date_to: Option<String>,
-    /// Overrides the configured relevance threshold for this search only.
     #[serde(default)]
     min_score: Option<f64>,
 }
 
-/// One search result, in the shape the workbench API returns it.
 #[derive(Debug, Serialize, PartialEq)]
 pub(super) struct MemorySearchResultItem {
     pub id: String,
@@ -65,23 +53,13 @@ pub(super) struct MemorySearchResultItem {
     pub score: f32,
 }
 
-/// Response body for `GET /api/agents/{name}/memory/search`.
 #[derive(Debug, Serialize, PartialEq)]
 pub(super) struct MemorySearchResponse {
     pub results: Vec<MemorySearchResultItem>,
-    /// Whether vector search contributed to these results.
     pub semantic: bool,
-    /// How many results scored below the relevance threshold and were
-    /// dropped; retry with a lower `min_score` to see them.
     pub below_threshold: usize,
 }
 
-/// `GET /api/agents/{name}/memory/search` — run the same hybrid BM25 + vector search the
-/// `memory_search` tool uses.
-///
-/// # Errors
-/// `400` for a blank `q`, an unrecognized `source`, or a malformed
-/// `date_from`/`date_to`. `500` if the search itself fails.
 pub(super) async fn api_memory_search(
     Query(query): Query<MemorySearchQuery>,
     State(state): State<MemoryApiState>,
@@ -246,8 +224,6 @@ mod tests {
     #[tokio::test]
     async fn limit_is_clamped_to_range() {
         let (_dir, state) = make_state();
-        // A limit of 0 (below the floor) should be clamped up to 1 rather
-        // than rejected or passed straight through to the searcher.
         let response = api_memory_search(
             Query(MemorySearchQuery {
                 q: "rust".to_string(),
@@ -310,9 +286,6 @@ mod tests {
     async fn min_score_override_surfaces_a_filtered_result_and_reports_the_count() {
         let dir = tempfile::tempdir().unwrap();
         let index = MemoryIndex::open_or_create(&dir.path().join(".index")).unwrap();
-        // A single-result search always normalizes to score 1.0, so it can
-        // never itself be filtered; two observations with a relevance gap
-        // let the weaker one fall below a high threshold.
         let strong = Observation {
             timestamp: chrono::Utc::now().naive_utc(),
             source_episodes: Some("ep-001".to_string()),

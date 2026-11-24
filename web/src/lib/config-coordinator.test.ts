@@ -14,23 +14,18 @@ import { applyPatch } from "../test/apply-patch";
 import type { RestoreOutcome, UndoOutcome } from "./types";
 import { waitFor } from "../test/wait";
 
-// ── A fake server ─────────────────────────────────────────────────────
-
 function patchText(file: ConfigFile, text: string, diff: Record<string, unknown>): string {
   return applyPatch(text, diff, file.kind === "agent" && file.name === "mcp" ? "json" : "toml");
 }
 
 interface FakeServer {
   io: ConfigIo;
-  /** What each file holds, by `configFileKey`. */
   disk: Map<string, string>;
-  /** Every request, in order: `read providers`, `patch providers`, and so on. */
   log: string[];
   patch: ReturnType<typeof vi.fn<ConfigIo["patch"]>>;
   put: ReturnType<typeof vi.fn<ConfigIo["put"]>>;
   restore: ReturnType<typeof vi.fn<ConfigIo["restore"]>>;
   undo: ReturnType<typeof vi.fn<ConfigIo["undo"]>>;
-  /** Change a file the way something outside the page would. */
   outside: (file: ConfigFile, text: string) => void;
 }
 
@@ -86,7 +81,6 @@ const mcp = agentConfigFile("scout", "mcp");
 
 const keepMine: ConfigChooser = () => Promise.resolve("keep-mine");
 
-/** Record what a file's subscribers hear. */
 function hear(
   coordinator: ConfigCoordinator,
   file: ConfigFile,
@@ -104,7 +98,6 @@ function deferred(): { promise: Promise<void>; release: () => void } {
   return { promise, release };
 }
 
-/** Let every queued promise callback run. */
 async function flush(): Promise<void> {
   for (let i = 0; i < 20; i++) await Promise.resolve();
 }
@@ -112,8 +105,6 @@ async function flush(): Promise<void> {
 let raised: unknown[];
 
 beforeEach(() => {
-  // A failing subscriber is raised as an uncaught error from a microtask;
-  // catch it so a test can look at it.
   raised = [];
   vi.stubGlobal("queueMicrotask", (callback: () => void) => {
     try {
@@ -127,8 +118,6 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals();
 });
-
-// ── Serialization ─────────────────────────────────────────────────────
 
 describe("serializing writes", () => {
   it("runs one write to a file at a time, each reading what the last wrote", async () => {
@@ -153,7 +142,6 @@ describe("serializing writes", () => {
     });
     await flush();
 
-    // The second has not even read the file: the first still holds it.
     expect(server.log).toEqual(["read providers", "patch providers (slow)"]);
 
     gate.release();
@@ -216,7 +204,6 @@ describe("serializing writes", () => {
       expect(choose).toHaveBeenCalledTimes(1);
     });
 
-    // The composer can still write the file while the user decides.
     const other = await coordinator.edit(providers, () => ({ a: 9 }));
     expect(other.written).toBe(true);
 
@@ -225,8 +212,6 @@ describe("serializing writes", () => {
     expect(server.disk.get(configFileKey(providers))).toBe("a = 9\nb = 3\n");
   });
 });
-
-// ── The re-read before a save ─────────────────────────────────────────
 
 describe("saving against a file that changed under the caller", () => {
   const baseline = "a = 1\nb = 1\n";
@@ -306,7 +291,6 @@ describe("saving against a file that changed under the caller", () => {
 
     expect(outcome).toEqual({ kind: "used-disk", raw: "a = 1\nb = 2\n" });
     expect(server.patch).not.toHaveBeenCalled();
-    // Every view is told to show the disk's text.
     expect(heard.causes()).toEqual(["reload"]);
   });
 
@@ -408,7 +392,6 @@ describe("saving against a file that changed under the caller", () => {
     await flush();
     expect(choose).toHaveBeenCalledTimes(1);
 
-    // While the user decides, something changes the same key again.
     server.outside(providers, "a = 1\nb = 3\n");
     answers[0]?.release();
     await flush();
@@ -491,7 +474,6 @@ describe("saving against a file that changed under the caller", () => {
     const reads = server.io.read;
     let readsSoFar = 0;
     server.io.read = vi.fn((file: ConfigFile) => {
-      // The pre-save read works, the read after the write doesn't.
       if (++readsSoFar > 1) return Promise.reject(new Error("offline"));
       return reads(file);
     });
@@ -505,8 +487,6 @@ describe("saving against a file that changed under the caller", () => {
     expect(outcome).toMatchObject({ kind: "saved", written: true, raw: null });
   });
 });
-
-// ── Subscribers ───────────────────────────────────────────────────────
 
 describe("telling subscribers", () => {
   it("tells them after a write, naming who wrote", async () => {
@@ -602,8 +582,6 @@ describe("telling subscribers", () => {
     expect(raised).toEqual([failure]);
   });
 });
-
-// ── Restores ──────────────────────────────────────────────────────────
 
 describe("restoring and undoing", () => {
   it("tells subscribers of the config files a restore wrote", async () => {
@@ -701,7 +679,6 @@ describe("restoring and undoing", () => {
 
     expect(server.undo).toHaveBeenCalledWith("scout", "cp1", "agent_config");
     expect(ofConfig.causes()).toEqual(["restore"]);
-    // A skipped path was not written.
     expect(ofProviders.changes).toEqual([]);
   });
 
@@ -757,8 +734,6 @@ describe("restoring and undoing", () => {
   });
 });
 
-// ── Changes made outside ──────────────────────────────────────────────
-
 describe("external changes", () => {
   it("tells subscribers when a file reads differently from when it was last seen", async () => {
     const server = fakeServer([[providers, "a = 1\n"]]);
@@ -788,7 +763,6 @@ describe("external changes", () => {
     const coordinator = new ConfigCoordinator(server.io);
     await coordinator.reload(providers);
     server.outside(providers, "a = 1\nb = 2\n");
-    // The save reads the new text and asks the user, who never answers.
     void coordinator.save(providers, {
       baseline: "a = 1\nb = 1\n",
       edit: { patch: { b: 3 } },
@@ -882,7 +856,6 @@ describe("reading a file", () => {
     await writing;
 
     await expect(reading).resolves.toBe("a = 2\n");
-    // Only the write is announced.
     expect(heard.causes()).toEqual(["write"]);
   });
 });

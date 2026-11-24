@@ -2,8 +2,6 @@
   import { hub } from "../lib/hub.svelte";
   import { Icon } from "../lib/icons";
 
-  // Where the summarized past meets the messages kept word for word.
-
   let { agent }: { agent: string } = $props();
 </script>
 

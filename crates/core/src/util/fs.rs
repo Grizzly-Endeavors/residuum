@@ -1,5 +1,3 @@
-//! Filesystem utilities.
-
 use std::io;
 use std::path::Path;
 use std::time::Duration;
@@ -9,26 +7,10 @@ use tokio::time::Instant;
 
 use super::FatalError;
 
-/// Write `data` to `path` atomically (temp file in the same directory, then rename).
-///
-/// The temporary file is named `.{filename}.{random}.residuum-tmp` in the same
-/// directory as `path`, so concurrent writers to one path never share a temp
-/// file, and [`is_atomic_write_temp`] can recognize it (file watchers skip it).
-///
-/// # Errors
-/// Returns an error if the parent directory is missing, or if writing or renaming fails.
 pub async fn atomic_write(path: &Path, data: impl AsRef<[u8]>) -> anyhow::Result<()> {
     write_via_temp_file(path, data.as_ref(), false).await
 }
 
-/// [`atomic_write`] for a file only the current user may read: the temporary
-/// file is created with mode 0600 (an owner-only ACL on Windows) before any
-/// data goes into it, so the content is never readable by other users, not
-/// even briefly. The data is flushed to disk before the rename.
-///
-/// # Errors
-/// Returns an error if the parent directory is missing, or if writing,
-/// restricting or renaming fails.
 pub async fn atomic_write_owner_only(path: &Path, data: impl AsRef<[u8]>) -> anyhow::Result<()> {
     write_via_temp_file(path, data.as_ref(), true).await
 }
@@ -73,17 +55,12 @@ async fn write_via_temp_file(path: &Path, data: &[u8], owner_only: bool) -> anyh
     Ok(())
 }
 
-/// Delete a temporary file a failed write leaves behind, logging when even
-/// that fails.
 async fn remove_temp_file(tmp_path: &Path) {
     if let Err(cleanup) = tokio::fs::remove_file(tmp_path).await {
         tracing::warn!(path = %tmp_path.display(), error = %cleanup, "failed to remove temporary file after a failed write");
     }
 }
 
-/// Create `path`, which must not exist, readable only by the current user
-/// where the platform says so at creation (mode 0600 on Unix), and fill it
-/// with `data`.
 async fn write_owner_only(path: &Path, data: &[u8]) -> std::io::Result<()> {
     use tokio::io::AsyncWriteExt as _;
 
@@ -98,26 +75,19 @@ async fn write_owner_only(path: &Path, data: &[u8]) -> std::io::Result<()> {
 
 const ATOMIC_WRITE_TEMP_SUFFIX: &str = ".residuum-tmp";
 
-/// Whether `file_name` is a temporary file [`atomic_write`] creates and
-/// renames away.
 #[must_use]
 pub fn is_atomic_write_temp(file_name: &str) -> bool {
     file_name.starts_with('.') && file_name.ends_with(ATOMIC_WRITE_TEMP_SUFFIX)
 }
 
-/// How long [`rename_dir_when_released`] waits for programs to let go of the
-/// files under a directory before it gives up.
 const RENAME_RELEASE_WINDOW: Duration = Duration::from_secs(5);
 
-/// How long [`rename_dir_when_released`] waits between attempts.
 const RENAME_RELEASE_INTERVAL: Duration = Duration::from_millis(50);
 
 /// The Windows errors for a file that another program has open:
 /// `ERROR_ACCESS_DENIED` and `ERROR_SHARING_VIOLATION`.
 const WINDOWS_FILE_IN_USE: [i32; 2] = [5, 32];
 
-/// Whether `error` is Windows refusing to move a directory because a program
-/// has a file under it open.
 #[must_use]
 pub fn is_held_open(error: &io::Error) -> bool {
     cfg!(windows)
@@ -151,8 +121,6 @@ pub async fn rename_dir_when_released(from: &Path, to: &Path) -> io::Result<()> 
     .await
 }
 
-/// [`rename_dir_when_released`] for the refusals `is_held` names, over `window`
-/// and `interval`.
 async fn rename_dir_retrying(
     from: &Path,
     to: &Path,
@@ -203,11 +171,6 @@ async fn rename_dir_retrying(
     }
 }
 
-/// Set file permissions to 0600 (Unix only).
-///
-/// # Errors
-///
-/// Returns [`FatalError::Config`] when the permissions can't be set.
 #[cfg(unix)]
 pub fn set_file_mode_600(path: &Path) -> Result<(), FatalError> {
     use std::os::unix::fs::PermissionsExt;
@@ -220,12 +183,6 @@ pub fn set_file_mode_600(path: &Path) -> Result<(), FatalError> {
     })
 }
 
-/// Restrict file access to the current user via `icacls` (Windows).
-///
-/// # Errors
-///
-/// Never returns an error: when `icacls` can't run or fails, a warning is
-/// logged and the file keeps its permissions.
 #[cfg(windows)]
 pub fn set_file_mode_600(path: &Path) -> Result<(), FatalError> {
     let username = std::env::var("USERNAME").unwrap_or_else(|_| "CURRENT_USER".to_string());
@@ -257,15 +214,8 @@ pub fn set_file_mode_600(path: &Path) -> Result<(), FatalError> {
     }
 }
 
-/// Leave file permissions as they are, on platforms with neither Unix modes
-/// nor `icacls`.
-///
-/// # Errors
-///
-/// Never returns an error.
 #[cfg(not(any(unix, windows)))]
 pub fn set_file_mode_600(_path: &Path) -> Result<(), FatalError> {
-    // No-op on unsupported platforms
     Ok(())
 }
 
@@ -374,8 +324,6 @@ mod tests {
         assert_eq!(content, "updated");
     }
 
-    /// Rename onto a directory that has something in it until `release_after`,
-    /// which a directory can't be renamed onto.
     async fn rename_onto_occupied_dir(
         is_held: fn(&io::Error) -> bool,
         release_after: Duration,

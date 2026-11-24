@@ -10,10 +10,6 @@ import type { SessionSummary } from "./types";
 import { setViewedAgent } from "./viewed-agent";
 import { ws } from "./ws.svelte";
 
-// The number the rail's Activity row and the Chat's header pill both show.
-// The bound agent follows the viewed one through effects, so this lives with
-// the component tests.
-
 function agent(name: string, state: AgentState): AgentSummary {
   return {
     name,

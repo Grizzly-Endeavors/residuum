@@ -6,18 +6,11 @@
   import SettingsGroup from "./SettingsGroup.svelte";
   import SettingsSection from "./SettingsSection.svelte";
 
-  // The Runtime section: limits on a reply, retries, what the
-  // agent may change about itself, the caps on a turn, and what happens when
-  // you go quiet. The default temperature and thinking level are in Model.
-  // Everything is in the agent's `config.toml`, so it stays editable while the
-  // agent is stopped.
-
   let { scope, section }: AgentSectionProps = $props();
 
   const agent = $derived(scope.agent);
   const guarding = $derived(scope.config.agent_repeat_call_guard_enabled);
 
-  // With no idle_channel in the file, updates go to the app, so the app is what an unset file shows.
   const APP_CHANNEL = "websocket";
   const CHANNELS: readonly Choice[] = [
     { value: APP_CHANNEL, label: "This app" },
@@ -28,7 +21,6 @@
 
   const idleChannel = $derived(scope.config.idle_channel || APP_CHANNEL);
 
-  // A channel the file names that the list doesn't (`ws` is another name for the app) still shows.
   const channels = $derived(
     CHANNELS.some((choice) => choice.value === idleChannel)
       ? CHANNELS

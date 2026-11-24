@@ -1,10 +1,3 @@
-//! CAA lookups: has the account been pinned in DNS for a host name?
-//!
-//! The relay publishes a CAA `issue` record carrying `accounturi=<account>` for
-//! each of an instance's names. This instance only orders a certificate once a
-//! public resolver shows those records, so a CA that honours CAA refuses every
-//! other ACME account for the same names.
-
 use std::net::SocketAddr;
 use std::time::Duration;
 
@@ -19,10 +12,8 @@ use tracing::{debug, warn};
 
 use super::types::normalize_host;
 
-/// Which resolver answers CAA queries.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct CaaSettings {
-    /// Public resolver to query over UDP, with TCP when the answer is truncated.
     pub resolver: SocketAddr,
 }
 
@@ -34,22 +25,14 @@ impl Default for CaaSettings {
     }
 }
 
-/// Why waiting for the CAA records ended without success.
 #[derive(Debug, Error)]
 pub(crate) enum CaaWaitError {
-    /// The records did not appear for these names within the timeout.
     #[error("CAA records for {} did not appear in time", .missing.join(", "))]
-    TimedOut {
-        /// Names that still lack the account pin.
-        missing: Vec<String>,
-    },
-    /// The resolver kept failing, so the state of the records is unknown.
+    TimedOut { missing: Vec<String> },
     #[error("CAA lookup failed: {0:#}")]
     Lookup(anyhow::Error),
 }
 
-/// A resolver that asks only `settings.resolver`: no system configuration, no
-/// search domains, no hosts file and no cache (callers poll for changes).
 fn build_resolver(settings: &CaaSettings) -> anyhow::Result<TokioResolver> {
     let mut connections = vec![ConnectionConfig::udp(), ConnectionConfig::tcp()];
     for connection in &mut connections {
@@ -71,9 +54,6 @@ fn build_resolver(settings: &CaaSettings) -> anyhow::Result<TokioResolver> {
     builder.build().context("failed to build the CAA resolver")
 }
 
-/// Whether `value` (a CAA `issue` property value) carries `accounturi=<account_uri>`.
-///
-/// Grammar: `[issuer-domain-name] [; parameter [; parameter]...]` where a parameter is `tag=value`.
 fn issue_value_pins_account(value: &str, account_uri: &str) -> bool {
     value.split(';').skip(1).any(|parameter| {
         parameter
@@ -90,7 +70,6 @@ async fn lookup_allows(
     name: &str,
     account_uri: &str,
 ) -> anyhow::Result<bool> {
-    // The trailing dot makes the name absolute, so no search domain is appended.
     let query = format!("{}.", normalize_host(name));
     let lookup = match resolver.lookup(query.as_str(), RecordType::CAA).await {
         Ok(lookup) => lookup,
@@ -110,12 +89,6 @@ async fn lookup_allows(
     }))
 }
 
-/// Whether the CAA records at exactly `name` (no climbing to parent names)
-/// include an `issue` record pinning `account_uri`.
-///
-/// # Errors
-/// Returns an error if the resolver cannot be reached or answers with a
-/// failure; a name without CAA records is `Ok(false)`.
 #[cfg(test)]
 pub(crate) async fn caa_allows_account(
     settings: &CaaSettings,
@@ -125,15 +98,6 @@ pub(crate) async fn caa_allows_account(
     lookup_allows(&build_resolver(settings)?, name, account_uri).await
 }
 
-/// Poll until every name in `names` pins `account_uri`, for at most `timeout`.
-///
-/// Lookup failures are retried while the timeout runs; they only surface as
-/// [`CaaWaitError::Lookup`] when the timeout ends and a failure was the last
-/// thing seen, so a flaky resolver is not mistaken for missing records.
-///
-/// # Errors
-/// [`CaaWaitError::TimedOut`] lists the names that never showed the pin;
-/// [`CaaWaitError::Lookup`] carries the last resolver failure.
 pub(crate) async fn wait_for_caa(
     settings: &CaaSettings,
     names: &[String],
@@ -235,8 +199,6 @@ mod tests {
         assert_eq!(CaaSettings::default().resolver.to_string(), "1.1.1.1:53");
     }
 
-    // Pebble integration tests: `cargo test --quiet -p residuum-net --lib pebble -- --ignored` (needs Docker).
-
     use crate::remote_access::pebble_support::PebbleHarness;
 
     fn pin(account: &str) -> String {
@@ -292,7 +254,6 @@ mod tests {
                 .await
                 .unwrap()
         );
-        // A record on the parent name does not cover a child name.
         assert!(
             !caa_allows_account(&settings, "child.parent.lab.test", ACCOUNT)
                 .await
@@ -329,8 +290,6 @@ mod tests {
             CaaWaitError::Lookup(e) => panic!("unexpected lookup failure: {e:#}"),
         }
 
-        // The record goes in only once the wait below has looked the name up
-        // and found it missing, so the wait has to pick it up on a later pass.
         pebble.clear_dns_queries("two.wait.test").await.unwrap();
         let late = Arc::clone(&pebble);
         let adder = tokio::spawn(async move {
@@ -356,7 +315,6 @@ mod tests {
 
     #[tokio::test]
     async fn unreachable_resolver_is_a_lookup_error_not_missing_records() {
-        // Nothing listens on this port, so queries time out or are refused.
         let settings = CaaSettings {
             resolver: SocketAddr::from(([127, 0, 0, 1], 9)),
         };

@@ -61,7 +61,6 @@ describe("installContext", () => {
   });
 });
 
-/** A browser's install prompt event, which carries the method the page runs. */
 function promptEvent(prompt: () => Promise<void>): Event {
   return Object.assign(new Event("beforeinstallprompt", { cancelable: true }), { prompt });
 }

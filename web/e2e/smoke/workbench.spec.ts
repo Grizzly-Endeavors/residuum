@@ -3,24 +3,13 @@ import { NO_SECURE_ORIGIN_REASON } from "../../src/lib/workbench";
 import { expectNoAxeViolations } from "../support/axe";
 import { artifactsOrigin, expect, test, type MockControls } from "../support/fixtures";
 
-/**
- * The Workbench, a launcher: the list and a selected row's detail, Open in a
- * new tab on the artifacts origin, Copy link, the hub's artifact events with
- * no agent running, an artifact's sessions on any agent opening in the panel,
- * delete with Undo, the URL corrections, and the banner when artifacts can't
- * open. Nothing in the app embeds an artifact.
- */
-
-/** The purpose of the mock's sample sessions that `wiki-graph` started, on atlas and on scout. */
 const WIKI_RUN = "Write a wiki page summarizing this week's notes on otters";
 
-/** Path and query of the page's URL, decoded, so a test can compare them exactly. */
 function address(page: Page): string {
   const url = new URL(page.url());
   return decodeURIComponent(`${url.pathname}${url.search}`);
 }
 
-/** The row for the page titled `title`. */
 function row(page: Page, title: string): Locator {
   return page
     .getByRole("list", { name: "Pages" })
@@ -28,7 +17,6 @@ function row(page: Page, title: string): Locator {
     .filter({ has: page.getByText(title, { exact: true }) });
 }
 
-/** Add the page the mock's sample `artifact:wiki-graph` sessions belong to. */
 async function addWikiGraph(mock: MockControls): Promise<void> {
   await mock.post("/api/mock/team-file", {
     data: {
@@ -67,7 +55,6 @@ test("Open opens the page on the artifacts origin in a new tab", async ({ page }
   const tab = await opened;
   expect(tab.url()).toBe(`${artifactsOrigin()}/tip-splitter/`);
   await expect(tab.getByRole("heading", { name: "Tip splitter" })).toBeVisible();
-  // The app stays where it was.
   await expect.poll(() => address(page)).toBe("/team/workbench");
 });
 
@@ -81,7 +68,6 @@ test("Copy link copies the page's address", async ({ page, browserName }) => {
     `${artifactsOrigin()}/tip-splitter/`,
   );
 
-  // The row's menu offers it too.
   await page.getByRole("button", { name: "More for Tip Splitter" }).click();
   await expect(page.getByRole("menuitem", { name: "Copy link" })).toBeVisible();
   await expectNoAxeViolations(page);
@@ -108,7 +94,6 @@ test("an agent's edit marks the page as updating now, with no agent running", as
   await expect(tip.getByText("updating now")).toBeVisible();
   await expect(tip.getByText(/^edited /)).toBeVisible();
 
-  // A page an agent writes appears the same way.
   await addWikiGraph(mock);
   await expect(row(page, "Wiki graph").getByText("updating now")).toBeVisible();
 });

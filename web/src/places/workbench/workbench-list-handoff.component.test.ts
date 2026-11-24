@@ -3,9 +3,6 @@ import { jsonResponse, mockFetch } from "../../test/component";
 import { WorkbenchList } from "./workbench-list.svelte";
 import { waitFor } from "../../test/wait";
 
-// Through Residuum Cloud, opening an artifact first trades a handoff token for
-// the workbench host's own credential; locally the link works as it is.
-
 const RELAY = {
   ui_origin: "https://bear.agent-residuum.com",
   artifacts_origin: "https://bear.workbench.agent-residuum.com",

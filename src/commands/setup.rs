@@ -1,48 +1,33 @@
-//! Setup subcommand: interactive or flag-driven configuration wizard.
-
 use residuum::checkpoints::CheckpointEngine;
 use residuum::config::Config;
 use residuum::util::FatalError;
 
 #[derive(clap::Args)]
 pub(super) struct SetupArgs {
-    /// What the agent should call you (written to the team's USER.md)
     #[arg(long)]
     pub user_name: Option<String>,
-    /// Name of the first agent (defaults to "assistant")
     #[arg(long)]
     pub agent_name: Option<String>,
-    /// Override the timezone
     #[arg(long)]
     pub timezone: Option<String>,
-    /// LLM provider name
     #[arg(long)]
     pub provider: Option<String>,
-    /// API key for the LLM provider
     #[arg(long)]
     pub api_key: Option<String>,
-    /// Model name to use
     #[arg(long)]
     pub model: Option<String>,
-    /// Web search backend (e.g., brave, tavily)
     #[arg(long)]
     pub web_search_backend: Option<String>,
-    /// API key for web search
     #[arg(long)]
     pub web_search_api_key: Option<String>,
-    /// Base URL for web search API
     #[arg(long)]
     pub web_search_base_url: Option<String>,
 }
 
-/// Run the `setup` subcommand — interactive or flag-driven config wizard.
 pub(super) async fn run_setup_command(args: &SetupArgs) -> Result<(), FatalError> {
     run_setup_command_at(residuum::config::residuum_root()?, args).await
 }
 
-/// [`run_setup_command`] against an explicit `~/.residuum` root, so the
-/// non-interactive (flag-driven) path is testable without touching the real
-/// `~/.residuum`.
 async fn run_setup_command_at(
     residuum_root: std::path::PathBuf,
     args: &SetupArgs,
@@ -59,7 +44,6 @@ async fn run_setup_command_at(
         return Ok(());
     }
 
-    // Check if any flags are present → non-interactive mode
     let has_flags = args.user_name.is_some()
         || args.agent_name.is_some()
         || args.timezone.is_some()
@@ -86,7 +70,6 @@ async fn run_setup_command_at(
         setup_wizard::run_interactive()?
     };
 
-    // Bootstrap creates the hub directory + example config
     HubConfig::bootstrap_at(&hub_dir)?;
 
     let checkpoints = CheckpointEngine::open_for_cli(&hub_dir);
@@ -96,10 +79,8 @@ async fn run_setup_command_at(
     )
     .await;
 
-    // Write the hub config and the first agent's workspace and config
     setup_wizard::write_config(&residuum_root, &answers).await?;
 
-    // Validate the result
     let agent_dir = residuum_root.join(&answers.agent_name);
     let loaded =
         HubConfig::load_at(&hub_dir).and_then(|hub| Config::load_agent_at(&agent_dir, &hub));

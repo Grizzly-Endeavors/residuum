@@ -1,5 +1,3 @@
-//! Agent runtime: context assembly, tool loop, and message history management.
-
 #[cfg(test)]
 #[path = "../../core/src/testing/crypto.rs"]
 mod crypto;

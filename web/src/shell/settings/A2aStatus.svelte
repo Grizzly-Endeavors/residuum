@@ -6,10 +6,6 @@
   import type { A2aStatusResponse } from "../../lib/types";
   import { Badge, Banner, Button, IconButton, Skeleton, type BadgeTone } from "../../lib/ui";
 
-  // A running agent's agent-to-agent status: whether the install's listener
-  // answers, the address other agents use, how far it reaches, and any
-  // problem with the agent's card.
-
   let { agent }: { agent: string } = $props();
 
   let status = $state.raw<A2aStatusResponse | null>(null);

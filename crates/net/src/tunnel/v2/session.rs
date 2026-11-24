@@ -1,9 +1,3 @@
-//! One v2 tunnel connection: the upgrade, the handshake, and the frame loop.
-//!
-//! The loop never waits on a stream consumer: inbound data is queued per
-//! stream (bounded by its window) and outbound frames go through a writer
-//! task fed by two queues, control frames first.
-
 use std::pin::pin;
 use std::sync::Arc;
 use std::time::Duration;
@@ -27,29 +21,19 @@ use crate::tunnel::TunnelStatus;
 
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
-/// How long the relay has to send `connected` after the upgrade.
 const CONNECTED_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// How long a closing session waits for its websocket close to be written.
 const CLOSE_FLUSH: Duration = Duration::from_secs(2);
 
-/// How often idle streams are looked for.
 const SWEEP_INTERVAL: Duration = Duration::from_secs(30);
 
-/// Result of the websocket upgrade on the registration endpoint.
 pub(in crate::tunnel) enum ConnectOutcome {
-    /// The relay accepted the upgrade.
     Connected(Box<WsStream>),
-    /// The relay has no registration endpoint or wants a capability this client lacks
-    /// (HTTP 404 or 426); the status is attached.
     Unsupported(u16),
-    /// The relay refused the token (HTTP 401 or 403); the status is attached.
     Unauthorized(u16),
-    /// Any other failure (network, TLS, a server error).
     Failed(WsError),
 }
 
-/// Open the tunnel websocket.
 pub(in crate::tunnel) async fn connect(
     request: tokio_tungstenite::tungstenite::http::Request<()>,
 ) -> ConnectOutcome {
@@ -65,18 +49,12 @@ pub(in crate::tunnel) async fn connect(
     }
 }
 
-/// How a session ended.
 pub(in crate::tunnel) enum SessionEnd {
-    /// Shutdown was requested; `Disconnected` is already published.
     Shutdown,
-    /// The handler refused the relay; `Disconnected` is already published.
     Refused,
-    /// The connection was lost. `accepted` tells whether the handler had
-    /// accepted it first.
     Lost { reason: String, accepted: bool },
 }
 
-/// What a session needs from the tunnel client around it.
 pub(in crate::tunnel) struct SessionInputs<'a> {
     pub handler: &'a Arc<dyn SessionHandler>,
     pub agents_rx: &'a mut watch::Receiver<Vec<AgentInfo>>,
@@ -125,8 +103,6 @@ async fn wait_for_connected(read: &mut SplitStream<WsStream>) -> Result<Connecte
     Err("the relay closed the connection before sending connected".into())
 }
 
-/// Resolves when shutdown is requested; never resolves if the sender is gone
-/// without having asked.
 async fn shutdown_requested(rx: &mut watch::Receiver<bool>) {
     loop {
         if *rx.borrow_and_update() {
@@ -138,7 +114,6 @@ async fn shutdown_requested(rx: &mut watch::Receiver<bool>) {
     }
 }
 
-/// Send queued messages to the websocket, control frames first.
 async fn write_loop(mut sink: SplitSink<WsStream, Message>, mut queues: OutboxReceivers) {
     loop {
         let message = tokio::select! {
@@ -165,7 +140,6 @@ fn send_agents_update(outbox: &Outbox, agents_rx: &mut watch::Receiver<Vec<Agent
     debug!(agents = count, "sent the agent list to the relay");
 }
 
-/// The per-connection state the frame handlers share.
 struct Frames<'a> {
     handler: &'a Arc<dyn SessionHandler>,
     outbox: Outbox,
@@ -175,7 +149,6 @@ struct Frames<'a> {
 }
 
 impl Frames<'_> {
-    /// Handle one websocket message. Returns the reason to end the session.
     fn handle(&self, message: Message) -> Option<String> {
         match message {
             Message::Text(text) => match serde_json::from_str::<V2Frame>(&text) {
@@ -276,7 +249,6 @@ impl Frames<'_> {
     }
 }
 
-/// Wait for the relay's `connected` frame, or end the session trying.
 async fn handshake(
     read: &mut SplitStream<WsStream>,
     shutdown_rx: &mut watch::Receiver<bool>,
@@ -308,7 +280,6 @@ async fn handshake(
     }
 }
 
-/// Publish an accepted relay's identity and origins.
 fn publish_accepted(
     status_tx: &watch::Sender<TunnelStatus>,
     info: &ConnectedInfo,
@@ -334,8 +305,6 @@ struct AcceptedRelay {
     instance_origin: Option<String>,
 }
 
-/// Tear a session down: fail waiters and streams, say goodbye when the end
-/// was ours, and stop the writer.
 async fn wind_down(
     end: &SessionEnd,
     outbox: &Outbox,
@@ -368,7 +337,6 @@ impl SessionEnd {
     }
 }
 
-/// What the relay announced, as the handler is shown it.
 fn connected_info(hello: ConnectedFrame) -> ConnectedInfo {
     ConnectedInfo {
         user: hello.user,
@@ -383,7 +351,6 @@ fn connected_info(hello: ConnectedFrame) -> ConnectedInfo {
     }
 }
 
-/// Run one v2 session on an upgraded websocket until it ends.
 pub(in crate::tunnel) async fn run_session(ws: WsStream, inputs: SessionInputs<'_>) -> SessionEnd {
     let SessionInputs {
         handler,

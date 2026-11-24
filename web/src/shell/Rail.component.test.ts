@@ -39,7 +39,6 @@ function actions(): ShellActions {
   };
 }
 
-/** An agent row by the start of its name, or by its whole name as read: "atlas, running". */
 const row = (name: RegExp | string): HTMLElement =>
   screen.getByRole("link", {
     name: (accessible) => {
@@ -95,7 +94,6 @@ describe("Rail", () => {
       "/agent/atlas/files",
     );
 
-    // Clicking the already-expanded agent's name again never collapses its places.
     await user.click(row(/^atlas/));
     expect(caret("atlas")).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByRole("link", { name: "Files" })).toBeVisible();
@@ -199,7 +197,6 @@ describe("Rail", () => {
     accordion.expand("atlas");
     const { unmount } = render(Rail, { accordion, actions: actions() });
 
-    // Arrow keys skip the button; Tab reaches it.
     screen.getByRole("link", { name: "Activity" }).focus();
     await user.keyboard("{ArrowDown}");
     expect(document.activeElement).toBe(screen.getByRole("link", { name: "Schedule" }));

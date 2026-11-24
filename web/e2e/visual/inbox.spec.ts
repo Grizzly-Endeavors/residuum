@@ -4,17 +4,9 @@ import { expect, test } from "../support/fixtures";
 import { expectFileRendered } from "../support/lazy";
 import { expectClipScreenshot, expectScreenshot } from "../support/screenshot";
 
-/**
- * The Inbox's design reference: the list beside a Markdown thread with
- * attachments, a thread of replies with the reply box, New message, and a
- * thread with an attachment open beside it in the file panel. Each is shot
- * alone, on the desktop.
- */
-
 const SYNC = MAIL_SEED.syncResearch;
 const AUDIT = MAIL_SEED.wikiAudit;
 
-/** The open thread. */
 function thread(page: Page): Locator {
   return page.getByRole("region", { name: "Conversation", exact: true });
 }
@@ -35,7 +27,6 @@ test.describe("inbox", { tag: "@visual" }, () => {
   });
 
   test("a thread of replies, with your answer's seen marks and the reply box", async ({ page }) => {
-    // Tall enough for the whole thread and its reply box, which the place otherwise scrolls.
     await page.setViewportSize({ width: page.viewportSize()?.width ?? 0, height: 1300 });
     await page.goto(`/inbox?thread=${AUDIT.threadId}`);
     await expect(thread(page).getByRole("article")).toHaveCount(4);
@@ -62,7 +53,6 @@ test.describe("inbox", { tag: "@visual" }, () => {
     await expect(
       compose.getByRole("list", { name: "Attached files" }).getByRole("progressbar"),
     ).toHaveCount(0);
-    // Focus leaves the message box, so its ring is not part of the shot.
     await compose.getByRole("textbox", { name: /^Message/ }).blur();
     await page.mouse.move(0, 0);
     await expectScreenshot(compose, "inbox-new-message");

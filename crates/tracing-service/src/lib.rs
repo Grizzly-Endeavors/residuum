@@ -1,9 +1,3 @@
-//! Tracing and observability service.
-//!
-//! Provides a transport-agnostic API for managing trace export, OTEL endpoints,
-//! content sanitization, and error reporting. Called by both CLI (via HTTP to
-//! the daemon) and web API handlers.
-
 pub mod client_context;
 #[cfg(test)]
 #[path = "../../core/src/testing/crypto.rs"]
@@ -28,117 +22,71 @@ use tokio::sync::{Mutex, RwLock};
 use residuum_config::{OtelEndpoint, TracingConfig};
 use residuum_core::util::telemetry::{CompletedSpan, SpanBufferHandle};
 
-/// Runtime tracing state that can diverge from persisted config.
-///
-/// Config changes (via reload) update this state. Runtime toggles (via API)
-/// also update this state but are not persisted to config.toml.
 struct TracingState {
     config: TracingConfig,
     streaming: bool,
     streaming_cancel: Option<tokio_util::sync::CancellationToken>,
 }
 
-/// Current status of the tracing subsystem (returned by status endpoints).
 #[derive(Debug, Clone, Serialize)]
 pub struct TracingStatus {
-    /// Current log detail level.
     pub log_level: String,
-    /// Whether automatic error reporting is enabled.
     pub auto_error_reporting: bool,
-    /// Whether content sanitization is enabled.
     pub sanitize_content: bool,
-    /// Configured OTEL endpoints.
     pub otel_endpoints: Vec<OtelEndpointStatus>,
-    /// Whether trace streaming is active.
     pub streaming: bool,
-    /// Number of spans currently in the buffer.
     pub buffer_size: usize,
 }
 
-/// OTEL endpoint info for status display.
 #[derive(Debug, Clone, Serialize)]
 pub struct OtelEndpointStatus {
-    /// Endpoint URL.
     pub url: String,
-    /// Human-readable name.
     pub name: Option<String>,
 }
 
-/// Result of a trace export operation.
 #[derive(Debug, Clone, Serialize)]
 pub struct ExportResult {
-    /// Number of spans exported.
     pub spans_sent: usize,
-    /// Per-endpoint results.
     pub endpoint_results: Vec<EndpointExportResult>,
 }
 
-/// Export result for a single endpoint.
 #[derive(Debug, Clone, Serialize)]
 pub struct EndpointExportResult {
-    /// Endpoint URL.
     pub url: String,
-    /// Whether the export succeeded.
     pub success: bool,
-    /// Error message if export failed.
     pub error: Option<String>,
 }
 
-/// Where to send exported traces.
 #[derive(Debug, Clone)]
 pub enum ExportTarget {
-    /// Send to all user-configured OTEL endpoints.
     UserEndpoints,
-    /// Send to a specific endpoint URL.
     Specific(String),
 }
 
-/// User-selected severity for a bug report. Wire values are locked to
-/// `broken | wrong | annoying` — anything else fails the ingest validator.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
-    /// Something is fundamentally non-functional.
     Broken,
-    /// Behavior is wrong but not blocking.
     Wrong,
-    /// Behavior is annoying but functional.
     Annoying,
 }
 
-/// One entry in the active-subagent inventory attached to a bug report.
 #[derive(Debug, Clone, Serialize)]
 pub struct Subagent {
-    /// Subagent identifier.
     pub name: String,
-    /// Free-form runtime status string.
     pub status: String,
 }
 
-/// Runtime metadata gathered for a bug report submission.
 #[derive(Debug, Clone, Serialize)]
 pub struct ClientContext {
-    /// Build version (`git describe --tags --always`).
     pub version: String,
-    /// Short git commit SHA, when built from a git checkout.
     pub commit: Option<String>,
-    /// `std::env::consts::OS` value.
     pub os: String,
-    /// `std::env::consts::ARCH` value.
     pub arch: String,
-    /// Active main provider kind (e.g. `"anthropic"`), if resolved.
     pub model_provider: Option<String>,
-    /// Active main model name, if resolved.
     pub model_name: Option<String>,
-    /// Live subagent inventory at submission time. Currently always empty.
     pub active_subagents: Vec<Subagent>,
-    /// Curated allowlist of safe config flags. Currently always empty.
     pub config_flags: std::collections::BTreeMap<String, String>,
-    /// The agent this context describes. Not part of the wire format (the
-    /// ingest service rejects unknown fields): it names the agent in the
-    /// report's text and keeps one agent's errors from suppressing another's
-    /// in the rate limiter. Every span in the report's trace carries the same
-    /// `agent` field.
     #[serde(skip)]
     pub agent: Option<String>,
 }
@@ -148,43 +96,28 @@ pub struct ClientContext {
 /// the over-attachment risk at zero.
 #[derive(Debug, Clone, Serialize)]
 pub struct FeedbackClient {
-    /// Build version.
     pub version: String,
 }
 
-/// A complete bug report ready to submit.
 #[derive(Debug, Clone)]
 pub struct BugReport {
-    /// What actually happened.
     pub what_happened: String,
-    /// What the user expected to happen.
     pub what_expected: String,
-    /// What the user was doing when the issue occurred.
     pub what_doing: String,
-    /// Severity selected by the user.
     pub severity: Severity,
-    /// Runtime metadata, built by the `client_context` module.
     pub client: ClientContext,
 }
 
-/// A feedback submission ready to send.
 #[derive(Debug, Clone)]
 pub struct Feedback {
-    /// Free-form feedback message.
     pub message: String,
-    /// Optional user-supplied category tag.
     pub category: Option<String>,
-    /// Version-only client metadata.
     pub client: FeedbackClient,
 }
 
-/// Receipt returned by the upstream ingest service on successful
-/// submission. Contains the public reference ID and submission time.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubmissionReceipt {
-    /// Public reference ID (e.g. `"RR-01HZKX2P7M"`).
     pub public_id: String,
-    /// ISO-8601 submission timestamp.
     pub submitted_at: String,
 }
 
@@ -193,16 +126,12 @@ pub struct SubmissionReceipt {
 /// budget. Admits at most one report per minute for a given error context,
 /// and at most five reports total in any rolling hour.
 struct ErrorReportLimiter {
-    /// Last admitted time per hash of `error_context`.
     last_admitted: HashMap<u64, Instant>,
-    /// Timestamps of reports admitted within the rolling hourly window.
     hourly: VecDeque<Instant>,
 }
 
 impl ErrorReportLimiter {
-    /// Minimum gap between admitted reports for the same error context.
     const PER_KEY_INTERVAL: Duration = Duration::from_secs(60);
-    /// Maximum admitted reports in any rolling hour, across all contexts.
     const HOURLY_CAP: usize = 5;
     const HOURLY_WINDOW: Duration = Duration::from_secs(3600);
 
@@ -213,9 +142,6 @@ impl ErrorReportLimiter {
         }
     }
 
-    /// Returns `true` if a report for `error_context` may be submitted now,
-    /// and records the admission. `now` is threaded through explicitly so
-    /// tests can exercise the boundary without a real 60-minute wait.
     fn admit(&mut self, error_context: &str, now: Instant) -> bool {
         while let Some(&oldest) = self.hourly.front() {
             if now.duration_since(oldest) > Self::HOURLY_WINDOW {
@@ -228,7 +154,6 @@ impl ErrorReportLimiter {
             return false;
         }
 
-        // Bounds map growth under a loop that varies the error context.
         self.last_admitted
             .retain(|_, last| now.duration_since(*last) < Self::PER_KEY_INTERVAL);
 
@@ -246,17 +171,13 @@ impl ErrorReportLimiter {
     }
 }
 
-/// The tracing service — owns runtime state and the span buffer handle.
 pub struct TracingService {
     state: Arc<RwLock<TracingState>>,
     span_buffer: SpanBufferHandle,
-    /// Source of the agent-key redactor applied to every export.
     agent_keys: Option<residuum_config::agent_keys::SharedAgentKeys>,
-    /// Rate limiter guarding [`Self::on_error`] submissions.
     error_report_limiter: Mutex<ErrorReportLimiter>,
 }
 
-/// Replace agent-key values in `spans` using `agent_keys`' current redactor.
 async fn redact_with(
     agent_keys: Option<&residuum_config::agent_keys::SharedAgentKeys>,
     spans: &mut [CompletedSpan],
@@ -267,7 +188,6 @@ async fn redact_with(
 }
 
 impl TracingService {
-    /// Create a new tracing service from config and span buffer.
     #[must_use]
     pub fn new(config: TracingConfig, span_buffer: SpanBufferHandle) -> Self {
         Self {
@@ -282,7 +202,6 @@ impl TracingService {
         }
     }
 
-    /// Redact agent-key values from every span this service exports.
     #[must_use]
     pub fn with_agent_keys(
         mut self,
@@ -292,12 +211,10 @@ impl TracingService {
         self
     }
 
-    /// Replace agent-key values in `spans` with their markers.
     async fn redact_agent_keys(&self, spans: &mut [CompletedSpan]) {
         redact_with(self.agent_keys.as_ref(), spans).await;
     }
 
-    /// Get the current tracing status.
     pub async fn status(&self) -> TracingStatus {
         let state = self.state.read().await;
         TracingStatus {
@@ -318,28 +235,21 @@ impl TracingService {
         }
     }
 
-    /// Update the tracing config (called on config reload).
     pub async fn update_config(&self, config: TracingConfig) {
         let mut state = self.state.write().await;
         state.config = config;
     }
 
-    /// Set automatic error reporting on or off.
     pub async fn set_auto_error_reporting(&self, enabled: bool) {
         let mut state = self.state.write().await;
         state.config.auto_error_reporting = enabled;
     }
 
-    /// Set content sanitization on or off.
     pub async fn set_sanitize_content(&self, enabled: bool) {
         let mut state = self.state.write().await;
         state.config.sanitize_content = enabled;
     }
 
-    /// Add an OTEL endpoint.
-    ///
-    /// # Errors
-    /// Returns an error if an endpoint with the same URL already exists.
     pub async fn add_otel_endpoint(&self, endpoint: OtelEndpoint) -> Result<()> {
         let mut state = self.state.write().await;
         if state
@@ -354,10 +264,6 @@ impl TracingService {
         Ok(())
     }
 
-    /// Remove an OTEL endpoint by URL.
-    ///
-    /// # Errors
-    /// Returns an error if no endpoint with the given URL exists.
     pub async fn remove_otel_endpoint(&self, url: &str) -> Result<()> {
         let mut state = self.state.write().await;
         let before = state.config.otel_endpoints.len();
@@ -368,16 +274,11 @@ impl TracingService {
         Ok(())
     }
 
-    /// List configured OTEL endpoints.
     pub async fn list_otel_endpoints(&self) -> Vec<OtelEndpoint> {
         let state = self.state.read().await;
         state.config.otel_endpoints.clone()
     }
 
-    /// Test connectivity to an OTEL endpoint by sending an empty export.
-    ///
-    /// # Errors
-    /// Returns an error if the endpoint is unreachable or the exporter fails to build.
     pub async fn test_otel_connectivity(&self, url: &str) -> Result<()> {
         let endpoint = OtelEndpoint {
             url: url.to_string(),
@@ -386,7 +287,6 @@ impl TracingService {
         };
         let otlp = otel::build_exporter(&endpoint)
             .map_err(|e| anyhow::anyhow!("failed to build exporter for {url}: {e}"))?;
-        // Send an empty batch to test connectivity
         if let Err(e) = otlp.exporter.export(Vec::new()).await {
             let error = otlp.transport.describe_failure(&e);
             tracing::warn!(
@@ -401,10 +301,6 @@ impl TracingService {
         Ok(())
     }
 
-    /// Export a snapshot of buffered traces to the target endpoints.
-    ///
-    /// # Errors
-    /// Returns an error if no endpoints are configured for the target, or if export fails.
     pub async fn dump_traces(&self, target: ExportTarget) -> Result<ExportResult> {
         let state = self.state.read().await;
 
@@ -448,13 +344,6 @@ impl TracingService {
         })
     }
 
-    /// Start streaming traces to configured OTEL endpoints.
-    ///
-    /// Spawns a background task that periodically drains the span buffer and
-    /// exports to all configured endpoints.
-    ///
-    /// # Errors
-    /// Returns an error if streaming is already active or no endpoints are configured.
     pub async fn start_streaming(&self) -> Result<()> {
         let mut state = self.state.write().await;
         if state.streaming {
@@ -497,7 +386,6 @@ impl TracingService {
                         redact_with(agent_keys.as_ref(), &mut spans).await;
 
                         let otel_spans = otel::convert_spans(&spans);
-                        // export_to_endpoint logs a failure itself.
                         for ep in &endpoints {
                             export_to_endpoint(ep, otel_spans.clone()).await;
                         }
@@ -512,10 +400,6 @@ impl TracingService {
         Ok(())
     }
 
-    /// Stop streaming traces.
-    ///
-    /// # Errors
-    /// Returns an error if streaming is not active.
     pub async fn stop_streaming(&self) -> Result<()> {
         let mut state = self.state.write().await;
         if !state.streaming {
@@ -543,27 +427,11 @@ impl TracingService {
         submit::submit_bug_report(&endpoint, report, spans).await
     }
 
-    /// Submit lightweight feedback (no trace dump) to the upstream relay.
-    ///
-    /// # Errors
-    /// Returns an error if the upstream is unreachable or returns a
-    /// non-2xx response.
     pub async fn send_feedback(&self, feedback: Feedback) -> Result<SubmissionReceipt> {
         let endpoint = self.state.read().await.config.feedback_endpoint.clone();
         submit::submit_feedback(&endpoint, feedback).await
     }
 
-    /// Called from error paths to auto-report if enabled.
-    ///
-    /// Builds a synthetic [`BugReport`] (severity `broken`) from
-    /// `error_context` and submits it through the same path as a manual
-    /// report, attaching the current span buffer. Submissions are rate
-    /// limited (see `ErrorReportLimiter`) so a tight error loop can't
-    /// exhaust the relay's per-IP submission budget; suppressed reports are
-    /// logged at debug level.
-    ///
-    /// This is fire-and-forget: failures are logged, never propagated, and
-    /// never block the caller's error path.
     pub async fn on_error(&self, error_context: &str, client: ClientContext) {
         let state = self.state.read().await;
         if !state.config.auto_error_reporting {
@@ -620,7 +488,6 @@ impl TracingService {
     }
 }
 
-/// Export OTEL spans to a single endpoint. Returns per-endpoint result.
 async fn export_to_endpoint(
     endpoint: &OtelEndpoint,
     spans: Vec<opentelemetry_sdk::trace::SpanData>,

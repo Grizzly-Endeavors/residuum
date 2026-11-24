@@ -1,29 +1,9 @@
-//! In-place text edits to HEARTBEAT.yml.
-//!
-//! Unlike `super::types::load_heartbeat`, which parses the file into
-//! structured data, these edits work on the raw text and touch only the one
-//! value being changed — every other byte (comments, blank lines,
-//! formatting, other pulses) survives untouched. This is what lets the
-//! Schedule place's enabled toggle flip a single pulse without silently
-//! discarding a comment the owner or agent left in the file.
-
-/// One pulse entry's location within the raw text, found by
-/// [`find_pulse_entry`].
 struct PulseEntry {
-    /// Line index of the `- name: ...` marker.
     marker_line: usize,
-    /// Line index of an existing `enabled:` field within the entry's block,
-    /// if it has one.
     enabled_line: Option<usize>,
-    /// Indentation (in spaces) a direct field of this entry uses — derived
-    /// from an existing field when the entry has one, otherwise the marker's
-    /// own indentation plus two spaces, matching every documented
-    /// HEARTBEAT.yml example (`  - name: x` then `    schedule: ...`).
     field_indent: usize,
 }
 
-/// Find the pulse named `pulse_name` among `- name: ...` list markers in
-/// `lines`, and locate its block's existing `enabled:` field, if any.
 fn find_pulse_entry(lines: &[&str], pulse_name: &str) -> Option<PulseEntry> {
     for (i, &line) in lines.iter().enumerate() {
         let trimmed = line.trim_start();
@@ -46,8 +26,6 @@ fn find_pulse_entry(lines: &[&str], pulse_name: &str) -> Option<PulseEntry> {
             }
             let t = l.trim_start();
             let ind = l.len() - t.len();
-            // Dedented back to this entry's own indent (the next list
-            // item) or shallower: the block has ended.
             if ind <= marker_indent {
                 break;
             }
@@ -69,10 +47,6 @@ fn find_pulse_entry(lines: &[&str], pulse_name: &str) -> Option<PulseEntry> {
     None
 }
 
-/// Strip a leading/trailing single- or double-quote pair from a scalar, the
-/// way YAML permits quoting a plain string. Only strips a matching pair of
-/// the same quote character at both ends, never a single stray quote or a
-/// mismatched pair.
 fn strip_yaml_scalar_quotes(s: &str) -> &str {
     for quote in ['"', '\''] {
         if let Some(inner) = s
@@ -85,14 +59,6 @@ fn strip_yaml_scalar_quotes(s: &str) -> &str {
     s
 }
 
-/// Flip a named pulse's `enabled` field in raw HEARTBEAT.yml text, editing
-/// only that one value (or inserting it, right after the pulse's `name`
-/// line, if it has none) and leaving every other line of the file
-/// unchanged.
-///
-/// # Errors
-/// Returns an error naming the pulse if no `pulses` entry with that `name`
-/// is found in the text.
 pub fn set_pulse_enabled(yaml: &str, pulse_name: &str, enabled: bool) -> Result<String, String> {
     let lines: Vec<&str> = yaml.split('\n').collect();
     let entry = find_pulse_entry(&lines, pulse_name)
@@ -142,7 +108,6 @@ pulses:
             !updated.contains("    enabled: true"),
             "the old value should be gone, not left alongside the new one"
         );
-        // Everything else, including the comment, must survive untouched.
         assert!(updated.contains("# a comment the agent left about memory_tending"));
         assert!(updated.contains("- name: memory_tending"));
     }
@@ -160,7 +125,6 @@ pulses:
             Some("enabled: false"),
             "enabled should be inserted right after the pulse's name line"
         );
-        // The pulse's other fields must still be present, unchanged.
         assert!(updated.contains("schedule: \"24h\""));
         assert!(updated.contains("active_hours: \"02:00-06:00\""));
     }

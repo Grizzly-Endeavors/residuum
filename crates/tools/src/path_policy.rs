@@ -1,15 +1,3 @@
-//! Write-scoping policy for file tools.
-//!
-//! Blocks writes to the credential stores in `hub/` (secrets, agent keys,
-//! A2A caller keys, the Web Push signing key and device list) and to the
-//! `.example.toml` reference templates, which
-//! Residuum regenerates from its compiled-in defaults on every startup
-//! (`config::bootstrap`), so any edit to them is silently lost at the next
-//! restart. The hub's and the agent's `config.toml`, and `providers.toml`,
-//! are writable — the agent edits them on the user's behalf and a reload
-//! picks up the change, same as any other file edit. All other writes are
-//! unrestricted.
-
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -20,13 +8,6 @@ use residuum_config::Config;
 use residuum_config::WorkspaceLayout;
 use residuum_workspace::team_files::TeamFiles;
 
-/// Paths the file tools may never write: the credential stores in `hub_dir`,
-/// the `.example.toml` reference templates, and `mcp.json`/`channels.toml`
-/// unless the matching agent ability (`agent.modify_mcp`/
-/// `agent.modify_channels`) is on.
-///
-/// The one definition of the blocked set, used at startup and on every
-/// config reload.
 #[must_use]
 pub fn blocked_write_paths(
     cfg: &Config,
@@ -43,16 +24,6 @@ pub fn blocked_write_paths(
     blocked
 }
 
-/// The hub's credential stores, and the regenerated-template files in the
-/// agent's `config/` directory, that are blocked regardless of agent
-/// abilities.
-///
-/// `config.toml` and `providers.toml` are deliberately absent — the agent is
-/// allowed to edit them (see the module doc). The `.example.toml` templates
-/// stay blocked because they are always overwritten from the binary's
-/// compiled-in defaults at the next startup
-/// (`config::bootstrap::bootstrap_agent_at`), so an edit to them would look
-/// like it worked and then vanish.
 fn always_blocked_paths(config_dir: &Path, hub_dir: &Path) -> HashSet<PathBuf> {
     let hub = residuum_config::HubPaths::new(hub_dir);
     let credential_stores = [
@@ -66,7 +37,6 @@ fn always_blocked_paths(config_dir: &Path, hub_dir: &Path) -> HashSet<PathBuf> {
         hub.push_vapid_key(),
         hub.push_devices_json(),
         hub.remote_access_json(),
-        // A directory: everything under it is blocked (see `check_write`).
         hub.remote_access_dir(),
     ];
     let templates = ["config.example.toml", "providers.example.toml"]
@@ -75,26 +45,16 @@ fn always_blocked_paths(config_dir: &Path, hub_dir: &Path) -> HashSet<PathBuf> {
     credential_stores.into_iter().chain(templates).collect()
 }
 
-/// Names (not full paths) of the `.example.toml` reference templates, used to
-/// give a write refusal for one of them a reason distinct from the plain
-/// "user-managed configuration" message the other blocked paths get.
 const REGENERATED_TEMPLATE_NAMES: [&str; 2] = ["config.example.toml", "providers.example.toml"];
 
-/// Shared path policy, checked by `WriteTool` and `EditTool` before every write.
 pub type SharedPathPolicy = Arc<RwLock<PathPolicy>>;
 
-/// Write-scoping policy based on a set of unconditionally blocked paths.
 pub struct PathPolicy {
-    /// Paths that are unconditionally blocked from writes (e.g. config files).
     blocked_paths: HashSet<PathBuf>,
-    /// The `team/` namespace and write coordination, when the agent belongs
-    /// to a team. The file tools resolve `team/...` paths and check team
-    /// writes through it.
     team: Option<TeamFiles>,
 }
 
 impl PathPolicy {
-    /// Create a new path policy with no blocked paths.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -103,7 +63,6 @@ impl PathPolicy {
         }
     }
 
-    /// Create a new path policy with blocked paths (e.g. config files).
     #[must_use]
     pub fn with_blocked_paths(blocked_paths: HashSet<PathBuf>) -> Self {
         let canonicalized: HashSet<PathBuf> = blocked_paths
@@ -116,27 +75,22 @@ impl PathPolicy {
         }
     }
 
-    /// Attach the agent's view of the team namespace.
     #[must_use]
     pub fn with_team(mut self, team: TeamFiles) -> Self {
         self.team = Some(team);
         self
     }
 
-    /// The agent's view of the team namespace, if it belongs to a team.
     #[must_use]
     pub fn team(&self) -> Option<&TeamFiles> {
         self.team.as_ref()
     }
 
-    /// Create a new shared path policy.
     #[must_use]
     pub fn new_shared() -> SharedPathPolicy {
         Arc::new(RwLock::new(Self::new()))
     }
 
-    /// Create a new shared path policy with blocked paths and the agent's
-    /// view of the team namespace.
     #[must_use]
     pub fn new_shared_with_team(
         blocked_paths: HashSet<PathBuf>,
@@ -147,9 +101,6 @@ impl PathPolicy {
         ))
     }
 
-    /// Replace the set of unconditionally blocked paths.
-    ///
-    /// Called during config hot-reload when agent ability gates change.
     pub fn set_blocked_paths(&mut self, paths: HashSet<PathBuf>) {
         self.blocked_paths = paths
             .into_iter()
@@ -157,16 +108,9 @@ impl PathPolicy {
             .collect();
     }
 
-    /// Check whether a write to `path` is allowed under the current policy.
-    ///
-    /// Returns `Ok(())` if allowed, or `Err(reason)` if rejected.
-    ///
-    /// # Errors
-    /// Returns a descriptive error string if the write is rejected.
     pub fn check_write(&self, path: &Path) -> Result<(), String> {
         let canonical = canonicalize_for_check(path);
 
-        // A blocked directory blocks everything under it.
         if canonical
             .ancestors()
             .any(|ancestor| self.blocked_paths.contains(ancestor))
@@ -202,18 +146,11 @@ impl Default for PathPolicy {
     }
 }
 
-/// Canonicalize a path for policy checks.
-///
-/// For existing paths, uses `std::fs::canonicalize`. For new files (path doesn't
-/// exist yet), canonicalizes the nearest existing ancestor and appends the
-/// remaining segments.
 fn canonicalize_for_check(path: &Path) -> PathBuf {
-    // Try full canonicalization first
     if let Ok(canonical) = std::fs::canonicalize(path) {
         return canonical;
     }
 
-    // Walk up to find the nearest existing ancestor
     let mut existing = path.to_path_buf();
     let mut remaining = Vec::new();
 
@@ -221,7 +158,6 @@ fn canonicalize_for_check(path: &Path) -> PathBuf {
         if let Some(file_name) = existing.file_name() {
             remaining.push(file_name.to_os_string());
         } else {
-            // Can't walk further up; return the original path as-is
             return path.to_path_buf();
         }
         if !existing.pop() {
@@ -229,7 +165,6 @@ fn canonicalize_for_check(path: &Path) -> PathBuf {
         }
     }
 
-    // Canonicalize the existing ancestor and re-append the missing segments
     let mut canonical = std::fs::canonicalize(&existing).unwrap_or(existing);
     for segment in remaining.into_iter().rev() {
         canonical.push(segment);
@@ -270,7 +205,6 @@ mod tests {
         std::fs::create_dir_all(ws.join("memory")).unwrap();
         let config_dir = dir.path().join("config");
         std::fs::create_dir_all(&config_dir).unwrap();
-        // Create the config files so they can be canonicalized
         std::fs::write(config_dir.join("config.toml"), "").unwrap();
         std::fs::write(config_dir.join("config.example.toml"), "").unwrap();
         let canonical_ws = std::fs::canonicalize(&ws).unwrap();
@@ -295,8 +229,6 @@ mod tests {
     #[test]
     fn config_toml_and_providers_toml_are_writable() {
         let (_dir, _ws, cfg_dir) = make_workspace_with_config();
-        // Neither is in the always-blocked set (see `always_blocked_paths`),
-        // and the policy under test carries no other blocked paths either.
         let policy = PathPolicy::with_blocked_paths(HashSet::new());
 
         assert!(
@@ -346,17 +278,14 @@ mod tests {
         let blocked: HashSet<PathBuf> = [cfg_dir.join("config.toml")].into_iter().collect();
         let mut policy = PathPolicy::with_blocked_paths(blocked);
 
-        // config.toml is blocked initially
         assert!(policy.check_write(&cfg_dir.join("config.toml")).is_err());
 
-        // Replace blocked set with empty — config.toml should now be writable
         policy.set_blocked_paths(HashSet::new());
         assert!(
             policy.check_write(&cfg_dir.join("config.toml")).is_ok(),
             "config.toml should be writable after clearing blocked paths"
         );
 
-        // Re-block config.toml
         let new_blocked: HashSet<PathBuf> = [cfg_dir.join("config.toml")].into_iter().collect();
         policy.set_blocked_paths(new_blocked);
         assert!(
@@ -403,7 +332,6 @@ mod tests {
         ));
 
         for name in ["push-vapid.key", "push-devices.json", "remote-access.json"] {
-            // Refused whether or not the file exists yet.
             let err = policy.check_write(&hub_dir.join(name)).unwrap_err();
             assert!(err.contains(name), "{err}");
             std::fs::write(hub_dir.join(name), "x").unwrap();

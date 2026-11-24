@@ -1,39 +1,13 @@
-//! Why a session fork failed, and how to tell the owner.
-//!
-//! The steps of a fork that fail for a reason the owner can act on attach a
-//! [`ForkFailure`] as `anyhow` context where they fail. The listener reads it
-//! back with a downcast to word a plain-language sentence, so the sentence
-//! never depends on the wording of an error message.
-
 use std::fmt;
 
 use residuum_bus::SessionAddress;
 
-/// The step of a session fork that failed.
-///
-/// Its `Display` is the developer wording that heads the error's cause chain
-/// in logs and in a failure's details.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ForkFailure {
-    /// An explicit `provider/model` id didn't resolve against the model
-    /// catalog.
-    UnknownModel {
-        /// The model id the session asked for.
-        model: String,
-    },
-    /// The provider chain for the session's model couldn't be built, most
-    /// often because a provider's API key is missing.
-    ProviderChain {
-        /// The session's model: a tier name or a `provider/model` id.
-        model: String,
-    },
-    /// The agent's or the team's identity files couldn't be read.
+    UnknownModel { model: String },
+    ProviderChain { model: String },
     IdentityFiles,
-    /// The skill the session runs couldn't be activated.
-    Skill {
-        /// The skill's name.
-        name: String,
-    },
+    Skill { name: String },
 }
 
 impl fmt::Display for ForkFailure {
@@ -49,10 +23,6 @@ impl fmt::Display for ForkFailure {
     }
 }
 
-/// The sentence that tells the owner the session they started at `address`
-/// couldn't start, or, when `resume` is set, couldn't pick up the message
-/// that resumed it: what went wrong and what to do next, from the
-/// [`ForkFailure`] anywhere in `error`'s context chain.
 pub(crate) fn owner_start_failure_message(
     address: &SessionAddress,
     resume: bool,
@@ -97,10 +67,6 @@ pub(crate) fn owner_start_failure_message(
     }
 }
 
-/// The sentence the Schedule place shows, and `pulse_state.json` records,
-/// when a fire of the pulse `pulse` couldn't start its session: what went
-/// wrong and what to do next, from the [`ForkFailure`] anywhere in `error`'s
-/// context chain.
 pub(crate) fn pulse_start_failure_message(pulse: &str, error: &anyhow::Error) -> String {
     let failed = format!("The pulse \"{pulse}\" couldn't start its session because");
     match error.downcast_ref::<ForkFailure>() {
@@ -137,8 +103,6 @@ mod tests {
         SessionAddress::from("spawned-session-1a2b")
     }
 
-    /// An error the way a fork step builds it: a cause, the step's context,
-    /// then one more context from a caller further out.
     fn failed_at(step: ForkFailure) -> anyhow::Error {
         Err::<(), _>(anyhow::anyhow!("the underlying cause"))
             .context(step)

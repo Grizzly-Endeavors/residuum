@@ -11,10 +11,6 @@
   import { Button, Dialog } from "../lib/ui";
   import { readMainModelLabel } from "../places/chat/main-model.svelte";
 
-  // What the old /status line reported, as a dialog: Residuum, the bound
-  // agent, that agent's connection, and its main model. The text is selectable,
-  // and Copy puts the same lines on the clipboard.
-
   let {
     open = $bindable(false),
     agent,

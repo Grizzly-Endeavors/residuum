@@ -1,7 +1,3 @@
-//! The join endpoints on the instance host (`/_sibling/join/...`), served
-//! in-process. They authenticate their callers themselves, by signature and
-//! by the join id only the requester knows, so there is no device gate.
-
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -22,9 +18,7 @@ use super::protocol::{NONCE_PATH, REQUEST_PATH};
 use crate::pairing::remote::RemoteTransport;
 use crate::remote_access::engine_limit::PeerRateLimiter;
 
-/// Join requests a peer address may make per minute.
 const PER_PEER_PER_MINUTE: f64 = 10.0;
-/// The largest request body: a signed request is a few hundred bytes.
 const MAX_BODY: usize = 16 * 1024;
 
 #[derive(Clone)]
@@ -33,7 +27,6 @@ struct RouteState {
     limiter: Arc<Mutex<PeerRateLimiter>>,
 }
 
-/// The router for the join endpoints.
 pub(crate) fn router(host: Arc<JoinHost>) -> Router {
     let state = RouteState {
         host,
@@ -43,9 +36,6 @@ pub(crate) fn router(host: Arc<JoinHost>) -> Router {
             Instant::now(),
         ))),
     };
-    // Only fetching a nonce and submitting a request are limited per peer. A
-    // poll is authenticated by the 128-bit join id only the requester knows,
-    // and a requester polls for as long as the approval takes.
     let limited = Router::new()
         .route(NONCE_PATH, get(nonce))
         .route(REQUEST_PATH, axum::routing::post(submit))

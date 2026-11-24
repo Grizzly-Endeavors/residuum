@@ -1,8 +1,3 @@
-//! A stand-in for the pin service, for tests: it checks the same things the
-//! real one does about a request's signature, grant and recovery code, keeps
-//! the pins in memory, and publishes the CAA records the real one would to a
-//! Pebble challenge test server.
-
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -18,18 +13,15 @@ use serde_json::{Value, json};
 
 use super::pebble_support::PebbleHarness;
 
-/// The grant the fake relay issues and this service accepts.
 pub(crate) const TEST_GRANT: &str = "test.grant.jws";
 
 #[derive(Clone)]
 struct StoredPin {
     account_uri: String,
     slug: String,
-    /// The account's public key, which a `kid` signature is checked against.
     jwk: Option<Value>,
 }
 
-/// A reset by email the service is holding.
 struct StoredReset {
     user: String,
     pin: StoredPin,
@@ -43,9 +35,7 @@ struct ServiceState {
     pins: Vec<StoredPin>,
     recovery_hash: Option<String>,
     pending_reset: Option<StoredReset>,
-    /// A status that the next `email_reset` request fails with.
     email_failure: Option<StatusCode>,
-    /// The `kid` of the account that signed the last accepted `cancel_reset`.
     cancelled_by: Option<String>,
     seen_jtis: Vec<String>,
     requests: Vec<String>,
@@ -57,7 +47,6 @@ struct Shared {
     dns: Option<Arc<PebbleHarness>>,
 }
 
-/// A running fake pin service.
 pub(crate) struct FakePinService {
     shared: Arc<Shared>,
     base: String,
@@ -71,8 +60,6 @@ impl Drop for FakePinService {
 }
 
 impl FakePinService {
-    /// Start on a free loopback port. With `dns`, every change publishes the
-    /// CAA records for `{user}.{base}` and `{user}.workbench.{base}` there.
     pub(crate) async fn start(dns: Option<Arc<PebbleHarness>>) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -101,12 +88,10 @@ impl FakePinService {
         Self { shared, base, task }
     }
 
-    /// The service's base URL.
     pub(crate) fn url(&self) -> &str {
         &self.base
     }
 
-    /// Pin `account_uri` as if another instance had enrolled.
     pub(crate) fn preload(&self, account_uri: &str, slug: &str) {
         lock(&self.shared).pins.push(StoredPin {
             account_uri: account_uri.to_string(),
@@ -115,7 +100,6 @@ impl FakePinService {
         });
     }
 
-    /// Pin `account_uri` with its public key, so it can sign `add` and `remove`.
     pub(crate) fn preload_with_key(&self, account_uri: &str, slug: &str, jwk: Value) {
         lock(&self.shared).pins.push(StoredPin {
             account_uri: account_uri.to_string(),
@@ -124,8 +108,6 @@ impl FakePinService {
         });
     }
 
-    /// Hold a reset by email asked for by `account_uri`, as if its link had
-    /// been mailed to the user.
     pub(crate) fn preload_pending_reset(
         &self,
         account_uri: &str,
@@ -145,7 +127,6 @@ impl FakePinService {
         });
     }
 
-    /// The person confirmed the emailed link: the hold ends at `effective_at`.
     pub(crate) fn confirm_email_reset(&self, effective_at: i64) {
         if let Some(reset) = lock(&self.shared).pending_reset.as_mut() {
             reset.confirmed = true;
@@ -153,7 +134,6 @@ impl FakePinService {
         }
     }
 
-    /// The hold ended: the held reset replaces every pin.
     pub(crate) async fn apply_email_reset(&self) {
         let user = {
             let mut state = lock(&self.shared);
@@ -167,27 +147,22 @@ impl FakePinService {
         publish_caa(&self.shared, &user).await;
     }
 
-    /// Make the next `email_reset` request fail with `status`.
     pub(crate) fn fail_next_email_reset(&self, status: StatusCode) {
         lock(&self.shared).email_failure = Some(status);
     }
 
-    /// Whether a reset by email is being held.
     pub(crate) fn has_pending_reset(&self) -> bool {
         lock(&self.shared).pending_reset.is_some()
     }
 
-    /// The recovery code hash the service holds.
     pub(crate) fn recovery_hash(&self) -> Option<String> {
         lock(&self.shared).recovery_hash.clone()
     }
 
-    /// The `kid` that signed the last accepted `cancel_reset`.
     pub(crate) fn cancelled_by(&self) -> Option<String> {
         lock(&self.shared).cancelled_by.clone()
     }
 
-    /// The pinned accounts, as `(account_uri, slug)`.
     pub(crate) fn pins(&self) -> Vec<(String, String)> {
         lock(&self.shared)
             .pins
@@ -196,7 +171,6 @@ impl FakePinService {
             .collect()
     }
 
-    /// The `op` of every accepted mutation, in order.
     pub(crate) fn operations(&self) -> Vec<String> {
         lock(&self.shared).requests.clone()
     }
@@ -235,8 +209,6 @@ async fn list(State(shared): State<Arc<Shared>>, Path(_user): Path<String>) -> R
     (StatusCode::OK, Json(body))
 }
 
-/// Check the JWS the way the pin service does: ES256 over the protected
-/// header and payload, the header's `url`, and a fresh `jti`.
 fn verify(shared: &Shared, path: &str, body: &Value) -> Result<(Value, Value), Reply> {
     let part = |name: &str| {
         body.get(name)

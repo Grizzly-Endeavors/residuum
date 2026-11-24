@@ -1,7 +1,3 @@
-//! Hub config loading: the hub counterpart to [`super::load`]'s
-//! `Config::load_at`. Reads and tolerantly parses `hub/config.toml`, then
-//! resolves it into a [`super::hub_types::HubConfig`].
-
 use std::path::Path;
 
 use residuum_core::util::FatalError;
@@ -12,38 +8,14 @@ use super::resolve;
 use super::tolerant::parse_tolerating_unknown_keys;
 
 impl HubConfig {
-    /// Write default hub config files to `hub_dir` if not already present.
-    ///
-    /// # Errors
-    /// Returns `FatalError::Config` if the directory or files cannot be written.
     pub fn bootstrap_at(hub_dir: &Path) -> Result<(), FatalError> {
         super::bootstrap::bootstrap_hub_at(hub_dir)
     }
 
-    /// Load `hub/config.toml` from `hub_dir`.
-    ///
-    /// A missing file resolves against defaults (same tolerant-degrade
-    /// behavior as the agent config loader): only the timezone is required.
-    ///
-    /// # Errors
-    /// Returns `FatalError::Config` if the file exists but can't be read or
-    /// parsed, or if the timezone is missing/invalid.
     pub fn load_at(hub_dir: &Path) -> Result<Self, FatalError> {
         Self::load_in(hub_dir, false)
     }
 
-    /// Load `hub/config.toml` the way process start does.
-    ///
-    /// With no agent under `residuum_root`, a missing timezone loads anyway
-    /// (see `super::resolve::hub::from_file_and_env_for_onboarding`) so the setup
-    /// wizard can run. Once an agent exists, a missing timezone is fatal,
-    /// the same as [`Self::load_at`]. An invalid timezone name is fatal
-    /// either way.
-    ///
-    /// # Errors
-    /// Returns `FatalError::Config` if the file exists but can't be read or
-    /// parsed, if the timezone is invalid, or if it is missing and an agent
-    /// already exists. Also returns the error from discovering agents.
     pub fn load_at_for_start(hub_dir: &Path, residuum_root: &Path) -> Result<Self, FatalError> {
         let onboarding = super::paths::discover_agents(residuum_root)?.is_empty();
         Self::load_in(hub_dir, onboarding)
@@ -87,12 +59,6 @@ impl HubConfig {
         Ok(cfg)
     }
 
-    /// Load `HubConfig` from an arbitrary hub config directory, bypassing
-    /// the default `~/.residuum/hub`. Used by tests and the last-known-good
-    /// fallback.
-    ///
-    /// # Errors
-    /// Same as [`Self::load_at`].
     pub fn load_from_path(config_path: &Path, hub_dir: &Path) -> Result<Self, FatalError> {
         if !config_path.exists() {
             return Self::load_at(hub_dir);
@@ -115,20 +81,10 @@ impl HubConfig {
         Ok(cfg)
     }
 
-    /// Validate a TOML string as `hub/config.toml` without saving it.
-    ///
-    /// # Errors
-    /// Returns a human-readable error string if validation fails.
     pub fn validate_toml(contents: &str, hub_dir: &Path) -> Result<(), String> {
         Self::validate_with(contents, hub_dir, resolve::hub::from_file_and_env)
     }
 
-    /// [`Self::validate_toml`] for a file the hub loads while first-run setup
-    /// is pending, where `timezone` may still be unset. Everything else is
-    /// checked as strictly as [`Self::validate_toml`] checks it.
-    ///
-    /// # Errors
-    /// Returns a human-readable error string if validation fails.
     pub fn validate_toml_for_onboarding(contents: &str, hub_dir: &Path) -> Result<(), String> {
         Self::validate_with(
             contents,
@@ -137,8 +93,6 @@ impl HubConfig {
         )
     }
 
-    /// Parse `contents` as `hub/config.toml` and resolve it with `resolve`,
-    /// the same two steps the hub takes when it loads the file.
     fn validate_with(
         contents: &str,
         hub_dir: &Path,
@@ -152,8 +106,6 @@ impl HubConfig {
         Ok(())
     }
 
-    /// Diagnostics for `contents` as `hub/config.toml`. Mirrors
-    /// `Config::diagnose_agent_toml`'s syntax-then-semantic approach.
     #[must_use]
     pub fn diagnose_toml(
         contents: &str,

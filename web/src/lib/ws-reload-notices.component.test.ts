@@ -2,10 +2,6 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { notifications } from "./notifications.svelte";
 import { ws } from "./ws.svelte";
 
-// What the page shows when the agent reloads its settings and no control
-// asked for it quietly: the palette's Reload settings, or a settings file
-// edited under the page.
-
 beforeEach(() => {
   notifications.clear();
 });

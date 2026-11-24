@@ -2,23 +2,4 @@
 import type { LastMessageRole } from "./LastMessageRole";
 import type { TimePrecision } from "./TimePrecision";
 
-/**
- * The newest message of an agent's main conversation that the user saw.
- */
-export type LastMessage = { 
-/**
- * Whether the user or the agent wrote it.
- */
-role: LastMessageRole, 
-/**
- * The message as one line of plain text, at most 200 characters.
- */
-preview: string, 
-/**
- * When it was written, as RFC 3339 with an offset.
- */
-at: string, 
-/**
- * How exactly `at` says when.
- */
-at_precision: TimePrecision, };
+export type LastMessage = { role: LastMessageRole, preview: string, at: string, at_precision: TimePrecision, };

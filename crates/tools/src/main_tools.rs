@@ -1,7 +1,3 @@
-//! The main agent's tool registry: the builder that registers every tool main
-//! carries, beside the session builder (`SessionTools::build`) that the
-//! parity test in this file holds it against.
-
 use std::sync::Arc;
 
 use residuum_agent::ToolRegistry;
@@ -16,56 +12,32 @@ use residuum_skills::SharedSkillState;
 
 use super::registration::{self, RegistryInjections};
 
-/// Shared subsystem handles needed for tool registration.
 pub struct ToolRegistryDeps<'a> {
     pub action_store: &'a Arc<tokio::sync::Mutex<ActionStore>>,
     pub action_notify: &'a Arc<tokio::sync::Notify>,
     pub skill_state: &'a SharedSkillState,
     pub tools_path: &'a residuum_config::SharedToolsPath,
-    /// Shared write policy — the same instance sessions fork with and
-    /// config reloads update.
     pub path_policy: &'a super::SharedPathPolicy,
-    /// The agent's Auto Mode, attached to main's registry so the turn loop
-    /// checks main's tool calls against it.
     pub auto_mode: &'a residuum_agent::auto_mode::SharedAutoMode,
     pub agent_keys: &'a residuum_config::agent_keys::SharedAgentKeys,
     pub session_registry: &'a Arc<SessionRegistry>,
     pub endpoint_registry: &'a EndpointRegistry,
     pub publisher: &'a residuum_bus::Publisher,
-    /// The running build, for the feedback tools' client context.
     pub build: residuum_core::build_info::BuildInfo,
     pub tracing_service: &'a Arc<residuum_tracing_service::TracingService>,
     pub tracing_client_context: &'a Arc<residuum_tracing_service::ClientContext>,
     pub agent_messenger: &'a Arc<AgentMessenger>,
-    /// Main's current-turn hop counter, shared with the `Agent` these tools
-    /// end up registered against (see `CreateAgentArgs::hop_counter`).
     pub hop_counter: &'a residuum_agent::HopCounter,
-    /// Remote A2A agents this instance's client can reach.
     pub a2a_hub: &'a Arc<residuum_a2a::A2aClientHub>,
-    /// Outbound A2A tasks this instance started on other agents.
     pub a2a_tracker: &'a Arc<residuum_a2a::RemoteTaskTracker>,
-    /// Workspace and config checkpoint repositories.
     pub checkpoints: &'a Arc<residuum_checkpoints::CheckpointEngine>,
-    /// Tracks the agent's own config-file writes so the reload each one
-    /// triggers can report back into its transcript. Wired only into main's
-    /// `write_file`/`edit_file` — see `ConfigWriteWatch`'s doc comment.
     pub config_reload_tracker: &'a crate::SharedConfigReloadTracker,
-    /// The hub's directory (`~/.residuum/hub`), needed to resolve the hub
-    /// config that `config.toml`/`providers.toml` diagnostics run against.
     pub hub_dir: &'a std::path::Path,
-    /// How `agent_create`/`agent_delete` reach the hub.
     pub lifecycle: &'a crate::LifecycleAccess,
-    /// The live catalog `subagent_spawn` and `schedule_action` check an
-    /// explicit model against — the same instance sessions fork with and
-    /// config reloads update.
     pub model_catalog: &'a residuum_config::SharedModelCatalog,
-    /// Every agent's mailbox, for the mail-aware inbox tools. `None` limits
-    /// them to this agent's own inboxes.
     pub mailboxes: Option<Arc<dyn residuum_workspace::inbox::mail::MailboxDirectory>>,
 }
 
-/// Main's tools for managing sessions and teammates: `stop_agent`,
-/// `list_agents`, `subagent_spawn`, and the teammate lifecycle tools.
 fn register_main_session_tools(
     tools: &mut ToolRegistry,
     cfg: &Config,
@@ -98,7 +70,6 @@ fn register_main_session_tools(
     );
 }
 
-/// Main's file, key, memory, action-scheduling, skill, and inbox tools.
 fn register_main_workspace_tools(
     tools: &mut ToolRegistry,
     injections: &RegistryInjections,
@@ -154,11 +125,6 @@ fn register_main_workspace_tools(
     registration::register_inbox_tools(tools, injections, layout, tz);
 }
 
-/// Build main's tool registry with all default and domain-specific tools.
-///
-/// Returns the registry, the injections its tools took at registration (kept
-/// beside the agent so a reload that re-registers a tool injects the same
-/// ones), and the sender `switch_endpoint` writes the output override to.
 #[must_use]
 pub fn init_tool_registry(
     cfg: &Config,
@@ -228,14 +194,12 @@ pub fn init_tool_registry(
         Arc::clone(deps.session_registry),
     );
 
-    // Checkpoint history and restore for the workspace and team repositories
     registration::register_workspace_checkpoint_tools(
         &mut tools,
         Arc::clone(deps.checkpoints),
         Arc::clone(deps.path_policy),
     );
 
-    // Register Ollama Cloud web search tool if configured
     if let Some(backend) = &cfg.web_search.standalone_backend
         && backend.name == "ollama"
     {
@@ -258,24 +222,12 @@ pub fn init_tool_registry(
 mod tests {
     use crate::testing::RegistryHarness;
 
-    /// Tools that must stay main-only, never registered for a session. This
-    /// is the one documented exclusion from the session registry
-    /// `crate::SessionTools` builds (see its `build` doc comment) —
-    /// keep the two lists in sync.
     const MAIN_ONLY_TOOLS: &[&str] = &["switch_endpoint"];
 
-    /// Tools registered only for a session, never for main — the reverse of
-    /// [`MAIN_ONLY_TOOLS`]. `a2a_task_update` is session-only because it
-    /// reports a delegated A2A task's outcome, which only makes sense for a
-    /// session started from the `a2a` endpoint — main never handles A2A
-    /// callers directly (see `docs/systems-usage/a2a.md`).
     const SESSION_ONLY_TOOLS: &[&str] = &["a2a_task_update"];
 
-    /// `TOOLS.md`, the contract every tool's description is quoted from.
     const TOOLS_MD: &str = include_str!("TOOLS.md");
 
-    /// How TOOLS.md quotes a description: each line as a blockquote line, and
-    /// each paragraph break as a bare `>`.
     fn quote_as_tools_md(description: &str) -> String {
         description
             .split('\n')
@@ -290,9 +242,6 @@ mod tests {
             .join("\n")
     }
 
-    /// Every tool main registers is quoted in TOOLS.md with its exact current
-    /// description, so a description edit that skips TOOLS.md fails here
-    /// instead of drifting silently.
     #[tokio::test]
     async fn every_main_tool_description_is_quoted_in_tools_md() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -315,8 +264,6 @@ mod tests {
         }
     }
 
-    /// A `ConversationTarget` naming the `a2a` endpoint, as an a2a
-    /// conversation session's tool scope carries.
     fn a2a_conversation_target() -> residuum_bus::ConversationTarget {
         residuum_bus::ConversationTarget {
             endpoint: "a2a".to_string(),
@@ -324,12 +271,6 @@ mod tests {
         }
     }
 
-    /// Enforces "every tool registered for main is also registered for
-    /// sessions, except the documented main-only allowlist" by building both
-    /// registration surfaces from equivalent config (every optional tool
-    /// gate turned on) and comparing their tool names directly. A tool added
-    /// to one registry but not the other fails this test instead of drifting
-    /// silently.
     #[tokio::test]
     async fn session_registry_matches_main_minus_documented_allowlist() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -361,8 +302,6 @@ mod tests {
              ({MAIN_ONLY_TOOLS:?}) plus the session-only allowlist ({SESSION_ONLY_TOOLS:?})"
         );
 
-        // Oversized results from main and from sessions both go to the
-        // agent's directory under hub/tool-results.
         let main_store = main_tools
             .result_store()
             .expect("main's registry saves oversized tool results");
@@ -379,9 +318,6 @@ mod tests {
         );
     }
 
-    /// An `artifact` session gets the same tools as a spawned one; only its
-    /// `message_agent` to `main` is refused, while its user-inbox tool still
-    /// files items.
     #[tokio::test]
     async fn artifact_session_keeps_every_session_tool_but_cannot_message_main() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -410,7 +346,6 @@ mod tests {
             to_main.output
         );
 
-        // Workspace bootstrap creates the inbox folders in a real install.
         std::fs::create_dir_all(h.layout.user_inbox_dir()).unwrap();
         let inbox = artifact_tools
             .execute(
@@ -428,9 +363,6 @@ mod tests {
         assert_eq!(filed, 1, "the item lands in the user's inbox");
     }
 
-    /// Only a session started from the `a2a` endpoint gets `a2a_task_update`
-    /// — an ordinary session (any other `conversation_target`, including
-    /// none at all) never does.
     #[tokio::test]
     async fn only_an_a2a_conversation_session_gets_the_a2a_task_update_tool() {
         let dir = tempfile::tempdir().expect("tempdir");

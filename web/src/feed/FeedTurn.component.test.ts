@@ -84,7 +84,6 @@ describe("a running turn", () => {
       if (next === undefined) continue;
       expect(element.compareDocumentPosition(next) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     }
-    // The earlier run is a summary; only the newest shows its steps.
     expect(summary).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByRole("button", { name: /^Read a\.md/ })).toBeNull();
   });
@@ -107,7 +106,6 @@ describe("a running turn", () => {
     render(FeedTurn, { agent: "atlas", turn: turn([], true), observed: running() });
     expect(screen.getByText("Working")).toBeInTheDocument();
     expect(screen.getByText("5s")).toBeInTheDocument();
-    // Without a way to stop it here, it offers none.
     expect(screen.queryByRole("button", { name: "Stop the reply" })).toBeNull();
   });
 
@@ -118,7 +116,6 @@ describe("a running turn", () => {
       observed: running({ retrying: true }),
     });
     expect(screen.getByText("Retrying…")).toBeVisible();
-    // Beside the working mark, not in place of it.
     expect(screen.getByText("Working")).toBeVisible();
     view.unmount();
 

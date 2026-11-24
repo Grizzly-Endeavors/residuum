@@ -4,31 +4,20 @@ import { normalizeWatchPrefix, watchPrefixProblem } from "./sockets";
 import { discoverArtifacts } from "./workbench-files";
 import { pathKind, removePath, writeFile } from "./workspace-tree";
 
-/** What a change to a team file sent, for the caller to check. */
 export interface TeamChangeOutcome {
-  /** The `workspace_changed` batch: one change, in the change feed's `team/...` paths. */
   changes: WorkspaceChange[];
-  /** The artifacts whose `artifact_updated` and `artifact_removed` frames followed. */
   artifacts: { updated: string[]; removed: string[] };
 }
 
-/** What a change to a file in an agent's own workspace sent. */
 export interface AgentChangeOutcome {
-  /** The `workspace_changed` batch: one change, in the agent's workspace paths. */
   changes: WorkspaceChange[];
 }
 
-/** A change the mock refused, and the status it answers with. */
 export interface FileChangeRefusal {
   status: number;
   error: string;
 }
 
-/**
- * Write `content` at `path` in `tree`, or remove what is there for `null`,
- * and say what the change feed reports for it. As in the feed, a new folder
- * is reported alone, standing for what it holds.
- */
 function applyFileChange(
   tree: MockState,
   path: string,
@@ -53,17 +42,6 @@ function applyFileChange(
   return newest === undefined ? { path, kind: "modified" } : { path: newest, kind: "created" };
 }
 
-/**
- * Change a team file the way an agent does, then send what the real system
- * sends once its change feed sees it: `workspace_changed` to the pages that
- * watch the path, on the hub socket and on every agent's, and for a change to
- * an artifact's page or folder `artifact_updated` or `artifact_removed` on
- * the hub socket and on every agent's socket. `content: null` removes the file, or the folder and
- * everything in it. A rewrite that leaves an artifact's files as they were
- * sends no artifact frame.
- *
- * `path` is in the file API's namespace, so `team/workbench/tip-splitter.html`.
- */
 export function changeTeamFile(
   hub: MockHub,
   requested: string,
@@ -91,7 +69,6 @@ export function changeTeamFile(
 
   const changes = [change];
   hub.broadcast({ type: "workspace_changed", changes });
-  // The hub watches the workbench itself, so its artifact frames don't depend on an agent running.
   for (const name of updated) hub.broadcast({ type: "artifact_updated", name });
   for (const name of removed) hub.broadcast({ type: "artifact_removed", name });
   const frames: ServerMessage[] = [
@@ -105,14 +82,6 @@ export function changeTeamFile(
   return { changes, artifacts: { updated, removed } };
 }
 
-/**
- * Change a file in `agent`'s own workspace the way the agent does, then send
- * `workspace_changed` to the pages on its socket that watch the path.
- * `content: null` removes the file, or the folder and everything in it.
- *
- * `path` is relative to the agent's workspace, so `notes/today.md`; team files
- * change through `changeTeamFile`.
- */
 export function changeAgentFile(
   agent: MockAgent,
   requested: string,

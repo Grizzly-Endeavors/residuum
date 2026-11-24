@@ -1,19 +1,3 @@
-//! The device gate: in front of the main and workbench routers, it refuses
-//! remotely delivered requests that don't carry a paired device's credential.
-//!
-//! What it does for a request:
-//!
-//! 1. A local request (see [`super::remote`]) passes untouched.
-//! 2. A remote request that changes state or opens a socket must pass the
-//!    cross-site rule, before anything else is looked at.
-//! 3. The pre-auth routes (the pairing page, its assets and the pairing API)
-//!    pass.
-//! 4. Anything else needs a valid device credential for the surface. Without
-//!    one, a browser navigation is redirected to the pairing page and
-//!    everything else gets `401`.
-//!
-//! The A2A and Teams listeners are separate servers and have no gate.
-
 use axum::Json;
 use axum::extract::{Request, State};
 use axum::http::{HeaderValue, Method, StatusCode, header};
@@ -26,10 +10,8 @@ use super::{DevicePairing, Surface};
 use crate::browser_landing::{self, Landing};
 use crate::workbench::forward::ArtifactsOrigin;
 
-/// The pairing page's path on the UI host.
 pub const PAIRING_PAGE_PATH: &str = "/pair";
 
-/// The page on the workbench host that carries a handoff token to the host.
 pub(crate) const HANDOFF_PAGE_PATH: &str = "/_handoff";
 
 const STATE_PATH: &str = "/api/hub/pairing/state";
@@ -43,40 +25,30 @@ const HANDOFF_API_PATH: &str = "/api/hub/pairing/handoff";
 
 const CROSS_SITE_MESSAGE: &str = "This request came from another website and was blocked. Open Residuum directly to make changes.";
 
-/// The machine-readable reason a `401` carries, which the web app turns into
-/// a move to the pairing page.
 pub(crate) const DEVICE_REQUIRED_CODE: &str = "device_required";
 
-/// What the gate needs: the pairing state and which host it is guarding.
 #[derive(Clone)]
 pub struct GateState {
     pub pairing: DevicePairing,
     pub surface: Surface,
 }
 
-/// The device a request authenticated as. A request extension, set only by the
-/// gate, so nothing a client sends can fake it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthenticatedDevice {
     pub(crate) id: String,
 }
 
 impl AuthenticatedDevice {
-    /// The paired device's id.
     #[must_use]
     pub fn id(&self) -> &str {
         &self.id
     }
 }
 
-/// Refuse remote requests that carry no valid device credential. See the
-/// module docs for the order of checks.
 pub async fn device_gate(State(gate): State<GateState>, mut req: Request, next: Next) -> Response {
     let Some(remote) = remote_context(req.extensions()) else {
         return next.run(req).await;
     };
-    // The workbench listener already gated this request, on its own host's
-    // credential, before handing the API call to the hub router in-process.
     if gate.surface == Surface::Ui && req.extensions().get::<ArtifactsOrigin>().is_some() {
         return next.run(req).await;
     }
@@ -121,7 +93,6 @@ pub async fn device_gate(State(gate): State<GateState>, mut req: Request, next: 
     response
 }
 
-/// Whether an unauthenticated remote request may reach its route.
 fn is_pre_auth(surface: Surface, method: &Method, path: &str) -> bool {
     let is_read = matches!(*method, Method::GET | Method::HEAD);
     match surface {
@@ -137,9 +108,6 @@ fn is_pre_auth(surface: Surface, method: &Method, path: &str) -> bool {
     }
 }
 
-/// The pairing page and the files it loads: the app shell's hashed assets,
-/// icons, favicon and manifest. None of these hold anything but the app's own
-/// code.
 fn is_pairing_page_asset(path: &str) -> bool {
     if path.contains("..") {
         return false;
@@ -176,10 +144,6 @@ fn unauthorized(gate: &GateState, req: &Request) -> Response {
         .into_response()
 }
 
-/// An artifact opened directly on the workbench host goes to the same artifact
-/// in the Residuum app, which opens it through the handoff once the browser is
-/// paired. A frame can't be sent there, and without a known app address there
-/// is nowhere to send a tab, so both get the fallback page.
 fn workbench_navigation_redirect(gate: &GateState, req: &Request) -> Response {
     let ui_origin = gate.pairing.origin_of(Surface::Ui);
     let artifact = req

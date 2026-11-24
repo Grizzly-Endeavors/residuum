@@ -1,9 +1,3 @@
-/**
- * The mock hub's timezone, and the conversions the hub makes between instants
- * and the naive local times its agents' files keep (`crates/core/src/time.rs`).
- */
-
-/** The hub timezone the mock reports from `GET /api/system/timezone` and reads its schedules in. */
 export const MOCK_TIMEZONE = "America/New_York";
 
 const SECOND_MS = 1000;
@@ -20,7 +14,6 @@ const FORMAT = new Intl.DateTimeFormat("en-US", {
   second: "numeric",
 });
 
-/** The wall clock of the hub's zone at `instantMs`, as a millisecond count read as if it were UTC. */
 export function localMs(instantMs: number): number {
   const whole = Math.floor(instantMs / SECOND_MS) * SECOND_MS;
   const field = new Map<string, number>();
@@ -31,16 +24,10 @@ export function localMs(instantMs: number): number {
   return Date.UTC(at("year"), at("month") - 1, at("day"), at("hour"), at("minute"), at("second"));
 }
 
-/** How far the hub's zone is ahead of UTC at `instantMs`, in milliseconds. */
 function offsetMs(instantMs: number): number {
   return localMs(instantMs) - Math.floor(instantMs / SECOND_MS) * SECOND_MS;
 }
 
-/**
- * The instant a wall-clock time in the hub's zone denotes, as `local_to_instant`
- * resolves it: the earlier of two instants when a fall-back repeats the time,
- * and, for a time a spring-forward skips, the offset in force before the gap.
- */
 export function instantOfLocal(local: number): number {
   const candidates = [offsetMs(local - DAY_MS), offsetMs(local + DAY_MS)]
     .map((offset) => local - offset)
@@ -49,7 +36,6 @@ export function instantOfLocal(local: number): number {
   return local - offsetMs(local - DAY_MS);
 }
 
-/** `instantMs` as RFC 3339 with whole seconds and the hub zone's offset, `Z` when it is zero. */
 export function rfc3339InZone(instantMs: number): string {
   const offset = offsetMs(instantMs);
   const wall = new Date(localMs(instantMs)).toISOString().slice(0, 19);

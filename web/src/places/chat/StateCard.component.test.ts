@@ -42,7 +42,6 @@ const DRIFTER: AgentSummary = {
 let shell: ShellActions;
 let requests: string[];
 
-/** The buttons' names in order, leaving out the Details disclosure. */
 function actionNames(): string[] {
   return screen
     .getAllByRole("button")

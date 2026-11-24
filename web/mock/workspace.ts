@@ -21,31 +21,19 @@ import {
   writeFile,
 } from "./workspace-tree";
 
-/**
- * The workspace file API comes in two scopes. The agent's own
- * (`/api/agents/{name}/workspace/...`) addresses its workspace, where the
- * shared team tree shows up under `team/`. The team's (`/api/team/workspace/...`)
- * addresses that tree directly, with paths relative to `team/`. The mock keeps
- * the team tree in the hub's state, under `team/`.
- */
 type WorkspaceScope = "agent" | "team";
 
-/** The team tree's place in a workspace path. */
 const TEAM_PREFIX = "team";
 
-/** A path in a workspace namespace, placed in the state that holds it. */
 interface Located {
   state: MockState;
-  /** The path within that state's workspace. */
   key: string;
 }
 
-/** Whether `key` is in the shared team tree. */
 function isTeamKey(key: string): boolean {
   return key === TEAM_PREFIX || key.startsWith(`${TEAM_PREFIX}/`);
 }
 
-/** Place a path as a client sent it, or `null` for one that leaves the workspace. */
 function place(ctx: RouteContext, scope: WorkspaceScope, path: string): Located | null {
   if (path.startsWith("/") || path.split("/").includes("..")) return null;
   const relative = path.replace(/\/+$/, "");
@@ -56,21 +44,18 @@ function place(ctx: RouteContext, scope: WorkspaceScope, path: string): Located 
   return { state: isTeamKey(relative) ? ctx.hub.hubState : ctx.state, key: relative };
 }
 
-/** `place`, refusing a path that leaves the workspace with `403`. */
 function locate(ctx: RouteContext, scope: WorkspaceScope, path: string): Located | null {
   const at = place(ctx, scope, path);
   if (at === null) text(ctx.res, 403, `path traversal rejected: ${path}`);
   return at;
 }
 
-/** The `path` query parameter every file route needs, or `null` after answering `400` for its absence. */
 function requirePathQuery(ctx: RouteContext): string | null {
   const path = ctx.query.get("path");
   if (path === null) text(ctx.res, 400, "Failed to deserialize query string: missing `path`");
   return path;
 }
 
-/** The string fields a JSON body has to carry, or `undefined` after answering `422` for one that is missing. */
 function requireStrings(
   ctx: RouteContext,
   body: JsonObject,
@@ -88,10 +73,6 @@ function requireStrings(
   return values;
 }
 
-/**
- * Diagnostics for `content` saved at `path` in an agent's workspace: a syntax
- * error in one of its config files (`mock/diagnostics.ts`).
- */
 function diagnose(scope: WorkspaceScope, path: string, content: string): Diagnostic[] {
   const format = scope === "agent" ? configFormatOf(path) : null;
   return format === null ? [] : diagnoseConfigText(format, content);
@@ -101,24 +82,17 @@ function notFound(ctx: RouteContext, path: string): void {
   text(ctx.res, 404, `path not found: ${path}`);
 }
 
-/** Refuse, with `400`, what would replace, move or delete the team folder itself. */
 function refusesTeamRoot(ctx: RouteContext, key: string): boolean {
   if (key !== TEAM_PREFIX) return false;
   text(ctx.res, 400, "team is the shared team folder; it can't be replaced, moved, or deleted");
   return true;
 }
 
-/** The version of the file at `at`, or `null` when there is none. */
 function versionOf(at: Located): string | null {
   const content = at.state.workspaceFileContents[at.key];
   return content === undefined ? null : fileVersion(content);
 }
 
-/**
- * Answer `412` when the request's `If-Match` or `If-None-Match: *` doesn't
- * hold for the file at `at`, and report whether it did. A request with
- * neither is unconditional.
- */
 function preconditionFailed(ctx: RouteContext, at: Located): boolean {
   const ifMatch = ctx.req.headers["if-match"];
   const createOnly = ctx.req.headers["if-none-match"] === "*";
@@ -152,8 +126,6 @@ function listFiles(ctx: RouteContext, scope: WorkspaceScope): void {
     text(ctx.res, 500, "failed to read directory: Not a directory (os error 20)");
     return;
   }
-  // The team folder in an agent's root is the shared one, whatever the agent's
-  // own copy of the root says about it.
   const team = ctx.hub.hubState.workspaceFiles[""]?.find((entry) => entry.name === TEAM_PREFIX);
   const listed: WorkspaceEntry[] =
     scope === "agent" && at.key === "" && team !== undefined
@@ -162,7 +134,6 @@ function listFiles(ctx: RouteContext, scope: WorkspaceScope): void {
   json(ctx.res, 200, listed);
 }
 
-/** The file the `path` query names, or `null` after answering `400`, `403`, `404` or `500`. */
 function requireFile(
   ctx: RouteContext,
   scope: WorkspaceScope,
@@ -193,7 +164,6 @@ function readFile(ctx: RouteContext, scope: WorkspaceScope): void {
   ctx.res.end(file.content);
 }
 
-/** The content types a raw read guesses from a file's extension. */
 const MIME_TYPES: Readonly<Record<string, string>> = {
   md: "text/markdown",
   txt: "text/plain",
@@ -207,7 +177,6 @@ const MIME_TYPES: Readonly<Record<string, string>> = {
   toml: "application/toml",
 };
 
-/** `GET .../workspace/raw`: a file's bytes, with a content type guessed from its extension and its version as the `ETag`. */
 function readRaw(ctx: RouteContext, scope: WorkspaceScope): void {
   const file = requireFile(ctx, scope);
   if (file === null) return;
@@ -219,7 +188,6 @@ function readRaw(ctx: RouteContext, scope: WorkspaceScope): void {
   ctx.res.end(Buffer.from(file.content));
 }
 
-/** `PUT .../workspace/raw?path=`: the body is the file, written as text. The same write rules as `PUT .../file`. */
 async function putRaw(ctx: RouteContext, scope: WorkspaceScope): Promise<void> {
   const path = requirePathQuery(ctx);
   if (path === null) return;
@@ -229,7 +197,6 @@ async function putRaw(ctx: RouteContext, scope: WorkspaceScope): Promise<void> {
   json(ctx.res, 200, { saved: true, version, diagnostics: [] } satisfies WorkspaceWriteResponse);
 }
 
-/** `POST .../workspace/dir`: create a directory and its parents, and succeed when it is already there. */
 async function makeDirectory(ctx: RouteContext, scope: WorkspaceScope): Promise<void> {
   const fields = requireStrings(ctx, await readJsonObject(ctx.req), ["path"]);
   if (fields === undefined) return;
@@ -248,7 +215,6 @@ async function makeDirectory(ctx: RouteContext, scope: WorkspaceScope): Promise<
   json(ctx.res, 200, { created: true });
 }
 
-/** `GET .../workspace/tree`: every file and directory below `path`, flat and in path order. */
 function listTree(ctx: RouteContext, scope: WorkspaceScope): void {
   const path = ctx.query.get("path") ?? "";
   const at = locate(ctx, scope, path);
@@ -335,7 +301,6 @@ function deleteFile(ctx: RouteContext, scope: WorkspaceScope): void {
   } else if (preconditionFailed(ctx, at)) {
     return;
   }
-  // Like the backend, the repository that holds the path is checkpointed first, so Undo can restore it.
   const repo = isTeamKey(at.key) ? "team" : "workspace";
   const checkpointId = checkpointBeforeAction(at.state, repo, `delete ${path}`);
   removePath(at.state, at.key);
@@ -360,7 +325,6 @@ async function moveFile(ctx: RouteContext, scope: WorkspaceScope): Promise<void>
 
   const moved = { moved: true, version: null } satisfies WorkspaceMoveResponse;
   const sameState = from.state === to.state;
-  // Moving a path onto itself succeeds and changes nothing.
   if (sameState && from.key === to.key) {
     json(ctx.res, 200, { ...moved, version: versionOf(to) });
     return;
@@ -432,7 +396,6 @@ function routesFor(scope: WorkspaceScope, prefix: string): readonly Route[] {
   ];
 }
 
-/** The workspace file routes of both scopes, in the spelling scoped routing leaves them in. */
 export const workspaceRoutes: readonly Route[] = [
   ...routesFor("agent", "/api/workspace"),
   ...routesFor("team", "/api/team/workspace"),

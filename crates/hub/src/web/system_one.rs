@@ -1,6 +1,3 @@
-//! Decision model (System 1) endpoints for the settings form: list a
-//! provider's models and test a configuration before it is saved.
-
 use std::collections::BTreeMap;
 
 use axum::extract::State;
@@ -13,8 +10,6 @@ use residuum_inference::system_one::{Question, client_for_config};
 
 use super::HubDir;
 
-/// Body of `POST /api/hub/system-one/models` and `/test`: the form's values,
-/// saved or not.
 #[derive(Deserialize)]
 pub(super) struct SystemOneFormRequest {
     provider: String,
@@ -22,7 +17,6 @@ pub(super) struct SystemOneFormRequest {
     url: Option<String>,
     #[serde(default)]
     model: Option<String>,
-    /// A literal key or a `secret:<name>` reference.
     #[serde(default)]
     api_key: Option<String>,
     #[serde(default)]
@@ -45,9 +39,7 @@ pub(super) struct SystemOneModelsResponse {
 #[derive(Serialize)]
 pub(super) struct SystemOneTestResponse {
     ok: bool,
-    /// What happened, in plain words.
     message: String,
-    /// The versioned model that answered, on success.
     #[serde(skip_serializing_if = "Option::is_none")]
     answered_by: Option<String>,
 }
@@ -59,8 +51,6 @@ fn non_empty(value: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Resolve a `secret:` reference against the hub's store; anything else
-/// passes through.
 async fn resolve_key(hub_dir: std::path::PathBuf, raw: Option<String>) -> Option<String> {
     let raw = raw?;
     let Some(name) = raw.strip_prefix("secret:").map(str::to_owned) else {
@@ -76,8 +66,6 @@ async fn resolve_key(hub_dir: std::path::PathBuf, raw: Option<String>) -> Option
     .flatten()
 }
 
-/// The config the form describes. `model_required` is false for listing
-/// models, which needs no model yet.
 async fn form_config(
     hub_dir: std::path::PathBuf,
     req: SystemOneFormRequest,
@@ -141,8 +129,6 @@ pub(super) async fn api_system_one_models(
     }
 }
 
-/// `POST /api/hub/system-one/test` — ask the configured model one small
-/// question, without touching the running service or its status.
 pub(super) async fn api_system_one_test(
     State(HubDir(hub_dir)): State<HubDir>,
     Json(req): Json<SystemOneFormRequest>,

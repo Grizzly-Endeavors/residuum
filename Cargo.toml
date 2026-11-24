@@ -337,9 +337,7 @@ exit = "deny"
 # --- Code complexity ---
 too_many_lines = "deny"
 
-# --- Documentation and API discipline ---
-missing_errors_doc = "deny"
-missing_panics_doc = "deny"
+# --- API discipline ---
 must_use_candidate = "deny"
 
 # --- Assertion quality ---
@@ -374,5 +372,7 @@ wildcard_enum_match_arm = "deny"
 rc_buffer = "deny"
 rc_mutex = "deny"
 
-# --- Keep relaxed (stylistic) ---
+# --- Keep relaxed (stylistic / app-binary noise) ---
 module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"

@@ -1,18 +1,14 @@
-//! Response parsing for the reflector LLM output.
-
 use chrono_tz::Tz;
 use serde::Deserialize;
 
 use crate::types::{Observation, ObservationLog, Visibility};
 use residuum_core::time::now_local;
 
-/// Typed response from structured output mode (object-wrapped).
 #[derive(Deserialize)]
 struct ReflectorJsonResponse {
     observations: Vec<ReflectorItem>,
 }
 
-/// Single observation item within the typed reflector response.
 #[derive(Deserialize)]
 struct ReflectorItem {
     content: String,
@@ -20,18 +16,10 @@ struct ReflectorItem {
     visibility: Visibility,
 }
 
-/// Parse the model's reflection response into an `ObservationLog`.
-///
-/// Tries typed deserialization first (structured output object format), then
-/// falls back to `Value`-based parsing for legacy bare arrays and Ollama fallback.
-///
-/// # Errors
-/// Returns an error if the response cannot be parsed.
 pub(super) fn parse_reflection_response(content: &str, tz: Tz) -> anyhow::Result<ObservationLog> {
     let trimmed = content.trim();
     let json_str = residuum_inference::strip_code_fences(trimmed);
 
-    // Fast path: try typed deserialization (structured output object format)
     if let Ok(typed) = serde_json::from_str::<ReflectorJsonResponse>(json_str) {
         let mut log = ObservationLog::new();
         for item in &typed.observations {
@@ -50,7 +38,6 @@ pub(super) fn parse_reflection_response(content: &str, tz: Tz) -> anyhow::Result
         return Ok(log);
     }
 
-    // Fallback: Value-based parsing for legacy bare arrays
     tracing::debug!("reflector structured output failed, falling back to value-based parsing");
     let value: serde_json::Value = serde_json::from_str(json_str).map_err(|e| {
         anyhow::anyhow!(

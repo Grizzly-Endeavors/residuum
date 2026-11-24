@@ -1,35 +1,9 @@
-//! Server-side patching of `mcp.json`.
-//!
-//! The Settings web form only models a subset of each server entry's
-//! fields (`command`/`args`/`env` for stdio, `url`/`type`/`headers` for
-//! HTTP). Rebuilding the whole file from form state drops anything the
-//! form doesn't model. [`apply_mcp_patch`] instead merges a JSON diff —
-//! only the fields the user changed — into the existing parsed document, so
-//! untouched servers, and untouched fields on a touched server, survive
-//! byte-for-byte in content (JSON has no comments to preserve).
-//!
-//! The diff shape mirrors `mcp.json`: `{"mcpServers": {"<name>": {...}}}`.
-//! A JSON `null` at a server name removes that server entirely. A JSON
-//! `null` at a field removes just that field. Any top-level key besides
-//! `mcpServers`, and any per-server field the diff doesn't mention, are left
-//! exactly as they were, including their original position in the file —
-//! `OrderedValue` parses and re-serializes the existing document without
-//! going through `serde_json::Value`, whose `Map` sorts keys alphabetically
-//! unless the crate's `preserve_order` feature is on. That feature is
-//! unified across the whole binary by Cargo, so enabling it here would
-//! reorder every other JSON document residuum serializes; this type keeps
-//! order-preservation scoped to this one patch path instead.
-
 use std::fmt;
 
 use serde::de::{Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde::ser::{Serialize, SerializeMap, SerializeSeq, Serializer};
 use serde_json::{Map, Number, Value};
 
-/// A JSON value whose object keys keep the order they appeared in the
-/// source text, rather than the alphabetical order `serde_json::Value`
-/// imposes by default. See the module docs for why this exists instead of
-/// enabling `serde_json`'s `preserve_order` feature.
 #[derive(Debug, Clone, PartialEq)]
 enum OrderedValue {
     Null,
@@ -37,8 +11,6 @@ enum OrderedValue {
     Number(Number),
     String(String),
     Array(Vec<OrderedValue>),
-    /// Insertion-ordered key/value pairs; never has two entries with the
-    /// same key.
     Object(Vec<(String, OrderedValue)>),
 }
 
@@ -234,23 +206,15 @@ pub fn apply_mcp_patch(existing_text: &str, diff: &Value) -> Result<String, Stri
     serde_json::to_string_pretty(&doc).map_err(|e| format!("couldn't serialize mcp.json: {e}"))
 }
 
-/// Recursively merge a JSON diff object into an existing ordered object.
 fn apply_object_patch(doc: &mut Vec<(String, OrderedValue)>, diff: &Map<String, Value>) {
     for (key, val) in diff {
         match val {
             Value::Null => remove(doc, key),
             Value::Object(map) => {
-                // Existing keys keep their position; a key that's new, or
-                // whose existing value isn't itself an object, is reset to
-                // an empty one (matching the un-ordered version's
-                // `.or_insert_with` behavior) before merging into it.
                 if !matches!(get_mut(doc, key), Some(OrderedValue::Object(_))) {
                     set(doc, key, OrderedValue::Object(Vec::new()));
                 }
                 let Some(OrderedValue::Object(sub)) = get_mut(doc, key) else {
-                    // Just ensured it's an `Object` above, so this is
-                    // unreachable; skip rather than panic if that
-                    // invariant ever breaks.
                     continue;
                 };
                 apply_object_patch(sub, map);
@@ -379,9 +343,6 @@ mod tests {
 
     #[test]
     fn original_key_order_is_preserved_across_a_patch() {
-        // Keys deliberately out of alphabetical order; a `serde_json::Value`
-        // round-trip (without `preserve_order`) would re-sort them to
-        // fs, git, remote and reorder each server's own fields too.
         let existing = r#"{
             "mcpServers": {
                 "zeta": {"command": "mcp-zeta"},
@@ -398,26 +359,15 @@ mod tests {
         let server_keys: Vec<&str> = extract_object_keys(&patched, 1, 0);
         assert_eq!(server_keys, vec!["zeta", "alpha"]);
 
-        // alpha is the second object at depth 2 (zeta's fields come first).
         let alpha_field_keys: Vec<&str> = extract_object_keys(&patched, 2, 1);
         assert_eq!(alpha_field_keys, vec!["url", "type", "headers"]);
     }
 
-    /// Extract the ordered keys of the `occurrence`-th `{...}` object at
-    /// nesting `depth` in `text` (depth 0 = the top-level object; occurrence
-    /// 0 = the first one at that depth, occurrence 1 = the next sibling at
-    /// the same depth, etc.), by scanning the raw text directly rather than
-    /// through an order-sorting JSON parser: tracks `{`/`}` nesting and
-    /// skips over string literals (including escapes) so brackets inside
-    /// values don't confuse the depth count.
     fn extract_object_keys(text: &str, depth: usize, occurrence: usize) -> Vec<&str> {
         #[derive(PartialEq)]
         enum State {
-            /// Haven't reached the target object yet.
             Searching,
-            /// Inside the target object; its top-level keys are collected.
             Collecting,
-            /// The target object has closed; ignore anything after it.
             Done,
         }
 

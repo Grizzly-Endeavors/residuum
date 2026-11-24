@@ -8,63 +8,34 @@ use anyhow::bail;
 
 use super::cadence::parse_weekdays;
 
-/// Top-level HEARTBEAT.yml structure.
 #[derive(Debug, Clone, Deserialize)]
 pub struct HeartbeatConfig {
     #[serde(default)]
     pub pulses: Vec<PulseDef>,
 }
 
-/// One pulse definition from HEARTBEAT.yml.
 #[derive(Debug, Clone, Deserialize)]
 pub struct PulseDef {
     pub name: String,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
-    /// How often the pulse runs: a duration (`"30m"`, `"7d"`). Required unless
-    /// `days` is set, where it becomes the least time between two runs.
     #[serde(default)]
     pub schedule: Option<String>,
-    /// Weekdays the pulse runs on (`mon`..`sun`, or full names), at the start
-    /// of `active_hours` (midnight without it). See [`super::cadence`].
     #[serde(default)]
     pub days: Option<Vec<String>>,
     pub active_hours: Option<String>,
-    /// Optional agent routing: a skill name to run a session with that skill
-    /// activated. `"main"` is rejected at load — see [`validate_pulse`].
     #[serde(default)]
     pub agent: Option<String>,
-    /// The session's model: a tier (`small`, `medium`, `large`) or an
-    /// explicit `provider/model` id. Defaults to `small`. A value that is
-    /// neither fails this pulse's load; an explicit id whose provider isn't
-    /// configured is reported by `PulseScheduler::due_pulses`, which skips
-    /// the pulse until it resolves.
     #[serde(default)]
     pub model_tier: Option<residuum_config::ModelSelector>,
-    /// Name of another pulse whose most recent delivered output (a
-    /// completed run that isn't `HEARTBEAT_OK`; a failed run doesn't count)
-    /// should be injected into this pulse's prompt at fire time. Single-hop
-    /// only — the named pulse's own stored output is used as-is, even if
-    /// that pulse itself sets `context_from`. `None`/never-fired upstream
-    /// injects nothing but notes it in the prompt.
     #[serde(default)]
     pub context_from: Option<String>,
-    /// Removed field, kept here only so its presence in HEARTBEAT.yml can be
-    /// detected and rejected at load rather than silently ignored. Forks
-    /// always carry the full agent identity now, so this option no longer
-    /// does anything.
     #[serde(default)]
     pub include_identity: Option<bool>,
     #[serde(default)]
     pub tasks: Vec<PulseTask>,
 }
 
-/// Validate a pulse definition against removed options.
-///
-/// # Errors
-/// Returns an error naming the pulse and the field to remove if it uses
-/// `agent: "main"` or sets `include_identity` at all (forks always carry the
-/// main agent's identity now, so the field is never silently reinterpreted).
 pub fn validate_pulse(pulse: &PulseDef) -> Result<(), String> {
     if pulse.agent.as_deref() == Some("main") {
         return Err(format!(
@@ -84,12 +55,6 @@ pub fn validate_pulse(pulse: &PulseDef) -> Result<(), String> {
     Ok(())
 }
 
-/// Validate a pulse's timing: it sets a `schedule` or `days` (or both), and
-/// its `days` name real weekdays. Its `schedule` and `active_hours` strings
-/// are read when the pulse is due, so they are not checked here.
-///
-/// # Errors
-/// Returns an error naming the pulse and the bad value.
 pub fn validate_pulse_timing(pulse: &PulseDef) -> Result<(), String> {
     if pulse.schedule.is_none() && pulse.days.is_none() {
         return Err(format!(
@@ -104,16 +69,6 @@ pub fn validate_pulse_timing(pulse: &PulseDef) -> Result<(), String> {
     Ok(())
 }
 
-/// Validate a pulse's tasks: each one has something to do, and the script
-/// options fit together.
-///
-/// # Errors
-/// Returns an error naming the pulse and task, and what to change, when a
-/// task sets `script_only` without a `script`, sets an empty `script`, sets
-/// a zero `script_timeout_secs` or `script_max_output_kb`, has neither a
-/// `prompt` nor a `script`, or when the pulse mixes `script_only` tasks
-/// with tasks that run a session (one pulse either runs a session or it
-/// doesn't).
 pub fn validate_pulse_tasks(pulse: &PulseDef) -> Result<(), String> {
     for task in &pulse.tasks {
         let label = format!("pulse '{}' task '{}'", pulse.name, task.name);
@@ -165,34 +120,13 @@ fn default_enabled() -> bool {
     true
 }
 
-/// What kind of problem a `HeartbeatProblem` represents, which decides both
-/// the log level and which doc a notice about it points at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProblemKind {
-    /// A pulse used an option removed by the agent sessions overhaul
-    /// (`agent: "main"` or `include_identity`). Logged at `error!`; the
-    /// owner notice links the migration guide.
     RemovedOption,
-    /// Anything else wrong with the file that isn't about a removed option
-    /// (a duplicate pulse name, an unparseable `schedule` or
-    /// `active_hours`, tasks whose script options don't fit together).
-    /// Logged at `warn!`; the owner notice links the heartbeats reference
-    /// doc instead.
     Malformed,
-    /// A setting the pulse has no use for (see `ignored_settings`). The
-    /// pulse still loads and runs. Logged at `warn!`; the owner notice
-    /// lists it apart from the problems that stop a pulse, and links the
-    /// heartbeats reference doc.
     IgnoredSetting,
 }
 
-/// A single problem found while loading or evaluating a HEARTBEAT.yml pulse
-/// — a pulse using a removed option, a duplicate pulse name, tasks whose
-/// script options don't fit together, or an unparseable
-/// `schedule`/`active_hours` string.
-///
-/// Carries the already-formatted message so the log line and the owner
-/// notice built from it stay in sync with the reason.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeartbeatProblem {
     pub name: String,
@@ -200,16 +134,6 @@ pub struct HeartbeatProblem {
     pub kind: ProblemKind,
 }
 
-/// Build an owner-facing notice naming every current HEARTBEAT.yml problem.
-///
-/// Links the migration guide if any problem is a removed option, or the
-/// heartbeats reference doc otherwise (a duplicate name or bad
-/// `schedule`/`active_hours` string has nothing to do with the migration).
-///
-/// Callers are responsible for only calling this when the problem set has
-/// actually changed since the last check — see `PulseScheduler` — so the
-/// notice fires once per distinct problem rather than on every reload of an
-/// unchanged file.
 #[must_use]
 pub fn heartbeat_problems_notice(problems: &[HeartbeatProblem]) -> String {
     let listed = |listing: &[&HeartbeatProblem]| {
@@ -255,14 +179,6 @@ pub fn heartbeat_problems_notice(problems: &[HeartbeatProblem]) -> String {
     parts.join("\n")
 }
 
-/// Settings a pulse sets but has no use for, named in one message, or
-/// `None` when it uses everything it sets.
-///
-/// A `script_only` pulse runs no session, so a session's settings (`agent`,
-/// `model_tier`, `context_from`, and its tasks' `prompt`s) do nothing
-/// there. The pulse still runs; this only tells the owner, since someone
-/// who wrote a prompt on a script-only task most likely expected it to be
-/// used.
 #[must_use]
 pub(crate) fn ignored_settings(pulse: &PulseDef) -> Option<String> {
     if !pulse.is_script_only() {
@@ -297,8 +213,6 @@ pub(crate) fn ignored_settings(pulse: &PulseDef) -> Option<String> {
     ))
 }
 
-/// One [`ProblemKind::IgnoredSetting`] problem per pulse that sets
-/// something it has no use for (see [`ignored_settings`]).
 fn ignored_settings_problems(pulses: &[PulseDef]) -> Vec<HeartbeatProblem> {
     pulses
         .iter()
@@ -312,42 +226,26 @@ fn ignored_settings_problems(pulses: &[PulseDef]) -> Vec<HeartbeatProblem> {
         .collect()
 }
 
-/// One task within a pulse.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct PulseTask {
     pub name: String,
-    /// What the session is asked to do for this task. Unused by a
-    /// `script_only` task.
     #[serde(default)]
     pub prompt: String,
-    /// Shell command run from the workspace root when the pulse fires,
-    /// before the session starts; its stdout is appended to this task's
-    /// prompt. See `crate::pulse::script`.
     #[serde(default)]
     pub script: Option<String>,
-    /// Deliver the script's stdout as the pulse's result instead of running
-    /// a session: empty output is silent, anything else is filed like a
-    /// pulse result. Needs `script`.
     #[serde(default)]
     pub script_only: bool,
-    /// How long the script may run before its process tree is killed.
-    /// Defaults to [`DEFAULT_SCRIPT_TIMEOUT_SECS`].
     #[serde(default)]
     pub script_timeout_secs: Option<u64>,
-    /// How much of the script's stdout is kept, in KiB; the rest is cut with
-    /// a visible marker. Defaults to [`DEFAULT_SCRIPT_MAX_OUTPUT_KB`].
     #[serde(default)]
     pub script_max_output_kb: Option<u64>,
 }
 
-/// Default for a task's `script_timeout_secs`.
 pub const DEFAULT_SCRIPT_TIMEOUT_SECS: u64 = 60;
 
-/// Default for a task's `script_max_output_kb`.
 pub const DEFAULT_SCRIPT_MAX_OUTPUT_KB: u64 = 64;
 
 impl PulseTask {
-    /// How long this task's script may run.
     #[must_use]
     pub fn script_timeout(&self) -> std::time::Duration {
         std::time::Duration::from_secs(
@@ -356,7 +254,6 @@ impl PulseTask {
         )
     }
 
-    /// How many bytes of this task's script stdout are kept.
     #[must_use]
     pub fn script_max_output_bytes(&self) -> usize {
         let kb = self
@@ -367,27 +264,17 @@ impl PulseTask {
 }
 
 impl PulseDef {
-    /// Whether any task in this pulse runs a script.
     #[must_use]
     pub fn has_scripts(&self) -> bool {
         self.tasks.iter().any(|task| task.script.is_some())
     }
 
-    /// Whether this pulse runs no session at all: it has tasks and every
-    /// one is `script_only`. [`validate_pulse`] rejects a pulse that mixes
-    /// `script_only` tasks with ones that run a session.
     #[must_use]
     pub fn is_script_only(&self) -> bool {
         !self.tasks.is_empty() && self.tasks.iter().all(|task| task.script_only)
     }
 }
 
-/// Parse a schedule duration string like "30m", "2h", "24h", "1d", "60s".
-///
-/// # Errors
-///
-/// Returns an error if the string is empty, has no unit suffix,
-/// or contains a non-numeric value before the suffix.
 pub fn parse_schedule_duration(s: &str) -> anyhow::Result<Duration> {
     let Some(last_byte_idx) = s.char_indices().next_back().map(|(i, _)| i) else {
         bail!("schedule duration cannot be empty");
@@ -408,14 +295,6 @@ pub fn parse_schedule_duration(s: &str) -> anyhow::Result<Duration> {
     }
 }
 
-/// Parse an active-hours window string like "08:00-18:00".
-///
-/// Returns `(start_time, end_time)` as `NaiveTime` values in the configured timezone.
-///
-/// # Errors
-///
-/// Returns an error if the string is malformed or contains
-/// out-of-range hour/minute values.
 pub fn parse_active_hours(s: &str) -> anyhow::Result<(NaiveTime, NaiveTime)> {
     let (start_str, end_str) = s
         .split_once('-')
@@ -439,23 +318,16 @@ fn parse_naive_time(t: &str, context: &str) -> anyhow::Result<NaiveTime> {
         .ok_or_else(|| anyhow::anyhow!("out-of-range time '{t}' in active_hours '{context}'"))
 }
 
-/// Check whether `now` falls within the active hours window (inclusive of start, exclusive of end).
-///
-/// Handles overnight windows (e.g. "22:00-06:00") where `start > end`.
 #[must_use]
 pub fn is_within_active_hours(now: NaiveDateTime, start: NaiveTime, end: NaiveTime) -> bool {
     let now_time = now.time();
     if start <= end {
         now_time >= start && now_time < end
     } else {
-        // Overnight window (e.g. 22:00-06:00)
         now_time >= start || now_time < end
     }
 }
 
-/// Read a file and parse its contents, returning `None` on missing file or errors.
-///
-/// Logs a warning on parse or read failures; silently returns `None` for missing files.
 pub(crate) fn read_and_parse<T, E>(path: &Path, parse: impl Fn(&str) -> Result<T, E>) -> Option<T>
 where
     E: std::fmt::Display,
@@ -476,27 +348,6 @@ where
     }
 }
 
-/// Deserialize one entry of HEARTBEAT.yml's `pulses` list from its raw YAML
-/// value, given its index in the list.
-///
-/// Exposed as its own function — not inlined into [`load_heartbeat`] — so
-/// other tooling (e.g. a HEARTBEAT.yml editor-side linter) can reuse the same
-/// per-pulse diagnostics without re-parsing or re-validating the whole
-/// document just to check one entry.
-///
-/// On failure, the returned [`HeartbeatProblem`] names the pulse by its
-/// `name` field when the entry has a readable one, otherwise by its position
-/// (`entry #N`), and includes a source line/column when `serde_yaml_ng`
-/// reports one.
-///
-/// Deserializes by re-serializing this one entry back to a YAML string and
-/// parsing that, rather than deserializing the already-parsed `Value`
-/// directly: a `Value` carries no span info once parsed, so a `from_value`
-/// error never has a location, while re-parsed text does (relative to this
-/// entry's own re-serialized snippet, not the original file's line numbers,
-/// but still enough to point at the right field within the pulse). Falls
-/// back to deserializing the `Value` directly if re-serializing it fails,
-/// which loses the location but still catches the error.
 pub(crate) fn deserialize_pulse_entry(
     index: usize,
     value: &serde_yaml_ng::Value,
@@ -529,8 +380,6 @@ pub(crate) fn deserialize_pulse_entry(
     })
 }
 
-/// Describe a YAML value's kind in plain words, for a problem message naming
-/// what was found where a list was expected.
 fn yaml_kind(value: &serde_yaml_ng::Value) -> &'static str {
     match value {
         serde_yaml_ng::Value::Null => "nothing",
@@ -543,38 +392,6 @@ fn yaml_kind(value: &serde_yaml_ng::Value) -> &'static str {
     }
 }
 
-/// Load HEARTBEAT.yml from the given path.
-///
-/// Returns `None` only when the file does not exist. Every other problem
-/// degrades instead of stopping every pulse:
-///
-/// - A single pulse entry that fails to deserialize (see
-///   `deserialize_pulse_entry`) is dropped; every other pulse in the file
-///   still loads.
-/// - A whole-document YAML syntax error, or a top-level `pulses` key that
-///   isn't a list, keeps `last_good_pulses` — the last set that loaded
-///   successfully — running rather than firing nothing until the file is
-///   fixed.
-///
-/// `last_parse_error` carries the most recently seen syntax-error message
-/// across calls (this is hot-reloaded on every scheduler tick), cleared once
-/// the file parses again (logged at `info`) — it exists purely to detect
-/// that recovery, not to dedupe the syntax-error problem itself, which goes
-/// through the same `problems` path as everything else below.
-///
-/// Duplicate pulse names are dropped, keeping the first occurrence: `PulseScheduler`
-/// keys its per-pulse state by name, so two pulses sharing a name would otherwise
-/// silently collapse into one scheduler-state entry.
-///
-/// `problems` is cleared and refilled on every call — with a whole-document
-/// syntax error or a non-list `pulses` key (see above), or with one entry
-/// per pulse dropped for failing to deserialize, using a removed option (see
-/// `validate_pulse`), having tasks that don't fit together (see
-/// `validate_pulse_tasks`), or duplicating an earlier pulse's name. This function
-/// itself doesn't log or notify about them — every call re-validates the
-/// whole file, so a caller hot-reloading on a timer (`PulseScheduler`) is
-/// responsible for comparing against the previous call's result and only
-/// logging/notifying when it actually changed.
 #[must_use]
 pub fn load_heartbeat(
     path: &Path,
@@ -600,13 +417,6 @@ pub fn load_heartbeat(
         Err(e) => {
             let message = e.to_string();
             *last_parse_error = Some(message.clone());
-            // Reported as a problem (not logged directly here) so the
-            // caller's existing per-tick dedup — comparing this tick's
-            // `problems` against the last tick it checked — decides whether
-            // this is worth a fresh warn log and owner notice, the same way
-            // it already does for every other kind of HEARTBEAT.yml problem.
-            // An unchanged, still-broken file therefore logs and notifies
-            // exactly once, not every tick.
             problems.push(HeartbeatProblem {
                 name: "HEARTBEAT.yml".to_string(),
                 message: format!(
@@ -615,9 +425,6 @@ pub fn load_heartbeat(
                 ),
                 kind: ProblemKind::Malformed,
             });
-            // Whole document is unparseable — keep the last known-good,
-            // already-validated pulse set running rather than stopping every
-            // pulse until the syntax error is fixed.
             return Some(HeartbeatConfig {
                 pulses: last_good_pulses.to_vec(),
             });
@@ -673,26 +480,6 @@ pub fn load_heartbeat(
     Some(HeartbeatConfig { pulses })
 }
 
-/// Diagnostics for `content` as `HEARTBEAT.yml`.
-///
-/// Reuses the same per-pulse deserialization (`deserialize_pulse_entry`)
-/// and checks (`dedupe_pulse_names`, `reject_invalid_pulses`) that
-/// [`load_heartbeat`] applies, so a diagnostic can never disagree with what
-/// loading rejects or drops: a whole-document YAML syntax error carries
-/// `serde_yaml_ng`'s own line/column; a non-list top-level `pulses` key is
-/// its own diagnostic; and each pulse entry that fails to deserialize,
-/// duplicates an earlier name, uses a removed option, or has tasks that
-/// don't fit together is its own
-/// diagnostic naming that pulse — one bad entry doesn't hide problems in the
-/// others, matching how loading drops only the offending pulse. A pulse's
-/// diagnostics carry its name (or position, for one that failed to
-/// deserialize enough to have a name) as the location, since pulses aren't
-/// tracked by source line here — a deserialize failure's message still
-/// includes the line/column `serde_yaml_ng` found within that entry.
-/// `schedule`/`active_hours` strings aren't checked at load time today (see
-/// `parse_schedule_duration`/`parse_active_hours`, evaluated only when a
-/// pulse is due to fire), so this doesn't flag them either — doing so would
-/// report a problem loading doesn't actually catch.
 #[must_use]
 pub fn diagnose_heartbeat(content: &str) -> Vec<residuum_core::diagnostics::Diagnostic> {
     use residuum_core::diagnostics::{Diagnostic, Location};
@@ -754,8 +541,6 @@ pub fn diagnose_heartbeat(content: &str) -> Vec<residuum_core::diagnostics::Diag
     diagnostics
 }
 
-/// Turn a [`HeartbeatProblem`] into a [`residuum_core::diagnostics::Diagnostic`] located at the pulse it
-/// names: a warning for a setting with no effect, an error otherwise.
 fn pulse_problem_diagnostic(problem: HeartbeatProblem) -> residuum_core::diagnostics::Diagnostic {
     use residuum_core::diagnostics::{Diagnostic, Location};
 
@@ -770,14 +555,6 @@ fn pulse_problem_diagnostic(problem: HeartbeatProblem) -> residuum_core::diagnos
     }
 }
 
-/// Drop pulses that use a removed option (`agent: "main"` or
-/// `include_identity`, see [`validate_pulse`]) or whose tasks don't fit
-/// together (see [`validate_pulse_tasks`]), returning what was dropped and
-/// why.
-///
-/// Never silently reinterpreted: the pulse is skipped entirely, not routed
-/// as if the option were absent. Logging and owner notification are the
-/// caller's responsibility (see `load_heartbeat`'s doc comment).
 fn reject_invalid_pulses(pulses: &mut Vec<PulseDef>) -> Vec<HeartbeatProblem> {
     let mut problems = Vec::new();
     pulses.retain(|pulse| {
@@ -801,13 +578,6 @@ fn reject_invalid_pulses(pulses: &mut Vec<PulseDef>) -> Vec<HeartbeatProblem> {
     problems
 }
 
-/// Drop pulses whose name duplicates an earlier one in the list, keeping the
-/// first, and return one problem per dropped duplicate.
-///
-/// A HEARTBEAT.yml typo (copy-pasted pulse block with an unchanged `name`)
-/// should be visible rather than silently overwriting scheduler state for
-/// the earlier pulse of the same name. Logging and owner notification are
-/// the caller's responsibility (see `load_heartbeat`'s doc comment).
 fn dedupe_pulse_names(pulses: &mut Vec<PulseDef>) -> Vec<HeartbeatProblem> {
     let mut seen = HashSet::new();
     let mut problems = Vec::new();
@@ -1248,9 +1018,6 @@ pulses:
         );
         let recorded = last_error.clone();
 
-        // Same broken file parsed again on a later tick: the recorded error is
-        // unchanged, so the caller can tell this isn't a new failure worth a
-        // fresh warning (see load_heartbeat's dedup behavior).
         assert!(load_heartbeat(&path, &mut last_error, &mut problems, &[]).is_some());
         assert_eq!(
             last_error, recorded,
@@ -1281,9 +1048,6 @@ pulses:
     fn load_heartbeat_one_invalid_pulse_entry_is_dropped_but_others_still_load() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("HEARTBEAT.yml");
-        // `schedule` must be a string; giving it a mapping makes this one
-        // pulse entry fail to deserialize, without touching the document's
-        // own YAML syntax (which is fine) or the other, valid pulse.
         let yaml = r#"
 pulses:
   - name: bad_pulse
@@ -1593,8 +1357,6 @@ pulses:
         assert_eq!(problems.first().unwrap().kind, ProblemKind::Malformed);
     }
 
-    // ── diagnose_heartbeat ───────────────────────────────────────────────
-
     #[test]
     fn diagnose_heartbeat_clean_file_has_no_diagnostics() {
         let yaml = "pulses:\n  - name: morning\n    schedule: \"30m\"\n    tasks: []\n";
@@ -1774,8 +1536,6 @@ pulses:
         std::fs::write(&path, content).unwrap();
         path
     }
-
-    // ── task scripts ─────────────────────────────────────────────────────
 
     fn load_problems(yaml: &str) -> (Vec<PulseDef>, Vec<HeartbeatProblem>) {
         let dir = tempdir().unwrap();

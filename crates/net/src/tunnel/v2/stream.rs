@@ -1,12 +1,3 @@
-//! One proxied connection carried over a v2 tunnel: its flow-control state
-//! and [`TunnelIo`], the `AsyncRead + AsyncWrite` handle the handler uses.
-//!
-//! Each direction has a window of [`WINDOW`] bytes. The sender spends credit
-//! as it writes and the receiver returns it with `stream_credit` as its
-//! consumer reads, so a stalled consumer stalls only its own stream: the
-//! websocket reader never waits on a consumer, it queues data (bounded by the
-//! window) and wakes the reader task of that one stream.
-
 use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::pin::Pin;
@@ -23,35 +14,24 @@ use uuid::Uuid;
 
 use super::frames::V2Frame;
 
-/// Unacknowledged bytes allowed in flight per stream, per direction.
 pub(crate) const WINDOW: usize = 256 * 1024;
 
-/// Largest payload in one binary data message.
 pub(crate) const MAX_CHUNK: usize = 64 * 1024;
 
-/// Most concurrent streams one tunnel carries.
 pub(crate) const MAX_STREAMS: usize = 256;
 
-/// A stream with no data in either direction for this long is closed.
 pub(crate) const IDLE_LIMIT: Duration = Duration::from_mins(10);
 
-/// Read credit is returned in batches of at least this many bytes, or as soon
-/// as the receive queue is drained, so small reads do not each cost a frame.
 const CREDIT_BATCH: usize = 32 * 1024;
 
-/// Capacity of the ordered outbound queue (stream data and closes).
 const ORDERED_QUEUE: usize = 64;
 
-/// The sending ends of a tunnel's outbound queues.
 #[derive(Clone)]
 pub(crate) struct Outbox {
-    /// Stream data and stream closes, in order.
     ordered: mpsc::Sender<Message>,
-    /// Everything else: credit, keepalives, requests. Never waits.
     control: mpsc::UnboundedSender<Message>,
 }
 
-/// The receiving ends, owned by the writer task.
 pub(crate) struct OutboxReceivers {
     pub ordered: mpsc::Receiver<Message>,
     pub control: mpsc::UnboundedReceiver<Message>,
@@ -80,9 +60,6 @@ impl Outbox {
         }
     }
 
-    /// Queue a control frame without waiting. Control frames may pass queued
-    /// data, so a frame that must follow a stream's data goes through the
-    /// stream itself.
     pub(crate) fn send_control(&self, frame: &V2Frame) {
         if let Some(message) = Self::text(frame)
             && self.control.send(message).is_err()
@@ -91,7 +68,6 @@ impl Outbox {
         }
     }
 
-    /// Queue a raw message on the control queue (used for the websocket close).
     pub(crate) fn send_control_message(&self, message: Message) {
         if self.control.send(message).is_err() {
             tracing::debug!("v2 control queue closed");
@@ -99,38 +75,26 @@ impl Outbox {
     }
 }
 
-/// Why inbound data from the relay was refused.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum PushError {
-    /// The relay sent more than the window allows.
     WindowExceeded,
-    /// The payload is larger than [`MAX_CHUNK`].
     TooLarge,
 }
 
 struct Inner {
-    /// Data received from the relay and not yet read.
     queue: VecDeque<Vec<u8>>,
-    /// How much of the front chunk has been read.
     front_offset: usize,
-    /// Bytes received and not yet returned to the relay as credit.
     unacked_in: usize,
-    /// Bytes read by the consumer whose credit has not been sent yet.
     read_uncredited: usize,
-    /// The relay closed the stream: EOF once the queue is drained.
     relay_closed: bool,
-    /// The stream ended abnormally; reads and writes fail.
     reset: Option<&'static str>,
-    /// A `stream_close` has been sent, or none is needed.
     close_settled: bool,
-    /// Bytes the relay will currently accept.
     send_credit: usize,
     read_waker: Option<Waker>,
     write_waker: Option<Waker>,
     last_activity: Instant,
 }
 
-/// State shared between the websocket reader and the stream's [`TunnelIo`].
 pub(crate) struct StreamShared {
     id: Uuid,
     outbox: Outbox,
@@ -162,12 +126,6 @@ impl StreamShared {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Accept data from the relay. Never waits.
-    ///
-    /// # Errors
-    ///
-    /// [`PushError`] when the data breaks the protocol; the caller closes the
-    /// stream.
     pub(crate) fn push_data(&self, payload: &[u8]) -> Result<(), PushError> {
         if payload.len() > MAX_CHUNK {
             return Err(PushError::TooLarge);
@@ -195,8 +153,6 @@ impl StreamShared {
         Ok(())
     }
 
-    /// The relay granted more send window. The window never grows past
-    /// [`WINDOW`], so a misbehaving relay cannot inflate it.
     pub(crate) fn add_credit(&self, bytes: u64) {
         let waker = {
             let mut inner = self.lock();
@@ -209,8 +165,6 @@ impl StreamShared {
         }
     }
 
-    /// The relay closed the stream: what it already sent is still readable,
-    /// then reads see EOF.
     pub(crate) fn relay_closed(&self) {
         let wakers = {
             let mut inner = self.lock();
@@ -221,8 +175,6 @@ impl StreamShared {
         wake_both(wakers);
     }
 
-    /// End the stream abnormally. When `tell_relay` a `stream_close` with
-    /// `reason` is sent (at most once per stream).
     pub(crate) fn reset(&self, reason: &'static str, tell_relay: bool) {
         let wakers = {
             let mut inner = self.lock();
@@ -256,14 +208,10 @@ fn wake_both((read, write): (Option<Waker>, Option<Waker>)) {
     }
 }
 
-/// Why a stream could not be opened.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum OpenError {
-    /// The tunnel already carries [`MAX_STREAMS`] streams.
     TooManyStreams,
-    /// The tunnel has ended.
     Closed,
-    /// The relay reused the id of a live stream.
     Duplicate,
 }
 
@@ -272,7 +220,6 @@ struct TableInner {
     closed: bool,
 }
 
-/// The live streams of one tunnel.
 pub(crate) struct StreamTable {
     inner: Mutex<TableInner>,
     outbox: Outbox,
@@ -293,11 +240,6 @@ impl StreamTable {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Register a stream the relay opened and return the consumer's handle.
-    ///
-    /// # Errors
-    ///
-    /// [`OpenError`] when the tunnel is full, ended, or the id is in use.
     pub(crate) fn open(self: &Arc<Self>, id: Uuid) -> Result<TunnelIo, OpenError> {
         let shared = Arc::new(StreamShared::new(id, self.outbox.clone()));
         {
@@ -333,8 +275,6 @@ impl StreamTable {
         self.lock().streams.len()
     }
 
-    /// The tunnel ended: fail every stream and refuse new ones. The relay is
-    /// not told; it already dropped them with the connection.
     pub(crate) fn close_all(&self) {
         let drained: Vec<Arc<StreamShared>> = {
             let mut table = self.lock();
@@ -346,7 +286,6 @@ impl StreamTable {
         }
     }
 
-    /// Close streams with no data in either direction for [`IDLE_LIMIT`].
     pub(crate) fn sweep_idle(&self) {
         let idle: Vec<Arc<StreamShared>> = self
             .lock()
@@ -363,11 +302,6 @@ impl StreamTable {
     }
 }
 
-/// A browser connection carried over the tunnel, as a byte stream.
-///
-/// Reads return what the relay sent and hand receive window back as they
-/// drain it. Writes spend send window and wait when it is gone. Shutting
-/// down or dropping the handle tells the relay to close the stream.
 pub(crate) struct TunnelIo {
     shared: Arc<StreamShared>,
     table: Arc<StreamTable>,
@@ -536,8 +470,6 @@ impl Drop for TunnelIo {
         match ordered.try_send(frame) {
             Ok(()) => {}
             Err(mpsc::error::TrySendError::Full(frame)) => {
-                // The close has to follow the stream's queued data, so wait for
-                // room instead of overtaking it on the control queue.
                 if tokio::runtime::Handle::try_current().is_ok() {
                     residuum_core::util::spawn_in_span(async move {
                         if ordered.send(frame).await.is_err() {

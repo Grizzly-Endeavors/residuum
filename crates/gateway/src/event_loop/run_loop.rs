@@ -1,12 +1,3 @@
-//! One agent's start-up and main event loop.
-//!
-//! [`start_agent`] initializes an agent's subsystems on the hub's shared
-//! services and returns a [`StartedAgent`]: the [`AgentControl`] the hub
-//! keeps (the agent's HTTP and A2A routers, its reload channel, and its stop
-//! signal) and the agent's event loop, [`run_agent_loop`], the
-//! `tokio::select` loop that processes all of the agent's events until the
-//! hub stops it.
-
 use std::sync::Arc;
 
 use tokio::time::Duration;
@@ -35,20 +26,6 @@ use super::turns::{handle_inbound_message, handle_retry_request, load_prompt_con
 use crate::{actions, idle, reload, web};
 use residuum_hub::{config_watcher, last_known_good};
 
-/// Initialize the agent at `inputs.agent_dir` on the hub's shared services,
-/// spawn its adapters, watchers, and A2A serving state, and return it with
-/// its event loop, [`run_agent_loop`], for the hub to run.
-///
-/// If the agent's live config files fail to load, or load but the agent
-/// can't actually start on them (no usable main provider, etc.), the agent
-/// falls back to its own last-known-good copy (see [`last_known_good`])
-/// instead of refusing to start. A fallback is announced with a notice once
-/// the agent is up, so it's visible to anyone using the web UI.
-///
-/// # Errors
-///
-/// Returns `FatalError` if the config can't be loaded and no working
-/// last-known-good copy is available, or an essential subsystem can't start.
 pub(crate) async fn start_agent(inputs: AgentStartInputs) -> Result<StartedAgent, FatalError> {
     let AgentStartInputs {
         name,
@@ -133,24 +110,16 @@ pub(crate) async fn start_agent(inputs: AgentStartInputs) -> Result<StartedAgent
         },
     )
     .await?;
-    // The hub's one discovery task feeds every registered agent's client hub;
-    // this agent joins it until it stops.
     sibling_fanout
         .register(&runtime.name, Arc::clone(&runtime.a2a_hub))
         .await;
-    // From here teammates can message this agent, until it stops.
     team_router.register(&runtime.name, team_messenger);
     Ok(StartedAgent {
         control,
-        // `run_agent_loop`'s state (the accumulated select! branches' locals)
-        // has grown past clippy's large-future threshold; boxing moves it to
-        // the heap, so the task the host runs it in stays small.
         event_loop: Box::pin(run_agent_loop(runtime)),
     })
 }
 
-/// Wrap `router` so every request it handles runs inside the agent's root
-/// span, giving handler logs and the tasks they spawn the `agent` field.
 pub(crate) fn agent_span_layer(name: &str, router: axum::Router) -> axum::Router {
     let span = agent_span(name);
     router.layer(axum::middleware::from_fn(
@@ -161,11 +130,6 @@ pub(crate) fn agent_span_layer(name: &str, router: axum::Router) -> axum::Router
     ))
 }
 
-/// Load the agent's config against `hub_cfg`, initializing it on that, and
-/// falling back to the agent's last-known-good copy if either fails. Returns
-/// the configs actually used, their initialized components, and — only when
-/// a fallback was used — a description of what was wrong, for the caller to
-/// publish once the agent is up.
 async fn load_and_initialize(
     agent_dir: &std::path::Path,
     hub_cfg: HubConfig,
@@ -193,10 +157,6 @@ async fn load_and_initialize(
     }
 }
 
-/// Try starting the agent from its last-known-good config after
-/// `original_err` broke the live files. Returns `original_err` untouched if
-/// there's no last-known-good copy, or it fails to initialize too — the
-/// live files are still the more relevant problem to report in that case.
 async fn agent_last_known_good_fallback(
     agent_dir: &std::path::Path,
     hub_cfg: HubConfig,
@@ -224,7 +184,6 @@ async fn agent_last_known_good_fallback(
     }
 }
 
-/// Handles returned from spawning the agent's router, adapters, and watchers.
 struct SpawnedHandles {
     router: axum::Router,
     adapters: crate::chat_adapters::ChatAdapters,
@@ -234,14 +193,10 @@ struct SpawnedHandles {
     root_config_watcher_handle: Option<tokio::task::JoinHandle<()>>,
     workbench_watcher_handle: Option<tokio::task::JoinHandle<()>>,
     change_feed_handle: Option<tokio::task::JoinHandle<()>>,
-    /// Whether the change feed over the agent's directory is running.
     workspace_watch_health: tokio::sync::watch::Receiver<residuum_workspace::watch::WatchHealth>,
-    /// Raised by [`build_runtime`] once the session spawn listener is up.
     sessions_ready_tx: tokio::sync::watch::Sender<bool>,
 }
 
-/// Bundle of `*ApiState` values `build_gateway_app` needs, split out of
-/// `spawn_agent_tasks` to keep it under the line-count lint.
 struct ApiStates {
     config: residuum_hub::web::ConfigApiState,
     memory: web::memory::MemoryApiState,
@@ -275,7 +230,6 @@ fn build_api_states(
     }
 }
 
-/// What `spawn_agent_tasks` built for the agent's routes before their state.
 struct RouteParts<'a> {
     file_registry: &'a residuum_hub::file_server::FileRegistry,
     webhooks: &'a residuum_interfaces::webhook::WebhookTable,
@@ -284,9 +238,6 @@ struct RouteParts<'a> {
     turn_journal: crate::turn_journal::TurnJournal,
 }
 
-/// Build the `GatewayState` the agent's routes share, bundling the pieces
-/// `spawn_agent_tasks` has already built or spawned by this point — split
-/// out purely to keep that function under the line-count lint.
 fn build_gateway_state(
     core: &GatewayCore,
     parts: &crate::startup::GatewayComponents,
@@ -327,8 +278,6 @@ fn build_gateway_state(
     }
 }
 
-/// The agent's A2A serving dependencies, plus the sender that marks the
-/// session spawner ready (raised by [`build_runtime`] once it is subscribed).
 fn a2a_serving_deps(
     core: &GatewayCore,
     parts: &crate::startup::GatewayComponents,
@@ -346,14 +295,8 @@ fn a2a_serving_deps(
     (deps, sessions_ready_tx)
 }
 
-/// A config-file poller's task handle.
 type WatcherHandle = Option<tokio::task::JoinHandle<()>>;
 
-/// Spawn the config-file pollers: workspace files (`mcp.json`,
-/// `channels.toml`, `agent-card.json`, `a2a.json`) signaling
-/// `ReloadSignal::Workspace`, and root files (`config.toml`,
-/// `providers.toml`) signaling `ReloadSignal::Agent`. The hub polls
-/// `hub/config.toml` itself and tells each agent to reload.
 fn spawn_config_watchers(
     cfg: &Config,
     parts: &crate::startup::GatewayComponents,
@@ -374,7 +317,6 @@ fn spawn_config_watchers(
     (watcher_handle, root_config_watcher_handle)
 }
 
-/// Spawn the agent's router, chat adapters, A2A serving state, and watchers.
 async fn spawn_agent_tasks(
     core: &GatewayCore,
     parts: &crate::startup::GatewayComponents,
@@ -405,8 +347,6 @@ async fn spawn_agent_tasks(
     let turn_journal = crate::turn_journal::TurnJournal::spawn(&core.bus_handle)
         .await
         .unwrap_or_else(|e| {
-            // The agent still runs for its other interfaces; the web chat's
-            // connections close at once and keep retrying.
             tracing::error!(error = %e, "failed to start the turn journal; the web chat can't connect");
             crate::turn_journal::TurnJournal::closed()
         });
@@ -461,20 +401,12 @@ async fn spawn_agent_tasks(
     })
 }
 
-/// The change-feed tasks the agent runs.
 struct ChangeFeeds {
-    /// The artifact reload watcher that follows the team feed.
     workbench_watcher: Option<tokio::task::JoinHandle<()>>,
-    /// The feed over the agent's directory.
     workspace: Option<tokio::task::JoinHandle<()>>,
-    /// Whether the agent-directory feed is running.
     health: tokio::sync::watch::Receiver<residuum_workspace::watch::WatchHealth>,
 }
 
-/// Start the change feed over the agent's directory and the artifact reload
-/// watcher. The team directory has one feed for the whole hub
-/// ([`TeamChangeFeed`](residuum_hub::services::TeamChangeFeed)); the watcher
-/// reads it and publishes its reloads on the agent's own bus.
 async fn spawn_change_feed_tasks(
     core: &GatewayCore,
     layout: &residuum_config::WorkspaceLayout,
@@ -508,41 +440,26 @@ async fn spawn_change_feed_tasks(
     }
 }
 
-/// The agent's name, the hub-provided services, and the per-run channels
-/// `build_runtime` needs, bundled to reduce its argument count.
 struct RuntimeChannels {
     name: String,
     services: HubServices,
     activity: Arc<ActivityTracker>,
     agent_stop_rx: tokio::sync::mpsc::Receiver<()>,
-    /// Pushed a fresh `ModelCallResources` on every config reload; stored on
-    /// `AgentRuntime` so `crate::reload` can push to it.
     model_call_resources_tx: tokio::sync::watch::Sender<Arc<web::model::ModelCallResources>>,
-    /// Publishes the agent's current A2A router to the hub.
     a2a_router_tx: tokio::sync::watch::Sender<Option<axum::Router>>,
-    /// Counts finished config reloads for the hub.
     reload_done_tx: tokio::sync::watch::Sender<u64>,
 }
 
-/// Handles for bus infrastructure spawned during agent startup.
 struct BusInfrastructure {
     agent_subscriber: residuum_bus::Subscriber<residuum_bus::MessageEvent>,
     error_subscriber: residuum_bus::Subscriber<residuum_bus::ErrorEvent>,
-    /// See `AgentRuntime::pulse_result_subscriber`'s own doc comment for
-    /// why this is a second, independent subscription rather than sharing
-    /// one with `background::listener`.
     pulse_result_subscriber: residuum_bus::Subscriber<residuum_bus::AgentResultEvent>,
-    /// See `AgentRuntime::pulse_fire_subscriber`.
     pulse_fire_subscriber: residuum_bus::Subscriber<residuum_bus::PulseFireEvent>,
     notify_handles: Vec<tokio::task::JoinHandle<()>>,
     bus_infra_handles: Vec<tokio::task::JoinHandle<()>>,
     spawn_context_tx: tokio::sync::watch::Sender<Arc<residuum_background::SpawnContext>>,
 }
 
-/// Subscribe to bus topics and spawn bus-level infrastructure tasks.
-///
-/// Subscribes the agent and error notification channels, spawns notify subscribers,
-/// the background result bridge, notification router, and subagent registry.
 async fn spawn_bus_infrastructure(
     core: &GatewayCore,
     parts: &mut crate::startup::GatewayComponents,
@@ -610,7 +527,6 @@ async fn spawn_bus_infrastructure(
     })
 }
 
-/// Assemble the `AgentRuntime` from initialized parts and spawned handles.
 async fn build_runtime(
     mut parts: crate::startup::GatewayComponents,
     core: GatewayCore,
@@ -623,9 +539,6 @@ async fn build_runtime(
     let infra = spawn_bus_infrastructure(&core, &mut parts).await?;
     spawned.sessions_ready_tx.send_replace(true);
     let pulse_state_path = parts.layout.pulse_state_json();
-    // Both post-turn workers report into the same channel — the main loop
-    // applies whichever kind of result arrives, see `run_agent_loop`'s own
-    // select branch for it.
     let (post_turn_result_tx, post_turn_result_rx) = tokio::sync::mpsc::unbounded_channel();
     let a2a = spawned.a2a;
     channels
@@ -633,8 +546,6 @@ async fn build_runtime(
         .send_replace(a2a.as_ref().map(|agent| agent.router.clone()));
 
     let tracing_service = Arc::clone(&channels.services.tracing_service);
-    // Each reply is counted read or unread as it reaches the main
-    // conversation, while the reader who saw it is still connected.
     parts.agent.set_reply_audience(
         Arc::clone(&channels.activity) as Arc<dyn residuum_agent::ReplyAudience>
     );
@@ -721,8 +632,6 @@ async fn build_runtime(
     })
 }
 
-/// How one workspace file's reload went: a plain-language note, and whether
-/// it failed. `handle_workspace_reload` joins the notes into its one notice.
 struct WorkspaceReloadNote {
     failed: bool,
     note: String,
@@ -744,8 +653,6 @@ impl WorkspaceReloadNote {
     }
 }
 
-/// Reload MCP servers from `mcp.json`, returning a plain-language outcome
-/// note (see `handle_workspace_reload`).
 async fn reload_mcp_servers_note(rt: &mut AgentRuntime) -> WorkspaceReloadNote {
     match residuum_workspace::config::load_mcp_servers(&rt.layout.mcp_json()) {
         Ok(servers) => {
@@ -775,10 +682,6 @@ async fn reload_mcp_servers_note(rt: &mut AgentRuntime) -> WorkspaceReloadNote {
     }
 }
 
-/// Reload notification channel subscribers from `channels.toml`, returning a
-/// plain-language outcome note. Parses the new file before touching
-/// anything running: a parse failure must leave the current subscribers in
-/// place rather than aborting them and spawning nothing.
 async fn reload_channels_note(rt: &mut AgentRuntime) -> WorkspaceReloadNote {
     match residuum_workspace::config::load_channel_configs(&rt.layout.channels_toml()) {
         Ok(configs) => {
@@ -807,9 +710,6 @@ async fn reload_channels_note(rt: &mut AgentRuntime) -> WorkspaceReloadNote {
     }
 }
 
-/// Reload the agent card, if A2A is enabled, returning a failure note (the
-/// listener keeps serving the last good card either way, but the user and,
-/// when this reload was agent-triggered, the agent still need to know).
 fn reload_agent_card_note(rt: &AgentRuntime) -> Option<WorkspaceReloadNote> {
     let a2a = rt.a2a.as_ref()?;
     let relay_base = a2a.relay_base();
@@ -831,15 +731,9 @@ fn reload_agent_card_note(rt: &AgentRuntime) -> Option<WorkspaceReloadNote> {
     )))
 }
 
-/// Handle a workspace config reload (mcp.json or channels.toml changed).
 async fn handle_workspace_reload(rt: &mut AgentRuntime) {
     tracing::info!("handling workspace config reload");
 
-    // Consumed once, up front: whether this specific reload is the one the
-    // agent's own `write_file`/`edit_file` call to mcp.json/channels.toml/
-    // a2a.json caused — see `ConfigWriteWatch`. Collects a plain-language
-    // line per subsystem below into one notice for the user, which, if
-    // `true`, reaches the agent's own transcript too.
     let deliver_to_agent = rt
         .config_reload_tracker
         .take_if_matches(residuum_tools::config_reload_tracker::ConfigReloadKind::Workspace);
@@ -848,10 +742,6 @@ async fn handle_workspace_reload(rt: &mut AgentRuntime) {
         reload_channels_note(rt).await,
     ];
 
-    // Reload the A2A client's remote agents. Bad entries are skipped with a
-    // warning; a read/parse failure keeps the current agents. No outcome is
-    // reported back to the agent here: `reload_from_file` only logs, with no
-    // success/failure signal this caller can read.
     rt.a2a_hub
         .reload_from_file(&rt.layout.a2a_agents_json(), &rt.agent_keys)
         .await;
@@ -895,7 +785,6 @@ async fn handle_workspace_reload(rt: &mut AgentRuntime) {
     }
 }
 
-/// Apply a reload signal's idle action to the idle deadline.
 async fn apply_idle_action(
     idle_action: reload::IdleAction,
     idle_deadline: &mut Option<tokio::time::Instant>,
@@ -923,7 +812,6 @@ async fn apply_idle_action(
     }
 }
 
-/// Wait until a deadline fires, or pend forever if no deadline is set.
 async fn wait_for_deadline(deadline: Option<tokio::time::Instant>) {
     match deadline {
         Some(d) => tokio::time::sleep_until(d).await,
@@ -931,45 +819,22 @@ async fn wait_for_deadline(deadline: Option<tokio::time::Instant>) {
     }
 }
 
-/// Fork sessions for every due scheduled action.
 async fn check_and_run_due_actions(rt: &mut AgentRuntime) {
     let models = rt.spawn_context.model_catalog.read().await;
     actions::spawn_due_actions(&rt.action_store, &rt.publisher, &models).await;
 }
 
-/// Maximum time to wait for the automatic checkpoints still being written
-/// during graceful shutdown. A stop, restart, delete or restore that follows
-/// would otherwise race them over the agent's repositories; one cut short
-/// here is logged, and the next turn's checkpoint records what it missed.
 const CHECKPOINT_SETTLE_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Maximum time to wait for an in-flight post-turn background cycle
-/// (observe or subconscious) to finish during graceful shutdown before
-/// giving up on it — its own writes are already atomic, so a cycle cut
-/// short here loses only whatever it hadn't yet persisted, never leaves
-/// something half-written.
 const POST_TURN_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// Gracefully shut down the agent: its post-turn cycles, live sessions,
-/// adapters, MCP servers, A2A state, and watchers.
-///
-/// Live sessions are stopped and recorded as interrupted, the same way a
-/// process restart records them.
 async fn graceful_shutdown(rt: &mut AgentRuntime) {
     tracing::info!(
         notify_handles = rt.notify_handles.len(),
         bus_infra_handles = rt.bus_infra_handles.len(),
         "beginning graceful shutdown"
     );
-    // First, so a stopping agent takes no more teammate messages while its
-    // sessions wind down.
     rt.services.team_router.unregister(&rt.name);
-    // Messages still waiting for their turn, plus anything already published
-    // to the bus but not yet read by the select loop below, get none now;
-    // keep them in history so they are not lost even though their senders
-    // (message_agent, the web UI) were already told delivery succeeded.
-    // Drained before the bus infrastructure is aborted further down, while
-    // this subscriber can still see what is queued for it.
     let mut undelivered: Vec<_> = rt
         .deferred_inbound
         .drain(..)
@@ -984,21 +849,12 @@ async fn graceful_shutdown(rt: &mut AgentRuntime) {
         undelivered,
     )
     .await;
-    // Before sessions: a post-turn cycle may itself be about to publish a
-    // notice or spawn a learner, which still needs the bus infrastructure
-    // (aborted further down) alive to land.
     rt.memory_worker.shutdown(POST_TURN_SHUTDOWN_TIMEOUT).await;
     rt.post_turn_subconscious
         .shutdown(POST_TURN_SHUTDOWN_TIMEOUT)
         .await;
-    // Before the sessions drain: a pulse script finishing during that wait
-    // would otherwise start a new session in an agent that is stopping.
     rt.pulse_fires.stop_all();
-    // Stop live sessions first, while the bus and its subscribers (notify
-    // router included) are still running, so their results are recorded and
-    // delivered rather than left for startup recovery on the next boot.
     rt.session_runtime.shutdown(SESSION_SHUTDOWN_TIMEOUT).await;
-    // After the sessions, which take checkpoints of their own.
     if tokio::time::timeout(CHECKPOINT_SETTLE_TIMEOUT, rt.checkpoints.settled())
         .await
         .is_err()
@@ -1016,8 +872,6 @@ async fn graceful_shutdown(rt: &mut AgentRuntime) {
         h.abort();
     }
     rt.mcp_registry.write().await.disconnect_all().await;
-    // Waited for, so a restart of this agent never has two copies of the same
-    // bot connected at once.
     rt.chat_adapters.shutdown_all().await;
     rt.a2a = None;
     rt.a2a_router_tx.send_replace(None);
@@ -1037,13 +891,6 @@ async fn graceful_shutdown(rt: &mut AgentRuntime) {
     tracing::info!("graceful shutdown complete");
 }
 
-/// Apply a finished background post-turn cycle's `Agent`-touching tail — the
-/// one thing neither `post_turn` worker can do for itself. See that
-/// module's own docs for why this exists as a deferred, drained-by-the-loop
-/// step instead of being awaited inline by whichever turn triggered it.
-///
-/// Each arm changes what the next request is made of, so the context
-/// breakdown is saved again at the end, for the hub to serve.
 async fn apply_post_turn_result(
     agent: &mut Agent,
     layout: &WorkspaceLayout,
@@ -1082,15 +929,11 @@ async fn apply_post_turn_result(
         .await;
 }
 
-/// Run the memory observation pipeline.
 fn run_observation(rt: &AgentRuntime) {
     let mem = crate::memory::MemorySubsystems::from_runtime(rt);
     rt.memory_worker.trigger(mem);
 }
 
-/// Await a `JoinHandle` if present, or pend forever if `None`.
-///
-/// On completion, the slot is cleared to prevent re-polling a finished handle.
 async fn poll_handle(
     handle: &mut Option<tokio::task::JoinHandle<()>>,
 ) -> Result<(), tokio::task::JoinError> {
@@ -1104,8 +947,6 @@ async fn poll_handle(
     }
 }
 
-/// Resolves when the first of the workspace watchers exits, naming which
-/// one; pends forever while none are running.
 async fn next_log_only_task_exit(
     watcher: &mut Option<tokio::task::JoinHandle<()>>,
     root_config_watcher: &mut Option<tokio::task::JoinHandle<()>>,
@@ -1120,10 +961,6 @@ async fn next_log_only_task_exit(
     }
 }
 
-/// Logs an unexpected exit or failure of a background adapter task, and
-/// auto-reports it.
-///
-/// Used for the tasks `run_agent_loop` only logs on exit.
 async fn log_adapter_task_exit(
     rt: &AgentRuntime,
     task_name: &str,
@@ -1147,16 +984,12 @@ async fn log_adapter_task_exit(
         .await;
 }
 
-/// Action from processing a bus event in the event loop.
 enum BusEventAction {
     Continue,
-    /// The hub's stop request interrupted the turn this event ran.
     Stop,
-    /// The inbound message channel closed.
     BusClosed,
 }
 
-/// Handle a single typed message event received on the agent subscriber.
 async fn handle_bus_event(
     event: Result<Option<residuum_bus::MessageEvent>, residuum_bus::BusError>,
     rt: &mut AgentRuntime,
@@ -1172,11 +1005,6 @@ async fn handle_bus_event(
                     BusEventAction::Continue
                 }
             } else {
-                // A group chat, a channel, or a non-owner DM: routes to that
-                // conversation's session instead of the main agent's turn.
-                // Spawned rather than awaited so a slow conversation delivery
-                // (a completing target's teardown) never holds up the main
-                // event loop.
                 let router = Arc::clone(&rt.conversation_router);
                 residuum_core::util::spawn_in_span(async move { router.route(message).await });
                 BusEventAction::Continue
@@ -1193,11 +1021,6 @@ async fn handle_bus_event(
     }
 }
 
-/// Process one bus event and, when it means the agent should stop running,
-/// shut down and report which exit the caller should return.
-///
-/// Kept separate from the `select!` arm in `run_agent_loop` purely to keep
-/// that function's line count down.
 async fn apply_bus_event(
     event: Result<Option<residuum_bus::MessageEvent>, residuum_bus::BusError>,
     rt: &mut AgentRuntime,
@@ -1217,9 +1040,6 @@ async fn apply_bus_event(
     }
 }
 
-/// Run or refuse a request to rerun the failed latest turn, made while no
-/// turn runs, and, when the hub's stop request interrupted the rerun, shut
-/// down and report the exit, as [`apply_bus_event`] does for a message.
 async fn apply_retry_request(
     request: crate::types::RetryTurnRequest,
     rt: &mut AgentRuntime,
@@ -1234,12 +1054,6 @@ async fn apply_retry_request(
     }
 }
 
-/// Handle a stop request that arrived while the event loop is idle.
-///
-/// A turn in progress blocks this whole select on the `agent_subscriber.recv()`
-/// arm, so a request only reaches this arm when there is genuinely nothing
-/// to stop — reply `false` immediately rather than leaving the caller to
-/// time out.
 fn handle_idle_stop_request(stop_req: Option<residuum_bus::control::StopRequest>) {
     let Some(req) = stop_req else {
         return;
@@ -1253,10 +1067,6 @@ fn handle_idle_stop_request(stop_req: Option<residuum_bus::control::StopRequest>
     }
 }
 
-/// Collect `first` plus every signal already queued behind it, one entry per
-/// kind, hub before agent before workspace (the agent reload resolves against
-/// the hub config, so the hub goes first). Duplicates of a kind coalesce
-/// because one reload of that kind picks up every edit made so far.
 fn drain_pending_reloads(
     first: ReloadSignal,
     rx: &mut residuum_bus::control::ReloadReceiver,
@@ -1278,8 +1088,6 @@ fn drain_pending_reloads(
     ordered
 }
 
-/// Apply one config reload signal: an agent config reload (which may put the
-/// agent back to idle), a hub config reload, or a workspace file reload.
 async fn dispatch_reload(
     signal: ReloadSignal,
     rt: &mut AgentRuntime,
@@ -1297,7 +1105,6 @@ async fn dispatch_reload(
     rt.reload_done_tx.send_modify(|finished| *finished += 1);
 }
 
-/// Apply `first` and any other reload signals already queued behind it.
 async fn dispatch_pending_reloads(
     first: ReloadSignal,
     rt: &mut AgentRuntime,
@@ -1309,11 +1116,6 @@ async fn dispatch_pending_reloads(
     }
 }
 
-/// The message waiting in `deferred_inbound` to run next: one the person asked
-/// to send now goes ahead of the rest. A message withdrawn while it waited
-/// is dropped here, and the next one taken instead. Returns `None` when a
-/// graceful restart is pending so queued messages stay in `deferred_inbound`
-/// and are persisted by `graceful_shutdown`.
 fn next_deferred_message(rt: &mut AgentRuntime) -> Option<residuum_bus::MessageEvent> {
     if rt.activity.snapshot().restart_pending {
         return None;
@@ -1332,11 +1134,6 @@ fn next_deferred_message(rt: &mut AgentRuntime) -> Option<residuum_bus::MessageE
     }
 }
 
-/// Run the agent's main event loop.
-///
-/// Processes inbound messages, pulse ticks, action ticks, and memory pipeline
-/// signals until the hub asks the agent to stop or its inbound channel
-/// closes.
 async fn run_agent_loop(mut rt: AgentRuntime) -> AgentExit {
     let mut pulse_tick = tokio::time::interval(Duration::from_mins(1));
     let mut action_tick = tokio::time::interval(Duration::from_secs(30));
@@ -1348,16 +1145,10 @@ async fn run_agent_loop(mut rt: AgentRuntime) -> AgentExit {
     tracing::info!("agent ready, entering main loop");
 
     loop {
-        // Apply any config reload that arrived during the previous turn before
-        // running deferred inbound messages so the next turn and any sessions
-        // it forks see the updated configuration immediately.
         if let Ok(first) = rt.reload_rx.try_recv() {
             dispatch_pending_reloads(first, &mut rt, &mut idle_deadline, &mut observe_deadline)
                 .await;
         }
-        // Messages that arrived after the last turn's final checkpoint run
-        // first: their senders are waiting on a reply, and anything queued
-        // on the bus arrived after them.
         if let Some(message) = next_deferred_message(&mut rt) {
             if let Some(exit) = Box::pin(apply_bus_event(
                 Ok(Some(message)),
@@ -1417,9 +1208,6 @@ async fn run_agent_loop(mut rt: AgentRuntime) -> AgentExit {
                 idle_deadline = None;
             }
 
-            // A finished background post-turn cycle's `Agent` mutation
-            // (see `crate::post_turn`) — never awaited inline by
-            // the turn that triggered it.
             result = rt.post_turn_result_rx.recv() => {
                 if let Some(result) = result {
                     apply_post_turn_result(
@@ -1439,10 +1227,6 @@ async fn run_agent_loop(mut rt: AgentRuntime) -> AgentExit {
                 }
             }
 
-            // Reached only between turns — a turn in progress blocks this
-            // whole select on the `agent_subscriber.recv()` arm above, so a
-            // stop request only lands here when there is genuinely nothing
-            // to stop.
             stop_req = rt.stop_rx.recv() => {
                 handle_idle_stop_request(stop_req);
             }
@@ -1510,11 +1294,6 @@ mod tests {
         let agent_dir = dir.path().join("scout");
         let agent_config_dir = agent_dir.join("config");
         std::fs::create_dir_all(&agent_config_dir).unwrap();
-        // A last-known-good pair that exists but is itself broken (should
-        // never happen in practice, since it's only ever saved after a
-        // successful start) still must not surface its own error in place
-        // of the live config's -- the live config is what the user needs to
-        // fix.
         std::fs::create_dir_all(dir.path().join("hub")).unwrap();
         std::fs::write(
             dir.path()

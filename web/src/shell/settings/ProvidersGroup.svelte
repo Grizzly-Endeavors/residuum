@@ -22,10 +22,6 @@
   import { fieldError } from "./sections";
   import SettingsGroup from "./SettingsGroup.svelte";
 
-  // The agent's providers: named connections to model services, each with
-  // its type, key and address. A model names one before its slash. Adding,
-  // editing and removing one are staged; Discard brings the list back.
-
   let { scope }: { scope: AgentScopeModel } = $props();
 
   const TYPES: readonly Choice[] = PROVIDER_KEYS.map((type) => ({
@@ -41,7 +37,6 @@
     { value: "text", label: "Text only: leave them out" },
   ];
 
-  /** Open providers, by name, so they stay open when a save gives the form new objects. */
   const open = new SvelteSet<string>();
 
   const blank = (): SettingsProviderEntry => ({
@@ -81,7 +76,6 @@
       : [...TYPES, { value: type, label: type }];
   }
 
-  /** The key on disk for a provider, which a key typed over it replaces. */
   function savedKey(name: string): string {
     return (
       scope.providersFile.baseline.providers.find((entry) => entry.name === name)?.apiKey ?? ""

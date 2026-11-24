@@ -1,18 +1,13 @@
-// The words for Auto Mode's verdict on a tool call: the row's status when it
-// blocked the call, and the note in the step's details for every checked call.
-
 import type { AutoModeVerdict } from "../lib/generated/AutoModeVerdict";
 
 function percent(probability: number | null): string {
   return probability === null ? "" : ` (${Math.round(probability * 100)}% sure)`;
 }
 
-/** Whether Auto Mode stopped this call from running. */
 export function blockedByAutoMode(verdict: AutoModeVerdict | undefined): boolean {
   return verdict?.decision === "blocked";
 }
 
-/** The sentence a step's details show about Auto Mode's check. */
 export function autoModeNote(verdict: AutoModeVerdict): string {
   switch (verdict.decision) {
     case "blocked":

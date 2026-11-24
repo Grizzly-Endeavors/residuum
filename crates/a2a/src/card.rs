@@ -1,8 +1,3 @@
-//! The workspace agent card (`{workspace}/config/agent-card.json`): what the
-//! user/agent declares about this agent, merged at serve time with runtime
-//! facts (interface URLs, capabilities, security) into the wire
-//! [`a2a::AgentCard`]. See `docs/systems-usage/a2a.md`.
-
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, PoisonError, RwLock};
@@ -12,7 +7,6 @@ use thiserror::Error;
 
 use residuum_config::A2aVisibility;
 
-/// One skill declared in the workspace agent card file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentCardSkillFile {
     pub id: String,
@@ -39,27 +33,17 @@ pub struct AgentCardFile {
     pub default_output_modes: Option<Vec<String>>,
 }
 
-/// Errors loading, parsing, or validating the workspace agent card file.
 #[derive(Error, Debug, Clone, PartialEq, Eq)]
 pub enum CardError {
-    /// The file could not be read.
     #[error("failed to read agent card at {path}: {message}")]
     Read { path: String, message: String },
-    /// The file's JSON did not match the expected shape.
     #[error("failed to parse agent card at {path}: {message}")]
     Parse { path: String, message: String },
-    /// The file parsed but failed content validation.
     #[error("invalid agent card at {path}: {message}")]
     Invalid { path: String, message: String },
 }
 
 impl AgentCardFile {
-    /// Load and validate the agent card file at `path`.
-    ///
-    /// # Errors
-    /// Returns [`CardError::Read`] if the file can't be read,
-    /// [`CardError::Parse`] if it isn't valid JSON in the expected shape,
-    /// or [`CardError::Invalid`] if it fails content validation.
     pub fn load(path: &Path) -> Result<Self, CardError> {
         let raw = std::fs::read_to_string(path).map_err(|e| CardError::Read {
             path: path.display().to_string(),
@@ -73,13 +57,6 @@ impl AgentCardFile {
         Ok(file)
     }
 
-    /// Check content invariants JSON schema alone can't express: non-empty
-    /// name/description, and skill ids that are non-empty and unique (the
-    /// A2A spec and the skill-mapping rule in `docs/systems-usage/a2a.md`
-    /// both depend on ids being unique).
-    ///
-    /// # Errors
-    /// Returns [`CardError::Invalid`] describing the first problem found.
     fn validate(&self, path: &Path) -> Result<(), CardError> {
         let invalid = |message: String| CardError::Invalid {
             path: path.display().to_string(),
@@ -116,34 +93,13 @@ impl AgentCardFile {
     }
 }
 
-/// Runtime facts the server fills into the card that the workspace file
-/// doesn't (and shouldn't) know about.
 #[derive(Debug, Clone)]
 pub struct CardRuntime {
-    /// Base URL other agents reach this instance's A2A interfaces at: JSON-RPC
-    /// is served at this exact URL, HTTP+JSON (REST) at `{base}/rest`.
-    ///
-    /// This is `[a2a] public_url` plus `/agents/<name>` when set; otherwise
-    /// the agent's instance address (`{instance origin}/a2a/<name>`) while the
-    /// tunnel is connected; otherwise a local fallback
-    /// (`http://{bind}:{port}/agents/<name>`), which is good for same-host
-    /// and same-network callers but not for callers over the public
-    /// internet.
     pub interfaces_base_url: String,
-    /// Who may reach this agent without a caller key. Not reflected in the
-    /// card's content — a private agent's card is simply never served to an
-    /// unauthenticated caller (see [`crate::auth`]) — but carried here
-    /// so callers building the runtime don't need a second config lookup.
     pub visibility: A2aVisibility,
 }
 
 impl CardRuntime {
-    /// Build runtime facts for `agent_name` from the resolved `[a2a]` config,
-    /// the gateway's bind address, and the instance's A2A base (`{instance origin}/a2a`,
-    /// see `super::public_url::relay_a2a_base`) when the tunnel is
-    /// connected: `public_url` plus `/agents/<name>` when set, otherwise the
-    /// agent's relay address, otherwise the local listener address plus
-    /// `/agents/<name>`.
     #[must_use]
     pub fn from_config(
         a2a: &residuum_config::A2aConfig,
@@ -163,7 +119,6 @@ impl CardRuntime {
     }
 }
 
-/// Build the wire [`a2a::AgentCard`] from the workspace file and runtime facts.
 #[must_use]
 pub fn build_agent_card(file: &AgentCardFile, runtime: &CardRuntime) -> a2a::AgentCard {
     let base = runtime.interfaces_base_url.trim_end_matches('/');
@@ -227,19 +182,13 @@ pub fn build_agent_card(file: &AgentCardFile, runtime: &CardRuntime) -> a2a::Age
     }
 }
 
-/// Live agent card state: the currently-served [`a2a::AgentCard`], hot-reloaded
-/// from the workspace file by the workspace watcher. Implements
-/// [`a2a_server::AgentCardProducer`] directly so it plugs straight into
-/// `a2a_server::agent_card_router`.
 pub struct CardState {
     current: RwLock<Arc<a2a::AgentCard>>,
 }
 
-/// Shared handle to the live agent card.
 pub type SharedCardState = Arc<CardState>;
 
 impl CardState {
-    /// Build initial state from an already-built card.
     #[must_use]
     pub fn new(card: a2a::AgentCard) -> SharedCardState {
         Arc::new(Self {
@@ -247,19 +196,11 @@ impl CardState {
         })
     }
 
-    /// Load, build, and wrap the card at `path` under `runtime`.
-    ///
-    /// # Errors
-    /// Returns whatever [`AgentCardFile::load`] returns — there is no "last
-    /// good" card yet to fall back to at startup.
     pub fn load(path: &Path, runtime: &CardRuntime) -> Result<SharedCardState, CardError> {
         let file = AgentCardFile::load(path)?;
         Ok(Self::new(build_agent_card(&file, runtime)))
     }
 
-    /// [`load`](Self::load), falling back to a minimal generic card and
-    /// logging a warning if the workspace file is missing or invalid.
-    /// Startup must never fail just because the agent card is broken.
     #[must_use]
     pub fn load_or_default(path: &Path, runtime: &CardRuntime) -> SharedCardState {
         Self::load(path, runtime).unwrap_or_else(|e| {
@@ -279,18 +220,11 @@ impl CardState {
         })
     }
 
-    /// The currently-served card.
     #[must_use]
     pub fn current(&self) -> Arc<a2a::AgentCard> {
         Arc::clone(&self.current.read().unwrap_or_else(PoisonError::into_inner))
     }
 
-    /// Reload from `path` under `runtime`, replacing the live card on
-    /// success. On failure the previous card keeps being served; the caller
-    /// decides what to log or notify.
-    ///
-    /// # Errors
-    /// Returns whatever [`AgentCardFile::load`] returns.
     pub fn reload(&self, path: &Path, runtime: &CardRuntime) -> Result<(), CardError> {
         let file = AgentCardFile::load(path)?;
         let card = build_agent_card(&file, runtime);

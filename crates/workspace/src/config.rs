@@ -1,5 +1,3 @@
-//! Workspace config loaders: MCP servers and notification channels.
-
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
@@ -10,22 +8,12 @@ use anyhow::Context;
 use residuum_config::{ExternalChannelConfig, ExternalChannelKind};
 use residuum_mcp::types::{McpServerEntry, McpTransport};
 
-// ── MCP loader ───────────────────────────────────────────────────────────────
-
-/// Raw JSON structure for the MCP config file (Claude Code format).
 #[derive(Deserialize)]
 struct McpConfigFile {
-    /// Map of server name → server definition.
     #[serde(default, rename = "mcpServers")]
     mcp_servers: BTreeMap<String, McpServerRaw>,
 }
 
-/// Raw JSON server entry before conversion to `McpServerEntry`.
-///
-/// Supports multiple config formats:
-/// - Residuum native: `transport` field with `"stdio"` or `"http"`
-/// - Claude Code/Desktop: `type` field with `"stdio"`, `"streamable-http"`, or `"http"`
-/// - `url` field alias for HTTP server address (falls back to `command`)
 #[derive(Deserialize)]
 struct McpServerRaw {
     command: Option<String>,
@@ -33,31 +21,17 @@ struct McpServerRaw {
     args: Vec<String>,
     #[serde(default)]
     env: BTreeMap<String, String>,
-    /// Claude Code/Desktop standard: `"stdio"`, `"streamable-http"`, `"http"`, or `"sse"`.
     #[serde(rename = "type")]
     type_: Option<String>,
-    /// Residuum extension: `"stdio"` (default) or `"http"`.
     transport: Option<String>,
-    /// HTTP server URL (alternative to putting the URL in `command`).
     url: Option<String>,
-    /// HTTP headers to send with requests (only used for http transport).
     #[serde(default)]
     headers: BTreeMap<String, String>,
-    /// Optional per-server tool-call timeout, in seconds. Unset means no
-    /// automatic cutoff — a call runs until it finishes or is stopped.
     #[serde(default)]
     timeout_secs: Option<u64>,
 }
 
-/// Resolve one raw `mcp.json` server entry into a usable [`McpServerEntry`],
-/// or the plain-language reason it can't be used.
-///
-/// Shared by [`load_mcp_servers_map`] (which drops the entry with a
-/// `tracing::warn!` naming the reason) and
-/// [`diagnose_mcp_json`] (which reports the same reason as a diagnostic), so
-/// the two can never disagree about which entries load.
 fn resolve_mcp_server(name: &str, raw: McpServerRaw) -> Result<McpServerEntry, String> {
-    // Resolve transport: check `type` first (Claude standard), then `transport` (Residuum)
     let transport_str = raw.type_.as_deref().or(raw.transport.as_deref());
     let transport = match transport_str {
         Some("streamable-http" | "http") => McpTransport::Http,
@@ -74,7 +48,6 @@ fn resolve_mcp_server(name: &str, raw: McpServerRaw) -> Result<McpServerEntry, S
         }
     };
 
-    // Resolve command/url based on transport
     let command = match transport {
         McpTransport::Http => {
             if let Some(url) = raw.url.filter(|u| !u.is_empty()) {
@@ -109,14 +82,6 @@ fn resolve_mcp_server(name: &str, raw: McpServerRaw) -> Result<McpServerEntry, S
     })
 }
 
-/// Load MCP server definitions from a JSON file as a name → entry map.
-///
-/// The map is ordered by server name, so one file always yields the same
-/// server order, and so the same tool order, however the JSON lists them.
-/// Returns an empty map if the file does not exist.
-///
-/// # Errors
-/// Returns an error if the file exists but cannot be read or parsed.
 #[tracing::instrument(skip_all, fields(path = %path.display()))]
 pub fn load_mcp_servers_map(path: &Path) -> anyhow::Result<BTreeMap<String, McpServerEntry>> {
     if !path.exists() {
@@ -145,12 +110,6 @@ pub fn load_mcp_servers_map(path: &Path) -> anyhow::Result<BTreeMap<String, McpS
     Ok(servers)
 }
 
-/// Diagnostics for `content` as `config/mcp.json`.
-///
-/// Reuses `resolve_mcp_server`, the same per-entry check
-/// [`load_mcp_servers_map`] applies, so a diagnostic can never disagree with
-/// what loading skips. A JSON syntax error carries `serde_json`'s own
-/// line/column.
 #[must_use]
 pub fn diagnose_mcp_json(content: &str) -> Vec<residuum_core::diagnostics::Diagnostic> {
     use residuum_core::diagnostics::{Diagnostic, Location};
@@ -183,29 +142,18 @@ pub fn diagnose_mcp_json(content: &str) -> Vec<residuum_core::diagnostics::Diagn
         .collect()
 }
 
-/// Load MCP server definitions from a JSON file, in server-name order.
-///
-/// Returns an empty vec if the file does not exist.
-///
-/// # Errors
-/// Returns an error if the file exists but cannot be read or parsed.
 pub fn load_mcp_servers(path: &Path) -> anyhow::Result<Vec<McpServerEntry>> {
     Ok(load_mcp_servers_map(path)?.into_values().collect())
 }
 
-// ── Channel loader ───────────────────────────────────────────────────────────
-
-/// Raw TOML structure for the channels config file.
 #[derive(Deserialize)]
 struct ChannelsFile {
     #[serde(default)]
     channels: HashMap<String, ChannelEntryRaw>,
 }
 
-/// Raw TOML channel entry before conversion to `ExternalChannelConfig`.
 #[derive(Deserialize)]
 struct ChannelEntryRaw {
-    /// Channel type: `"ntfy"`, `"webhook"`, `"macos"`, or `"windows"`.
     #[serde(rename = "type")]
     type_: String,
     url: Option<String>,
@@ -213,23 +161,16 @@ struct ChannelEntryRaw {
     priority: Option<String>,
     method: Option<String>,
     headers: Option<HashMap<String, String>>,
-    // macOS / Windows channel fields
-    /// Retired. Retained so a stale config warns rather than being silently ignored.
     default_category: Option<String>,
     default_priority: Option<String>,
     throttle_window_secs: Option<u64>,
     sound: Option<bool>,
     app_name: Option<String>,
     web_url: Option<String>,
-    // Windows-specific fields
-    /// Retired. Retained so a stale config warns rather than being silently ignored.
     default_scenario: Option<String>,
     app_id: Option<String>,
 }
 
-/// Retired channel option keys present on `raw`, kept only so a stale config
-/// warns rather than being silently ignored. The channel still loads with
-/// these fields present — they just do nothing.
 fn retired_channel_keys(raw: &ChannelEntryRaw) -> Vec<&'static str> {
     let mut keys = Vec::new();
     if raw.default_category.is_some() {
@@ -241,14 +182,6 @@ fn retired_channel_keys(raw: &ChannelEntryRaw) -> Vec<&'static str> {
     keys
 }
 
-/// Resolve one raw `channels.toml` entry's type-specific fields into an
-/// [`ExternalChannelKind`], or the plain-language reason the channel can't
-/// be used.
-///
-/// Shared by [`load_channel_configs`] (which drops the channel with a
-/// `tracing::warn!` naming the reason) and [`diagnose_channels_toml`] (which
-/// reports the same reason as a diagnostic), so the two can never disagree
-/// about which channels load.
 fn resolve_channel_kind(name: &str, raw: &ChannelEntryRaw) -> Result<ExternalChannelKind, String> {
     match raw.type_.as_str() {
         "ntfy" => {
@@ -278,9 +211,6 @@ fn resolve_channel_kind(name: &str, raw: &ChannelEntryRaw) -> Result<ExternalCha
             app_id: raw.app_id.clone(),
         }),
         "webhook" => {
-            // Keep in sync with the methods `WebhookChannel::deliver` actually
-            // supports (crates/notify/src/external.rs) — validate here, at config load,
-            // so a typo surfaces at startup instead of at first delivery attempt.
             const SUPPORTED_METHODS: [&str; 2] = ["POST", "PUT"];
 
             let url = raw.url.clone().filter(|u| !u.is_empty()).ok_or_else(|| {
@@ -311,12 +241,6 @@ fn resolve_channel_kind(name: &str, raw: &ChannelEntryRaw) -> Result<ExternalCha
     }
 }
 
-/// Load external channel configs from a TOML file.
-///
-/// Returns an empty vec if the file does not exist.
-///
-/// # Errors
-/// Returns an error if the file exists but cannot be read or parsed.
 #[tracing::instrument(skip_all, fields(path = %path.display()))]
 pub fn load_channel_configs(path: &Path) -> anyhow::Result<Vec<ExternalChannelConfig>> {
     if !path.exists() {
@@ -355,12 +279,6 @@ pub fn load_channel_configs(path: &Path) -> anyhow::Result<Vec<ExternalChannelCo
     Ok(configs)
 }
 
-/// Diagnostics for `content` as `config/channels.toml`.
-///
-/// Reuses `resolve_channel_kind` and `retired_channel_keys`, the same
-/// per-entry checks [`load_channel_configs`] applies, so a diagnostic can
-/// never disagree with what loading skips or ignores. A TOML syntax error
-/// carries the parser's own line/column.
 #[must_use]
 pub fn diagnose_channels_toml(content: &str) -> Vec<residuum_core::diagnostics::Diagnostic> {
     use residuum_core::diagnostics::{Diagnostic, Location};
@@ -411,8 +329,6 @@ pub fn diagnose_channels_toml(content: &str) -> Vec<residuum_core::diagnostics::
 )]
 mod tests {
     use super::*;
-
-    // ── MCP loader tests ─────────────────────────────────────────────────
 
     #[test]
     fn load_mcp_servers_valid_json() {
@@ -715,8 +631,6 @@ mod tests {
         assert!(err.contains("failed to parse mcp.json"), "got: {err}");
     }
 
-    // ── Channel loader tests ─────────────────────────────────────────────
-
     #[test]
     fn load_channel_configs_ntfy() {
         let dir = tempfile::tempdir().unwrap();
@@ -850,8 +764,6 @@ url = "https://hooks.slack.com/services/xxx"
         let err = result.unwrap_err().to_string();
         assert!(err.contains("failed to parse channels.toml"), "got: {err}");
     }
-
-    // ── Channel error path tests ────────────────────────────────────────
 
     #[test]
     fn load_channel_configs_ntfy_missing_url_excluded() {
@@ -998,8 +910,6 @@ topic = "alerts"
         assert_eq!(configs[0].name, "good-ntfy");
     }
 
-    // ── MCP empty-string boundary tests ────────────────────────────────
-
     #[test]
     fn load_mcp_servers_http_empty_url_skipped() {
         let dir = tempfile::tempdir().unwrap();
@@ -1046,8 +956,6 @@ topic = "alerts"
             "stdio server with empty command should be skipped"
         );
     }
-
-    // ── macOS channel config tests ─────────────────────────────────────
 
     #[test]
     fn load_channel_configs_macos_minimal() {
@@ -1126,8 +1034,6 @@ web_url = "http://localhost:3000"
         assert_eq!(web_url.as_deref(), Some("http://localhost:3000"));
     }
 
-    // ── Channel diagnostics ──────────────────────────────────────────────
-
     #[test]
     fn diagnose_channels_toml_clean_file_has_no_diagnostics() {
         let content = "[channels.my-ntfy]\ntype = \"ntfy\"\nurl = \"https://ntfy.sh\"\ntopic = \"residuum\"\n";
@@ -1185,8 +1091,6 @@ url = "https://hooks.example.com/notify"
         assert!(diagnostics[0].message.contains("bad-hook"));
     }
 
-    // ── MCP diagnostics ──────────────────────────────────────────────────
-
     #[test]
     fn diagnose_mcp_json_clean_file_has_no_diagnostics() {
         let content = r#"{"mcpServers": {"fs": {"command": "mcp-fs"}}}"#;
@@ -1241,8 +1145,6 @@ url = "https://hooks.example.com/notify"
         );
         assert!(diagnostics[0].message.contains("sse-server"));
     }
-
-    // ── MCP map + resolution tests ──────────────────────────────────────
 
     #[test]
     fn load_mcp_servers_map_valid() {

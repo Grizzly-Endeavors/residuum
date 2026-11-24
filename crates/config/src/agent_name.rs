@@ -1,23 +1,12 @@
-//! The name a person types for an agent, and the folder name derived from it.
-//!
-//! The typed name is what the team list, setup, and `agent:` addresses use.
-//! It may contain capitals, spaces, and letters from any language. The folder,
-//! the URL, and the A2A path stay a short ASCII slug, because those have to
-//! be a relay path segment and a directory name that is the same folder on
-//! every platform. Two typed names that differ only by case are the same agent.
-
 use toml_edit::DocumentMut;
 use unicode_normalization::UnicodeNormalization;
 
 use super::paths::{MAX_AGENT_NAME_LEN, validate_agent_name};
 
-/// Longest typed name, counted in Unicode scalar values after the name is
-/// cleaned up.
 pub const MAX_DISPLAY_NAME_CHARS: usize = 32;
 
 const RESERVED_KEYS: &[&str] = &["hub", "team", "agents"];
 
-/// Letters that do not decompose into ASCII, mapped after lowercasing.
 const LATIN_ASCII: &[(char, &str)] = &[
     ('ß', "ss"),
     ('æ', "ae"),
@@ -31,11 +20,6 @@ const LATIN_ASCII: &[(char, &str)] = &[
     ('ŋ', "ng"),
 ];
 
-/// Clean up a typed agent name: trim it, collapse whitespace, and compose
-/// accented letters.
-///
-/// # Errors
-/// Returns a message naming what is wrong with `raw`.
 pub fn canonicalize_display_name(raw: &str) -> Result<String, String> {
     let name: String = raw
         .split_whitespace()
@@ -74,16 +58,11 @@ pub fn canonicalize_display_name(raw: &str) -> Result<String, String> {
     Ok(name)
 }
 
-/// The identity of a typed name: composed, lowercased, so `Atlas` and `atlas`
-/// are one agent.
 #[must_use]
 pub fn display_name_key(canonical: &str) -> String {
     canonical.to_lowercase()
 }
 
-/// The folder name derived from a cleaned typed name: ASCII letters, digits,
-/// and hyphens, at most `MAX_AGENT_NAME_LEN` characters. A name with no
-/// ASCII letters becomes a stable `n` plus eight hex digits.
 #[must_use]
 pub fn slug_base(display: &str) -> String {
     let key = display_name_key(display);
@@ -95,12 +74,6 @@ pub fn slug_base(display: &str) -> String {
     }
 }
 
-/// The first slug derived from `base` that `taken` says is free, adding
-/// `-2`, `-3`, and so on when `base` itself is taken or not a legal folder
-/// name.
-///
-/// # Errors
-/// Returns a message when every candidate it tries is taken.
 pub fn allocate_slug(base: &str, mut taken: impl FnMut(&str) -> bool) -> Result<String, String> {
     if validate_agent_name(base).is_ok() && !taken(base) {
         return Ok(base.to_string());
@@ -123,10 +96,6 @@ pub fn allocate_slug(base: &str, mut taken: impl FnMut(&str) -> bool) -> Result<
     Err("couldn't find a free folder for that name. Try a different one.".to_string())
 }
 
-/// The name stored as `display_name` in an agent's `config.toml` text.
-///
-/// `fallback` when the key is absent, empty, or not a usable name, and when
-/// `config` is not TOML.
 #[must_use]
 pub fn display_name_in_toml(config: &str, fallback: &str) -> String {
     let Ok(doc) = config.parse::<DocumentMut>() else {
@@ -138,11 +107,6 @@ pub fn display_name_in_toml(config: &str, fallback: &str) -> String {
     }
 }
 
-/// Set `display_name` in an agent's `config.toml` text, leaving the rest of
-/// the file as it is.
-///
-/// # Errors
-/// Returns a parse error when `config` is not TOML.
 pub fn set_display_name_toml(config: &str, display: &str) -> Result<String, String> {
     let mut doc = config
         .parse::<DocumentMut>()
@@ -164,7 +128,6 @@ fn fold_to_ascii(lowercased: &str) -> String {
         } else if ch == ' ' || ch == '-' {
             raw.push('-');
         } else if ch == '\'' {
-            // "O'Brien" is one word.
         } else if let Some((_, ascii)) = LATIN_ASCII.iter().find(|(letter, _)| *letter == ch) {
             raw.push_str(ascii);
         }
@@ -195,8 +158,6 @@ fn is_combining_mark(ch: char) -> bool {
     )
 }
 
-/// FNV-1a, 64-bit, so a name with no ASCII letters always maps to the same
-/// folder. The low 32 bits are what the slug shows.
 fn fnv1a64(bytes: &[u8]) -> u64 {
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
     for byte in bytes {
@@ -299,7 +260,6 @@ mod tests {
 
     #[test]
     fn a_name_with_no_ascii_gets_a_stable_slug() {
-        // Locked to the same value as `web/src/lib/agent-name.test.ts`.
         assert_eq!(slug_base("研究"), "n310509ec");
     }
 
@@ -310,7 +270,6 @@ mod tests {
         assert_eq!(slug, "research-desk-2");
         let long = "a".repeat(24);
         let next = allocate_slug(&long, |_| false);
-        // The base itself is free, so it is used.
         assert_eq!(next.unwrap(), long);
         let suffixed = allocate_slug(&long, |candidate| candidate == long).unwrap();
         assert_eq!(suffixed.len(), 24, "{suffixed}");
@@ -320,7 +279,6 @@ mod tests {
 
     #[test]
     fn a_reserved_folder_name_takes_the_next_slug() {
-        // "Hüb" is not the reserved word, but it folds to the folder `hub`.
         let base = slug_base("Hüb");
         assert_eq!(base, "hub");
         let slug = allocate_slug(&base, |_| false).unwrap();

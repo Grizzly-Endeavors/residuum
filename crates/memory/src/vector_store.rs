@@ -1,8 +1,3 @@
-//! Vector similarity search using `SQLite` + sqlite-vec.
-//!
-//! Stores observation, chunk, and wiki page embeddings in `vec0` virtual tables with
-//! denormalized metadata columns for efficient filtered search.
-
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Mutex, Once};
@@ -14,66 +9,39 @@ use anyhow::Context;
 
 use crate::types::{DocSource, IndexChunk, Observation};
 
-/// A vector search result from the observation, chunk, or wiki table.
 #[derive(Debug, Clone)]
 pub struct VectorSearchResult {
-    /// Document identifier (obs ID, chunk ID, or wiki page path).
     pub id: String,
-    /// Which kind of document this result came from.
     pub source_type: DocSource,
-    /// Parent episode identifier (empty for wiki pages).
     pub episode_id: String,
-    /// Date string (YYYY-MM-DD).
     pub date: String,
-    /// Snippet of content.
     pub content: String,
-    /// Line range start (chunks only).
     pub line_start: Option<usize>,
-    /// Line range end (chunks only).
     pub line_end: Option<usize>,
-    /// Cosine distance from query vector (lower = more similar).
     pub(crate) distance: f64,
 }
 
-/// Filters for narrowing vector search results.
 #[derive(Debug, Clone, Default)]
 pub struct VectorSearchFilters {
-    /// Filter results on or after this date (YYYY-MM-DD, inclusive).
     pub date_from: Option<String>,
-    /// Filter results on or before this date (YYYY-MM-DD, inclusive).
     pub date_to: Option<String>,
-    /// Filter to results from these episode IDs. Wiki pages belong to no
-    /// episode, so an episode filter excludes them.
     pub episode_ids: Option<Vec<String>>,
-    /// Filter to a single document kind; `None` searches every table.
     pub source: Option<DocSource>,
 }
 
-/// A wiki page's embedding, keyed by its workspace-relative path.
 #[derive(Debug, Clone)]
 pub struct WikiVector<'a> {
-    /// Workspace-relative page path (the page's doc ID).
     pub page_id: &'a str,
-    /// Page date (YYYY-MM-DD), from its last modification.
     pub date: &'a str,
-    /// The text that was embedded.
     pub content: &'a str,
-    /// The embedding vector.
     pub embedding: &'a [f32],
 }
 
-/// `SQLite` + sqlite-vec backed vector store for memory embeddings.
 pub struct VectorStore {
     conn: Mutex<Connection>,
     dim: usize,
 }
 
-/// Register the sqlite-vec extension globally, exactly once per process.
-///
-/// `sqlite3_auto_extension` is process-global and applies to every connection
-/// opened afterwards, so several stores (an agent's and the team wiki's) share
-/// the one registration. The `Once` keeps the extension from being registered
-/// again on every store open.
 fn register_sqlite_vec_extension() {
     static REGISTER: Once = Once::new();
     REGISTER.call_once(register_sqlite_vec_extension_unchecked);
@@ -102,13 +70,6 @@ fn register_sqlite_vec_extension_unchecked() {
 }
 
 impl VectorStore {
-    /// Open or create a vector store at the given database path.
-    ///
-    /// Registers the sqlite-vec extension, opens the database in WAL mode,
-    /// and creates the virtual tables if they don't exist.
-    ///
-    /// # Errors
-    /// Returns an error if the database cannot be opened or schema creation fails.
     pub fn open_or_create(db_path: &Path, dim: usize) -> anyhow::Result<Self> {
         register_sqlite_vec_extension();
 
@@ -135,12 +96,6 @@ impl VectorStore {
         })
     }
 
-    /// Insert observation embeddings for a single episode.
-    ///
-    /// Each observation gets a doc ID of `"{episode_id}-o{index}"`.
-    ///
-    /// # Errors
-    /// Returns an error if the insert fails or embedding dimensions don't match.
     pub fn insert_observations(
         &self,
         episode_id: &str,
@@ -201,10 +156,6 @@ impl VectorStore {
         Ok(doc_ids)
     }
 
-    /// Insert chunk embeddings.
-    ///
-    /// # Errors
-    /// Returns an error if the insert fails or embedding dimensions don't match.
     pub fn insert_chunks(
         &self,
         chunks: &[IndexChunk],
@@ -270,10 +221,6 @@ impl VectorStore {
         Ok(doc_ids)
     }
 
-    /// Replace the stored embeddings of wiki pages (delete, then insert).
-    ///
-    /// # Errors
-    /// Returns an error if the write fails or an embedding dimension doesn't match.
     pub fn upsert_wiki_pages(&self, pages: &[WikiVector<'_>]) -> anyhow::Result<()> {
         if pages.is_empty() {
             return Ok(());
@@ -309,12 +256,6 @@ impl VectorStore {
         Ok(())
     }
 
-    /// The embedded content of every stored wiki page, keyed by page ID.
-    ///
-    /// Lets a resync skip re-embedding pages whose text has not changed.
-    ///
-    /// # Errors
-    /// Returns an error if the query fails.
     pub fn wiki_page_contents(&self) -> anyhow::Result<HashMap<String, String>> {
         let conn = self.lock_conn()?;
         let mut stmt = conn
@@ -331,12 +272,6 @@ impl VectorStore {
         Ok(contents)
     }
 
-    /// Search for similar vectors across the tables `filters.source` selects.
-    ///
-    /// Returns results sorted by distance.
-    ///
-    /// # Errors
-    /// Returns an error if the query fails.
     pub fn search(
         &self,
         query_embedding: &[f32],
@@ -373,7 +308,6 @@ impl VectorStore {
         let wiki_count = wiki_results.len();
         results.extend(wiki_results);
 
-        // Sort by distance ascending (most similar first)
         results.sort_by(|a, b| {
             a.distance
                 .partial_cmp(&b.distance)
@@ -391,10 +325,6 @@ impl VectorStore {
         Ok(results)
     }
 
-    /// Delete documents by their IDs from every table.
-    ///
-    /// # Errors
-    /// Returns an error if the delete fails.
     pub fn delete_by_doc_ids(&self, ids: &[String]) -> anyhow::Result<()> {
         if ids.is_empty() {
             return Ok(());
@@ -406,7 +336,6 @@ impl VectorStore {
             .context("failed to begin delete transaction")?;
 
         for id in ids {
-            // Try every table — a given ID only exists in one
             tx.execute("DELETE FROM obs_vectors WHERE obs_id = ?1", [id])
                 .context("failed to delete from obs_vectors")?;
             tx.execute("DELETE FROM chunk_vectors WHERE chunk_id = ?1", [id])
@@ -420,23 +349,12 @@ impl VectorStore {
         Ok(())
     }
 
-    /// Delete every wiki page embedding, returning how many rows were removed.
-    ///
-    /// Wiki pages live in the team wiki's own store; this clears any
-    /// wiki rows an agent's store holds.
-    ///
-    /// # Errors
-    /// Returns an error if the delete fails.
     pub fn purge_wiki_vectors(&self) -> anyhow::Result<usize> {
         let conn = self.lock_conn()?;
         conn.execute("DELETE FROM wiki_vectors", [])
             .context("failed to purge wiki vectors")
     }
 
-    /// The embedding model whose vectors this store holds, if one was recorded.
-    ///
-    /// # Errors
-    /// Returns an error if the lookup fails.
     pub fn embedding_model(&self) -> anyhow::Result<Option<String>> {
         let conn = self.lock_conn()?;
         let mut stmt = conn
@@ -451,15 +369,6 @@ impl VectorStore {
         }
     }
 
-    /// Discard every stored vector and rebuild the tables for `dim`.
-    ///
-    /// Used when the embedding model changes: the old vectors are meaningless
-    /// to the new model and may have a different dimension. This clears the
-    /// store in place rather than deleting the database file, because the file
-    /// cannot be deleted on Windows while any connection to it is open.
-    ///
-    /// # Errors
-    /// Returns an error if dropping or recreating the tables fails.
     pub fn reset(&mut self, dim: usize) -> anyhow::Result<()> {
         {
             let conn = self.lock_conn()?;
@@ -476,10 +385,6 @@ impl VectorStore {
         Ok(())
     }
 
-    /// Record the embedding model whose vectors this store holds.
-    ///
-    /// # Errors
-    /// Returns an error if the write fails.
     pub(crate) fn set_embedding_model(&self, model: &str) -> anyhow::Result<()> {
         let conn = self.lock_conn()?;
         conn.execute(
@@ -491,10 +396,6 @@ impl VectorStore {
         Ok(())
     }
 
-    /// Check if an observation vector exists by its doc ID.
-    ///
-    /// # Errors
-    /// Returns an error if the query fails.
     pub fn has_observation(&self, obs_id: &str) -> anyhow::Result<bool> {
         let conn = self.lock_conn()?;
         let mut stmt = conn
@@ -506,10 +407,6 @@ impl VectorStore {
         Ok(exists)
     }
 
-    /// Check if a chunk vector exists by its doc ID.
-    ///
-    /// # Errors
-    /// Returns an error if the query fails.
     pub fn has_chunk(&self, chunk_id: &str) -> anyhow::Result<bool> {
         let conn = self.lock_conn()?;
         let mut stmt = conn
@@ -521,14 +418,12 @@ impl VectorStore {
         Ok(exists)
     }
 
-    /// Lock the connection mutex.
     fn lock_conn(&self) -> anyhow::Result<std::sync::MutexGuard<'_, Connection>> {
         self.conn
             .lock()
             .map_err(|e| anyhow::anyhow!("vector store lock poisoned: {e}"))
     }
 
-    /// Validate that an embedding has the expected dimension.
     fn check_dim(&self, embedding: &[f32]) -> anyhow::Result<()> {
         if embedding.len() != self.dim {
             anyhow::bail!(
@@ -541,10 +436,6 @@ impl VectorStore {
     }
 }
 
-/// Check if a rusqlite error is a UNIQUE constraint violation.
-///
-/// Handles both standard `SQLite` constraint errors and vec0 virtual table
-/// errors which report UNIQUE violations via extended error codes.
 fn is_unique_violation(err: &rusqlite::Error) -> bool {
     if let rusqlite::Error::SqliteFailure(ffi_err, msg) = err {
         return msg
@@ -555,7 +446,6 @@ fn is_unique_violation(err: &rusqlite::Error) -> bool {
     false
 }
 
-/// Create the vec0 virtual tables if they don't exist.
 fn create_tables(conn: &Connection, dim: usize) -> anyhow::Result<()> {
     conn.execute_batch(&format!(
         "CREATE VIRTUAL TABLE IF NOT EXISTS obs_vectors USING vec0(
@@ -592,7 +482,6 @@ fn create_tables(conn: &Connection, dim: usize) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Search the `obs_vectors` table.
 fn search_obs_table(
     conn: &Connection,
     query_embedding: &[f32],
@@ -616,7 +505,6 @@ fn search_obs_table(
         .prepare_cached(&sql)
         .context("failed to prepare obs search")?;
 
-    // Build parameter list: embedding bytes, limit, then filter values
     let mut all_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
     all_params.push(Box::new(query_embedding.as_bytes().to_vec()));
     all_params.push(Box::new(limit_i64));
@@ -647,7 +535,6 @@ fn search_obs_table(
     Ok(results)
 }
 
-/// Search the `chunk_vectors` table.
 fn search_chunk_table(
     conn: &Connection,
     query_embedding: &[f32],
@@ -703,10 +590,6 @@ fn search_chunk_table(
     Ok(results)
 }
 
-/// Search the `wiki_vectors` table.
-///
-/// Callers skip this table when an episode filter is set: wiki pages belong to
-/// no episode, and the table has no `episode_id` column to filter on.
 fn search_wiki_table(
     conn: &Connection,
     query_embedding: &[f32],
@@ -766,11 +649,6 @@ fn search_wiki_table(
     Ok(results)
 }
 
-/// Build SQL WHERE clause fragments and parameter values from filters.
-///
-/// Returns `(clause_string, params)` where `clause_string` contains SQL fragments
-/// like `AND date >= ?3 AND date <= ?4` and `params` are the corresponding values.
-/// Parameter numbering starts at `?3` because `?1` is the embedding and `?2` is k.
 fn build_filter_clauses(filters: &VectorSearchFilters) -> (String, Vec<String>) {
     let mut clauses = Vec::new();
     let mut params = Vec::new();
@@ -853,7 +731,6 @@ mod tests {
         assert_eq!(ids[0], "ep-001-o0");
         assert_eq!(ids[1], "ep-001-o1");
 
-        // Search for something similar to the first embedding
         let query = sample_embedding(0.1);
         let results = store
             .search(&query, 5, &VectorSearchFilters::default())
@@ -1127,14 +1004,12 @@ mod tests {
         let ids1 = store
             .insert_observations("ep-001", "2026-02-19", &obs, &embeddings)
             .unwrap();
-        // Second insert with same IDs should succeed (INSERT OR IGNORE)
         let ids2 = store
             .insert_observations("ep-001", "2026-02-19", &obs, &embeddings)
             .unwrap();
 
         assert_eq!(ids1, ids2, "should return same doc IDs");
 
-        // Should still only have one result when searching
         let query = sample_embedding(0.1);
         let results = store
             .search(&query, 10, &VectorSearchFilters::default())
@@ -1160,7 +1035,6 @@ mod tests {
         let embeddings = vec![sample_embedding(0.3)];
 
         let ids1 = store.insert_chunks(&chunks, &embeddings).unwrap();
-        // Second insert with same IDs should succeed (INSERT OR IGNORE)
         let ids2 = store.insert_chunks(&chunks, &embeddings).unwrap();
 
         assert_eq!(ids1, ids2, "should return same doc IDs");

@@ -10,33 +10,24 @@ import { PAIRING_PATH } from "./lib/pairing";
 import { startInstallOffer } from "./shell/install-offer";
 import { startPushClient } from "./shell/push-client.svelte";
 
-/** Every primitive control in every state, for development. */
 const UI_GALLERY_PATH = "/dev/gallery";
 
 const target = document.getElementById("app");
 if (!target) throw new Error("missing #app element");
 
-// Production builds replace the flag with false, which drops this branch and
-// the gallery's chunk with it.
 if (__UI_GALLERY__ && window.location.pathname === UI_GALLERY_PATH) {
   void import("./lib/ui/gallery/Gallery.svelte").then(({ default: Gallery }) =>
     mount(Gallery, { target }),
   );
 } else if (window.location.pathname === PAIRING_PATH) {
-  // An unpaired browser reaching Residuum through Residuum Cloud lands here.
-  // The page stands alone: nothing else in the app can load before pairing.
   void import("./pairing/PairingPage.svelte").then(({ default: PairingPage }) =>
     mount(PairingPage, { target }),
   );
 } else {
-  // The Cloud sign-in's outcome, before the router drops it from the address.
   captureCloudHandoff(window.location.search);
-  // Config changes made outside this page reach the views that show them.
   startConfigSync();
   startInstallOffer();
-  // Builds only: the app opens with no network, and a rebuilt app shows Update ready.
   startServiceWorker();
-  // This device's notifications, its presence on the hub socket, and notification clicks.
   startPushClient();
   mount(App, { target });
 }

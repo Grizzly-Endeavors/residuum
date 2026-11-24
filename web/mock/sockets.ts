@@ -5,41 +5,30 @@ import type { HubServerMessage, HubWorkspaceFrame } from "../src/lib/hub-types";
 import type { ServerMessage } from "../src/lib/generated/protocol";
 import { byName } from "./util";
 
-/** The WebSocket path of the hub. */
 export const HUB_SOCKET_PATH = "/api/hub/ws";
 
-/** The WebSocket path of one agent. */
 export function agentSocketPath(name: string): string {
   return `/api/agents/${name}/ws`;
 }
 
 type UpgradeListener = (req: IncomingMessage, socket: Duplex, head: Buffer) => void;
 
-/** The part of the HTTP server a socket route needs: its upgrade requests. */
 export interface UpgradeHost {
   on: (event: "upgrade", listener: UpgradeListener) => unknown;
   off: (event: "upgrade", listener: UpgradeListener) => unknown;
 }
 
-/** Whether an upgrade request's URL is `path`, with or without a query string. */
 export function isSocketPath(url: string | undefined, path: string): boolean {
   const target = url ?? "";
   return target === path || target.startsWith(`${path}?`);
 }
 
-/** The upgrade requests a socket route took, which answered them or accepted them. */
 const claimedUpgrades = new WeakSet<IncomingMessage>();
 
-/** Whether a socket route took the upgrade request, once the server has emitted it. */
 export function isClaimedUpgrade(req: IncomingMessage): boolean {
   return claimedUpgrades.has(req);
 }
 
-/**
- * Hand upgrade requests for `path` to `wss`, or answer them `409` with the
- * JSON body `conflict` returns when it returns one. Every other upgrade is
- * left alone, so Vite's HMR socket keeps working. The result stops routing.
- */
 export function routeUpgrades(
   host: UpgradeHost | null,
   wss: WebSocketServer,
@@ -67,12 +56,10 @@ export function routeUpgrades(
   };
 }
 
-/** Send a frame to one client, unless its connection is no longer open. */
 export function sendFrame(client: WebSocket, frame: object): void {
   if (client.readyState === WebSocket.OPEN) client.send(JSON.stringify(frame));
 }
 
-/** The text of a message a client sent. */
 export function frameText(raw: RawData): string {
   if (Array.isArray(raw)) return Buffer.concat(raw).toString();
   if (raw instanceof ArrayBuffer) return Buffer.from(raw).toString();
@@ -99,10 +86,8 @@ export function watchPrefixProblem(prefix: string): string | null {
   return null;
 }
 
-/** The prefixes a connection watches, as the backend's `WatchSet` keeps them; empty watches nothing. */
 export type WatchSet = readonly string[];
 
-/** A prefix of a `watch_workspace` or `watch_team` frame, without the empty and `.` segments the backend drops. */
 export function normalizeWatchPrefix(prefix: string): string {
   return prefix
     .split("/")
@@ -110,12 +95,10 @@ export function normalizeWatchPrefix(prefix: string): string {
     .join("/");
 }
 
-/** Whether `path` is `ancestor` or lies under it, by whole segments; `""` is the root and holds everything. */
 function isWithin(path: string, ancestor: string): boolean {
   return ancestor === "" || path === ancestor || path.startsWith(`${ancestor}/`);
 }
 
-/** Whether a frame belongs to the change feed, whose frames only connections that watch something receive. */
 export function isWorkspaceFrame(
   frame: ServerMessage | HubServerMessage,
 ): frame is HubWorkspaceFrame {
@@ -126,12 +109,6 @@ export function isWorkspaceFrame(
   );
 }
 
-/**
- * What a connection watching `watch` is sent for a change feed frame, or `null`
- * for nothing. `workspace_changed` is cut to the changes at, under or above a
- * watched prefix (removing a folder takes the prefixes inside it along),
- * sorted by path; the other frames go to a connection that watches anything.
- */
 export function watchedFrame(watch: WatchSet, frame: HubWorkspaceFrame): HubWorkspaceFrame | null {
   if (frame.type !== "workspace_changed") return watch.length === 0 ? null : frame;
   const changes = frame.changes

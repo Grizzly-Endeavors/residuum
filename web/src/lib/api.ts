@@ -1,5 +1,3 @@
-// ── Typed fetch wrappers ─────────────────────────────────────────────
-
 import type {
   StatusResponse,
   ChatHistorySegment,
@@ -79,18 +77,10 @@ import { cachedFetch, invalidate } from "./cache";
 import { agentBase, agentPath, hubPath, requireAgent, teamPath } from "./paths";
 import { isDeviceRequiredBody, redirectToPairing } from "./pairing";
 
-// ── Cache keys ──────────────────────────────────────────────────────
-//
-// Exported so other modules (e.g. ws.svelte.ts) can clear them when
-// out-of-band signals (gateway reload, WS reconnect) tell us the
-// server's view may have changed.
-
 export const CACHE_KEY_TIMEZONE = `GET ${hubPath("/system/timezone")}`;
 export const CACHE_KEY_MCP_CATALOG = `GET ${hubPath("/mcp-catalog")}`;
 export const CACHE_KEY_HUB_CONFIG_RAW = `GET ${hubPath("/config/raw")}`;
 
-// Agent-scoped entries are keyed by agent, so a fetch for one agent can't
-// fill or clear another agent's entry.
 function agentCacheKey(agent: string, sub: string): string {
   return `GET ${agentBase(agent)}${sub}`;
 }
@@ -101,9 +91,6 @@ export const cacheKeyProvidersRaw = (agent: string): string =>
   agentCacheKey(agent, "/providers/raw");
 export const cacheKeyMcpRaw = (agent: string): string => agentCacheKey(agent, "/mcp/raw");
 
-// ── Error class + fetch helpers ─────────────────────────────────────
-
-/** Structured error from a failed API response. */
 export class ApiError extends Error {
   constructor(
     public readonly status: number,
@@ -115,12 +102,6 @@ export class ApiError extends Error {
   }
 }
 
-/**
- * The validation result a raw-file PUT reports through a 400. Those
- * endpoints answer invalid input with `400 {valid: false, error}`, and
- * `apiFetch` throws on any non-2xx, so callers would otherwise only ever see
- * a generic failure instead of the validation message.
- */
 export function validationFromApiError(err: unknown): ValidateResponse | null {
   if (!(err instanceof ApiError) || err.status !== 400) return null;
   try {
@@ -139,20 +120,11 @@ export function validationFromApiError(err: unknown): ValidateResponse | null {
   return null;
 }
 
-/** A workspace write conflict: the file changed since it was last read. */
 export interface WorkspaceWriteConflict {
   error: string;
-  /** The file's version now, or `null` if it no longer exists. */
   currentVersion: string | null;
 }
 
-/**
- * The conflict a workspace file `PUT` reports through a `412` when its
- * `If-Match` no longer matches the file's current version — someone else
- * (the agent, another tab) saved it first. `apiFetch`/`apiFetchText` throw
- * on any non-2xx, so callers would otherwise only see a generic failure
- * instead of the version needed to reload or force an overwrite.
- */
 export function workspaceConflictFromApiError(err: unknown): WorkspaceWriteConflict | null {
   if (!(err instanceof ApiError) || err.status !== 412) return null;
   try {
@@ -194,12 +166,6 @@ async function putValidated(
   }
 }
 
-/**
- * `PATCH` a JSON diff (see `lib/settings-toml.ts`'s diff builders) and
- * report the same `{valid, error}` shape a raw-file PUT would. Skips the
- * request entirely when `diff` has no keys — an empty patch is a no-op, not
- * a network call.
- */
 async function patchValidated(
   path: string,
   diff: Record<string, unknown>,
@@ -234,19 +200,15 @@ async function checkOk(resp: Response): Promise<Response> {
   return resp;
 }
 
-/** Fetch wrapper that throws `ApiError` on non-ok responses. */
 async function apiFetch<T>(input: RequestInfo | URL, init?: RequestInit): Promise<T> {
   const resp = await checkOk(await fetch(input, init));
   return (await resp.json()) as T;
 }
 
-/** Fetch wrapper for plain text responses that throws `ApiError` on non-ok. */
 async function apiFetchText(input: RequestInfo | URL, init?: RequestInit): Promise<string> {
   const resp = await checkOk(await fetch(input, init));
   return resp.text();
 }
-
-// ── Core API wrappers ───────────────────────────────────────────────
 
 export async function fetchStatus(agent: string): Promise<StatusResponse> {
   return cachedFetch(cacheKeyStatus(agent), () =>
@@ -254,12 +216,6 @@ export async function fetchStatus(agent: string): Promise<StatusResponse> {
   );
 }
 
-/**
- * Throws `ApiError` when the server fails to serve the recent segment — the
- * caller is responsible for surfacing the failure to the user. Swallowing
- * silently would hide real corruption (e.g. a malformed `recent_messages.json`)
- * and make the chat feed look empty when it isn't.
- */
 export async function fetchChatHistory(agent: string): Promise<RecentHistorySegment> {
   const segment = await apiFetch<ChatHistorySegment>(agentPath(agent, "/chat/history"));
   if (segment.kind === "recent") return segment;
@@ -268,27 +224,10 @@ export async function fetchChatHistory(agent: string): Promise<RecentHistorySegm
   );
 }
 
-/**
- * Fetch the main agent's cumulative token usage totals, for the chat
- * footer to render correctly on connect/reconnect before the next model
- * call. Not cached — the WebSocket carries live updates from here on, this
- * is only the connect-time seed. Callers should degrade quietly on
- * failure (the footer simply starts blank) rather than surfacing an error
- * for this quiet, non-critical feature.
- */
 export async function fetchUsageTotals(agent: string): Promise<SessionUsageTotals> {
   return apiFetch<SessionUsageTotals>(agentPath(agent, "/usage"));
 }
 
-/**
- * Fetch an episode segment by cursor. Not cached: an episode id names a
- * different conversation on another instance behind the same address, or
- * after an agent is created again under the same name.
- *
- * Throws `ApiError` on failure — callers must decide how to surface the
- * error. A 404 (episode not found) is surfaced the same as any other
- * failure; the caller can inspect `ApiError.status` if it needs to branch.
- */
 export async function fetchChatSegment(
   agent: string,
   episodeId: string,
@@ -302,18 +241,13 @@ export async function fetchChatSegment(
   );
 }
 
-// ── Feedback / bug-report API wrappers ──────────────────────────────
-
-/** Receipt returned by the developer ingest service after submission. */
 export interface FeedbackReceipt {
   public_id: string;
   submitted_at: string;
 }
 
-/** Severity values accepted by the bug-report endpoint. */
 export type BugSeverity = "broken" | "wrong" | "annoying";
 
-/** POST a structured bug report through the gateway to the developer endpoint. */
 export async function submitBugReport(body: {
   what_happened: string;
   what_expected: string;
@@ -327,7 +261,6 @@ export async function submitBugReport(body: {
   });
 }
 
-/** POST a free-form feedback message through the gateway. */
 export async function submitFeedback(body: {
   message: string;
   category?: string;
@@ -339,9 +272,6 @@ export async function submitFeedback(body: {
   });
 }
 
-// ── Setup API wrappers ──────────────────────────────────────────────
-
-/** Graceful fallback: uses browser timezone when server is unreachable during setup. */
 export async function fetchTimezone(): Promise<string> {
   try {
     const data = await cachedFetch(CACHE_KEY_TIMEZONE, () =>
@@ -363,7 +293,6 @@ export async function fetchProviderModels(
   if (apiKey) body.api_key = apiKey;
   if (url) body.url = url;
 
-  // Onboarding lists a provider's models before any agent exists.
   const path =
     agent === null ? hubPath("/providers/models") : agentPath(agent, "/providers/models");
   return apiFetch<ModelsResponse>(path, {
@@ -373,12 +302,10 @@ export async function fetchProviderModels(
   });
 }
 
-/** The decision model form's values, saved or not: what the model list and the connection test use. */
 export interface SystemOneForm {
   provider: string;
   url?: string;
   model?: string;
-  /** A literal key or a `secret:<name>` reference. */
   api_key?: string;
   keep_alive?: string;
 }
@@ -386,11 +313,9 @@ export interface SystemOneForm {
 /** `POST /api/hub/system-one/models`. */
 export interface SystemOneModelsResponse {
   models: { id: string; description: string | null }[];
-  /** Why the list couldn't be read, in plain words. */
   error?: string;
 }
 
-/** `POST /api/hub/system-one/test`. */
 export interface SystemOneTestResponse {
   ok: boolean;
   message: string;
@@ -406,7 +331,6 @@ export async function fetchSystemOneModels(form: SystemOneForm): Promise<SystemO
   });
 }
 
-/** Ask the decision model the form describes one small question. Throws `ApiError` only when the hub can't be reached. */
 export async function testSystemOne(form: SystemOneForm): Promise<SystemOneTestResponse> {
   return apiFetch<SystemOneTestResponse>(hubPath("/system-one/test"), {
     method: "POST",
@@ -415,7 +339,6 @@ export async function testSystemOne(form: SystemOneForm): Promise<SystemOneTestR
   });
 }
 
-/** The MCP catalog. Throws `ApiError`; a failed read isn't cached, so the caller can offer Try again. */
 export async function fetchMcpCatalog(): Promise<McpCatalogEntry[]> {
   return cachedFetch(CACHE_KEY_MCP_CATALOG, () =>
     apiFetch<McpCatalogEntry[]>(hubPath("/mcp-catalog")),
@@ -430,11 +353,9 @@ export async function storeSecret(name: string, value: string): Promise<SecretRe
   });
 }
 
-/** Everything onboarding writes: the hub config, and the first agent's name and files. */
 export interface CompleteSetupPayload {
   hubConfig: string;
   agentName: string;
-  /** The user's name, written to the team's USER.md. Empty when they skipped it. */
   userName: string;
   config: string;
   providers: string;
@@ -457,8 +378,6 @@ export async function completeSetup(setup: CompleteSetupPayload): Promise<Valida
   });
 }
 
-// ── Settings API wrappers ────────────────────────────────────────────
-
 export async function fetchConfigRaw(agent: string): Promise<string> {
   return cachedFetch(cacheKeyConfigRaw(agent), () => apiFetchText(agentPath(agent, "/config/raw")));
 }
@@ -472,7 +391,6 @@ export async function putConfigRaw(agent: string, toml: string): Promise<Validat
   );
 }
 
-/** Merge a diff (from `diffConfigFields`) into `config.toml` on the server. */
 export async function patchConfig(
   agent: string,
   diff: Record<string, unknown>,
@@ -488,7 +406,6 @@ export async function validateConfig(agent: string, toml: string): Promise<Valid
   });
 }
 
-/** The hub's `config.toml` (timezone, gateway, cloud, A2A listener, tracing, session limits). */
 export async function fetchHubConfigRaw(): Promise<string> {
   return cachedFetch(CACHE_KEY_HUB_CONFIG_RAW, () => apiFetchText(hubPath("/config/raw")));
 }
@@ -497,7 +414,6 @@ export async function putHubConfigRaw(toml: string): Promise<ValidateResponse> {
   return putValidated(hubPath("/config/raw"), "text/plain", toml, CACHE_KEY_HUB_CONFIG_RAW);
 }
 
-/** Merge a diff (the hub half of `splitConfigPatch`) into the hub's `config.toml`. */
 export async function patchHubConfig(diff: Record<string, unknown>): Promise<ValidateResponse> {
   return patchValidated(hubPath("/config/patch"), diff, CACHE_KEY_HUB_CONFIG_RAW);
 }
@@ -525,7 +441,6 @@ export async function putProvidersRaw(agent: string, toml: string): Promise<Vali
   );
 }
 
-/** Merge a diff (from `diffProviders`/`modelRoleJson`) into `providers.toml` on the server. */
 export async function patchProviders(
   agent: string,
   diff: Record<string, unknown>,
@@ -554,7 +469,6 @@ export async function putMcpRaw(agent: string, json: string): Promise<ValidateRe
   );
 }
 
-/** Problems in `json` as the agent's `mcp.json`, without writing it. Throws when the check can't be made. */
 export async function validateMcp(agent: string, json: string): Promise<Diagnostic[]> {
   const result = await apiFetch<WorkspaceValidateResponse>(
     agentPath(agent, "/workspace/validate"),
@@ -567,7 +481,6 @@ export async function validateMcp(agent: string, json: string): Promise<Diagnost
   return result.diagnostics;
 }
 
-/** Merge a diff (from `diffMcpServers`) into `mcp.json` on the server. */
 export async function patchMcp(
   agent: string,
   diff: Record<string, unknown>,
@@ -575,13 +488,11 @@ export async function patchMcp(
   return patchValidated(agentPath(agent, "/mcp/patch"), diff, cacheKeyMcpRaw(agent));
 }
 
-/** The names of the stored secrets (never their values). Throws `ApiError` on failure. */
 export async function fetchSecretNames(): Promise<string[]> {
   const data = await apiFetch<SecretsListResponse>(hubPath("/secrets"));
   return data.names;
 }
 
-/** Graceful fallback: returns empty on failure (secrets list is non-critical). */
 export async function listSecrets(): Promise<string[]> {
   try {
     return await fetchSecretNames();
@@ -596,9 +507,6 @@ export async function deleteSecret(name: string): Promise<void> {
   });
 }
 
-// ── Agent keys API wrappers ─────────────────────────────────────────
-
-/** Throws `ApiError` on failure; the caller surfaces it. */
 export async function fetchAgentKeys(): Promise<AgentKeyInfo[]> {
   const data = await apiFetch<AgentKeysListResponse>(hubPath("/agent-keys"));
   return data.keys;
@@ -620,9 +528,6 @@ export async function deleteAgentKey(name: string): Promise<string | null> {
   return readCheckpointId(hubPath(`/agent-keys/${encodeURIComponent(name)}`), { method: "DELETE" });
 }
 
-// ── A2A API wrappers ──────────────────────────────────────────────────
-
-/** Live A2A status. Throws `ApiError` on failure; the caller surfaces it. */
 export async function fetchA2aStatus(agent: string): Promise<A2aStatusResponse> {
   return apiFetch<A2aStatusResponse>(agentPath(agent, "/a2a/status"));
 }
@@ -636,7 +541,6 @@ export async function fetchA2aCard(agent: string): Promise<A2aAgentCard> {
   return apiFetch<A2aAgentCard>(agentPath(agent, "/a2a/card"));
 }
 
-/** Throws `ApiError` on failure; the caller surfaces it. */
 export async function fetchA2aKeys(): Promise<A2aKeyInfo[]> {
   const data = await apiFetch<A2aKeysListResponse>(hubPath("/a2a/keys"));
   return data.keys;
@@ -657,15 +561,10 @@ export async function revokeA2aKey(name: string): Promise<string | null> {
   return readCheckpointId(hubPath(`/a2a/keys/${encodeURIComponent(name)}`), { method: "DELETE" });
 }
 
-/**
- * Remote agents from `config/a2a.json` plus any discovered siblings.
- * Throws `ApiError` on failure; the caller surfaces it.
- */
 export async function fetchA2aAgents(agent: string): Promise<A2aRemoteAgent[]> {
   return apiFetch<A2aRemoteAgent[]>(agentPath(agent, "/a2a/agents"));
 }
 
-/** Open tasks the agent sent to remote agents, newest first. Throws `ApiError`. */
 export async function fetchOutboundA2aTasks(agent: string): Promise<OutboundA2aTaskSummary[]> {
   return apiFetch<OutboundA2aTaskSummary[]>(agentPath(agent, "/a2a/outbound"));
 }
@@ -687,7 +586,6 @@ export async function stopOutboundA2aTask(
   );
 }
 
-/** Stop watching a task without reaching its agent. Throws `ApiError` (`404` when it already ended). */
 export async function stopWatchingOutboundA2aTask(
   agent: string,
   taskId: string,
@@ -698,33 +596,14 @@ export async function stopWatchingOutboundA2aTask(
   );
 }
 
-/**
- * `config/a2a.json` as it is now. Never cached: the agent edits it too, and
- * an editor opened on an old copy would save over the agent's change.
- */
 export async function fetchA2aAgentsRaw(agent: string): Promise<string> {
   return apiFetchText(agentPath(agent, "/a2a/agents/raw"));
 }
 
-/**
- * Save `config/a2a.json`. Always saves, even when invalid — the loader
- * skips an unusable agent entry with a warning and keeps every other agent
- * running, so the response reports a diagnostic instead of the write being
- * rejected. Same shape as `putConfigRaw`/`putProvidersRaw`/`putMcpRaw`.
- */
 export async function putA2aAgentsRaw(agent: string, content: string): Promise<ValidateResponse> {
   return putValidated(agentPath(agent, "/a2a/agents/raw"), "application/json", content, null);
 }
 
-// ── Agent sessions API wrappers ─────────────────────────────────────
-
-/**
- * List live sessions plus one page of completed runs, newest first, both
- * limited to `category` when given. Never cached: the listing changes
- * whenever a session starts or finishes.
- *
- * Throws `ApiError` on failure; the caller surfaces it.
- */
 export async function fetchSessions(
   agent: string,
   query: {
@@ -732,7 +611,6 @@ export async function fetchSessions(
     before?: string;
     limit?: number;
     address?: string;
-    /** Only sessions that workbench artifact started, not sessions those spawned in turn. */
     artifact?: string;
   },
 ): Promise<SessionListResponse> {
@@ -746,12 +624,6 @@ export async function fetchSessions(
   return apiFetch<SessionListResponse>(agentPath(agent, `/sessions${qs ? `?${qs}` : ""}`));
 }
 
-/**
- * Fetch one run's transcript, live or completed. Not cached: a live run's
- * transcript grows as it works.
- *
- * Throws `ApiError` on failure (404 for an unknown run).
- */
 export async function fetchSessionTranscript(
   agent: string,
   runId: string,
@@ -761,16 +633,11 @@ export async function fetchSessionTranscript(
   );
 }
 
-/** Which of the agent's models a session runs on. */
 export type SessionModelSize = "small" | "medium" | "large";
 
-/** What the owner starts a session with. */
 export interface StartSessionRequest {
-  /** The task, the session's first message. */
   prompt: string;
-  /** The agent's medium model when left out. */
   model?: SessionModelSize;
-  /** Start from the main conversation (`/multitask`) instead of clean. */
   fork?: boolean;
 }
 
@@ -794,9 +661,7 @@ export async function startSession(agent: string, request: StartSessionRequest):
 
 /** `POST /api/sessions/{address}/messages` response. */
 export interface SessionMessageReply {
-  /** Where the message landed. */
   outcome: SessionDeliveryOutcome;
-  /** The message's id, which the session's `session_user_message` frame names once it reads it. */
   id: string;
 }
 
@@ -824,25 +689,16 @@ export async function messageSession(
   );
 }
 
-/**
- * Stop the live session at `address`. The run's `completing` and
- * `session_completed` frames follow. Throws `ApiError` (`404` when nothing
- * there can still be stopped).
- */
 export async function stopSession(agent: string, address: string): Promise<void> {
   await apiFetch<unknown>(agentPath(agent, `/sessions/${encodeURIComponent(address)}/stop`), {
     method: "POST",
   });
 }
 
-// ── Scheduled view API wrappers ──────────────────────────────────────
-
-/** Every pulse in HEARTBEAT.yml. Not cached: run state changes live. */
 export async function fetchScheduledPulses(agent: string): Promise<PulseInfo[]> {
   return apiFetch<PulseInfo[]>(agentPath(agent, "/scheduled/pulses"));
 }
 
-/** Flip a pulse's `enabled` field in HEARTBEAT.yml. Throws `ApiError` (404 if the pulse is gone). */
 export async function setPulseEnabled(
   agent: string,
   name: string,
@@ -858,11 +714,6 @@ export async function setPulseEnabled(
   );
 }
 
-/**
- * Stop one fire of a pulse, in its scripts or its session. The stop's outcome
- * arrives as a `pulse_fire_changed` frame. Throws `ApiError` (`404` once that
- * fire has finished).
- */
 export async function stopPulseFire(agent: string, pulse: string, fireId: string): Promise<void> {
   await apiFetch<unknown>(
     agentPath(
@@ -873,39 +724,29 @@ export async function stopPulseFire(agent: string, pulse: string, fireId: string
   );
 }
 
-/** Every pending scheduled action. Not cached: it changes as actions fire. */
 export async function fetchScheduledActions(agent: string): Promise<ActionInfo[]> {
   return apiFetch<ActionInfo[]>(agentPath(agent, "/scheduled/actions"));
 }
 
-/** Cancel a pending scheduled action. Throws `ApiError` (404 if already gone). */
 export async function cancelScheduledAction(agent: string, id: string): Promise<void> {
   await apiFetch<unknown>(agentPath(agent, `/scheduled/actions/${encodeURIComponent(id)}`), {
     method: "DELETE",
   });
 }
 
-// ── Workbench API wrappers ──────────────────────────────────────────
-
-/** Every workbench artifact, most recently modified first. Not cached: artifacts change live. */
 export async function fetchWorkbenchArtifacts(): Promise<ArtifactSummary[]> {
   return apiFetch<ArtifactSummary[]>(teamPath("/workbench/artifacts"));
 }
 
-/** Where artifacts are served, locally and through the relay. Not cached: the relay connection changes. */
 export async function fetchWorkbenchInfo(): Promise<WorkbenchInfo> {
   return apiFetch<WorkbenchInfo>(teamPath("/workbench/info"));
 }
 
-/** What deleting an artifact removed, and the team checkpoint that can bring it back. */
 export interface ArtifactDeletion {
-  /** Team-relative paths of everything removed (`workbench/chart.html`, `workbench/graph`). */
   paths: string[];
-  /** The pre-delete team checkpoint, or `null` when none was recorded. */
   checkpointId: string | null;
 }
 
-/** Delete an artifact and its data files. Throws `ApiError` (404 if already gone). */
 export async function deleteWorkbenchArtifact(name: string): Promise<ArtifactDeletion> {
   const body = await apiFetch<{ removed?: unknown; checkpoint_id?: unknown }>(
     teamPath(`/workbench/artifacts/${encodeURIComponent(name)}`),
@@ -924,15 +765,6 @@ export async function deleteWorkbenchArtifact(name: string): Promise<ArtifactDel
   };
 }
 
-// ── Workspace API wrappers ──────────────────────────────────────────
-
-/**
- * A workspace API path. Scope `agent` addresses `agent`'s tree (where the
- * shared tree shows up under `team/`); `team` addresses the shared tree
- * directly, with paths relative to `team/`. Only the agent scope needs an
- * agent: `null` is for the team scope, and throws `NoAgentSelectedError` for
- * the agent one.
- */
 function workspacePath(agent: string | null, sub: string, scope: WorkspaceScope): string {
   return scope === "team"
     ? teamPath(`/workspace${sub}`)
@@ -948,7 +780,6 @@ export async function fetchWorkspaceFiles(
   return apiFetch<WorkspaceEntry[]>(workspacePath(agent, `/files${params}`, scope));
 }
 
-/** A workspace file's content plus the version to send back as `If-Match`. */
 export interface WorkspaceFileRead {
   content: string;
   version: string;
@@ -990,10 +821,6 @@ export async function putWorkspaceFile(
   });
 }
 
-/** Diagnostics for `content` as if it were saved to `path`, without writing
- * anything. Empty means either the content is clean or `path` isn't one of
- * the strictly-parsed files the server checks. Graceful fallback: a network
- * or server error returns no diagnostics rather than interrupting typing. */
 export async function validateWorkspaceFile(
   agent: string | null,
   path: string,
@@ -1015,7 +842,6 @@ export async function validateWorkspaceFile(
   }
 }
 
-/** A pre-action checkpoint and the repository that holds it. */
 export interface WorkspaceCheckpoint {
   id: string;
   repo: RepoKind;
@@ -1026,13 +852,6 @@ interface CheckpointFields {
   checkpoint_repo?: unknown;
 }
 
-/**
- * The checkpoints a workspace-API response names: `checkpoint_id` +
- * `checkpoint_repo` for one, or a `checkpoints` list when the action spanned
- * the agent and team directories. Empty when none was recorded. A response
- * without `checkpoint_repo` came from an agent-only path, so the workspace
- * repository holds it.
- */
 export function parseWorkspaceCheckpoints(
   body: CheckpointFields & { checkpoints?: unknown },
 ): WorkspaceCheckpoint[] {
@@ -1047,8 +866,6 @@ export function parseWorkspaceCheckpoints(
   return one(body);
 }
 
-/** Delete a workspace file or `team/...` file. Throws `ApiError` (404 if already gone).
- * Returns the pre-delete checkpoint(s), empty when none was recorded. */
 export async function deleteWorkspaceFile(
   agent: string | null,
   path: string,
@@ -1061,7 +878,6 @@ export async function deleteWorkspaceFile(
   return parseWorkspaceCheckpoints(body);
 }
 
-/** Move or rename a workspace file. Throws `ApiError` (409 if `to` exists and `overwrite` isn't set). */
 export async function moveWorkspaceFile(
   agent: string | null,
   from: string,
@@ -1076,24 +892,11 @@ export async function moveWorkspaceFile(
   });
 }
 
-// ── Checkpoints API wrappers ─────────────────────────────────────────
-
-/**
- * Hub and team repositories live under the hub; workspace and agent-config
- * under the agent. Only those two need an agent: `null` is for the hub-level
- * repositories, and throws `NoAgentSelectedError` for an agent-level one.
- */
 function checkpointPath(agent: string | null, repo: RepoKind, sub: string): string {
   const path = `/checkpoints${sub}`;
   return repo === "hub" || repo === "team" ? hubPath(path) : agentPath(requireAgent(agent), path);
 }
 
-/**
- * One page of checkpoints, newest first. `path` restricts to checkpoints
- * that changed it; `turnId` restricts to a single turn's checkpoints (its
- * turn-start/turn-end pair); `before`/`limit` page. Never cached — the
- * list changes on every turn and action.
- */
 export async function fetchCheckpoints(
   agent: string | null,
   query: {
@@ -1112,7 +915,6 @@ export async function fetchCheckpoints(
   return apiFetch<CheckpointPage>(checkpointPath(agent, query.repo, `?${params}`));
 }
 
-/** On-disk size, checkpoint count, and oldest checkpoint for a repository. */
 export async function fetchCheckpointStats(
   agent: string | null,
   repo: RepoKind,
@@ -1120,7 +922,6 @@ export async function fetchCheckpointStats(
   return apiFetch<RepoStats>(checkpointPath(agent, repo, `/stats?repo=${repo}`));
 }
 
-/** A checkpoint's metadata plus the paths it changed. */
 export async function fetchCheckpointDetail(
   agent: string | null,
   id: string,
@@ -1131,7 +932,6 @@ export async function fetchCheckpointDetail(
   );
 }
 
-/** Unified diff for one file at a checkpoint, `null` if it didn't change there. */
 export async function fetchCheckpointDiff(
   agent: string | null,
   id: string,
@@ -1164,7 +964,6 @@ export async function fetchCheckpointFile(
   );
 }
 
-/** Restore `path` to its content at checkpoint `id`. Checkpoints the result, so it can itself be undone. */
 export async function restoreCheckpoint(
   agent: string | null,
   id: string,
@@ -1181,7 +980,6 @@ export async function restoreCheckpoint(
   );
 }
 
-/** Undo everything checkpoint `id` changed, skipping any path changed again since. */
 export async function undoCheckpoint(
   agent: string | null,
   id: string,
@@ -1194,8 +992,6 @@ export async function undoCheckpoint(
   });
 }
 
-/** `checkpoint_id` from a delete/revoke response, or `null` when the server
- * recorded none (the checkpoint failed, or the field is missing). */
 async function readCheckpointId(path: string, init?: RequestInit): Promise<string | null> {
   const body = await apiFetch<{ checkpoint_id?: unknown }>(path, init);
   return typeof body.checkpoint_id === "string" && body.checkpoint_id.length > 0
@@ -1203,16 +999,10 @@ async function readCheckpointId(path: string, init?: RequestInit): Promise<strin
     : null;
 }
 
-// ── Cloud API wrappers ──────────────────────────────────────────────
-
 export async function fetchCloudStatus(): Promise<CloudStatusResponse> {
   return apiFetch<CloudStatusResponse>(hubPath("/cloud/status"));
 }
 
-/**
- * Start a sign-in to Residuum Cloud: the hub answers with the relay's sign-in
- * address, carrying the `state` its callback will accept the token with.
- */
 export async function startCloudSignIn(relayUrl: string, port: string): Promise<string> {
   const { url } = await apiFetch<{ url: string }>(hubPath("/cloud/connect"), {
     method: "POST",
@@ -1226,8 +1016,6 @@ export async function disconnectCloud(): Promise<void> {
   await apiFetchText(hubPath("/cloud/disconnect"), { method: "POST" });
 }
 
-// ── Update API wrappers ──────────────────────────────────────────────
-
 export async function fetchUpdateStatus(): Promise<UpdateStatusResponse> {
   return apiFetch<UpdateStatusResponse>(hubPath("/update/status"));
 }
@@ -1240,23 +1028,16 @@ export async function applyUpdate(): Promise<UpdateStatusResponse> {
   return apiFetch<UpdateStatusResponse>(hubPath("/update/apply"), { method: "POST" });
 }
 
-// ── Web Push API wrappers ────────────────────────────────────────────
-//
-// Every one throws `ApiError` on failure; the caller surfaces it.
-
-/** The hub's VAPID public key, base64url: what a browser subscribes with. */
 export async function fetchPushKey(): Promise<string> {
   const data = await apiFetch<PushKeyResponse>(hubPath("/push/key"));
   return data.public_key;
 }
 
-/** Every device that receives notifications, oldest first. */
 export async function fetchPushDevices(): Promise<PushDevice[]> {
   const data = await apiFetch<PushDeviceList>(hubPath("/push/devices"));
   return data.devices;
 }
 
-/** Register a browser's subscription, or update the device already registered for it. */
 export async function registerPushDevice(
   subscription: WebPushSubscription,
   label: string,
@@ -1269,7 +1050,6 @@ export async function registerPushDevice(
   return data.device;
 }
 
-/** Rename a device or change some of its preferences. */
 export async function updatePushDevice(
   id: string,
   change: { label?: string; preferences?: PushPreferencesPatch },
@@ -1285,31 +1065,24 @@ export async function updatePushDevice(
   return data.device;
 }
 
-/** Stop sending to a device. */
 export async function removePushDevice(id: string): Promise<void> {
   await apiFetchText(hubPath(`/push/devices/${encodeURIComponent(id)}`), { method: "DELETE" });
 }
 
-/** Send the test notification to a device and say whether its push service took it. */
 export async function sendPushTest(id: string): Promise<PushTestResult> {
   return apiFetch<PushTestResult>(hubPath(`/push/devices/${encodeURIComponent(id)}/test`), {
     method: "POST",
   });
 }
 
-// ── Hub lifecycle API wrappers ───────────────────────────────────────
-
-/** Every agent with its state, sorted by name, with the activity and stopping set beside the list. */
 export async function fetchAgents(): Promise<AgentListResponse> {
   return apiFetch<AgentListResponse>(hubPath("/agents"));
 }
 
-/** Hub status: version, uptime, tunnel, and agent counts by state. */
 export async function fetchHubStatus(): Promise<HubStatusResponse> {
   return apiFetch<HubStatusResponse>(hubPath("/status"));
 }
 
-/** Create an agent. Throws `ApiError` (400 invalid name, 409 name exists). */
 export async function createAgent(request: CreateAgentRequest): Promise<AgentSummary> {
   return apiFetch<AgentSummary>(hubPath("/agents"), {
     method: "POST",
@@ -1319,14 +1092,12 @@ export async function createAgent(request: CreateAgentRequest): Promise<AgentSum
   });
 }
 
-/** Delete an agent. `checkpoint_id` names the checkpoint it can be restored from. */
 export async function deleteAgent(name: string): Promise<DeleteOutcome> {
   return apiFetch<DeleteOutcome>(hubPath(`/agents/${encodeURIComponent(name)}`), {
     method: "DELETE",
   });
 }
 
-/** Deleted agents that can be restored, newest deletion first. */
 export async function fetchDeletedAgents(): Promise<DeletedAgent[]> {
   const data = await apiFetch<DeletedAgentListResponse>(hubPath("/agents/deleted"));
   return data.agents;
@@ -1371,7 +1142,6 @@ export async function restartAgent(name: string, force = false): Promise<AgentSu
   });
 }
 
-/** Make an agent's A2A card public or private. */
 export async function setAgentVisibility(
   name: string,
   a2a_visibility: A2aVisibility,
@@ -1379,7 +1149,6 @@ export async function setAgentVisibility(
   return patchAgent(name, { a2a_visibility });
 }
 
-/** Turn an agent's autostart on or off. */
 export async function setAgentAutostart(name: string, autostart: boolean): Promise<AgentSummary> {
   return patchAgent(name, { autostart });
 }
@@ -1393,9 +1162,6 @@ async function patchAgent(name: string, patch: Partial<AgentPatch>): Promise<Age
   });
 }
 
-// ── Team overview and team events ───────────────────────────────────
-
-/** `?a=1&b=2` from the parameters that are set, or `""` when none are. */
 function queryString(params: Record<string, string | number | undefined>): string {
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
@@ -1405,38 +1171,27 @@ function queryString(params: Record<string, string | number | undefined>): strin
   return text === "" ? "" : `?${text}`;
 }
 
-/** Every agent's overview, sorted by name, with the boot id of the hub process that answered. Throws `ApiError`. */
 export async function fetchOverview(): Promise<OverviewResponse> {
   return apiFetch<OverviewResponse>(hubPath("/overview"));
 }
 
-/**
- * One page of the team event log, newest first: entries older than `before`
- * and newer than `after`, at most `limit` (50 by default, 200 at most).
- * Throws `ApiError`.
- */
 export async function fetchTeamEvents(
   query: { before?: number; after?: number; limit?: number } = {},
 ): Promise<TeamEventPage> {
   return apiFetch<TeamEventPage>(hubPath(`/events${queryString(query)}`));
 }
 
-// ── Mail ────────────────────────────────────────────────────────────
-
 /** The largest file the hub stages for a message, in bytes. A larger upload is answered `413`. */
 export const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 
-/** `MAX_UPLOAD_BYTES` as the screens say it: "50 MB". */
 export const UPLOAD_LIMIT_LABEL = `${String(MAX_UPLOAD_BYTES / (1024 * 1024))} MB`;
 
-/** A file the hub has staged, to attach to a message by `id`. */
 export interface UploadedFile {
   id: string;
   filename: string;
   size: number;
 }
 
-/** What `POST /api/hub/mail/send` takes. `attachments` are upload ids. */
 export interface SendMailRequest {
   to: string[];
   subject: string;
@@ -1450,17 +1205,11 @@ export interface ReplyToMailRequest {
   attachments: string[];
 }
 
-/** The hub's route for one mail thread, followed by `action` when there is one. A thread id holds `/`, so it is encoded. */
 function mailThreadPath(threadId: string, action?: string): string {
   const path = `/mail/threads/${encodeURIComponent(threadId)}`;
   return hubPath(action === undefined ? path : `${path}/${action}`);
 }
 
-/**
- * One page of the mail threads in a folder, newest first, across every agent
- * or only those `agent` took part in. `before` is the previous page's `next`.
- * Throws `ApiError`.
- */
 export async function fetchMailThreads(query: {
   folder: MailFolder;
   agent?: string;
@@ -1473,16 +1222,10 @@ export async function fetchMailThreads(query: {
   );
 }
 
-/**
- * A thread with every message, oldest first. `threadId` can be the ref of any
- * message in the thread; the answer names the thread by its own id. Throws
- * `ApiError`.
- */
 export async function fetchMailThread(threadId: string): Promise<MailThread> {
   return apiFetch<MailThread>(mailThreadPath(threadId));
 }
 
-/** Send a new message to one or more agents and get the thread it starts. Throws `ApiError`. */
 export async function sendMail(request: SendMailRequest): Promise<MailSendResponse> {
   return apiFetch<MailSendResponse>(hubPath("/mail/send"), {
     method: "POST",
@@ -1491,7 +1234,6 @@ export async function sendMail(request: SendMailRequest): Promise<MailSendRespon
   });
 }
 
-/** Reply to everyone in a thread and get the message that was added. Throws `ApiError`. */
 export async function replyToMailThread(
   threadId: string,
   request: ReplyToMailRequest,
@@ -1503,17 +1245,14 @@ export async function replyToMailThread(
   });
 }
 
-/** Mark every message an agent sent in the thread read. Throws `ApiError`. */
 export async function markMailThreadRead(threadId: string): Promise<void> {
   await apiFetchText(mailThreadPath(threadId, "read"), { method: "POST" });
 }
 
-/** Move the thread's messages from the agents to the archive. Throws `ApiError`. */
 export async function archiveMailThread(threadId: string): Promise<void> {
   await apiFetchText(mailThreadPath(threadId, "archive"), { method: "POST" });
 }
 
-/** Move the thread's archived messages back to the inbox. Throws `ApiError`. */
 export async function restoreMailThread(threadId: string): Promise<void> {
   await apiFetchText(mailThreadPath(threadId, "restore"), { method: "POST" });
 }
@@ -1538,17 +1277,10 @@ export async function uploadFile(
   });
 }
 
-// ── Teams setup API ─────────────────────────────────────────────────
-
-/** Fetch prerequisite check results for Teams setup. */
 export async function fetchTeamsSetupPrereqs(agent: string): Promise<TeamsSetupPrereqs> {
   return apiFetch<TeamsSetupPrereqs>(agentPath(agent, "/teams-setup/prereqs"));
 }
 
-/**
- * Fetch current Teams setup job state. Returns `null` on 404 when no job exists.
- * When `logSince` is given, only log lines with `seq > logSince` are returned.
- */
 export async function fetchTeamsSetupJob(
   agent: string,
   logSince?: number,
@@ -1589,7 +1321,6 @@ export async function startTeamsSetupJob(
   }
 }
 
-/** Submit a redirect URL from browser authentication. */
 export async function submitTeamsSetupRedirect(agent: string, url: string): Promise<TeamsSetupJob> {
   return apiFetch<TeamsSetupJob>(agentPath(agent, "/teams-setup/job/redirect"), {
     method: "POST",
@@ -1598,44 +1329,37 @@ export async function submitTeamsSetupRedirect(agent: string, url: string): Prom
   });
 }
 
-/** Cancel a running Teams setup job and kill its process tree. */
 export async function cancelTeamsSetupJob(agent: string): Promise<TeamsSetupJob> {
   return apiFetch<TeamsSetupJob>(agentPath(agent, "/teams-setup/job/cancel"), {
     method: "POST",
   });
 }
 
-/** Retry a failed or cancelled Teams setup job from the failed phase. */
 export async function retryTeamsSetupJob(agent: string): Promise<TeamsSetupJob> {
   return apiFetch<TeamsSetupJob>(agentPath(agent, "/teams-setup/job/retry"), {
     method: "POST",
   });
 }
 
-/** Install the generated Teams app package into Teams via ATK. */
 export async function installTeamsApp(agent: string): Promise<TeamsSetupJob> {
   return apiFetch<TeamsSetupJob>(agentPath(agent, "/teams-setup/job/install-app"), {
     method: "POST",
   });
 }
 
-/** Direct URL for downloading the app package zip. */
 export function teamsAppPackageUrl(agent: string): string {
   return agentPath(agent, "/teams-setup/job/package");
 }
 
-/** Fetch the app package zip as a Blob. */
 export async function fetchTeamsAppPackage(agent: string): Promise<Blob> {
   const resp = await checkOk(await fetch(agentPath(agent, "/teams-setup/job/package")));
   return resp.blob();
 }
 
-/** Forget a finished Teams setup job. Throws 409 if still running. */
 export async function deleteTeamsSetupJob(agent: string): Promise<void> {
   await apiFetchText(agentPath(agent, "/teams-setup/job"), { method: "DELETE" });
 }
 
-/** Clean up local project files, CLI install, or M365 session. */
 export async function cleanupTeamsSetup(
   agent: string,
   req: CleanupRequest,

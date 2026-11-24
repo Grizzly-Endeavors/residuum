@@ -5,19 +5,12 @@
   import Spinner from "./Spinner.svelte";
   import type { BannerTone } from "./types";
 
-  // A notice at the top of a region: information on a blue wash, a warning or
-  // an error on a red one. Errors are announced as alerts, the rest politely.
   interface Props {
     tone?: BannerTone;
-    /** A short bold lead-in before the message. */
     title?: string;
-    /** Replaces the tone's icon, for example `check` after a save. */
     icon?: IconName;
-    /** Something is under way: a spinner takes the icon's place. */
     busy?: boolean;
-    /** Square corners, for a banner that spans its region edge to edge. */
     edge?: boolean;
-    /** Shows a close button that calls this. */
     ondismiss?: () => void;
     actions?: Snippet;
     children: Snippet;
@@ -98,7 +91,6 @@
     border-radius: 0;
   }
 
-  /* Icon and message align to the message's first line when it wraps. */
   .ui-banner-icon {
     display: grid;
     flex: none;

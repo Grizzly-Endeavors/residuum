@@ -37,15 +37,9 @@ use crate::context::PromptContext;
 use crate::testing::EchoTool;
 use crate::{Agent, AgentConfig, HopCounter, ToolRegistry};
 
-/// The message the user sends while the first turn's tool call runs.
 const MID_TURN_TEXT: &str = "actually, check it twice";
-/// The message delivered between the first and second turns.
 const BETWEEN_TURNS_TEXT: &str = "a note that reached your inbox";
 
-/// Answers each request with the next reply of its script. While answering
-/// the first request it also hands the running turn a user message, as if
-/// the user sent it while the model was working; the turn reads it before
-/// its next model call.
 struct ScriptedReplies {
     replies: Mutex<VecDeque<Value>>,
     mid_turn: Mutex<Option<UnboundedSender<Interrupt>>>,
@@ -65,9 +59,6 @@ impl Respond for ScriptedReplies {
     }
 }
 
-/// A provider that answers every call whole, so the scripted replies are
-/// plain JSON rather than event streams. The request a streaming call sends
-/// differs only in its top-level `stream` flag.
 struct WholeReplies(Box<dyn InferenceProvider>);
 
 #[async_trait]
@@ -96,22 +87,14 @@ impl InferenceProvider for WholeReplies {
     }
 }
 
-/// One provider's wire: how to reach it, what the turns ask of it, and the
-/// replies it gives.
 struct Wire {
     name: &'static str,
     endpoint: &'static str,
     client: fn(&str) -> Box<dyn InferenceProvider>,
     options: CompletionOptions,
-    /// The first turn's tool call, its final reply, the second turn's reply,
-    /// and the reply after the restart.
     replies: [Value; 4],
 }
 
-/// A request body as the exact bytes sent: each top-level field, and each
-/// message of `messages`. Every field is compared, so one that varies between
-/// calls fails the test whatever it is (a cache-relevant `thinking`,
-/// `tool_choice` or `system`, or one a provider adds later).
 struct Body<'a> {
     fields: BTreeMap<&'a str, &'a RawValue>,
     messages: Vec<&'a RawValue>,
@@ -146,7 +129,6 @@ fn inbound(id: &str, content: &str) -> MessageEvent {
     }
 }
 
-/// A person's message from the web.
 fn web_origin() -> MessageOrigin {
     MessageOrigin {
         endpoint: "ws".to_string(),
@@ -163,7 +145,6 @@ fn picture() -> ImageData {
     }
 }
 
-/// The main conversation's agent, with the echo tool, over `client`.
 fn agent_over(client: Box<dyn InferenceProvider>, options: &CompletionOptions) -> Agent {
     let mut tools = ToolRegistry::new();
     tools.register(Box::new(EchoTool));
@@ -185,7 +166,6 @@ fn agent_over(client: Box<dyn InferenceProvider>, options: &CompletionOptions) -
     )
 }
 
-/// Run one turn of `agent` on a web message.
 async fn send(
     agent: &mut Agent,
     text: &str,
@@ -212,8 +192,6 @@ async fn send(
         .unwrap();
 }
 
-/// Hold the conversation over `wire` and return every request body it sent,
-/// in order.
 async fn converse(wire: &Wire) -> Vec<String> {
     let server = MockServer::start().await;
     let (mid_turn, mut interrupts) = unbounded_channel();
@@ -239,7 +217,6 @@ async fn converse(wire: &Wire) -> Vec<String> {
     agent.inject_inbound_message(inbound("between", BETWEEN_TURNS_TEXT));
     send(&mut agent, "and what now?", &[], "t2", &mut interrupts).await;
 
-    // A restart: the history goes to disk and a new agent loads it.
     let dir = tempfile::tempdir().unwrap();
     let history = dir.path().join("recent_messages.json");
     append_recent_messages(
@@ -266,9 +243,6 @@ async fn converse(wire: &Wire) -> Vec<String> {
         .collect()
 }
 
-/// Assert each body repeats the previous body's top-level fields byte for
-/// byte, apart from `messages`, repeats its messages byte for byte, and
-/// appends at least one message.
 fn assert_each_request_extends_the_last(wire: &Wire, bodies: &[String]) {
     for (call, pair) in bodies.windows(2).enumerate() {
         let [earlier, later] = pair else {
@@ -311,8 +285,6 @@ fn assert_each_request_extends_the_last(wire: &Wire, bodies: &[String]) {
     }
 }
 
-/// Assert the conversation logged no cache break at `info` or `warn`: it only
-/// appends, so the prefix watch stays quiet through every part of it.
 fn assert_no_cache_break_warnings(log: &EventLog) {
     let breaks: Vec<_> = log
         .matching("prompt cache prefix changed")
@@ -325,7 +297,6 @@ fn assert_no_cache_break_warnings(log: &EventLog) {
     );
 }
 
-/// The options of a main-conversation turn: keyed to the conversation.
 fn main_options(thinking: Option<ThinkingConfig>) -> CompletionOptions {
     CompletionOptions {
         thinking,

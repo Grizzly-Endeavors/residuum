@@ -17,7 +17,6 @@ function folder(name: string): WorkspaceEntry {
   return { name, entry_type: "directory", size: null, modified: 0, version: "v" };
 }
 
-/** The listings the fake server answers, by folder, and how often each was asked for. */
 let listings: Record<string, WorkspaceEntry[]> = {};
 let listed: Record<string, number> = {};
 let requests: { method: string; url: string; body?: string }[] = [];
@@ -43,7 +42,6 @@ function serve(filesUrl: string): void {
     if (parsed.pathname.endsWith("/restore")) {
       return jsonResponse({ checkpoint_id: "cp2", restored_paths: ["SOUL.md"] });
     }
-    // Connecting an agent also loads its history and usage; the tree doesn't wait for them.
     return new Promise<Response>(() => {});
   });
 }

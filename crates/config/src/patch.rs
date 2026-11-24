@@ -1,37 +1,6 @@
-//! Server-side patching of `config.toml` / `providers.toml`.
-//!
-//! The Settings web form only models a subset of each file's keys. Rather
-//! than rebuilding the whole file from form state (which silently drops
-//! anything the form doesn't model — comments, unmodeled sections like
-//! `[tracing]`, unmodeled keys), the form sends a diff: a JSON object whose
-//! shape mirrors the TOML section/key layout, containing only the fields the
-//! user actually changed. [`apply_patch`] applies that diff to the existing
-//! file's parsed `toml_edit` document in place, so everything untouched by
-//! the diff — formatting, comments, ordering, unmodeled keys — survives.
-//!
-//! A JSON object value at a key recurses into (or creates) the matching
-//! TOML table. A JSON `null` removes that key (or, for a table, removes the
-//! whole sub-table) from the document. A JSON object of the shape
-//! `{"$inline": {...}}` sets the key to a TOML inline table built from the
-//! inner object, rather than recursing — used for model-role assignments
-//! that carry `temperature`/`thinking` overrides (`main = { model = "...",
-//! temperature = 0.7 }`). Any other JSON scalar or array sets the key to the
-//! matching TOML value.
-
 use serde_json::{Map, Value as JsonValue};
 use toml_edit::{Array, DocumentMut, InlineTable, Item, TableLike, Value as TomlValue};
 
-/// Apply a JSON diff to an existing TOML document's text, returning the
-/// patched text.
-///
-/// `label` names the file in error messages (e.g. `"config.toml"`).
-///
-/// # Errors
-/// Returns a plain-language error naming `label` and the problem if the
-/// existing text is not valid TOML, or if the diff cannot be applied (an
-/// object key without a string counterpart, or an unsupported nested
-/// shape). The existing text is never consulted for its *semantic*
-/// validity here — callers run their normal validation on the result.
 pub fn apply_patch(
     existing_text: &str,
     diff: &Map<String, JsonValue>,
@@ -47,7 +16,6 @@ pub fn apply_patch(
     Ok(doc.to_string())
 }
 
-/// Recursively apply a JSON patch object onto a TOML table-like value.
 fn apply_table_patch(
     table: &mut dyn TableLike,
     diff: &Map<String, JsonValue>,
@@ -99,13 +67,6 @@ fn apply_table_patch(
     Ok(())
 }
 
-/// Set `key` to `item`, preferring an in-place swap of an existing item over
-/// [`TableLike::insert`].
-///
-/// `insert` reformats the key when it already exists (`Key::fmt` clears its
-/// decor), which silently drops a comment sitting on the line above that
-/// key. Swapping the existing `Item` in place leaves the key, and its
-/// decor, untouched.
 fn set_item(table: &mut dyn TableLike, key: &str, item: Item) {
     if let Some(existing) = table.get_mut(key) {
         *existing = item;
@@ -114,8 +75,6 @@ fn set_item(table: &mut dyn TableLike, key: &str, item: Item) {
     }
 }
 
-/// Build a flat TOML inline table from a JSON object of scalars, for the
-/// `{"$inline": {...}}` convention (model-role assignments with overrides).
 fn build_inline_table(map: &Map<String, JsonValue>) -> Result<InlineTable, String> {
     let mut inline = InlineTable::new();
     for (key, val) in map {
@@ -128,8 +87,6 @@ fn build_inline_table(map: &Map<String, JsonValue>) -> Result<InlineTable, Strin
     Ok(inline)
 }
 
-/// Build a TOML array from a JSON array. Only scalar elements are supported
-/// — every array the settings form emits is a flat string list.
 fn build_array(items: &[JsonValue]) -> Result<Array, String> {
     let mut arr = Array::new();
     for item in items {
@@ -138,7 +95,6 @@ fn build_array(items: &[JsonValue]) -> Result<Array, String> {
     Ok(arr)
 }
 
-/// Convert a JSON scalar (string, bool, or number) to a TOML value.
 fn json_scalar_to_toml(val: &JsonValue) -> Result<TomlValue, String> {
     match val {
         JsonValue::String(s) => Ok(TomlValue::from(s.as_str())),

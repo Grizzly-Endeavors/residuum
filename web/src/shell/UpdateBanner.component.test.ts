@@ -38,7 +38,6 @@ describe("UpdateBanner", () => {
     await userEvent.setup().click(screen.getByRole("button", { name: "Reload" }));
 
     expect(apply).toHaveBeenCalledOnce();
-    // `apply` asks through the function it is given; the guard is what answers.
     const confirm = apply.mock.calls[0]?.[0];
     await expect(confirm?.()).resolves.toBe(false);
     expect(confirmReload).toHaveBeenCalledOnce();

@@ -9,10 +9,6 @@
   import EmptyState from "./EmptyState.svelte";
   import VisuallyHidden from "./VisuallyHidden.svelte";
 
-  // The notifications surfaced since the page opened, newest first, with
-  // their details and when they came. Clear all offers Undo twice: in the
-  // dialog, where the keyboard reaches it, and on the toast it raises.
-
   let { open = $bindable(false) }: { open?: boolean } = $props();
 
   const KINDS: Readonly<Record<NotificationKind, { icon: IconName; word: string }>> = {
@@ -22,10 +18,8 @@
   };
 
   let now = $state(Date.now());
-  /** The last clear while it can still be undone here: until Undo, or the dialog closes. */
   let lastClear = $state.raw<{ count: number; undo: () => void } | null>(null);
 
-  // Relative times move on once a minute, only while the dialog is open.
   $effect(() => {
     if (!open) {
       lastClear = null;

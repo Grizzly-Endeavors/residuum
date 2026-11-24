@@ -20,14 +20,12 @@ import { waitFor } from "../src/test/wait";
 
 type Middleware = (req: IncomingMessage, res: ServerResponse, next: () => void) => void;
 
-/** The part of Vite's dev server the plugin uses, on a real HTTP server. */
 interface DevServer {
   http: Server;
   baseUrl: string;
   logged: string[];
 }
 
-/** Which Vite server the plugin is started on: the dev server, or the preview server of a production build. */
 type ServerKind = "configureServer" | "configurePreviewServer";
 
 function startPlugin(kind: ServerKind = "configureServer"): Promise<DevServer> {
@@ -54,7 +52,6 @@ function startPlugin(kind: ServerKind = "configureServer"): Promise<DevServer> {
 
   const plugin: Plugin = mockServerPlugin();
   const hook = plugin[kind];
-  // The two hooks take different servers, which this fake stands in for both of.
   const configure = (typeof hook === "function" ? hook : hook?.handler) as
     | ((server: unknown) => unknown)
     | undefined;
@@ -78,7 +75,6 @@ function startPlugin(kind: ServerKind = "configureServer"): Promise<DevServer> {
   });
 }
 
-/** The types of the first two frames the hub socket at `url` sends. */
 function firstHubFrames(url: string): Promise<string[]> {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(url);
@@ -240,7 +236,6 @@ describe("the mock server plugin", () => {
       "drifter",
       "scout",
     ]);
-    // The preview server's own middleware, the built app, answers what isn't /api.
     expect((await fetch(`${preview.baseUrl}/index.html`)).status).toBe(404);
     await waitFor(async () => {
       const info = (await fetchJson(`${preview.baseUrl}/api/team/workbench/info`))

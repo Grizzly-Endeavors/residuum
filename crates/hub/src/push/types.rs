@@ -9,29 +9,18 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-/// Why a notification is sent. The first four are the events a device can
-/// turn on or off; `test` is what the test button sends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export)]
 pub enum PushEvent {
-    /// An agent filed an item in the user inbox.
     InboxItem,
-    /// An agent entered the failed state.
     AgentFailed,
-    /// A task sent to a remote agent has been unreachable past its notice
-    /// threshold.
     OutboundUnreachable,
-    /// A main turn the user didn't start produced a reply while no client was
-    /// connected.
     ReplyWhileAway,
-    /// A notification the user asked for from the Notifications section.
     Test,
 }
 
 impl PushEvent {
-    /// The events a device can turn on or off, with each one's name in a
-    /// preferences object.
     const SWITCHABLE: [(Self, &'static str); 4] = [
         (Self::InboxItem, "inbox_item"),
         (Self::AgentFailed, "agent_failed"),
@@ -39,7 +28,6 @@ impl PushEvent {
         (Self::ReplyWhileAway, "reply_while_away"),
     ];
 
-    /// How urgently the push service should hand the message to the device.
     #[must_use]
     pub fn urgency(self) -> Urgency {
         match self {
@@ -50,9 +38,6 @@ impl PushEvent {
         }
     }
 
-    /// How long the push service keeps the message for a device that is
-    /// offline. A reply is stale within the hour, an unreachable task within
-    /// hours, and an item or failure within a day.
     #[must_use]
     pub fn ttl(self) -> Duration {
         let hours = match self {
@@ -64,17 +49,13 @@ impl PushEvent {
     }
 }
 
-/// The `Urgency` header of a push message (RFC 8030 section 5.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Urgency {
-    /// Delivered immediately, even to a sleeping device.
     High,
-    /// The push service's default.
     Normal,
 }
 
 impl Urgency {
-    /// The header's value.
     #[must_use]
     pub(super) fn header_value(self) -> &'static str {
         match self {
@@ -84,31 +65,19 @@ impl Urgency {
     }
 }
 
-/// The most characters a payload's body holds; longer text is cut with an
-/// ellipsis so a notification stays readable on a lock screen.
 pub const MAX_BODY_CHARS: usize = 120;
 
-/// The JSON a device's service worker decrypts from a push message.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct PushPayload {
-    /// The payload format version, always 1.
     #[ts(type = "1")]
     pub v: u8,
-    /// Why the notification was sent.
     pub event: PushEvent,
-    /// The agent the notification is about, or an empty string when it is
-    /// about none (the test notification).
     pub agent: String,
-    /// The notification's title.
     pub title: String,
-    /// Plain text, at most 120 characters.
     pub body: String,
-    /// The app path a click opens, such as `/inbox?thread=scout%2Fuser%2Fnote-1`.
     pub target: String,
-    /// Notifications with the same tag replace each other.
     pub tag: String,
-    /// The user's total unread inbox items, for the app badge.
     pub badge: u32,
 }
 
@@ -138,8 +107,6 @@ impl PushPayload {
     }
 }
 
-/// `text` cut to at most `max` characters, ending in an ellipsis when it was
-/// cut.
 fn truncate_chars(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
         return text.to_string();
@@ -148,19 +115,14 @@ fn truncate_chars(text: &str, max: usize) -> String {
     format!("{}…", kept.trim_end())
 }
 
-/// A payload with the delivery terms its event carries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PushMessage {
-    /// What the device decrypts.
     pub payload: PushPayload,
-    /// The `Urgency` header.
     pub urgency: Urgency,
-    /// The `TTL` header.
     pub ttl: Duration,
 }
 
 impl PushMessage {
-    /// A message with the urgency and lifetime its event calls for.
     #[must_use]
     pub fn new(payload: PushPayload) -> Self {
         let urgency = payload.event.urgency();
@@ -173,15 +135,6 @@ impl PushMessage {
     }
 }
 
-/// Which notifications a device receives, as an object with one boolean per
-/// event a device can turn on or off:
-///
-/// - `inbox_item`: an agent filed an item in the user inbox
-/// - `agent_failed`: an agent failed to start or crashed
-/// - `outbound_unreachable`: a task sent to a remote agent can't reach it
-/// - `reply_while_away`: an agent replied while no Residuum window was open
-///
-/// A new device receives `inbox_item` and `agent_failed`.
 #[derive(Debug, Clone, PartialEq, Eq, TS)]
 #[ts(
     export,
@@ -200,14 +153,11 @@ impl Default for PushPreferences {
 }
 
 impl PushPreferences {
-    /// Whether the device wants notifications for `event`. The test
-    /// notification goes out whatever the preferences say.
     #[must_use]
     pub fn wants(&self, event: PushEvent) -> bool {
         event == PushEvent::Test || self.enabled.contains(&event)
     }
 
-    /// These preferences with the events `patch` names switched on or off.
     #[must_use]
     pub fn patched(&self, patch: PushPreferencesPatch) -> Self {
         let mut enabled = self.enabled.clone();
@@ -240,8 +190,6 @@ impl Serialize for PushPreferences {
 }
 
 impl<'de> Deserialize<'de> for PushPreferences {
-    /// A name the object leaves out keeps its default, and a name it doesn't
-    /// know is ignored.
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let stated = BTreeMap::<String, bool>::deserialize(deserializer)?;
         let defaults = Self::default();
@@ -259,31 +207,24 @@ impl<'de> Deserialize<'de> for PushPreferences {
     }
 }
 
-/// Some of a device's preferences, in a request. A field left out keeps its
-/// current value.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, TS)]
 #[ts(export)]
 pub struct PushPreferencesPatch {
-    /// New value for `inbox_item`.
     #[serde(default)]
     #[ts(optional)]
     pub inbox_item: Option<bool>,
-    /// New value for `agent_failed`.
     #[serde(default)]
     #[ts(optional)]
     pub agent_failed: Option<bool>,
-    /// New value for `outbound_unreachable`.
     #[serde(default)]
     #[ts(optional)]
     pub outbound_unreachable: Option<bool>,
-    /// New value for `reply_while_away`.
     #[serde(default)]
     #[ts(optional)]
     pub reply_while_away: Option<bool>,
 }
 
 impl PushPreferencesPatch {
-    /// What the patch sets for `event`, if it names it.
     fn setting(self, event: PushEvent) -> Option<bool> {
         match event {
             PushEvent::InboxItem => self.inbox_item,
@@ -295,46 +236,29 @@ impl PushPreferencesPatch {
     }
 }
 
-/// The delivery that most recently failed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct PushFailure {
-    /// When the failure was recorded.
     #[ts(type = "string")]
     pub at: DateTime<Utc>,
-    /// The HTTP status the push service answered, or `null` when it was never
-    /// reached (or nothing could be sent).
     pub status: Option<u16>,
-    /// What went wrong, in plain words, and what to do about it.
     pub message: String,
 }
 
-/// One browser or installed app that receives notifications.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct PushDevice {
-    /// The hub's id for the device.
     pub id: String,
-    /// The name the user gave it.
     pub label: String,
-    /// When the device was first registered.
     #[ts(type = "string")]
     pub created_at: DateTime<Utc>,
-    /// When a notification last reached the push service, or `null` if none
-    /// has.
     #[ts(type = "string | null")]
     pub last_success_at: Option<DateTime<Utc>>,
-    /// The most recent failure. It stays until the next failure replaces it,
-    /// so compare its `at` with `last_success_at` to tell whether delivery
-    /// has recovered.
     pub last_failure: Option<PushFailure>,
-    /// Which notifications the device receives.
     pub preferences: PushPreferences,
 }
 
 impl PushDevice {
-    /// Whether the device's latest delivery attempt failed: it has a failure
-    /// that no success has followed.
     #[must_use]
     pub fn is_failing(&self) -> bool {
         self.last_failure
@@ -343,13 +267,10 @@ impl PushDevice {
     }
 }
 
-/// The keys of a browser's push subscription.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct WebPushSubscriptionKeys {
-    /// The browser's P-256 public key, base64url.
     pub p256dh: String,
-    /// The subscription's 16-byte authentication secret, base64url.
     pub auth: String,
 }
 
@@ -360,82 +281,57 @@ pub struct WebPushSubscription {
     /// The push service's URL for this subscription. Whoever holds it can
     /// send to the device, so the API never returns it.
     pub endpoint: String,
-    /// The keys notifications are encrypted with.
     pub keys: WebPushSubscriptionKeys,
 }
 
-/// Body of `PUT /api/hub/push/devices`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, TS)]
 #[ts(export)]
 pub struct PutPushDeviceRequest {
-    /// The browser's subscription.
     pub subscription: WebPushSubscription,
-    /// The device's name. A new device without one is called "Unnamed
-    /// device"; an existing one keeps its name.
     #[serde(default)]
     #[ts(optional)]
     pub label: Option<String>,
-    /// Preferences to set. A new device starts from the defaults; an existing
-    /// one from its current preferences.
     #[serde(default)]
     #[ts(optional)]
     pub preferences: Option<PushPreferencesPatch>,
-    /// The endpoint this browser's device was last registered under, when
-    /// `subscription.endpoint` is a rotated replacement for it (the
-    /// browser's `pushsubscriptionchange`). Matching on this instead of the
-    /// new endpoint updates that device in place, keeping its id, label and
-    /// preferences, rather than registering a second device.
     #[serde(default)]
     #[ts(optional)]
     pub previous_endpoint: Option<String>,
 }
 
-/// Body of `PATCH /api/hub/push/devices/{id}`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, TS)]
 #[ts(export)]
 pub struct PatchPushDeviceRequest {
-    /// A new name.
     #[serde(default)]
     #[ts(optional)]
     pub label: Option<String>,
-    /// Preferences to change.
     #[serde(default)]
     #[ts(optional)]
     pub preferences: Option<PushPreferencesPatch>,
 }
 
-/// Answer of `GET /api/hub/push/key`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
 #[ts(export)]
 pub struct PushKeyResponse {
-    /// The hub's VAPID public key, base64url: the `applicationServerKey` a
-    /// browser subscribes with.
     pub public_key: String,
 }
 
-/// Answer of `GET /api/hub/push/devices`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
 #[ts(export)]
 pub struct PushDeviceList {
-    /// Every registered device, oldest first.
     pub devices: Vec<PushDevice>,
 }
 
-/// Answer of the routes that create or change one device.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
 #[ts(export)]
 pub struct PushDeviceResponse {
-    /// The device as it is now.
     pub device: PushDevice,
 }
 
-/// Answer of `POST /api/hub/push/devices/{id}/test`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
 #[ts(export)]
 pub struct PushTestResult {
-    /// Whether the push service accepted the notification.
     pub delivered: bool,
-    /// What went wrong, in plain words, when it wasn't accepted.
     pub error: Option<String>,
 }
 

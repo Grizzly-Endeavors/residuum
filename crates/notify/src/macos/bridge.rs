@@ -42,15 +42,11 @@ fn require_app_bundle() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Isolates all objc2 FFI so the rest of the notification system
-/// stays platform-agnostic and testable without a macOS runtime.
 pub struct MacosBridge {
     config: MacosChannelConfig,
 }
 
 impl MacosBridge {
-    /// # Errors
-    /// Returns an error if category registration fails.
     pub fn new(config: MacosChannelConfig) -> anyhow::Result<Self> {
         require_app_bundle()?;
         let bridge = Self { config };
@@ -119,8 +115,6 @@ impl MacosBridge {
         }
     }
 
-    /// # Errors
-    /// Returns an error if the `spawn_blocking` task panics.
     #[tracing::instrument(skip_all, fields(identifier, category = category_id))]
     pub async fn post_notification(
         &self,
@@ -183,9 +177,6 @@ impl MacosBridge {
     }
 }
 
-/// Urgent results break through Focus modes; everything else uses the
-/// configured default. This is the only thing that varies the interruption
-/// level, so a channel with no urgent traffic behaves exactly as configured.
 fn interruption_level_for(urgent: bool, config: &MacosChannelConfig) -> MacosInterruptionLevel {
     if urgent {
         MacosInterruptionLevel::TimeSensitive
@@ -241,8 +232,6 @@ impl NotificationBridge for MacosBridge {
     }
 }
 
-/// Wraps objc2 calls in `catch_unwind` because the `ObjC` runtime can panic
-/// on missing selectors or nil center — we log rather than crash the process.
 fn post_notification_sync(
     identifier: &str,
     text: &NotificationText,

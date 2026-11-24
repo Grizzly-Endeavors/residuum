@@ -8,19 +8,12 @@
   import { IconButton, Menu, MenuItem } from "../../lib/ui";
   import PlaceHeader from "../../shell/PlaceHeader.svelte";
 
-  // The Chat's title bar: the agent with its role, how much it has running
-  // (the number the rail's Activity row shows, opening Activity beside the
-  // Chat, and only while the agent is up), its settings, and a menu with the
-  // conversation's size, Restart and Stop. The menu's items are the action
-  // registry's, so they carry the same reasons when they can't run.
-
   let { agent }: { agent: string } = $props();
 
   const summary = $derived(hub.agent(agent));
   const label = $derived(hub.shownName(agent));
   const running = $derived(runningCount(agent));
 
-  /** Why Restart or Stop isn't offered, when the registry doesn't list it. */
   const lifecycleReason = $derived.by(() => {
     const state = hub.displayStateOf(agent);
     if (state === "stopping") return `${label} is stopping`;
@@ -127,7 +120,6 @@
       min-height: var(--layout-touch-target);
     }
 
-    /* Settings is in the bottom bar on phones. */
     .chat-header-gear {
       display: none;
     }

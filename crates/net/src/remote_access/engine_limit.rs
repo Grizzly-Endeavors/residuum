@@ -1,28 +1,16 @@
-//! Per-peer token bucket for the instance host's A2A path.
-//!
-//! The relay no longer sees A2A requests, so the limit that used to live there
-//! (300 per minute, burst 60, per peer address) is enforced here.
-
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv6Addr};
 use std::time::Duration;
 
 use tokio::time::Instant;
 
-/// Sustained requests per minute one peer may make.
 pub(crate) const REFILL_PER_MINUTE: f64 = 300.0;
-/// Requests a peer may make in a burst before the sustained rate applies.
 pub(crate) const BURST: f64 = 60.0;
-/// How often idle buckets are dropped.
 const SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 
-/// What a bucket is keyed by: the address, with IPv6 reduced to its /64 so a
-/// single subscriber cannot dodge the limit by rotating addresses.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum PeerKey {
     Ip(IpAddr),
-    /// A peer address that is not an IP literal; all such peers share the
-    /// bucket for their exact text.
     Other(String),
 }
 
@@ -47,7 +35,6 @@ struct Bucket {
     last: Instant,
 }
 
-/// Token buckets per peer, with idle buckets evicted.
 #[derive(Debug)]
 pub(crate) struct PeerRateLimiter {
     buckets: HashMap<PeerKey, Bucket>,
@@ -57,12 +44,10 @@ pub(crate) struct PeerRateLimiter {
 }
 
 impl PeerRateLimiter {
-    /// A limiter at the relay's former rate: 300 per minute, burst 60.
     pub(crate) fn new(now: Instant) -> Self {
         Self::with_rate(REFILL_PER_MINUTE, BURST, now)
     }
 
-    /// A limiter allowing `per_minute` sustained requests and `burst` at once.
     pub(crate) fn with_rate(per_minute: f64, burst: f64, now: Instant) -> Self {
         Self {
             buckets: HashMap::new(),
@@ -72,8 +57,6 @@ impl PeerRateLimiter {
         }
     }
 
-    /// Take one token for `peer_ip`. `Err` carries how long until one is
-    /// available.
     pub(crate) fn check(&mut self, peer_ip: &str, now: Instant) -> Result<(), Duration> {
         self.sweep(now);
         let key = PeerKey::from_peer(peer_ip);
@@ -94,14 +77,11 @@ impl PeerRateLimiter {
         }
     }
 
-    /// Number of peers currently tracked.
     #[cfg(test)]
     pub(crate) fn tracked_peers(&self) -> usize {
         self.buckets.len()
     }
 
-    /// Drop buckets that have refilled completely: forgetting them changes
-    /// nothing for the peer and keeps the map bounded by recent activity.
     fn sweep(&mut self, now: Instant) {
         if now.saturating_duration_since(self.last_sweep) < SWEEP_INTERVAL {
             return;
@@ -128,7 +108,6 @@ mod tests {
             assert!(limiter.check("203.0.113.9", t0).is_ok());
         }
         let wait = limiter.check("203.0.113.9", t0).unwrap_err();
-        // 300/min is one token per 200 ms.
         assert!(wait <= Duration::from_millis(201) && wait > Duration::ZERO);
         assert!(
             limiter
@@ -195,8 +174,6 @@ mod tests {
             limiter.check("203.0.113.9", t0).unwrap();
         }
         let later = t0 + Duration::from_secs(61);
-        // Refilled 61 s * 5/s = 305 tokens, so it is full and dropped; the
-        // peer starts over at a full burst, which is what it would have had.
         limiter.check("203.0.113.9", later).unwrap();
         assert_eq!(limiter.tracked_peers(), 1);
     }

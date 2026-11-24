@@ -2,12 +2,6 @@
   import { currentMoment } from "../lib/current-day.svelte";
   import { messageTimeLabel, parseTimestamp } from "../lib/time";
 
-  // When a message was sent: the time of day, with the date before it for any
-  // other day, in the reader's locale. It is quiet until its message is
-  // hovered, focused or tapped (see `FeedItemView`), but always in the page,
-  // so assistive technology reaches it. Reading the present moment re-words
-  // "10:05" as "Oct 9, 10:05" once midnight passes.
-
   let { timestamp }: { timestamp: string } = $props();
 
   const at = $derived(parseTimestamp(timestamp));

@@ -6,14 +6,8 @@
   import { ws } from "../../lib/ws.svelte";
   import PanelHeader from "../../shell/panel/PanelHeader.svelte";
 
-  // The conversation's size in the context panel: the bound
-  // agent's figures in plain words, with the token counts behind a
-  // disclosure. A stopped agent shows the figures it last recorded. While a
-  // reply runs, what it has written and done so far shows too.
-
   const agent = $derived(ws.agent ?? "");
   const store = $derived(ws.store);
-  // Totals of nothing, as an agent that has never replied has, are no figures yet.
   const usage = $derived(
     store.sessionUsage !== null && store.sessionUsage.input_tokens > 0 ? store.sessionUsage : null,
   );
@@ -146,7 +140,6 @@
     font-size: var(--font-size-sm);
   }
 
-  /* Each figure's label, and its value at the end of the row, or under the label when the row is narrow. */
   .size-figures {
     display: flex;
     flex-direction: column;

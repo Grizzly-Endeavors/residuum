@@ -1,22 +1,3 @@
-//! Update checking and self-update logic.
-//!
-//! Provides version checking against GitHub Releases, binary replacement
-//! via the install script, and shared update status for the gateway.
-//!
-//! A self-update never leaves only a possibly-broken binary on disk: the
-//! previously-running binary is preserved beside the new one
-//! ([`previous_binary_path`]) and a [`PendingRollback`] marker records the
-//! install path both are found from ([`install_path`]). `commands::serve::foreground::relaunch` reads that marker to
-//! decide whether the restart needs the rollback-capable watchdog path or
-//! the plain one, and the watchdog deletes the preserved binary once the new
-//! version proves healthy (see `commands::update_watchdog`) or restores it
-//! and leaves a [`RollbackNotice`] otherwise.
-//!
-//! Before that swap, the download is checked against the `SHA256SUMS`
-//! asset published with the release. A mismatch refuses the install and
-//! leaves the running binary where it is. A release that has no manifest
-//! still installs, and leaves an [`UnverifiedUpdate`] the Update page shows.
-
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
@@ -26,29 +7,18 @@ use tokio::sync::RwLock;
 
 use anyhow::{Context, bail};
 
-/// Release asset that lists a SHA-256 hash for every other asset.
-///
-/// Written by `.github/workflows/release.yml` and downloaded next to the
-/// binary. The name has to match the uploaded asset exactly.
 const CHECKSUM_MANIFEST_ASSET: &str = "SHA256SUMS";
 
-/// Shared update status visible to the gateway event loop and web API.
 #[derive(Debug, Clone)]
 pub struct UpdateStatus {
-    /// Current binary version.
     pub current: String,
-    /// Latest release tag from GitHub (None if never checked).
     pub latest: Option<String>,
-    /// Whether an update is available.
     pub update_available: bool,
-    /// When the last successful check occurred.
     pub last_checked: Option<DateTime<Utc>>,
-    /// Whether a check is currently in progress.
     pub checking: bool,
 }
 
 impl UpdateStatus {
-    /// Status for a process running `current`, before any check has run.
     #[must_use]
     pub fn for_version(current: &str) -> Self {
         Self {
@@ -61,16 +31,13 @@ impl UpdateStatus {
     }
 }
 
-/// Thread-safe shared update status.
 pub type SharedUpdateStatus = Arc<RwLock<UpdateStatus>>;
 
-/// Fresh shared update status for a process running `current`.
 #[must_use]
 pub fn shared_update_status(current: &str) -> SharedUpdateStatus {
     Arc::new(RwLock::new(UpdateStatus::for_version(current)))
 }
 
-/// Fetch the latest release, update shared state, log on failure.
 #[tracing::instrument(skip_all)]
 pub async fn check_for_update(status: &SharedUpdateStatus) {
     tracing::trace!("checking for updates");
@@ -111,11 +78,6 @@ fn http_client() -> anyhow::Result<reqwest::Client> {
         .context("failed to build http client")
 }
 
-/// Fetch the latest release tag name from GitHub.
-///
-/// # Errors
-///
-/// Returns an error if the HTTP request or JSON parsing fails.
 #[tracing::instrument(skip_all)]
 pub async fn fetch_latest_version() -> anyhow::Result<String> {
     let client = http_client()?;
@@ -146,19 +108,11 @@ pub async fn fetch_latest_version() -> anyhow::Result<String> {
     Ok(tag)
 }
 
-/// Compare the current build version against the latest release tag.
-///
-/// Returns `true` if the current version starts with the latest tag,
-/// accounting for `git describe` suffixes like `-5-gabcdef1`, or if the
-/// current version is a newer `CalVer` release than the latest.
 #[must_use]
 pub fn is_up_to_date(current: &str, latest: &str) -> bool {
-    // Exact match (tagged commit)
     if current == latest {
         return true;
     }
-    // current is "v2026.03.02-5-gabcdef1" and latest is "v2026.03.02" —
-    // the current build is *ahead* of the latest release
     if current.starts_with(latest)
         && current
             .get(latest.len()..)
@@ -166,7 +120,6 @@ pub fn is_up_to_date(current: &str, latest: &str) -> bool {
     {
         return true;
     }
-    // current is a newer tagged release (e.g. rollback or delayed publish)
     if let (Some(cur_ver), Some(lat_ver)) = (parse_calver(current), parse_calver(latest))
         && cur_ver > lat_ver
     {
@@ -189,12 +142,6 @@ fn parse_calver(v: &str) -> Option<(u32, u32, u32)> {
     Some((year, month, day))
 }
 
-/// The path a running binary is preserved at for rollback while a new
-/// version installed at `exe` is proven healthy.
-///
-/// Appends rather than replaces the extension (`residuum` →
-/// `residuum.prev`, `residuum.exe` → `residuum.exe.prev`) so the preserved
-/// file keeps whatever extension the platform needs to execute it directly.
 #[must_use]
 pub fn previous_binary_path(exe: &Path) -> PathBuf {
     let mut name = exe.as_os_str().to_os_string();
@@ -202,29 +149,18 @@ pub fn previous_binary_path(exe: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
-/// Where the previous binary was preserved, and whether the download
-/// matched the release checksum.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstalledUpdate {
     pub previous_binary: PathBuf,
-    /// [`ReleaseVerification::Unverified`] when the release published no
-    /// checksum manifest. The binary was still installed.
     pub verification: ReleaseVerification,
 }
 
-/// Whether the installed bytes matched `SHA256SUMS`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReleaseVerification {
-    /// The download's SHA-256 matched the manifest entry for this asset.
     Verified,
-    /// The release has no `SHA256SUMS` asset. The binary was installed,
-    /// and callers should say that it couldn't be verified.
     Unverified,
 }
 
-/// An update was refused before the running binary was replaced.
-///
-/// The message is the whole user-facing explanation.
 #[derive(Debug, thiserror::Error)]
 #[error("{message}")]
 struct RejectedUpdate {
@@ -235,36 +171,12 @@ fn rejected(message: &'static str) -> anyhow::Error {
     anyhow::Error::from(RejectedUpdate { message })
 }
 
-/// The plain-language reason an update was refused before install, if
-/// `err` is that refusal.
-///
-/// Other failures (a download that never arrived, a swap that couldn't
-/// rename the binary) return `None`.
 #[must_use]
 pub fn rejection_message(err: &anyhow::Error) -> Option<&'static str> {
     err.downcast_ref::<RejectedUpdate>()
         .map(|rejected| rejected.message)
 }
 
-/// Download the latest release binary and install it, preserving the
-/// binary that was running so a failed restart can roll back to it.
-///
-/// Downloads directly from GitHub Releases. Refuses before downloading
-/// when the binary's directory isn't writable by this account, since the
-/// swap could never succeed there. The download is checked against the release `SHA256SUMS` asset before the
-/// running binary is moved. A mismatch returns an error and leaves the
-/// current binary untouched. A release with no manifest still installs.
-///
-/// Leaves a [`PendingRollback`] marker for
-/// `commands::serve::foreground::relaunch` to act on once the restart it
-/// triggers actually happens. When the release had no checksum, also
-/// leaves an [`UnverifiedUpdate`] marker.
-///
-/// # Errors
-///
-/// Returns an error if the download, checksum check, platform detection,
-/// or binary replacement fails. A checksum mismatch is a
-/// [`rejection_message`] and does not replace the running binary.
 #[tracing::instrument(skip_all, fields(current = %current, version = %version))]
 pub async fn download_and_install(current: &str, version: &str) -> anyhow::Result<InstalledUpdate> {
     let asset = release_asset_name(std::env::consts::OS, std::env::consts::ARCH)?;
@@ -285,11 +197,6 @@ pub async fn download_and_install(current: &str, version: &str) -> anyhow::Resul
     Ok(installed)
 }
 
-/// Replace `exe_path` only when `verification` succeeded.
-///
-/// The `Result` is the gate: a mismatch (or any other refusal) returns
-/// before [`swap_in_new_binary`], so a bad download cannot move the
-/// running binary aside.
 fn install_verified_bytes(
     exe_path: &Path,
     bytes: &[u8],
@@ -303,7 +210,6 @@ fn install_verified_bytes(
     })
 }
 
-/// Download the release asset for this platform.
 async fn download_release_bytes(version: &str, asset: &str) -> anyhow::Result<Vec<u8>> {
     let url = release_asset_url(version, asset);
 
@@ -334,12 +240,6 @@ fn release_asset_url(version: &str, asset: &str) -> String {
     format!("https://github.com/grizzly-endeavors/residuum/releases/download/{version}/{asset}")
 }
 
-/// Download `SHA256SUMS` and check `bytes` against the entry for `asset`.
-///
-/// A 404 is "this release didn't publish a manifest" and installs
-/// unverified. Any other failure to obtain or read a usable manifest
-/// refuses the install: the release may have a checksum we simply didn't
-/// get, and installing past that would hide it.
 async fn verify_downloaded_asset(
     version: &str,
     asset: &str,
@@ -378,10 +278,6 @@ async fn verify_downloaded_asset(
     verify_download(manifest.as_deref(), asset, bytes)
 }
 
-/// Map a checksum-asset response to a manifest body.
-///
-/// `Ok(None)` is a missing asset (HTTP 404). Other non-success statuses
-/// refuse the install.
 fn manifest_from_response(
     status: reqwest::StatusCode,
     body: String,
@@ -398,9 +294,6 @@ fn manifest_from_response(
     Ok(Some(body))
 }
 
-/// Check `bytes` against a manifest body.
-///
-/// `manifest == None` means the release published no checksum file.
 fn verify_download(
     manifest: Option<&str>,
     asset: &str,
@@ -443,9 +336,7 @@ fn verify_download(
 
 enum ManifestLookup {
     Hash(String),
-    /// The manifest has entries, and none of them is `asset`.
     AssetMissing,
-    /// No usable `hash  filename` lines.
     Unreadable,
 }
 
@@ -523,7 +414,6 @@ fn sha256_hex(bytes: &[u8]) -> String {
     for byte in digest.as_ref() {
         let hi = usize::from(byte >> 4);
         let lo = usize::from(byte & 0x0f);
-        // A nibble is 0..=15, so both lookups hit.
         if let (Some(high), Some(low)) = (HEX.get(hi), HEX.get(lo)) {
             out.push(*high);
             out.push(*low);
@@ -554,14 +444,8 @@ pub fn install_path() -> std::io::Result<PathBuf> {
     Ok(INSTALL_PATH.get_or_init(|| path).clone())
 }
 
-/// The install path [`install_path`] keeps once it has read it.
 static INSTALL_PATH: OnceLock<PathBuf> = OnceLock::new();
 
-/// Keep the running binary's install path, for every later
-/// [`install_path`] call. Call it first thing in `main`.
-///
-/// A failure is not reported here: tracing isn't set up this early, and the
-/// error comes back from the `install_path` call that needs the path.
 pub fn capture_install_path() {
     if let Ok(exe) = std::env::current_exe() {
         INSTALL_PATH.get_or_init(|| live_exe_path(&exe));
@@ -586,20 +470,11 @@ fn live_exe_path(exe: &Path) -> PathBuf {
     exe.to_path_buf()
 }
 
-/// What the user sees when the binary lives in a directory this account
-/// can't write to, such as a `/usr/local/bin` that needs `sudo`.
 #[cfg(unix)]
 const INSTALL_DIR_NOT_WRITABLE: &str = "residuum can't update itself because it's installed in a folder this account can't write to. Rerun the installer to move it somewhere it can: curl -fsSL https://agent-residuum.com/install | sh";
 #[cfg(not(unix))]
 const INSTALL_DIR_NOT_WRITABLE: &str = "residuum can't update itself because it's installed in a folder this account can't write to. Move residuum.exe to a folder you own and run it from there.";
 
-/// Refuse the update when the directory holding `exe_path` can't be
-/// written, by creating and removing the temp file the swap will use.
-///
-/// # Errors
-///
-/// Returns a [`rejection_message`] error when the directory is read-only
-/// to this account, and a plain error for any other write failure.
 fn check_install_dir_writable(exe_path: &Path) -> anyhow::Result<()> {
     let exe_dir = exe_path
         .parent()
@@ -625,15 +500,6 @@ fn check_install_dir_writable(exe_path: &Path) -> anyhow::Result<()> {
     }
 }
 
-/// Write `bytes` to a temp file beside `exe_path`, preserve the currently
-/// running binary at [`previous_binary_path`], then swap the new one into
-/// `exe_path`. Restores the original binary and returns an error if the
-/// final swap fails, so a partial update never leaves nothing executable.
-///
-/// # Errors
-///
-/// Returns an error if `exe_path` has no parent directory, or if writing,
-/// permissioning, or renaming any of the files fails.
 fn swap_in_new_binary(exe_path: &Path, bytes: &[u8]) -> anyhow::Result<PathBuf> {
     let exe_dir = exe_path
         .parent()
@@ -666,9 +532,6 @@ fn swap_in_new_binary(exe_path: &Path, bytes: &[u8]) -> anyhow::Result<PathBuf> 
 
     let prev_path = previous_binary_path(exe_path);
 
-    // Clear a stale backup from an update that was applied but never
-    // confirmed healthy (or never cleaned up after a crash) — only the
-    // binary this update is about to replace should be preserved.
     if let Err(e) = std::fs::remove_file(&prev_path)
         && e.kind() != std::io::ErrorKind::NotFound
     {
@@ -689,8 +552,6 @@ fn swap_in_new_binary(exe_path: &Path, bytes: &[u8]) -> anyhow::Result<PathBuf> 
         })?;
 
     if let Err(e) = std::fs::rename(&tmp_path, exe_path) {
-        // Restore the running binary's original name so this failure
-        // doesn't leave nothing executable at exe_path.
         if let Err(re) = std::fs::rename(&prev_path, exe_path) {
             tracing::error!(error = %re, path = %exe_path.display(), "failed to restore the running binary after a failed update swap");
         }
@@ -706,10 +567,6 @@ fn swap_in_new_binary(exe_path: &Path, bytes: &[u8]) -> anyhow::Result<PathBuf> 
     Ok(prev_path)
 }
 
-/// Leave a [`PendingRollback`] marker for the restart that will follow, and
-/// clear any stale rollback notice from an earlier attempt. Best-effort: if
-/// the config directory can't be found, the update still installed
-/// correctly, it just won't be able to roll back on a failed restart.
 fn record_pending_rollback(install_path: &Path, previous_version: &str, target_version: &str) {
     let Ok(config_dir) = residuum_config::default_hub_dir() else {
         tracing::warn!(
@@ -728,11 +585,6 @@ fn record_pending_rollback(install_path: &Path, previous_version: &str, target_v
     clear_rollback_notice(&config_dir);
 }
 
-/// Record whether this install matched a checksum, for the Update page.
-///
-/// A verified install clears any earlier note. An unverified one replaces
-/// it. Best-effort, same as [`record_pending_rollback`]: the binary is
-/// already in place either way.
 fn record_verification(version: &str, verification: ReleaseVerification) {
     let Ok(config_dir) = residuum_config::default_hub_dir() else {
         tracing::warn!(
@@ -752,44 +604,29 @@ fn record_verification(version: &str, verification: ReleaseVerification) {
     }
 }
 
-/// What a restart needs to know to roll back an update if the new version
-/// doesn't become healthy: the install path the new binary went to, and
-/// both versions involved (for the notice a rollback leaves behind).
-///
-/// Written by [`download_and_install`], read and deleted by
-/// `commands::serve::foreground::relaunch` when it hands off to the
-/// rollback-capable watchdog. Also reads a marker that names only the
-/// preserved binary (`previous_binary`), recovering the install path from
-/// its name.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(try_from = "PendingRollbackOnDisk")]
 pub struct PendingRollback {
-    /// The install path, which holds the new binary. The restart runs it.
     pub gateway_binary: PathBuf,
     pub previous_version: String,
     pub target_version: String,
 }
 
 impl PendingRollback {
-    /// Where the binary that was running before the update was preserved.
     #[must_use]
     pub fn previous_binary(&self) -> PathBuf {
         previous_binary_path(&self.gateway_binary)
     }
 }
 
-/// The shapes a [`PendingRollback`] marker is found in on disk.
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum PendingRollbackOnDisk {
-    /// What [`write_pending_rollback`] writes.
     InstallPath {
         gateway_binary: PathBuf,
         previous_version: String,
         target_version: String,
     },
-    /// What releases before the install path was recorded write: the
-    /// preserved binary, from which the install path is recovered.
     PreservedBinary {
         previous_binary: PathBuf,
         previous_version: String,
@@ -833,20 +670,16 @@ impl TryFrom<PendingRollbackOnDisk> for PendingRollback {
     }
 }
 
-/// The install path whose [`previous_binary_path`] is `previous`, if
-/// `previous` is named like one.
 fn install_path_of_previous_binary(previous: &Path) -> Option<PathBuf> {
     let installed_name = previous.file_name()?.to_str()?.strip_suffix(".prev")?;
     (!installed_name.is_empty()).then(|| previous.with_file_name(installed_name))
 }
 
-/// Path to the [`PendingRollback`] marker.
 #[must_use]
 pub fn pending_rollback_path(config_dir: &Path) -> PathBuf {
     config_dir.join("residuum.update-pending.json")
 }
 
-/// Record that a restart, once it happens, needs the rollback-capable path.
 fn write_pending_rollback(config_dir: &Path, pending: &PendingRollback) {
     let path = pending_rollback_path(config_dir);
     match serde_json::to_string(pending) {
@@ -861,11 +694,6 @@ fn write_pending_rollback(config_dir: &Path, pending: &PendingRollback) {
     }
 }
 
-/// Read and consume the [`PendingRollback`] marker, if one is present.
-///
-/// A malformed marker is treated the same as a missing one (logged, not
-/// fatal): the restart just takes the plain, non-rollback-capable path
-/// instead of failing outright.
 #[must_use]
 pub fn take_pending_rollback(config_dir: &Path) -> Option<PendingRollback> {
     let path = pending_rollback_path(config_dir);
@@ -882,9 +710,6 @@ pub fn take_pending_rollback(config_dir: &Path) -> Option<PendingRollback> {
     }
 }
 
-/// Why an update-rollback watchdog restored the previous version, for the
-/// user to see. Written by `commands::update_watchdog`, read by the update
-/// status API and cleared at the start of the next update attempt.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RollbackNotice {
     pub attempted_version: String,
@@ -892,16 +717,11 @@ pub struct RollbackNotice {
     pub at: DateTime<Utc>,
 }
 
-/// Path to the [`RollbackNotice`] marker.
 #[must_use]
 pub fn rollback_notice_path(config_dir: &Path) -> PathBuf {
     config_dir.join("residuum.rollback-notice.json")
 }
 
-/// Record why a rollback happened, for the update status API to surface.
-///
-/// Clears an [`UnverifiedUpdate`] too: that note describes the version
-/// that was just installed, and a rollback means it isn't running anymore.
 pub fn write_rollback_notice(config_dir: &Path, notice: &RollbackNotice) {
     let path = rollback_notice_path(config_dir);
     match serde_json::to_string(notice) {
@@ -917,24 +737,17 @@ pub fn write_rollback_notice(config_dir: &Path, notice: &RollbackNotice) {
     clear_unverified_update(config_dir);
 }
 
-/// An update that installed even though the release published no checksum.
-///
-/// Written by [`download_and_install`] when verification is
-/// [`ReleaseVerification::Unverified`], read by the update status API, and
-/// cleared by the next verified install or by [`write_rollback_notice`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UnverifiedUpdate {
     pub version: String,
     pub at: DateTime<Utc>,
 }
 
-/// Path to the [`UnverifiedUpdate`] marker.
 #[must_use]
 pub fn unverified_update_path(config_dir: &Path) -> PathBuf {
     config_dir.join("residuum.update-unverified.json")
 }
 
-/// Record that the installed update had no checksum to check it against.
 pub fn write_unverified_update(config_dir: &Path, notice: &UnverifiedUpdate) {
     let path = unverified_update_path(config_dir);
     match serde_json::to_string(notice) {
@@ -949,14 +762,12 @@ pub fn write_unverified_update(config_dir: &Path, notice: &UnverifiedUpdate) {
     }
 }
 
-/// Read the current [`UnverifiedUpdate`], if any.
 #[must_use]
 pub fn read_unverified_update(config_dir: &Path) -> Option<UnverifiedUpdate> {
     let raw = std::fs::read_to_string(unverified_update_path(config_dir)).ok()?;
     serde_json::from_str(&raw).ok()
 }
 
-/// Clear an unverified-update notice, e.g. after a verified install.
 pub fn clear_unverified_update(config_dir: &Path) {
     let path = unverified_update_path(config_dir);
     if let Err(e) = std::fs::remove_file(&path)
@@ -966,14 +777,12 @@ pub fn clear_unverified_update(config_dir: &Path) {
     }
 }
 
-/// Read the current [`RollbackNotice`], if any.
 #[must_use]
 pub fn read_rollback_notice(config_dir: &Path) -> Option<RollbackNotice> {
     let raw = std::fs::read_to_string(rollback_notice_path(config_dir)).ok()?;
     serde_json::from_str(&raw).ok()
 }
 
-/// Clear a rollback notice, e.g. before a new update attempt.
 pub fn clear_rollback_notice(config_dir: &Path) {
     let path = rollback_notice_path(config_dir);
     if let Err(e) = std::fs::remove_file(&path)
@@ -983,12 +792,6 @@ pub fn clear_rollback_notice(config_dir: &Path) {
     }
 }
 
-/// Name of the release asset built for `os`/`arch` (values of
-/// `std::env::consts::OS`/`ARCH`), exactly as `release.yml` uploads it.
-///
-/// # Errors
-///
-/// Returns an error for OS/architecture combinations that have no release build.
 fn release_asset_name(os: &str, arch: &str) -> anyhow::Result<&'static str> {
     match (os, arch) {
         ("linux", "x86_64") => Ok("residuum-linux-x86_64"),
@@ -1086,8 +889,6 @@ mod tests {
 
     #[test]
     fn release_asset_name_matches_every_release_build() {
-        // The names must match what the release workflow uploads, or
-        // self-update downloads a URL that 404s.
         let release_workflow = include_str!("../../../.github/workflows/release.yml");
         for (os, arch) in [
             ("linux", "x86_64"),
@@ -1155,7 +956,6 @@ mod tests {
         };
         write_pending_rollback(dir.path(), &pending);
         assert_eq!(take_pending_rollback(dir.path()), Some(pending));
-        // Consumed: a second read finds nothing.
         assert!(take_pending_rollback(dir.path()).is_none());
     }
 
@@ -1172,9 +972,6 @@ mod tests {
         assert!(take_pending_rollback(dir.path()).is_none());
     }
 
-    /// A marker that names only the preserved binary, as releases before
-    /// the install path was recorded write it, still rolls back: the
-    /// install path comes back from the preserved binary's name.
     #[test]
     fn pending_rollback_reads_a_marker_naming_the_preserved_binary() {
         let dir = tempfile::tempdir().unwrap();
@@ -1241,7 +1038,6 @@ mod tests {
 
     #[test]
     fn sha256_hex_matches_a_known_digest() {
-        // SHA-256("abc") from FIPS 180-2.
         assert_eq!(
             sha256_hex(b"abc"),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
@@ -1323,7 +1119,6 @@ not-a-hash  ignored
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
 
         let result = check_install_dir_writable(&exe);
-        // Restore write access so the tempdir can be cleaned up.
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let err = result.expect_err("a read-only install directory must refuse the update");
@@ -1479,9 +1274,6 @@ not-a-hash  ignored
         );
     }
 
-    /// Names the directory the swap scenario's installed test binary runs
-    /// from. The scenario refuses to run without it, since it renames the
-    /// binary it is running in.
     const SWAP_SCENARIO_DIR: &str = "RESIDUUM_TEST_SWAP_SCENARIO_DIR";
 
     /// A self-update renames the running binary aside, and on Linux the
@@ -1493,7 +1285,6 @@ not-a-hash  ignored
     #[test]
     fn install_path_names_the_new_binary_after_the_running_one_is_swapped_aside() {
         let test_exe = std::env::current_exe().unwrap();
-        // Beside the test binary, so the hard link stays on one filesystem.
         let install_dir = tempfile::Builder::new()
             .prefix(".swap-scenario")
             .tempdir_in(test_exe.parent().unwrap())
@@ -1524,9 +1315,6 @@ not-a-hash  ignored
         );
     }
 
-    /// Install a new binary over the one running this test, the way
-    /// [`download_and_install`] does, then check [`install_path`] still
-    /// names the install path. Run by the test above.
     #[test]
     #[ignore = "run by install_path_names_the_new_binary_after_the_running_one_is_swapped_aside from a link it can rename"]
     fn swap_scenario_in_an_installed_test_binary() {

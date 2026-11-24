@@ -81,9 +81,6 @@ RS=$'\036'
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
-# One entry per failing test, in the order first seen. A test named in two logs
-# (the unloaded Tests step and the stress run) is one entry with both sets of
-# messages.
 titles=()
 declare -A files=() projects=() messages=() counts=()
 unparsed=""
@@ -101,8 +98,6 @@ for log in "$@"; do
             unparsed+="$message_lines"$'\n'
             continue
         fi
-        # A test binary that crashed is named by its file, which carries a build
-        # hash; without the hash the title stays the same from one night to the next.
         if [ "$kind" = rust ] && [[ "$title" =~ ^(.+)-[0-9a-f]{16}$ ]]; then
             title="${BASH_REMATCH[1]} test binary"
         fi
@@ -141,7 +136,6 @@ repro_for() {
     fi
 }
 
-# The fenced block of a failure's messages, or nothing when there are none.
 message_block() {
     [ -n "$1" ] || return 0
     printf "\n\`\`\`text\n%s\`\`\`\n" "$1"
@@ -198,8 +192,6 @@ file_failure() {
     fi
 }
 
-# A cancelled job did not finish its tests, so a test may have hung under load. The
-# job's timeout is the usual cause of the cancellation.
 if [ "$result" = cancelled ]; then
     title="$(truncate_title "Nightly stress: the $suite run did not finish")"
     body="The nightly stress run on \`main\`, which runs $what, was cancelled before it finished. The job's timeout is the usual cause: a test that hangs under load keeps the job running until the timeout cancels it, so the tests after it never run.
@@ -243,7 +235,6 @@ for name in "${titles[@]}"; do
     fi
 done
 
-# The failing tests of the run as a Markdown list, LIST_LIMIT of them at most.
 test_list() {
     local name shown=0
     for name in "${titles[@]}"; do

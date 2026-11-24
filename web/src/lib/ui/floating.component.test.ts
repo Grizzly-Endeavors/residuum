@@ -63,7 +63,6 @@ describe("Menu", () => {
     expect(focusedLabel()).toBe("Settings");
     await user.keyboard("{ArrowDown}");
     expect(focusedLabel()).toBe("Open chat");
-    // A disabled item is reached, so its label is heard.
     await user.keyboard("{ArrowDown}");
     expect(focusedLabel()).toBe("Start");
     expect(document.activeElement).toHaveAttribute("aria-disabled", "true");
@@ -130,7 +129,6 @@ describe("Menu", () => {
     expect(menuButton()).toHaveFocus();
 
     await user.keyboard("{Enter}");
-    // Tab leaves for the menu button, which the next Tab moves on from.
     await fireEvent.keyDown(screen.getByRole("menuitem", { name: "Open chat" }), { key: "Tab" });
     expect(screen.queryByRole("menu")).toBeNull();
     expect(menuButton()).toHaveFocus();
@@ -228,7 +226,6 @@ describe("Tooltips", () => {
     expect(screen.getByRole("tooltip")).toHaveTextContent("Copy the address");
     await user.tab();
     expect(screen.queryByRole("tooltip")).toBeNull();
-    // Hiding never moves focus.
     expect(screen.getByRole("button", { name: "Open dialog" })).toHaveFocus();
   });
 
@@ -249,7 +246,6 @@ describe("Tooltips", () => {
 
   it("shows after a pointer rests, and goes on a press or when the pointer leaves", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
-    // Long after any tooltip closed, so this one waits for the pointer to rest.
     vi.setSystemTime(Date.now() + 60_000);
     const user = userEvent.setup({ advanceTimers: (ms) => vi.advanceTimersByTime(ms) });
     render(FloatingHarness);
@@ -261,7 +257,6 @@ describe("Tooltips", () => {
     await user.pointer({ keys: "[MouseLeft>]", target: settings });
     expect(screen.queryByRole("tooltip")).toBeNull();
     await user.pointer({ keys: "[/MouseLeft]", target: settings });
-    // A mouse press focuses the button, but only keyboard focus shows a tooltip.
     expect(screen.queryByRole("tooltip")).toBeNull();
     await user.unhover(settings);
     await user.hover(settings);
@@ -276,7 +271,6 @@ describe("Tooltips", () => {
     render(FloatingHarness);
     screen.getByRole("button", { name: "Open dialog" }).focus();
     await user.keyboard("{Enter}");
-    // The tooltip is a layer above the dialog, but holds no focus: Tab is still the dialog's.
     expect(screen.getByRole("button", { name: "Reload" })).toHaveFocus();
     expect(screen.getByRole("tooltip")).toHaveTextContent("Reload");
 
@@ -292,7 +286,6 @@ describe("Tooltips", () => {
     screen.getByRole("button", { name: "Open dialog" }).focus();
     await user.keyboard("{Enter}");
     const dialog = screen.getByRole("dialog", { name: "Inside" });
-    // Opened from the keyboard, the dialog's first control shows its tooltip.
     expect(screen.getByRole("button", { name: "Reload" })).toHaveFocus();
     expect(screen.getByRole("tooltip")).toHaveTextContent("Reload");
     await user.keyboard("{Escape}");

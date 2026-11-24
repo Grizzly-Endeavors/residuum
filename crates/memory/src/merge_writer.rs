@@ -1,28 +1,3 @@
-//! Memory merge writer: the single writer for global memory.
-//!
-//! Episode id allocation, the observation log append, the episode transcript
-//! and its search-chunk index, embedding, and the reflector trigger all go
-//! through [`MemoryMergeWriter`]. The main agent's own observation flow and
-//! every session run's completion pipeline call the same writer, so episode
-//! numbering and log appends never race between concurrent runs.
-//!
-//! No lock is held across a model or embedding call, so a slow reflection
-//! never holds up another run's merge or a config reload. `merge_lock`
-//! serializes episode id allocation and the durable per-episode writes
-//! (transcript, observation archives, chunk index, merged-run record,
-//! completion marker). `log_lock` serializes writes to the global
-//! observation log: a merge's append, and the reflector's replacement of the
-//! log once its model call has returned. `reflection_lock` keeps reflections
-//! to one at a time. The reflector and embedding provider are copied out of
-//! their lock before use, so a reload swaps them without waiting.
-//!
-//! A session run's completion pipeline can run more than once for the same
-//! run id — a crash between a successful merge and the run record being
-//! marked completed leaves the run `running`, and startup recovery re-runs
-//! the pipeline from the same transcript. `merge` refuses to create a
-//! duplicate episode for a run id already recorded in
-//! `crate::merged_run_log`.
-
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -46,76 +21,34 @@ use residuum_config::WorkspaceLayout;
 use residuum_core::time::now_local;
 use residuum_inference::EmbeddingProvider;
 
-/// The result of merging one episode into the memory index: the episode's
-/// identity, its transcript and observations, and whether the reflector ran
-/// for it.
 pub struct MergeOutcome {
-    /// The episode identifier (e.g., `"ep-001"`).
     pub id: String,
-    /// Path to the transcript file on disk.
     pub transcript_path: std::path::PathBuf,
-    /// Narrative summary captured at merge time, if any.
     pub narrative: Option<String>,
-    /// The merged observations, tagged with `tag`.
     pub observations: Vec<Observation>,
-    /// Interaction-pair chunks extracted from the transcript.
     pub chunks: Vec<IndexChunk>,
-    /// Episode date in `YYYY-MM-DD` format.
     pub date: String,
-    /// Whether the reflector ran as part of this merge.
     pub reflected: bool,
-    /// Set exactly when this merge's reflector check started or cleared an
-    /// automatic failure streak, for the caller to surface as a user
-    /// notice. `None` on every other merge, including one where the
-    /// reflector wasn't due or was backing off.
     pub reflector_notice: Option<residuum_core::util::NoticeAction>,
 }
 
-/// State that is replaced on a config/provider reload: the reflector and the
-/// embedding provider. Locked only long enough to copy them out or swap them
-/// in; a merge or reflection runs with the copy it took, and a reload takes
-/// effect for the next one.
 struct MergeState {
     reflector: Reflector,
     embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
 }
 
-/// The single serialized writer for global memory.
-///
-/// Shared (via `Arc`) between the main agent's event loop and every
-/// session's completion pipeline, so this is the one place episode ids are
-/// allocated, the observation log is appended, and the reflector is checked.
 pub struct MemoryMergeWriter {
-    /// Serializes episode id allocation and the durable per-episode writes
-    /// in `Self::persist_episode` (transcript, observation archives, chunk
-    /// index, merged-run record, completion marker), so episode numbering
-    /// never races. Released before indexing, embedding, or reflection run.
     merge_lock: Mutex<()>,
-    /// Serializes writes to the global observation log: a merge's append
-    /// (inside `persist_episode`) and the reflector's replacement of that
-    /// same file must never interleave. Never held across a model call.
     log_lock: Mutex<()>,
-    /// Held for the whole of a reflection, model call included, so two
-    /// reflections never compress the same log. An automatic reflection
-    /// that finds one running skips instead of waiting.
     reflection_lock: Mutex<()>,
     state: Mutex<MergeState>,
     layout: WorkspaceLayout,
     search_index: Arc<MemoryIndex>,
     vector_store: Option<Arc<VectorStore>>,
-    /// Backs off the reflector's automatic trigger (inside
-    /// [`Self::index_embed_and_reflect`]) after a failure, same reasoning as
-    /// the observer's own tracker: skip re-attempting on every later merge
-    /// while a prior failure's backoff hasn't elapsed. Shared across every
-    /// caller (main and every session), since the observation log — and so
-    /// the reflector's own state — is itself global. `force_reflect` bypasses
-    /// this and always attempts, but still updates it so a working manual
-    /// retry un-sticks a stuck automatic backoff.
     reflector_failure: residuum_core::util::BackoffTracker,
 }
 
 impl MemoryMergeWriter {
-    /// Create a new merge writer over the given subsystems.
     #[must_use]
     pub fn new(
         reflector: Reflector,
@@ -139,31 +72,20 @@ impl MemoryMergeWriter {
         }
     }
 
-    /// Tracks consecutive failures of the reflector's *automatic* trigger,
-    /// for backing off retries and telling the caller once when a failure
-    /// streak starts or clears. `force_reflect` doesn't consult this for
-    /// whether to attempt, but does update it — see the field's own doc.
     #[must_use]
     pub fn reflector_failure_tracker(&self) -> &residuum_core::util::BackoffTracker {
         &self.reflector_failure
     }
 
-    /// Update the reflector's configuration (e.g. after a config reload).
     pub async fn update_reflector_config(&self, config: ReflectorConfig) {
         self.state.lock().await.reflector.update_config(config);
     }
 
-    /// Replace the reflector wholesale (e.g. after a provider reload rebuilds
-    /// it with a fresh provider chain). A subsequent
-    /// [`Self::update_reflector_config`] call is still safe — reloads apply
-    /// providers and thresholds in a fixed order regardless of which changed,
-    /// so the two calls simply agree on the same end state.
     pub async fn swap_reflector(&self, reflector: Reflector) {
         self.state.lock().await.reflector = reflector;
         self.reflector_failure.clear_backoff_wait();
     }
 
-    /// Replace the embedding provider (e.g. after a provider reload).
     pub async fn set_embedding_provider(
         &self,
         embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
@@ -171,18 +93,11 @@ impl MemoryMergeWriter {
         self.state.lock().await.embedding_provider = embedding_provider;
     }
 
-    /// Copy out the reflector and embedding provider, releasing their lock
-    /// before either is used.
     async fn snapshot_state(&self) -> (Reflector, Option<Arc<dyn EmbeddingProvider>>) {
         let state = self.state.lock().await;
         (state.reflector.clone(), state.embedding_provider.clone())
     }
 
-    /// Force a reflection cycle regardless of the observation log's size.
-    /// Waits for a reflection already running to finish first.
-    ///
-    /// # Errors
-    /// Returns an error if the LLM call fails or file persistence fails.
     pub async fn force_reflect(&self) -> anyhow::Result<ObservationLog> {
         let _reflection = self.reflection_lock.lock().await;
         let (reflector, _) = self.snapshot_state().await;
@@ -190,9 +105,6 @@ impl MemoryMergeWriter {
         self.reflect_and_replace(&reflector, log).await
     }
 
-    /// Compress `log` and write the result back, keeping anything merged
-    /// into the log while the model was working. Only the final write holds
-    /// `log_lock`. The caller holds `reflection_lock`.
     async fn reflect_and_replace(
         &self,
         reflector: &Reflector,
@@ -206,19 +118,6 @@ impl MemoryMergeWriter {
         replace_with_compressed(&self.layout, &log, compressed).await
     }
 
-    /// Whether `tag` names a session run that has already been durably
-    /// merged into an episode, per the `crate::merged_run_log`
-    /// record. Always `Ok(None)` for the main agent's own merges
-    /// (`SourceTag::main` carries no run id).
-    ///
-    /// Checked before allocating a new episode so a re-run of a run's
-    /// completion pipeline — e.g. startup recovery after a crash between a
-    /// successful merge and the run record being marked completed — refuses
-    /// to create a duplicate episode instead of merging the same transcript
-    /// twice.
-    ///
-    /// # Errors
-    /// Returns an error if the merged-run record exists but cannot be read.
     async fn check_already_merged(&self, tag: &SourceTag) -> anyhow::Result<Option<MergeOutcome>> {
         let Some(run_id) = tag.run_id.as_deref() else {
             return Ok(None);
@@ -248,14 +147,6 @@ impl MemoryMergeWriter {
         }))
     }
 
-    /// Look up the episode a session run id has already been merged into, if
-    /// any, without going through the full [`Self::merge`] pipeline. Used by
-    /// startup recovery to backfill a recovered run's record instead of
-    /// re-running the completion pipeline for a run that already merged
-    /// before the crash.
-    ///
-    /// # Errors
-    /// Returns an error if the merged-run record exists but cannot be read.
     pub async fn find_merged_episode(&self, run_id: &str) -> anyhow::Result<Option<String>> {
         Ok(
             crate::merged_run_log::load_merged_runs(&self.layout.merged_runs_json())
@@ -265,24 +156,6 @@ impl MemoryMergeWriter {
         )
     }
 
-    /// Merge an extraction into global memory: allocate an episode id, write
-    /// the transcript and observation archives, index and embed, and check
-    /// whether the reflector should run.
-    ///
-    /// Episode id allocation and the durable per-episode writes in
-    /// `Self::persist_episode` are serialized against every other merge
-    /// (main agent or session) through the writer's merge lock, so episode
-    /// numbering and log appends never race. That lock is released before
-    /// indexing, embedding, and the reflector check run, and none of those
-    /// hold a lock across their network or model calls, so a slow one never
-    /// blocks a concurrent merge.
-    ///
-    /// # Errors
-    /// Returns an error if the episode id cannot be allocated or the
-    /// transcript, observation log, chunk index, merged-run record, or
-    /// completion marker cannot be written — these are the durable record a
-    /// merge must not silently lose. Indexing, embedding, and reflector
-    /// failures are logged as warnings and never fail the merge.
     #[tracing::instrument(skip_all, fields(session_address = tag.session_address.as_deref().unwrap_or("main")))]
     pub async fn merge(
         &self,
@@ -295,9 +168,6 @@ impl MemoryMergeWriter {
         }
 
         let merge_guard = self.merge_lock.lock().await;
-        // Re-check under the lock: closes the window between the check above
-        // and another merge for the same run id finishing while this call
-        // waited for the lock.
         if let Some(outcome) = self.check_already_merged(&tag).await? {
             return Ok(outcome);
         }
@@ -356,22 +226,6 @@ impl MemoryMergeWriter {
         })
     }
 
-    /// Write the episode's durable artifacts: transcript, per-episode and
-    /// global observation archives, the interaction-pair chunk index, the
-    /// merged-run record (for a session tag), and the completion marker —
-    /// in that order, with the marker last. Returns the transcript path,
-    /// the tagged observations, and the extracted chunks for the caller to
-    /// index.
-    ///
-    /// Called only while [`Self::merge`] holds `merge_lock`.
-    ///
-    /// # Errors
-    /// Returns an error, propagated from whichever step failed, if any
-    /// artifact cannot be written. Every step here is required: the
-    /// completion marker's presence certifies that all of them landed on
-    /// disk, so a failure anywhere leaves the marker absent — the signal
-    /// [`crate::episode_store::find_interrupted_episodes`] uses to
-    /// detect an interrupted write.
     async fn persist_episode(
         &self,
         episode: &Episode,
@@ -414,8 +268,6 @@ impl MemoryMergeWriter {
             .context("failed to write per-episode observation archive")?;
 
         {
-            // Serialized against the reflector's replacement of the same
-            // file, so neither write loses the other's.
             let _log_guard = self.log_lock.lock().await;
             append_observations(&self.layout.observations_json(), observations.clone())
                 .await
@@ -447,14 +299,6 @@ impl MemoryMergeWriter {
         Ok((transcript_path, observations, chunks))
     }
 
-    /// Index and embed the episode's observations and chunks, record the
-    /// manifest entries, and check whether the reflector should run.
-    /// Returns whether the reflector fired, and a notice for the caller to
-    /// surface exactly when an automatic reflector failure streak starts or
-    /// clears (`residuum_core::util::NoticeAction::None` otherwise, including when
-    /// backed off, not due, or another reflection is already running). Never
-    /// fails the merge — every failure here is logged and degrades
-    /// search/reflection, not the durable record.
     async fn index_embed_and_reflect(
         &self,
         reflector: &Reflector,
@@ -495,9 +339,6 @@ impl MemoryMergeWriter {
         )
         .await;
 
-        // A reflection already running carries this merge's observations
-        // over into the log it writes; a later merge checks the threshold
-        // again against that log.
         let Ok(_reflection) = self.reflection_lock.try_lock() else {
             tracing::debug!("a reflection is already running, skipping this check");
             return (false, residuum_core::util::NoticeAction::None);
@@ -530,9 +371,6 @@ impl MemoryMergeWriter {
     }
 }
 
-/// Embed observations and chunks into the vector store, if both an embedding
-/// provider and a vector store are configured. Returns whether embedding
-/// succeeded for every non-empty batch (used to record manifest state).
 async fn embed_and_insert(
     vector_store: Option<&VectorStore>,
     embedding_provider: Option<&dyn EmbeddingProvider>,
@@ -584,14 +422,12 @@ async fn embed_and_insert(
     all_ok
 }
 
-/// Date-formatted subdirectory (`YYYY-MM/DD`) for an episode's date string.
 fn episode_date_dir(date: &str) -> Option<String> {
     let year_month = date.get(..7)?;
     let day = date.get(8..10)?;
     Some(format!("{year_month}/{day}"))
 }
 
-/// Record a just-indexed episode's `.obs.json` and `.idx.jsonl` in the manifest.
 async fn record_episode_in_manifest(
     layout: &WorkspaceLayout,
     episode_id: &str,
@@ -722,9 +558,6 @@ mod tests {
         assert_eq!(log.observations.len(), 1);
     }
 
-    /// A reflector wired to always be due (threshold 0) but backed by the
-    /// `NullProvider`, which always errors — so every reflection attempt
-    /// through this writer fails deterministically.
     fn writer_with_always_failing_reflector(dir: &Path) -> MemoryMergeWriter {
         let layout = WorkspaceLayout::new(dir);
         let search_index =
@@ -744,8 +577,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mw = writer_with_always_failing_reflector(dir.path());
 
-        // First merge: the reflector is due, attempts, and fails — the
-        // caller should be told this is a new failure streak.
         let first = mw
             .merge(sample_extraction("one"), SourceTag::main(), chrono_tz::UTC)
             .await
@@ -756,8 +587,6 @@ mod tests {
             Some(residuum_core::util::NoticeAction::FailureStarted)
         );
 
-        // Second merge: still due, but backing off — no repeat attempt, no
-        // repeat notice.
         let second = mw
             .merge(sample_extraction("two"), SourceTag::main(), chrono_tz::UTC)
             .await
@@ -768,9 +597,6 @@ mod tests {
             "must not re-attempt (and re-spend) while backing off, nor renotify"
         );
 
-        // force_reflect always attempts regardless of the automatic
-        // backoff, and still fails against the same null provider, but its
-        // outcome updates the same tracker used above (no separate streak).
         assert!(mw.force_reflect().await.is_err());
         assert_eq!(
             mw.reflector_failure_tracker().gate(),
@@ -779,7 +605,6 @@ mod tests {
         );
     }
 
-    /// A reflector that is always due and whose model call waits at `gate`.
     fn writer_with_gated_reflector(
         dir: &Path,
         gate: &residuum_core::testing::gate::Gate,
@@ -1044,10 +869,6 @@ mod tests {
         assert_ne!(a.id, b.id, "different run ids must get distinct episodes");
     }
 
-    /// An embedding provider that sleeps before returning, standing in for a
-    /// slow network call.
-    /// Embedding provider that parks every call until the test releases it,
-    /// signalling when the first call has entered the embedding step.
     struct GatedEmbeddingProvider {
         entered: Arc<tokio::sync::Notify>,
         release: Arc<tokio::sync::Semaphore>,
@@ -1080,8 +901,6 @@ mod tests {
         let search_index =
             Arc::new(MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap());
         let vector_store = Arc::new(VectorStore::open_or_create(&layout.vectors_db(), 4).unwrap());
-        // A never-triggering reflector isolates this test to the embedding
-        // step alone.
         let reflector = Reflector::new(
             Box::new(residuum_inference::NullProvider),
             ReflectorConfig {
@@ -1113,8 +932,6 @@ mod tests {
             .unwrap()
         });
 
-        // The first merge is now parked inside its embedding step and stays
-        // there until the gate is released below.
         entered.notified().await;
 
         let mw2 = Arc::clone(&mw);
@@ -1128,10 +945,6 @@ mod tests {
             .unwrap()
         });
 
-        // Episode id allocation and the durable per-episode writes must not
-        // wait on the first merge's embedding step. The gate is still closed,
-        // so the second episode appearing on disk at all proves it; the
-        // timeout only bounds how long a regression takes to fail.
         residuum_core::testing::wait::until(
             "the second merge's episode id allocation and durable writes to complete \
              while the first merge is still inside its embedding step",

@@ -1,38 +1,23 @@
-//! Errors returned by inference provider operations.
-
 use std::fmt;
 
 use crate::types::AttemptUsage;
 
-/// Errors from model provider operations.
 #[derive(Debug)]
 pub enum InferenceError {
-    /// HTTP request failed (network, DNS, TLS)
     Request(reqwest::Error),
 
-    /// Response could not be parsed
     Parse(String),
 
-    /// API returned an error status
     Api(String),
 
-    /// Request timed out
     Timeout(u64),
 
-    /// A streaming response went quiet: no bytes arrived for this many seconds
     Stalled(u64),
 
-    /// A streaming response ended or broke before it was complete
     StreamInterrupted(String),
 
-    /// A model call that ended in `error`, with every request it sent, in
-    /// order. Shows as `error` alone and keeps `error`'s source chain;
-    /// [`InferenceError::underlying`] is the error to classify, and
-    /// [`InferenceError::attempts`] what the call spent.
     Attempted {
-        /// What ended the call; never itself `Attempted`.
         error: Box<InferenceError>,
-        /// Every request the call sent, in order.
         attempts: Vec<AttemptUsage>,
     },
 }
@@ -54,8 +39,6 @@ impl fmt::Display for InferenceError {
 }
 
 impl std::error::Error for InferenceError {
-    /// The error's own cause. An `Attempted` wrapper is transparent here, so a
-    /// wrapped error reports the same chain as the bare one.
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Request(e) => Some(e),
@@ -76,8 +59,6 @@ impl From<reqwest::Error> for InferenceError {
 }
 
 impl InferenceError {
-    /// The error itself, without the attempts a failed call records on it.
-    /// Match on this rather than on `self` to tell what went wrong.
     #[must_use]
     pub fn underlying(&self) -> &Self {
         match self {
@@ -91,8 +72,6 @@ impl InferenceError {
         }
     }
 
-    /// Every request the failed call sent, in order, with what each spent.
-    /// Empty when the call failed before it sent any.
     #[must_use]
     pub fn attempts(&self) -> &[AttemptUsage] {
         match self {
@@ -106,7 +85,6 @@ impl InferenceError {
         }
     }
 
-    /// Split into the bare error and the attempts it carries.
     pub(crate) fn into_parts(self) -> (Self, Vec<AttemptUsage>) {
         match self {
             Self::Attempted { error, attempts } => (*error, attempts),
@@ -119,8 +97,6 @@ impl InferenceError {
         }
     }
 
-    /// This error, recording `earlier` ahead of the attempts it already
-    /// carries. With no attempts at all it stays bare.
     #[must_use]
     pub(crate) fn after_attempts(self, mut earlier: Vec<AttemptUsage>) -> Self {
         let (error, own) = self.into_parts();
@@ -134,13 +110,6 @@ impl InferenceError {
         }
     }
 
-    /// Whether this error is likely to succeed on retry.
-    ///
-    /// - Request/Timeout/Stalled/StreamInterrupted: transient network failures
-    /// - Parse: permanent -- malformed response won't improve
-    /// - Api: by its HTTP status when the message names one (a timeout, a
-    ///   rate limit, Groq's capacity refusal or a server error); otherwise when
-    ///   the message indicates rate-limiting, overload or a server-side failure
     #[must_use]
     pub(crate) fn is_retryable(&self) -> bool {
         match self.underlying() {
@@ -162,9 +131,6 @@ impl InferenceError {
         }
     }
 
-    /// Classify this error into a plain-language cause, for a non-technical
-    /// user who has no reason to know what an HTTP status code or a
-    /// provider's own error string means.
     fn category(&self) -> FailureCategory {
         match self.underlying() {
             Self::Timeout(_) | Self::Stalled(_) => FailureCategory::Timeout,
@@ -175,27 +141,16 @@ impl InferenceError {
         }
     }
 
-    /// Plain-language sentence naming what went wrong and what to do next.
-    /// Never exposes a raw status code, error type, or module path — see
-    /// `AGENTS.md`'s "No Silent Failures".
     #[must_use]
     pub fn user_message(&self) -> String {
         self.category().user_message(self.underlying())
     }
 
-    /// Short plain-language fragment naming the cause, for embedding into a
-    /// longer sentence (a failover notice: "main model unavailable
-    /// ({cause}), using ..."). Unlike [`Self::user_message`] this carries no
-    /// "what to do next" — the caller supplies that context.
     #[must_use]
     pub(crate) fn cause_phrase(&self) -> &'static str {
         self.category().cause_phrase()
     }
 
-    /// Whether the provider turned the request down because it carried
-    /// image content the model can't take. Matches only the rejections
-    /// listed in [`IMAGE_INPUT_REJECTIONS`]; any other error, a `400`
-    /// included, is not one.
     #[must_use]
     pub(crate) fn rejects_image_input(&self) -> bool {
         let Self::Api(msg) = self.underlying() else {
@@ -249,8 +204,6 @@ fn http_status(lower: &str) -> Option<u16> {
         .find_map(leading_status)
 }
 
-/// A three-digit status at the start of `text`, followed by anything but
-/// another digit.
 fn leading_status(text: &str) -> Option<u16> {
     let digits = text.get(..3)?;
     let ends = text
@@ -266,20 +219,10 @@ fn leading_status(text: &str) -> Option<u16> {
         .filter(|status| (100..600).contains(status))
 }
 
-/// Whether a lowercased provider error names a server-side failure by its
-/// error type rather than an HTTP status. A streaming response reports a
-/// failure after its `200` status has gone out, so the error type
-/// (Anthropic's `api_error`, `OpenAI`'s `server_error`) is all there is to
-/// classify it by.
 fn has_server_error_type(lower: &str) -> bool {
     lower.contains("api_error") || lower.contains("server_error")
 }
 
-/// A plain-language bucket for an [`InferenceError`], independent of which
-/// provider produced it. Providers collapse their own status code and
-/// error body into `InferenceError::Api`'s single string (see
-/// `crates/inference/src/providers/`), so classification reads the status where the
-/// clients put it (see [`http_status`]) and matches the rest of that string.
 enum FailureCategory {
     AuthFailed,
     ToolsWithThinkingUnsupported,
@@ -294,11 +237,6 @@ enum FailureCategory {
 }
 
 impl FailureCategory {
-    /// Classify a provider's collapsed `"{status}: {body}"` (or similar)
-    /// error string. Order matters: more specific matches are checked
-    /// before generic ones (e.g. a 400 naming the context limit is checked
-    /// before a bare "4" status range that would otherwise fall through to
-    /// "unclassified").
     fn from_api_message(msg: &str) -> Self {
         let lower = msg.to_lowercase();
         let status = http_status(&lower);
@@ -348,7 +286,6 @@ impl FailureCategory {
         }
     }
 
-    /// Short fragment naming the cause, for a sentence the caller builds.
     fn cause_phrase(&self) -> &'static str {
         match self {
             Self::AuthFailed => "an authentication failure",
@@ -364,9 +301,6 @@ impl FailureCategory {
         }
     }
 
-    /// Full plain-language sentence: what happened, and what to do next.
-    /// `err` supplies the one category (`Timeout`) whose sentence needs a
-    /// value out of the error itself.
     fn user_message(&self, err: &InferenceError) -> String {
         match self {
             Self::AuthFailed => "Residuum couldn't authenticate with the AI provider. Check \
@@ -419,27 +353,12 @@ impl FailureCategory {
     }
 }
 
-/// A turn failure described for two different audiences: `message` is
-/// plain language for the user (never a raw error type or status code, per
-/// `AGENTS.md`'s "No Silent Failures"), and `details` is the full technical
-/// cause chain for a developer or an expandable "details" view.
 #[derive(Debug, Clone)]
 pub struct FailureDescription {
-    /// Plain-language cause and next step.
     pub message: String,
-    /// Full technical chain (`anyhow`'s alternate `{:#}` formatting).
     pub details: String,
 }
 
-/// Describe a turn failure for both audiences at once: a plain-language
-/// message for the user, classified from the originating [`InferenceError`]
-/// when the failure came from a model call, and the full technical chain
-/// for a details view or the logs.
-///
-/// Walks `err`'s cause chain rather than requiring the caller to classify
-/// before wrapping it in `.context(...)` — `anyhow::Error`'s `Display`
-/// (what `.to_string()` gives you) only shows the outermost context, so the
-/// originating error's detail would otherwise never reach the user.
 #[must_use]
 pub fn describe_turn_failure(err: &anyhow::Error) -> FailureDescription {
     let details = format!("{err:#}");
@@ -690,8 +609,6 @@ mod tests {
         assert_eq!(err.cause_phrase(), "an error talking to the AI provider");
     }
 
-    /// A request the client rejects before sending it, so the `reqwest` error
-    /// carries its own cause (the URL parse failure).
     fn request_error() -> InferenceError {
         let error = reqwest::Client::new().get("not a url").build().unwrap_err();
         InferenceError::from(error)

@@ -1,37 +1,11 @@
-//! Moving a paused clock.
-//!
-//! For tests of code with no real I/O (no sockets, child processes or OS file
-//! watchers), run on a paused clock (`#[tokio::test(start_paused = true)]`)
-//! and move time with these. Each checks first that the clock is paused, so
-//! it can never quietly measure real time. Under a paused clock, a runtime
-//! with nothing to do jumps straight to its next timer, so waiting on a socket
-//! there fires every pending timeout at once; keep real I/O out of these tests.
-//! A test of a timeout on a child process pauses the clock itself once the
-//! child has started and jumps it with `tokio::time::advance`; CONTRIBUTING.md,
-//! "Waiting in tests", says why.
-
 use std::future::IntoFuture;
 use std::time::Duration;
 
-/// Let `duration` of paused time pass, firing every timer due in it in order.
-///
-/// This sleeps rather than calling `tokio::time::advance`: a sleep lets each
-/// woken task run before time moves on, so timers fire in order, where an
-/// advance jumps past them all at once.
-///
-/// # Panics
-/// Panics if the clock isn't paused.
 pub async fn elapse(duration: Duration) {
     assert_paused().await;
     tokio::time::sleep(duration).await;
 }
 
-/// `fut`'s output if it completes within `duration` of paused time, `None` if
-/// it doesn't. On a paused clock this is how a test checks that something
-/// does not happen within a window.
-///
-/// # Panics
-/// Panics if the clock isn't paused.
 pub async fn within<F: IntoFuture>(duration: Duration, fut: F) -> Option<F::Output> {
     assert_paused().await;
     tokio::time::timeout(duration, fut).await.ok()

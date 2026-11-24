@@ -1,22 +1,3 @@
-//! Static serving of the web app: cache headers, compression and the SPA
-//! fallback. The files come from the [`WebAssetSource`] the process hands the
-//! hub; the root embeds `web/dist/` and serves it through that source.
-//!
-//! - Files under `assets/` are named by content hash, so a browser keeps them
-//!   for a year without asking again.
-//! - HTML documents (`index.html`, also as the answer for a client route) are
-//!   fetched whole on every load: `no-cache` and no validator, so they never get
-//!   a 304.
-//! - Every other file (the service worker, the manifest, icons) keeps its name
-//!   across releases, so a browser revalidates it on every use against a
-//!   content-hash `ETag` and gets a bodyless 304 when nothing changed.
-//! - Scripts, styles, JSON, SVG and the manifest are compressed when the client
-//!   accepts it. HTML and images are not.
-//! - HTML documents carry the app shell's Content-Security-Policy
-//!   ([`APP_SHELL_CSP`]), which keeps the app from loading images, media,
-//!   plug-ins or frames from anywhere but the hub, and from posting a form
-//!   anywhere else.
-
 use std::borrow::Cow;
 
 use axum::Router;
@@ -34,50 +15,23 @@ use tracing::warn;
 
 use residuum_net::browser_landing::is_top_level_navigation;
 
-/// A file of the embedded web app, as the static routes serve it.
 pub struct WebAsset {
-    /// The file's bytes.
     pub data: Cow<'static, [u8]>,
-    /// The SHA-256 of `data`. A file that is neither hashed nor HTML is
-    /// revalidated against it.
     pub sha256: [u8; 32],
 }
 
-/// Looks up a file of the embedded web app by its path under `web/dist/`,
-/// returning `None` when the build has no such file.
 pub type WebAssetSource = fn(&str) -> Option<WebAsset>;
 
-/// Directory of build output whose file names carry a content hash.
 const HASHED_ASSET_DIR: &str = "assets/";
 
-/// A hashed file never changes under its name, so it is kept for a year.
 const IMMUTABLE_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
 
-/// `no-cache` lets a browser keep the file but makes it check before each use.
-/// With an `ETag` that check is a 304; without one it is a full fetch.
 const REVALIDATE_CACHE_CONTROL: &str = "no-cache";
 
-/// The app shell's Content-Security-Policy. The app shows agents' replies, and
-/// a reply can be steered by what its model read into naming a URL on someone
-/// else's server that carries the conversation in it. The web app renders such
-/// an image as a link (`web/src/lib/markdown.ts`); this policy is the browser's
-/// own refusal if anything gets past that. Images and media load only from the
-/// hub, where the agents' files are, or from `data:` and `blob:` URIs the app
-/// builds itself. The app embeds no plug-ins or frames: workbench artifacts
-/// open in their own tab, on their own origin. Scripts, styles, fonts and
-/// connections are left to the browser's defaults.
-///
-/// The policy is the one line of `web/app-shell-csp.txt`, which the web app's
-/// mock servers send too, so the end-to-end suite runs under it.
 const APP_SHELL_CSP: &str = include_str!("../../../../web/app-shell-csp.txt").trim_ascii();
 
-/// Brotli quality and gzip level for compressing on the fly. The encoder's
-/// default brotli quality (11) takes about 0.7 s per request on the 566 kB
-/// main bundle; 5 takes about 10 ms and is within 12% of its size.
 const COMPRESSION_QUALITY: i32 = 5;
 
-/// The embedded web app as a router, for use as the hub's fallback: every
-/// path the API and webhook routes don't claim lands here.
 pub(crate) fn static_assets(assets: WebAssetSource) -> Router {
     Router::new()
         .fallback(static_handler)
@@ -89,14 +43,6 @@ pub(crate) fn static_assets(assets: WebAssetSource) -> Router {
         .with_state(assets)
 }
 
-/// Serves the file at the requested URI path, falling back to `index.html`
-/// for the web UI's client-side routes (paths without file extensions).
-///
-/// A missing file is a 404 in the form its asker reads: a browser loading a
-/// page gets the app shell with the 404 status, so the app's Not Found page
-/// shows; a script, image or other subresource gets a plain 404. Unknown API
-/// and WebSocket paths get the API's JSON error, so a client calling a missing
-/// endpoint sees the failure instead of HTML.
 async fn static_handler(
     State(assets): State<WebAssetSource>,
     method: Method,
@@ -105,7 +51,6 @@ async fn static_handler(
 ) -> Response {
     let path = uri.path().trim_start_matches('/');
 
-    // Try the exact path first
     if let Some(resp) = serve_embedded(assets, path, &method, &request_headers) {
         return resp;
     }
@@ -134,14 +79,11 @@ async fn static_handler(
         .unwrap_or_default()
 }
 
-/// Whether `path` (without its leading slash) is under the hub's API or its
-/// socket, which answer for themselves and never with the app shell.
 fn is_api_path(path: &str) -> bool {
     let first_segment = path.split('/').next().unwrap_or_default();
     first_segment == "api" || first_segment == "ws"
 }
 
-/// The API's `{ "error" }` 404 for a path no endpoint serves.
 fn api_not_found() -> Response {
     (
         StatusCode::NOT_FOUND,
@@ -150,11 +92,6 @@ fn api_not_found() -> Response {
         .into_response()
 }
 
-/// Serve an embedded file by path, returning `None` if it doesn't exist.
-///
-/// Carries the cache headers for the file's class. A file that is neither
-/// hashed nor HTML has an `ETag`, and a matching `If-None-Match` gets a
-/// bodyless 304.
 fn serve_embedded(
     assets: WebAssetSource,
     path: &str,
@@ -166,8 +103,6 @@ fn serve_embedded(
 
     let mut headers = HeaderMap::new();
     if is_compressible(mime.essence_str()) {
-        // Sent on every answer, compressed or not, so a cache keeps the
-        // encodings apart. A 304 repeats it (RFC 9110 §15.4.5).
         headers.insert(header::VARY, HeaderValue::from_static("Accept-Encoding"));
     }
 
@@ -207,10 +142,6 @@ fn serve_embedded(
     Some(resp)
 }
 
-/// Whether the request's `If-None-Match` lists `etag` or `*`.
-///
-/// Compares weakly, as RFC 9110 §13.1.2 prescribes for this header, so a
-/// `W/` prefix on the client's copy doesn't hide a match.
 fn if_none_match_names(request_headers: &HeaderMap, etag: &str) -> bool {
     request_headers
         .get_all(header::IF_NONE_MATCH)
@@ -223,8 +154,6 @@ fn if_none_match_names(request_headers: &HeaderMap, etag: &str) -> bool {
         })
 }
 
-/// Set a header from a string that is valid by construction. A value that
-/// isn't is logged and the header left off, so the file is still served.
 fn set_header(headers: &mut HeaderMap, name: HeaderName, value: &str) {
     match HeaderValue::from_str(value) {
         Ok(value) => {
@@ -236,14 +165,10 @@ fn set_header(headers: &mut HeaderMap, name: HeaderName, value: &str) {
     }
 }
 
-/// Whether this media type (no parameters) is an HTML document.
 fn is_html(essence: &str) -> bool {
     essence == "text/html"
 }
 
-/// Whether a response with this media type (no parameters) is compressed.
-///
-/// HTML is not compressed, and images are compressed already.
 fn is_compressible(essence: &str) -> bool {
     matches!(
         essence,
@@ -256,8 +181,6 @@ fn is_compressible(essence: &str) -> bool {
     )
 }
 
-/// Compression predicate for the layer in [`static_assets`]: a 200 whose
-/// media type [`is_compressible`]. A 304 carries no body and no media type.
 fn should_compress(
     status: StatusCode,
     _version: Version,
@@ -280,7 +203,6 @@ mod tests {
 
     use crate::testing::{FIXTURE_HASHED_CSS, FIXTURE_HASHED_JS, fixture_assets};
 
-    /// A GET of `path` through the router, with the given request headers.
     async fn get(path: &str, request_headers: &[(&str, &str)]) -> Response {
         let mut request = Request::builder().method(Method::GET).uri(path);
         for (name, value) in request_headers {
@@ -305,7 +227,6 @@ mod tests {
             .map(|value| value.to_str().unwrap())
     }
 
-    /// The path of the fixture's hashed build output ending in `suffix`.
     fn hashed_asset(suffix: &str) -> String {
         [FIXTURE_HASHED_JS, FIXTURE_HASHED_CSS]
             .into_iter()
@@ -518,7 +439,6 @@ mod tests {
         }
     }
 
-    /// The directives of a Content-Security-Policy, by name, as the browser reads them.
     fn csp_directives(policy: &str) -> std::collections::HashMap<&str, Vec<&str>> {
         policy
             .split(';')
@@ -593,7 +513,6 @@ mod tests {
                 ("sec-fetch-dest", "image"),
                 ("accept", "image/avif,image/*"),
             ][..],
-            // An iframe or fetch that asks for HTML is still not a page load.
             &[("sec-fetch-dest", "iframe"), ("accept", "text/html")][..],
             &[("accept", "application/json")][..],
         ] {
@@ -837,8 +756,6 @@ mod tests {
         assert_eq!(header_of(&plain, "etag"), header_of(&gzip, "etag"));
     }
 
-    /// A `reqwest` client that doesn't decompress gets the raw encoded body and
-    /// headers.
     #[tokio::test]
     async fn a_client_that_does_not_decompress_receives_the_encoded_body_and_headers() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

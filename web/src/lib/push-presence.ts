@@ -1,34 +1,23 @@
-// Telling the hub when this window is in front of the user, so it holds back
-// pushes the user is already looking at. The hub ends a report
-// itself when the socket closes, so nothing is sent while the socket is down,
-// and a new connection hears the report again.
-
 import type { HubClientMessage } from "./hub-types";
 
-/** How often an active window repeats itself; the hub keeps a report for 60 seconds. */
 export const PRESENCE_REPEAT_MS = 30_000;
 
 export type PresenceMessage = Extract<HubClientMessage, { type: "presence" }>;
 
-/** The hub socket, as presence uses it. */
 export interface PresenceSocket {
   connected: () => boolean;
   send: (message: PresenceMessage) => void;
-  /** Call `listener` on each new connection. Returns a function that stops. */
   onConnect: (listener: () => void) => () => void;
 }
 
-/** The window, as presence uses it. */
 export interface PresencePage {
   visible: () => boolean;
   focused: () => boolean;
-  /** Call `listener` when visibility or focus changes. Returns a function that stops. */
   onChange: (listener: () => void) => () => void;
 }
 
 export class PresenceReporter {
   #device: string | null = null;
-  /** The device the hub was last told is active, or null. */
   #reported: string | null = null;
   #timer: ReturnType<typeof setInterval> | undefined;
 
@@ -37,13 +26,11 @@ export class PresenceReporter {
     private readonly page: PresencePage,
   ) {}
 
-  /** Follow the page and the socket. Returns a function that stops and says the window is gone. */
   start(): () => void {
     const stopPage = this.page.onChange(() => {
       this.#update();
     });
     const stopSocket = this.socket.onConnect(() => {
-      // The new connection has no report yet.
       this.#reported = null;
       this.#update();
     });
@@ -55,7 +42,6 @@ export class PresenceReporter {
     };
   }
 
-  /** The device with push on here, or null when push is off. */
   setDevice(device: string | null): void {
     this.#device = device;
     this.#update();
@@ -77,12 +63,10 @@ export class PresenceReporter {
   }
 
   #send(device: string, active: boolean): void {
-    // A closed socket already ended the report, and queuing would replay a stale one.
     if (this.socket.connected()) this.socket.send({ type: "presence", device_id: device, active });
   }
 }
 
-/** The browser window: visible from its visibility state, focused from its focus and blur events. */
 export function browserPresencePage(): PresencePage {
   let focused = document.hasFocus();
   return {

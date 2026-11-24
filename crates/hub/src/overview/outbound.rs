@@ -1,10 +1,3 @@
-//! `outbound_problems`: the open tasks a running agent sent to remote agents
-//! that it has been unable to reach for longer than the tracker's notice
-//! threshold, read from the agent's `a2a/outbound.json`.
-//!
-//! The tracker saves a task before it announces the change, so the file is
-//! never behind the event that sent the overview here to read it.
-
 use chrono::{DateTime, Utc};
 
 use super::types::OutboundProblem;
@@ -12,21 +5,13 @@ use crate::AgentFiles;
 use residuum_a2a::client::tracker::read_open_tasks;
 use residuum_config::WorkspaceLayout;
 
-/// What reading an agent's outbound tasks found.
 pub(super) struct OutboundRead {
-    /// The tasks past the threshold, the longest unreachable first.
     pub problems: Vec<OutboundProblem>,
-    /// When the next task still short of the threshold passes it, if one is
-    /// in a streak. Nothing announces that moment, so the service waits for
-    /// it.
     pub next_notice_at: Option<DateTime<Utc>>,
-    /// What could not be read, as one plain sentence, which the service
-    /// reports once for as long as it stays unreadable.
     pub problem: Option<String>,
 }
 
 impl OutboundRead {
-    /// An agent with no tasks being watched: one that isn't running.
     pub(super) fn none() -> Self {
         Self {
             problems: Vec::new(),
@@ -36,7 +21,6 @@ impl OutboundRead {
     }
 }
 
-/// The agent's outbound tasks that are problems as of `now`.
 pub(super) async fn read(files: &AgentFiles, now: DateTime<Utc>) -> OutboundRead {
     let path = WorkspaceLayout::new(&files.dir).a2a_outbound_json();
     let tasks = match read_open_tasks(&path).await {

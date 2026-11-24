@@ -1,24 +1,3 @@
-//! Rules checked by reading the workspace's own source: the root crate's and
-//! every workspace member's `src` and `tests`.
-//!
-//! The rules need to know which lines are test code, and a file is not split
-//! cleanly at its first `#[cfg(test)]`: plenty of files put the attribute on a
-//! `use` or an accessor near the top and carry on with production code. The
-//! classifier here goes by module declarations and by the shape rustfmt gives
-//! an item:
-//! - A whole file is test code when it is under a `tests/` directory of a
-//!   scanned root, or when a `#[cfg(test)] mod x;` (or a `mod x;` inside a test
-//!   file) declares it.
-//! - Elsewhere, a `#[cfg(test)]` or `#[cfg(any(test, feature = "test-support"))]`
-//!   line covers the item after it (past any further attributes and comments).
-//!   That item ends at its own line when the line ends in `;`, or at the first
-//!   later line at the item's indentation that closes it (`}`, `)` or `]`).
-//!
-//! The same classification under `#[cfg(test)]` alone gives the code only the
-//! crate's own test build compiles, without the test-support helpers other
-//! crates' tests use. `unused_pub` needs that split: a member crate's `pub`
-//! item that only its own tests use is dead to every other crate.
-
 mod unused_pub;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -29,9 +8,6 @@ use regex::Regex;
 
 use super::wall_clock_backlog::{ALLOWED, BACKLOG};
 
-/// Whether `line` is an attribute that makes the item after it test code: a
-/// `#[cfg(test)]`, or the `test-support` gate, which compiles the same helpers
-/// into another crate's test build.
 fn is_test_gate(line: &str) -> bool {
     matches!(
         line.trim(),
@@ -39,27 +15,18 @@ fn is_test_gate(line: &str) -> bool {
     )
 }
 
-/// Whether `line` is `#[cfg(test)]`, which compiles the item after it into
-/// its own crate's test build alone.
 fn is_own_test_gate(line: &str) -> bool {
     line.trim() == "#[cfg(test)]"
 }
 
-/// A source file, its lines, and which of them are test code.
 struct SourceFile {
-    /// Relative to the repository root, with `/` separators.
     path: String,
     lines: Vec<String>,
     test: Vec<bool>,
-    /// The lines only the crate's own test build compiles: `test` without the
-    /// test-support code, which other crates' test builds compile too.
     own_test: Vec<bool>,
 }
 
 impl SourceFile {
-    /// Classifies `lines`. `test_file` and `own_test_file` say whether module
-    /// declarations make the whole file test code: under either gate, and
-    /// under `#[cfg(test)]` alone.
     fn new(path: String, lines: Vec<String>, test_file: bool, own_test_file: bool) -> Self {
         let in_literal = starts_inside_literal(&lines);
         let test = gated_lines(&lines, &in_literal, test_file, is_test_gate);
@@ -72,8 +39,6 @@ impl SourceFile {
         }
     }
 
-    /// The file's lines with their 1-based numbers, test code or not, with
-    /// comments removed.
     fn code_lines(&self, want_test: bool) -> impl Iterator<Item = (usize, &str)> {
         self.lines
             .iter()
@@ -84,13 +49,10 @@ impl SourceFile {
     }
 }
 
-/// The code on `line`, without a `//` comment; `None` for a comment line.
 fn without_comment(line: &str) -> Option<&str> {
     if line.trim_start().starts_with("//") {
         return None;
     }
-    // A ` //` with an even number of quotes before it starts a comment, not
-    // the inside of a string literal.
     let mut search_from = 0;
     while let Some(found) = line.get(search_from..).and_then(|rest| rest.find(" //")) {
         let at = search_from + found;
@@ -107,8 +69,6 @@ fn crate_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// The `[workspace] members` the root manifest names; none when it has no
-/// `[workspace]` table or no `members` key.
 fn workspace_members(manifest: &toml::Table) -> Result<Vec<String>, String> {
     let Some(members) = manifest
         .get("workspace")
@@ -129,9 +89,6 @@ fn workspace_members(manifest: &toml::Table) -> Result<Vec<String>, String> {
         .collect()
 }
 
-/// The directories (relative to `root`) that `members` names. Only literal
-/// paths and a trailing `/*` glob are supported; a `/*` glob matches each
-/// directory under its prefix that holds a `Cargo.toml`.
 fn member_dirs(root: &Path, members: &[String]) -> Result<Vec<String>, String> {
     let mut dirs = Vec::new();
     for member in members {
@@ -165,8 +122,6 @@ fn member_dirs(root: &Path, members: &[String]) -> Result<Vec<String>, String> {
     Ok(dirs)
 }
 
-/// The `src` and `tests` directories to scan, relative to the repository root:
-/// the root's, then each workspace member's, keeping only those that exist.
 fn scan_roots() -> Result<Vec<String>, String> {
     let root = crate_root();
     let manifest_path = root.join("Cargo.toml");
@@ -213,12 +168,10 @@ fn relative(root: &Path, path: &Path) -> String {
         .join("/")
 }
 
-/// Leading spaces, the indentation rustfmt uses.
 fn indent(line: &str) -> usize {
     line.len() - line.trim_start().len()
 }
 
-/// The file a `mod name;` in `declaring` refers to, if it exists.
 fn module_file(declaring: &Path, name: &str) -> Option<PathBuf> {
     let parent = declaring.parent()?;
     let file_name = declaring.file_name()?.to_str()?;
@@ -235,14 +188,11 @@ fn module_file(declaring: &Path, name: &str) -> Option<PathBuf> {
     .find(|candidate| candidate.is_file())
 }
 
-/// The index of the first line of the item that `#[cfg(test)]` at `at`
-/// covers, past any further attributes, comments and blank lines.
 fn item_start(lines: &[String], at: usize) -> usize {
     let mut idx = at + 1;
     while let Some(line) = lines.get(idx) {
         let trimmed = line.trim_start();
         if trimmed.starts_with("#[") {
-            // An attribute can span lines; skip to where its brackets close.
             let mut depth = 0_i32;
             while let Some(attr_line) = lines.get(idx) {
                 depth += i32::try_from(attr_line.matches('[').count()).unwrap_or(0);
@@ -261,21 +211,14 @@ fn item_start(lines: &[String], at: usize) -> usize {
     idx
 }
 
-/// Where the lexer stands at the end of a line.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Lexed {
     Code,
-    /// Inside `"..."`; a trailing `\` escapes the newline, which changes nothing here.
     Str,
-    /// Inside `r#"..."#` with this many `#`.
     RawStr(usize),
-    /// Inside `/* ... */`, nested this deep.
     BlockComment(usize),
 }
 
-/// For each line, whether it starts inside a string literal or block comment.
-/// Such a line's indentation is the literal's content, not rustfmt's, so a `}`
-/// at column 0 in an embedded shell script must not end the item around it.
 fn starts_inside_literal(lines: &[String]) -> Vec<bool> {
     let mut state = Lexed::Code;
     let mut inside = Vec::with_capacity(lines.len());
@@ -309,7 +252,6 @@ fn starts_inside_literal(lines: &[String]) -> Vec<bool> {
                         }
                     }
                     '\'' => {
-                        // A char literal ('"', '\'', '\u{7f}'); a lifetime has no closing quote.
                         if next == Some('\\') {
                             if let Some(close) = chars.iter().skip(i + 2).position(|ch| *ch == '\'')
                             {
@@ -360,7 +302,6 @@ fn starts_inside_literal(lines: &[String]) -> Vec<bool> {
     inside
 }
 
-/// The index of the last line of the item starting at `start`.
 fn item_end(lines: &[String], in_literal: &[bool], start: usize) -> usize {
     let Some(first) = lines.get(start) else {
         return start;
@@ -390,8 +331,6 @@ fn item_end(lines: &[String], in_literal: &[bool], start: usize) -> usize {
     lines.len().saturating_sub(1)
 }
 
-/// For each line, whether `gate` covers it: every line when `whole_file` is
-/// set, else the lines of each item a `gate` line precedes.
 fn gated_lines(
     lines: &[String],
     in_literal: &[bool],
@@ -417,9 +356,6 @@ fn gated_lines(
     flags
 }
 
-/// The files that are test code throughout under `gate`: each file under one
-/// of `test_dirs`, each file a `mod x;` after a `gate` line declares, and
-/// everything a test file declares, until nothing new turns up.
 fn test_files(
     contents: &BTreeMap<PathBuf, Vec<String>>,
     test_dirs: &[PathBuf],
@@ -463,7 +399,6 @@ fn test_files(
     found
 }
 
-/// Every Rust file in the scanned roots, classified.
 fn crate_sources() -> Vec<SourceFile> {
     let root = crate_root();
     let mut paths = Vec::new();
@@ -495,16 +430,12 @@ fn crate_sources() -> Vec<SourceFile> {
         .collect()
 }
 
-/// Files whose test code may wait on the clock: the waits that everything
-/// else goes through.
 const WAIT_HELPERS: &[&str] = &[
     "crates/core/src/testing/wait.rs",
     "crates/core/src/testing/clock.rs",
     "src/testing/source_scan.rs",
 ];
 
-/// A wall-clock wait in test code: a sleep, a timeout, an import that brings
-/// one in under a bare name, a bare call to one, or a wiremock reply delay.
 fn wall_clock_wait() -> Regex {
     Regex::new(concat!(
         r"\b(?:time::(?:sleep|sleep_until|timeout|timeout_at)|thread::sleep)\b",
@@ -515,7 +446,6 @@ fn wall_clock_wait() -> Regex {
     .unwrap()
 }
 
-/// Each file's wall-clock waits in test code, as `(line, code)`.
 fn wall_clock_waits(sources: &[SourceFile]) -> BTreeMap<String, Vec<(usize, String)>> {
     let pattern = wall_clock_wait();
     let mut found: BTreeMap<String, Vec<(usize, String)>> = BTreeMap::new();
@@ -525,7 +455,6 @@ fn wall_clock_waits(sources: &[SourceFile]) -> BTreeMap<String, Vec<(usize, Stri
         }
         for (number, code) in file.code_lines(true) {
             if code.trim_start().starts_with("fn ") || code.contains(" fn ") {
-                // Declaring a helper named `timeout` isn't waiting.
                 continue;
             }
             for _ in pattern.find_iter(code) {
@@ -539,17 +468,11 @@ fn wall_clock_waits(sources: &[SourceFile]) -> BTreeMap<String, Vec<(usize, Stri
     found
 }
 
-/// Files that may grant execute permission in test code: the helper that does
-/// it safely, and this file, whose rule tests hold sample lines.
 const EXEC_GRANT_HELPERS: &[&str] = &[
     "crates/core/src/testing/script.rs",
     "src/testing/source_scan.rs",
 ];
 
-/// Test code that sets an execute-bit mode on something that is not a script
-/// the test then runs, as `(file, count, why)`. A directory needs its execute
-/// bit to be entered, so making one read-only and restoring it is not writing
-/// a program.
 const EXEC_MODE_ALLOWED: &[(&str, usize, &str)] = &[
     (
         "crates/hub/src/update.rs",
@@ -568,15 +491,10 @@ const EXEC_MODE_ALLOWED: &[(&str, usize, &str)] = &[
     ),
 ];
 
-/// A test making a file executable on its own: a `chmod`, or a mode literal
-/// with an execute bit passed to `from_mode`, `set_mode` or `.mode(`. The file
-/// is then written in this process, and executing it races with any other
-/// test thread that forks while the write descriptor is open.
 fn exec_grant() -> Regex {
     Regex::new(r#""chmod"|\b(?:from_mode|set_mode|mode)\(\s*0o([0-7_]+)"#).unwrap()
 }
 
-/// How many execute-granting calls `code` holds.
 fn exec_grants_on(pattern: &Regex, code: &str) -> usize {
     pattern
         .captures_iter(code)
@@ -589,7 +507,6 @@ fn exec_grants_on(pattern: &Regex, code: &str) -> usize {
         .count()
 }
 
-/// Each file's execute grants in test code, as `(line, code)`.
 fn exec_grants(sources: &[SourceFile]) -> BTreeMap<String, Vec<(usize, String)>> {
     let pattern = exec_grant();
     let mut found: BTreeMap<String, Vec<(usize, String)>> = BTreeMap::new();
@@ -609,11 +526,6 @@ fn exec_grants(sources: &[SourceFile]) -> BTreeMap<String, Vec<(usize, String)>>
     found
 }
 
-/// The code that assembles a model request, or sets the tools it offers. An
-/// entry ending in `/` covers every file under that directory; any other entry
-/// is one file. A `HashMap` or `HashSet` iterates in an order that changes from
-/// process to process, so a request built from one changes its bytes between
-/// runs and misses the provider's prompt cache.
 const REQUEST_ORDER_PATHS: &[&str] = &[
     "crates/agent/src/",
     "crates/tools/src/registration.rs",
@@ -623,7 +535,6 @@ const REQUEST_ORDER_PATHS: &[&str] = &[
     "crates/inference/src/providers/",
 ];
 
-/// Whether the `REQUEST_ORDER_PATHS` entry `entry` covers the file `path`.
 fn request_order_covers(entry: &str, path: &str) -> bool {
     if entry.ends_with('/') {
         path.starts_with(entry)
@@ -632,13 +543,10 @@ fn request_order_covers(entry: &str, path: &str) -> bool {
     }
 }
 
-/// An unordered collection, by name.
 fn unordered_collection() -> Regex {
     Regex::new(r"\b(?:HashMap|HashSet)\b").unwrap()
 }
 
-/// Each request-order file's production lines that name an unordered
-/// collection, as `(line, code)`.
 fn unordered_collections_in_request_code(
     sources: &[SourceFile],
 ) -> BTreeMap<String, Vec<(usize, String)>> {
@@ -670,7 +578,6 @@ const IT_DIR: &str = "tests/it";
 const IT_CONTAINER: &str = "main.rs";
 const IT_EXEMPT: &[&str] = &["support"];
 
-/// The `name` of each member package under `root`, read from its manifest.
 fn member_packages(root: &Path) -> Result<BTreeSet<String>, String> {
     let manifest_path = root.join("Cargo.toml");
     let text = std::fs::read_to_string(&manifest_path)
@@ -703,8 +610,6 @@ struct CoversScan {
     malformed: Vec<String>,
 }
 
-/// The names of a covers line's list, when the list is `<package>, <package>, …`
-/// with single spaces and no other separator.
 fn canonical_names(list: &str) -> Option<Vec<String>> {
     let names: Vec<String> = list.split(", ").map(str::to_string).collect();
     names
@@ -718,7 +623,6 @@ fn canonical_names(list: &str) -> Option<Vec<String>> {
         .then_some(names)
 }
 
-/// The covers lines of the leading doc comment of `file`.
 fn covers_lines(file: &Path) -> Result<CoversScan, String> {
     let text = std::fs::read_to_string(file)
         .map_err(|err| format!("failed to read {}: {err}", file.display()))?;
@@ -749,7 +653,6 @@ fn covers_lines(file: &Path) -> Result<CoversScan, String> {
     Ok(scan)
 }
 
-/// Every `.rs` file under the module directory `dir`, at any depth, sorted.
 fn files_below_module(dir: &Path, problems: &mut Vec<String>) -> Vec<PathBuf> {
     let mut files = Vec::new();
     let mut pending = vec![dir.to_path_buf()];
@@ -780,8 +683,6 @@ fn files_below_module(dir: &Path, problems: &mut Vec<String>) -> Vec<PathBuf> {
     files
 }
 
-/// Every top-level module of `dir`, as its name and the file that holds it,
-/// sorted by name. The `container` file is not a module.
 fn top_level_modules(
     dir: &Path,
     container: &str,
@@ -824,8 +725,6 @@ fn top_level_modules(
     modules
 }
 
-/// Problems with the covers lines and the `mod` lines that declare the modules
-/// of `IT_DIR`. An empty result is a pass.
 fn covers_problems(root: &Path) -> Vec<String> {
     let mut problems = Vec::new();
     let mut valid_packages = BTreeSet::from(["residuum".to_string()]);
@@ -866,8 +765,6 @@ fn covers_problems(root: &Path) -> Vec<String> {
         let rel = format!("{IT_DIR}/{name}");
         let module_dir_path = dir.join(name);
         if module_dir_path.is_dir() {
-            // Only the module's mod.rs carries its covers line; every other
-            // file below the directory belongs to the module.
             for inner in files_below_module(&module_dir_path, &mut problems) {
                 if inner == *file {
                     continue;
@@ -893,8 +790,6 @@ fn covers_problems(root: &Path) -> Vec<String> {
     problems
 }
 
-/// One module's covers lines: exactly one, canonical, naming packages that are
-/// valid, with no name repeated.
 fn check_covers_lines(
     rel: &str,
     scan: &CoversScan,
@@ -925,19 +820,12 @@ fn check_covers_lines(
     }
 }
 
-/// A file a crate embeds with `include_str!` or `include_bytes!` from outside
-/// its own directory and outside `assets/`.
 struct ExternalInput {
-    /// Relative to the repository root, with `/` separators.
     path: String,
-    /// The package whose source embeds it.
     package: String,
-    /// Where: `file:line`.
     site: String,
 }
 
-/// The package a source path belongs to, and that package's directory
-/// (empty for the root).
 fn package_of(path: &str) -> (String, String) {
     if let Some(rest) = path.strip_prefix("crates/") {
         let dir = rest.split('/').next().unwrap_or_default();
@@ -947,8 +835,6 @@ fn package_of(path: &str) -> (String, String) {
     }
 }
 
-/// `relative` joined to the directory of `file`, with `.` and `..` resolved;
-/// `None` when it climbs above the repository root.
 fn resolve_from(file: &str, relative: &str) -> Option<String> {
     let mut parts: Vec<&str> = file.split('/').collect();
     parts.pop();
@@ -964,8 +850,6 @@ fn resolve_from(file: &str, relative: &str) -> Option<String> {
     Some(parts.join("/"))
 }
 
-/// Whether `path` is inside the package directory `dir`: for the root
-/// package, its `src/`, `tests/` and `build.rs`.
 fn inside_package(path: &str, dir: &str) -> bool {
     if dir.is_empty() {
         path.starts_with("src/") || path.starts_with("tests/") || path == "build.rs"
@@ -974,7 +858,6 @@ fn inside_package(path: &str, dir: &str) -> bool {
     }
 }
 
-/// Every [`ExternalInput`] of the scanned sources, test code included.
 fn external_inputs(sources: &[SourceFile]) -> Vec<ExternalInput> {
     let include = Regex::new(r#"include_(?:str|bytes)!\(\s*"([^"]+)"\s*\)"#).unwrap();
     let mut found = Vec::new();
@@ -1002,17 +885,12 @@ fn external_inputs(sources: &[SourceFile]) -> Vec<ExternalInput> {
     found
 }
 
-/// The `RUST_PATHS_RE` of the `changes` job in `.github/workflows/ci.yml`,
-/// which decides when CI runs the Rust checks and which the pre-push hook
-/// reads.
 fn ci_rust_paths(root: &Path) -> Regex {
     let workflow = std::fs::read_to_string(root.join(".github/workflows/ci.yml"))
         .expect("read .github/workflows/ci.yml");
     rust_paths_in(&workflow)
 }
 
-/// The `RUST_PATHS_RE` value in the text of `ci.yml`, whose lines end in
-/// `\n` or, in a Windows checkout, `\r\n`.
 fn rust_paths_in(workflow: &str) -> Regex {
     let line = Regex::new(r"(?mR)^\s*RUST_PATHS_RE: '(.*)'$").unwrap();
     let caps = line
@@ -1032,7 +910,6 @@ mod tests {
             .unwrap_or_else(|| panic!("{path} is not in the crate"))
     }
 
-    /// Whether the one line of `path` containing `needle` is test code.
     fn is_test_line(sources: &[SourceFile], path: &str, needle: &str) -> bool {
         let file = source(sources, path);
         let matches: Vec<bool> = file
@@ -1083,7 +960,6 @@ mod tests {
                 "crates/hub/src/host.rs",
                 ".map(|running| *running.control.reload_done.borrow())",
             ),
-            // Below fake-tool scripts whose raw strings hold a column-0 `}`.
             (
                 "crates/interfaces/src/teams/setup_job.rs",
                 "async fn test_job_failure_mid_provision_records_created_and_retry() {",
@@ -1127,8 +1003,6 @@ mod tests {
         );
     }
 
-    /// Whether the one line of `path` containing `needle` is test code, and
-    /// whether it is code only its own crate's tests compile.
     fn test_and_own_test(sources: &[SourceFile], path: &str, needle: &str) -> (bool, bool) {
         let file = source(sources, path);
         let matches: Vec<(bool, bool)> = file
@@ -1150,19 +1024,16 @@ mod tests {
     fn the_classifier_tells_own_test_code_from_test_support_code() {
         let sources = crate_sources();
         let cases = [
-            // A whole file behind the test-support gate.
             (
                 "crates/core/src/testing/wait.rs",
                 "pub fn drain<R: Recv>(rx: &mut R) -> Vec<R::Item> {",
                 (true, false),
             ),
-            // Its `#[cfg(test)] mod tests`.
             (
                 "crates/core/src/testing/wait.rs",
                 "async fn guarded_returns_what_the_future_does() {",
                 (true, true),
             ),
-            // An item behind the test-support gate in production code.
             (
                 "crates/config/src/layout.rs",
                 "pub fn with_tempdir_guard(mut self, dir: tempfile::TempDir) -> Self {",
@@ -1196,10 +1067,6 @@ mod tests {
         );
     }
 
-    /// An agent's tasks must carry its `agent` log field, and `tokio::spawn`
-    /// starts a task with no tracing span. Production code spawns through
-    /// `crate::util::spawn_in_span` and its siblings; this fails when a bare
-    /// spawn slips back in.
     #[test]
     fn no_bare_spawns_outside_the_span_preserving_helpers() {
         let bare = [
@@ -1225,9 +1092,6 @@ mod tests {
         );
     }
 
-    /// Test code waits on the event it checks, through `crate::testing`. The
-    /// waits that predate the rule are counted in `wall_clock_backlog`, and the
-    /// counts may only go down.
     #[test]
     fn test_code_waits_on_events_not_elapsed_time() {
         let found = wall_clock_waits(&crate_sources());
@@ -1350,8 +1214,6 @@ mod tests {
         }
     }
 
-    /// Model-request code iterates in a fixed order: an unordered collection in
-    /// its production code would reorder the request between processes.
     #[test]
     fn request_assembly_code_names_no_unordered_collection() {
         let sources = crate_sources();
@@ -1421,10 +1283,6 @@ mod tests {
         }
     }
 
-    /// The build version and commit are read in one place, `src/lib.rs`, which
-    /// builds the `BuildInfo` value from them. A read anywhere else would
-    /// compile, and a member crate's `option_env!` would quietly return
-    /// `None` for the commit, so the rule covers every crate in the workspace.
     #[test]
     fn only_the_root_library_reads_the_build_version() {
         const READERS: &[&str] = &["src/lib.rs", "src/testing/source_scan.rs"];
@@ -1453,10 +1311,6 @@ mod tests {
         );
     }
 
-    /// The root package makes HTTP requests only to the hub on this machine,
-    /// and a client that picks up `HTTP_PROXY` sends them to the proxy
-    /// instead, which can't reach the hub and answers in its place. Every
-    /// client there is built from `local_hub_client`, which turns the proxy off.
     #[test]
     fn the_cli_builds_its_hub_clients_without_a_proxy() {
         const BUILDER: &str = "src/commands/hub_client.rs";
@@ -1530,10 +1384,6 @@ mod tests {
         }
     }
 
-    /// The scan covers the root and every workspace member, and nothing else:
-    /// a member that is not scanned hides its waits from every rule here. The
-    /// expectation lists `crates/` from disk rather than reading `members`,
-    /// so a member missing from `members` fails here.
     #[test]
     fn the_scanned_roots_are_the_root_and_every_workspace_member() {
         let root = crate_root();
@@ -1569,8 +1419,6 @@ mod tests {
         );
     }
 
-    /// A hard-coded path names a file that exists, so a rename cannot leave an
-    /// exemption or a backlog entry silently pointing at nothing.
     #[test]
     fn the_hard_coded_paths_name_files_that_exist() {
         let root = crate_root();
@@ -1619,12 +1467,6 @@ mod tests {
         }
     }
 
-    /// CI decides from the changed paths whether to run the Rust checks, and
-    /// the pre-push hook picks tests from the package each path belongs to. A
-    /// file a crate embeds from outside its own directory and `assets/` is
-    /// neither under `crates/` nor in `assets/`, so it must be listed by hand:
-    /// without the `RUST_PATHS_RE` entry, a change to it alone runs no Rust
-    /// checks in CI, and a breakage reaches `main`.
     #[test]
     fn files_embedded_from_outside_a_crate_run_its_checks() {
         let root = crate_root();
@@ -1656,10 +1498,6 @@ mod tests {
         );
     }
 
-    /// The other half: `scripts/affected-packages.sh` classifies each such
-    /// file to the package that embeds it, so the pre-push hook runs that
-    /// package's tests and clippy checks it and its dependents. The script is a
-    /// shell script, so the Windows run skips this.
     #[cfg(unix)]
     #[test]
     fn files_embedded_from_outside_a_crate_select_their_package() {
@@ -1707,9 +1545,6 @@ mod tests {
         );
     }
 
-    /// Each `tests/it` module carries one canonical covers line naming real
-    /// packages, no file inside a module directory carries one, and the `mod`
-    /// lines match the files.
     #[test]
     fn it_covers() {
         let problems = covers_problems(&crate_root());

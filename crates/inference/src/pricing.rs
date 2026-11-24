@@ -1,8 +1,3 @@
-//! Estimated spend per model call: the built-in price table, the `[pricing]`
-//! overrides from `hub/config.toml`, and the arithmetic that prices one call's
-//! [`Usage`]. The result is an estimate; the provider's own bill is the record
-//! of what was charged.
-
 use std::collections::BTreeMap;
 
 use serde::Serialize;
@@ -11,11 +6,6 @@ use residuum_config::ModelPrice;
 
 use crate::Usage;
 
-/// Built-in prices, keyed `provider/model` with the provider kind as usage
-/// records name it. Each is the base tier of the provider's published price
-/// list. A provider that bills longer prompts at a higher rate is priced at
-/// its base tier, so an estimate for those prompts runs low until an override
-/// states the rate that applies.
 const BUILT_IN: &[(&str, ModelPrice)] = &[
     (
         "anthropic/claude-opus-5-5",
@@ -219,23 +209,17 @@ const BUILT_IN: &[(&str, ModelPrice)] = &[
     ),
 ];
 
-/// What one model call cost, in US dollars.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct CostEstimate {
-    /// Estimated spend in US dollars.
     pub usd: f64,
 }
 
-/// Prices by `provider/model`: the built-in table with the config's overrides
-/// applied.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PriceTable {
     prices: BTreeMap<String, ModelPrice>,
 }
 
 impl PriceTable {
-    /// The built-in table, with each entry in `overrides` replacing the one
-    /// for its model.
     #[must_use]
     pub fn new(overrides: &BTreeMap<String, ModelPrice>) -> Self {
         let mut prices: BTreeMap<String, ModelPrice> = BUILT_IN
@@ -246,21 +230,14 @@ impl PriceTable {
         Self { prices }
     }
 
-    /// The estimated cost of one call to `model` at `provider` that reported
-    /// `usage`, or `None` when the model has no price. An exact match wins;
-    /// otherwise a trailing `-YYYYMMDD` date is dropped and the base model is
-    /// matched.
     #[must_use]
     pub fn estimate(&self, provider: &str, model: &str, usage: &Usage) -> Option<CostEstimate> {
         let price = self.price(provider, model)?;
         let cache_write_long = usage.cache_write_long_tokens.unwrap_or(0);
-        // The rest of the cache writes used the default, 5-minute TTL.
         let cache_write_short = usage
             .cache_write_tokens
             .unwrap_or(0)
             .saturating_sub(cache_write_long);
-        // Reasoning tokens are already counted in the output tokens, so they
-        // are not priced a second time.
         let usd = cost(usage.uncached_input_tokens.unwrap_or(0), price.input)
             + cost(usage.cache_read_tokens.unwrap_or(0), price.cache_read)
             + cost(cache_write_short, price.cache_write)
@@ -280,7 +257,6 @@ impl PriceTable {
     }
 }
 
-/// The USD for `tokens` at `usd_per_million` dollars per million tokens.
 fn cost(tokens: u32, usd_per_million: f64) -> f64 {
     f64::from(tokens) * usd_per_million / 1_000_000.0
 }
@@ -289,8 +265,6 @@ fn table_key(provider: &str, model: &str) -> String {
     format!("{provider}/{model}")
 }
 
-/// `model` without a trailing `-YYYYMMDD` date, the suffix dated snapshots
-/// carry (`claude-haiku-4-5-20251001`).
 fn strip_date_suffix(model: &str) -> Option<&str> {
     let (base, date) = model.rsplit_once('-')?;
     (date.len() == 8 && date.bytes().all(|b| b.is_ascii_digit())).then_some(base)
@@ -322,8 +296,6 @@ mod tests {
 
     #[test]
     fn every_field_is_priced_at_its_own_rate() {
-        // claude-sonnet-4-6: $3 input, $0.30 read, $3.75 5-minute write, $6
-        // 1-hour write, $15 output, per million tokens.
         let usage = Usage {
             uncached_input_tokens: Some(1_000_000),
             cache_read_tokens: Some(1_000_000),
@@ -335,7 +307,6 @@ mod tests {
 
         let table = PriceTable::new(&BTreeMap::new());
 
-        // 3 + 0.30 + (1M at 3.75) + (1M at 6) + 15
         assert_usd(
             table.estimate("anthropic", "claude-sonnet-4-6", &usage),
             28.05,
@@ -510,9 +481,7 @@ mod tests {
 
         let table = PriceTable::new(&BTreeMap::new());
 
-        // gemini-3.8-flash: $0.75 input, $0.075 cached, $3.75 output.
         assert_usd(table.estimate("gemini", "gemini-3.8-flash", &usage), 4.575);
-        // glm-5p3-flash: $0.15 input, $0.03 cached, $0.50 output.
         assert_usd(
             table.estimate(
                 "fireworks",

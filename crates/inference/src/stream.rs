@@ -1,7 +1,3 @@
-//! Plumbing shared by the providers' streaming paths: turning a response body
-//! into lines and server-sent events, and tracking what a [`StreamSink`] has
-//! been sent.
-
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use futures_util::StreamExt;
@@ -9,16 +5,12 @@ use futures_util::StreamExt;
 use super::http::map_stream_read_error;
 use super::{InferenceError, StreamDelta, StreamSink};
 
-/// Wraps a [`StreamSink`] and remembers whether its consumer is holding a
-/// partial response, so a failed attempt can be voided exactly once and only
-/// when there is something to void.
 pub(crate) struct TrackedSink<'a> {
     inner: &'a dyn StreamSink,
     holds_partial: AtomicBool,
 }
 
 impl<'a> TrackedSink<'a> {
-    /// Track what is pushed to `inner`.
     pub(crate) fn new(inner: &'a dyn StreamSink) -> Self {
         Self {
             inner,
@@ -26,9 +18,6 @@ impl<'a> TrackedSink<'a> {
         }
     }
 
-    /// Tell the consumer everything streamed so far is void, if it was sent
-    /// anything since the last restart. Called when an attempt fails, before
-    /// the request is sent again or the next provider is tried.
     pub(crate) fn restart_if_needed(&self) {
         if self.holds_partial.swap(false, Ordering::SeqCst) {
             self.inner.push(StreamDelta::Restart);
@@ -49,19 +38,13 @@ impl StreamSink for TrackedSink<'_> {
     }
 }
 
-/// Splits bytes into lines. A line ends at `\n`, `\r` or `\r\n`, and a
-/// multi-byte character split across chunks is only decoded once its line is
-/// complete.
 #[derive(Default)]
 pub(crate) struct LineBuffer {
     pending: Vec<u8>,
-    /// The previous byte was `\r`, so a `\n` right after it belongs to the
-    /// same line break.
     after_cr: bool,
 }
 
 impl LineBuffer {
-    /// Take the next bytes of the stream; returns every line they complete.
     pub(crate) fn push(&mut self, bytes: &[u8]) -> Vec<String> {
         let mut lines = Vec::new();
         for &byte in bytes {
@@ -80,7 +63,6 @@ impl LineBuffer {
         lines
     }
 
-    /// The final line when the stream ended without a line break.
     pub(crate) fn finish(&mut self) -> Option<String> {
         (!self.pending.is_empty()).then(|| self.take_line())
     }
@@ -92,15 +74,12 @@ impl LineBuffer {
     }
 }
 
-/// One server-sent event: its optional name and its data lines joined by
-/// newlines.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SseEvent {
     pub(crate) event: Option<String>,
     pub(crate) data: String,
 }
 
-/// Incremental server-sent-events decoder.
 #[derive(Default)]
 pub(crate) struct SseDecoder {
     lines: LineBuffer,
@@ -109,7 +88,6 @@ pub(crate) struct SseDecoder {
 }
 
 impl SseDecoder {
-    /// Take the next bytes of the stream; returns every event they complete.
     pub(crate) fn push(&mut self, bytes: &[u8]) -> Vec<SseEvent> {
         let lines = self.lines.push(bytes);
         lines
@@ -118,8 +96,6 @@ impl SseDecoder {
             .collect()
     }
 
-    /// The final event when the stream ended without the blank line that
-    /// normally closes it.
     pub(crate) fn finish(&mut self) -> Option<SseEvent> {
         let last_line = self.lines.finish();
         let completed = last_line.and_then(|line| self.accept_line(&line));
@@ -130,8 +106,6 @@ impl SseDecoder {
         if line.is_empty() {
             return self.dispatch();
         }
-        // A line starting with a colon is a comment, used by servers as a
-        // keep-alive.
         if line.starts_with(':') {
             return None;
         }
@@ -140,8 +114,6 @@ impl SseDecoder {
         match field {
             "event" => self.event = Some(value.to_string()),
             "data" => self.data.push(value.to_string()),
-            // `id` and `retry` steer reconnection, which the providers handle
-            // themselves.
             _ => {}
         }
         None
@@ -157,10 +129,8 @@ impl SseDecoder {
     }
 }
 
-/// Whether to keep reading a stream.
 pub(crate) enum Flow {
     Continue,
-    /// The stream's terminal event arrived; stop reading.
     Done,
 }
 
@@ -185,12 +155,6 @@ pub(crate) fn answered_whole(response: &reqwest::Response) -> bool {
     whole
 }
 
-/// Read a server-sent-events response to its end, handing each event to
-/// `on_event` as it completes.
-///
-/// A stall of `idle_secs` surfaces as [`InferenceError::Stalled`] and a body
-/// that breaks as [`InferenceError::StreamInterrupted`]; the caller decides
-/// whether a stream that ended cleanly without its terminal event is complete.
 pub(crate) async fn read_sse(
     response: reqwest::Response,
     idle_secs: u64,
@@ -212,8 +176,6 @@ pub(crate) async fn read_sse(
     Ok(())
 }
 
-/// Read a newline-delimited response to its end, handing each non-blank
-/// line to `on_line` as it completes. Errors are as for [`read_sse`].
 pub(crate) async fn read_ndjson(
     response: reqwest::Response,
     idle_secs: u64,

@@ -1,8 +1,3 @@
-/**
- * What "the app is usable" means to every spec (`support/app.ts`): the harness
- * makes `page.goto` return only once it holds, so these check the state a spec
- * finds when navigation returns.
- */
 import { waitForApp } from "../support/app";
 import { expect, test } from "../support/fixtures";
 
@@ -38,7 +33,6 @@ test("goto returns on the hub banner when the test has taken the hub down", asyn
   await page.goto("/home");
   expect(await page.locator(".shell").getAttribute("data-hub")).toBe("lost");
 
-  // Back up, the next load waits for the connection again.
   await mock.post("/api/mock/hub-socket", { data: { online: true } });
   await page.reload();
   expect(await page.locator(".shell").getAttribute("data-hub")).toBe("connected");
@@ -50,7 +44,6 @@ test("the app is ready again once a dropped hub socket has reconnected", async (
 
   await mock.post("/api/mock/hub-socket", { data: { online: false } });
   await expect(shell).toHaveAttribute("data-hub", "lost");
-  // With the hub down, the screenshot helper's wait names the state it expects.
   await waitForApp(page, { hub: "lost" });
 
   await mock.post("/api/mock/hub-socket", { data: { online: true } });

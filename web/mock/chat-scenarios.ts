@@ -2,53 +2,36 @@ import type { ServerMessage } from "../src/lib/generated/protocol";
 import type { JsonValue } from "../src/lib/generated/serde_json/JsonValue";
 import type { RecentMessage } from "../src/lib/types";
 
-/** A message of a turn as history records it, before the mock stamps it with a time and the turn's id. */
 export type ScenarioMessage = Pick<
   RecentMessage,
   "role" | "content" | "tool_calls" | "tool_call_id" | "thinking"
 >;
 
-/** Frames the mock sends a number of milliseconds into a turn. */
 export interface ScenarioStep {
   at: number;
   frames: ServerMessage[];
 }
 
-/** How a scripted turn goes wrong. */
 export interface ScenarioFailure {
-  /** What the agent says went wrong, in plain words. */
   message: string;
-  /** The technical cause chain behind it. */
   details: string;
 }
 
-/** A scripted chat turn. */
 export interface Scenario {
-  /** What the agent does on the way, in order. */
   steps: ScenarioStep[];
-  /** When the steps are over. A test that holds turns keeps the turn here until it lets it end. */
   endAt: number;
-  /** What follows once the turn is let end: its last model call, timed from that moment. */
   finale: ScenarioStep[];
-  /** How long the finale takes. */
   finaleMs: number;
-  /** The tool calls the turn makes, which add to the conversation's totals. */
   toolCalls: number;
-  /** The reply that ends the turn, or null when it fails instead. */
   reply: string | null;
-  /** The model call that wrote the reply, counting from zero. */
   replyCall: number;
   failure: ScenarioFailure | null;
-  /** What history records for the turn after the user's message; empty for a turn that failed. */
   recorded: ScenarioMessage[];
 }
 
-/** Hands out the ids of a scenario's tool calls. */
 export type NextId = () => number;
 
-/** What a scenario needs to address its frames to the turn it runs for. */
 interface Context {
-  /** The correlation id of the turn. */
   replyTo: string;
   nextId: NextId;
 }
@@ -57,7 +40,6 @@ type ToolCall = NonNullable<RecentMessage["tool_calls"]>[number];
 
 interface ScriptedCall {
   call: ToolCall;
-  /** The call's arguments, which the live frame carries as JSON. */
   args: Record<string, JsonValue>;
   output: string;
   isError?: boolean;
@@ -78,14 +60,9 @@ function scriptCall(
   };
 }
 
-/**
- * How a scenario's frames are timed: words arrive in pieces of about this
- * many characters, one piece this many milliseconds after the last.
- */
 const PIECE_CHARS = 28;
 export const PIECE_MS = 45;
 
-/** `text` in pieces that end at word breaks, about `PIECE_CHARS` long. */
 export function pieces(text: string): string[] {
   const out: string[] = [];
   let piece = "";
@@ -100,7 +77,6 @@ export function pieces(text: string): string[] {
   return out;
 }
 
-/** The frames that stream `text` (or reasoning) of model call `call` to the page, in pieces. */
 export function deltaFrames(
   replyTo: string,
   kind: "text" | "thinking",
@@ -114,13 +90,6 @@ export function deltaFrames(
   );
 }
 
-/**
- * The frames of a turn no person started, such as the one a teammate's message
- * starts, from its start to its end: the reply written in pieces, then
- * complete, and the turn's usage. The message that started it is announced
- * on its own, as a `user_message` naming its sender, and the reply went
- * nowhere, so its endpoint is empty.
- */
 export function backgroundTurnFrames(replyTo: string, reply: string): ServerMessage[] {
   return [
     {
@@ -142,19 +111,16 @@ export function backgroundTurnFrames(replyTo: string, reply: string): ServerMess
   ];
 }
 
-/** Builds the timed frames of one stretch of a turn. */
 class Timeline {
   readonly steps: ScenarioStep[] = [];
 
   constructor(private readonly ctx: Context) {}
 
-  /** Send `frames` at `at`. */
   at(at: number, ...frames: ServerMessage[]): number {
     this.steps.push({ at, frames });
     return at;
   }
 
-  /** Send the text or reasoning of model call `call` in pieces from `from`; the time after the last. */
   stream(kind: "text" | "thinking", call: number, text: string, from: number): number {
     let at = from;
     for (const frame of deltaFrames(this.ctx.replyTo, kind, call, text)) {
@@ -164,7 +130,6 @@ class Timeline {
     return at;
   }
 
-  /** The reasoning of model call `call` is complete. */
   thought(at: number, call: number, content: string): number {
     return this.at(at, {
       type: "thinking",
@@ -174,7 +139,6 @@ class Timeline {
     });
   }
 
-  /** A text the agent sends on the way, complete. */
   text(at: number, call: number, content: string): ServerMessage {
     const frame: ServerMessage = {
       type: "broadcast_response",
@@ -220,7 +184,6 @@ function resultFrame(ctx: Context, scripted: ScriptedCall): ServerMessage {
   };
 }
 
-/** The history records of one model call: its reasoning and text, its tool calls, then each result. */
 function recordCall(
   text: string,
   calls: ScriptedCall[],
@@ -243,13 +206,6 @@ function recordCall(
   ];
 }
 
-/**
- * A turn the agent works through in rounds, the way the activity reads in the
- * chat: it thinks and reads three files, then says what it will check and runs
- * two commands, then says what it found and edits the file. Its last model
- * call thinks, then answers. Texts and work alternate, so the chat shows runs
- * of steps between messages.
- */
 function segments(ctx: Context): Scenario {
   const reads = ["config.toml", "docker-compose.yml", "README.md"].map((file) =>
     scriptCall(
@@ -320,10 +276,6 @@ function segments(ctx: Context): Scenario {
   };
 }
 
-/**
- * A turn that gets as far as a search and then can't go on: the model
- * provider stops answering, and the agent reports it.
- */
 function failing(ctx: Context): Scenario {
   const search = scriptCall(
     ctx,
@@ -354,10 +306,6 @@ function failing(ctx: Context): Scenario {
   };
 }
 
-/**
- * A reply whose first attempt stops partway: the stream starts over, and the
- * second attempt is what the user is left with.
- */
 function retrying(ctx: Context): Scenario {
   const attempt = "Let me look at the notification routing doc and see what";
   const answer = "The routing doc sends urgent notices to every channel and the rest to one.";
@@ -378,10 +326,6 @@ function retrying(ctx: Context): Scenario {
   };
 }
 
-/**
- * A short turn that is mostly thought: a long stretch of reasoning, then a
- * brief answer.
- */
 function thinkingAloud(ctx: Context): Scenario {
   const thought = [
     "The question is whether to cascade to the next channel or park the notice.",
@@ -407,10 +351,6 @@ function thinkingAloud(ctx: Context): Scenario {
   };
 }
 
-/**
- * A turn another channel started, such as a message from Telegram: a short
- * thought, a search, and a reply.
- */
 export function externalTurn(replyTo: string, nextId: NextId): Scenario {
   const ctx: Context = { replyTo, nextId };
   const search = scriptCall(
@@ -445,10 +385,6 @@ export function externalTurn(replyTo: string, nextId: NextId): Scenario {
   };
 }
 
-/**
- * The rerun of a turn that failed (`retry_turn`): the provider answers this
- * time, so the agent searches its notes again and gives its reply.
- */
 export function retriedTurn(replyTo: string, nextId: NextId): Scenario {
   const ctx: Context = { replyTo, nextId };
   const search = scriptCall(
@@ -479,11 +415,6 @@ export function retriedTurn(replyTo: string, nextId: NextId): Scenario {
   };
 }
 
-/**
- * The turn a message from one of the agent's own sessions starts when no turn
- * is running: main takes in what the session at `address` reported, in one
- * model call and no tools.
- */
 export function sessionMessageTurn(replyTo: string, nextId: NextId, address: string): Scenario {
   const reply = `${address} has reported back. Nothing in it needs you right now.`;
   const finale = new Timeline({ replyTo, nextId });
@@ -501,14 +432,6 @@ export function sessionMessageTurn(replyTo: string, nextId: NextId, address: str
   };
 }
 
-/**
- * The scripted turn for a message, or null for one the plain simulated turn
- * answers. A message starting with:
- * - `segments` has the agent work in rounds, with a text before each
- * - `error` has the turn fail after a search
- * - `retry` has a reply's stream start over
- * - `think` has the agent think at length before a short answer
- */
 export function scenarioFor(content: string, replyTo: string, nextId: NextId): Scenario | null {
   const ctx: Context = { replyTo, nextId };
   const lower = content.toLowerCase();

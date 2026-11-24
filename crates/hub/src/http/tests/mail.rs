@@ -1,7 +1,3 @@
-//! Tests for `/api/hub/mail/...`, against the fake directory's agents in
-//! every state: `scout` running, `quiet` stopped, and `broken` failed when a
-//! test adds it.
-
 use chrono::{NaiveDate, NaiveDateTime};
 
 use super::*;
@@ -14,7 +10,6 @@ fn at(day: u32, hour: u32, minute: u32) -> NaiveDateTime {
         .unwrap()
 }
 
-/// A message an agent sent the user, as `add_agent_message` writes it.
 struct AgentMessage<'a> {
     agent: &'a str,
     id: &'a str,
@@ -22,7 +17,6 @@ struct AgentMessage<'a> {
     read: bool,
     archived: bool,
     in_reply_to: Option<&'a str>,
-    /// One `note.txt` with these bytes, when set.
     attachment: Option<&'a [u8]>,
 }
 
@@ -40,7 +34,6 @@ impl<'a> AgentMessage<'a> {
     }
 }
 
-/// Save `message` in its agent's user inbox (or its archive).
 async fn add_agent_message(h: &Harness, message: AgentMessage<'_>) {
     use residuum_workspace::inbox::InboxKind;
     let layout = WorkspaceLayout::new(h.agent_dir(message.agent));
@@ -74,22 +67,18 @@ async fn add_agent_message(h: &Harness, message: AgentMessage<'_>) {
         .unwrap();
 }
 
-/// The plain message an agent sent at `when`.
 async fn add_simple(h: &Harness, agent: &str, id: &str, when: NaiveDateTime) {
     add_agent_message(h, AgentMessage::new(agent, id, when)).await;
 }
 
-/// `ref` escaped as one path segment.
 fn enc(item: &str) -> String {
     item.replace('/', "%2F")
 }
 
-/// Stage `bytes` as `filename` and return the upload id.
 async fn stage(h: &Harness, filename: &str, bytes: &[u8]) -> String {
     h.uploads.stage(filename, bytes).await.unwrap().id
 }
 
-/// The thread ids of a page, in order.
 fn listed(page: &Value) -> Vec<String> {
     page["threads"]
         .as_array()
@@ -99,7 +88,6 @@ fn listed(page: &Value) -> Vec<String> {
         .collect()
 }
 
-/// The `error` of a JSON error body.
 fn error_of(body: &Value) -> &str {
     body["error"]
         .as_str()
@@ -439,7 +427,6 @@ async fn one_send_to_several_agents_is_one_message_with_each_agents_seen() {
         "the staged upload is consumed by the send"
     );
 
-    // scout reads its copy.
     let id = thread_id.rsplit('/').next().unwrap().to_string();
     residuum_workspace::inbox::mark_read(
         &WorkspaceLayout::new(h.agent_dir("scout")).agent_inbox_dir(),
@@ -480,12 +467,10 @@ async fn one_send_to_several_agents_is_one_message_with_each_agents_seen() {
         attachment["url"],
         format!("/api/agents/quiet/inbox/agent/{id}/attachments/0")
     );
-    // quiet is stopped: the file router serves the bytes.
     let (_served_headers, served) = h
         .request_ok(Method::GET, attachment["url"].as_str().unwrap(), "")
         .await;
     assert_eq!(served, b"# plan");
-    // Each recipient holds its own copy of the file.
     for agent in ["scout", "quiet"] {
         let (_headers, bytes) = h
             .request_ok(
@@ -732,7 +717,6 @@ async fn a_users_message_attachment_and_an_agents_both_serve_with_the_agent_stop
         assert_eq!(bytes, want, "{url}");
     }
 
-    // Archiving the thread keeps both links working.
     h.expect(
         Method::POST,
         "/api/hub/mail/threads/quiet%2Fuser%2Freport/archive",

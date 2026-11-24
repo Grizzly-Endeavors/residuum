@@ -1,16 +1,12 @@
 <script lang="ts">
   import { Button } from "../../lib/ui";
 
-  // The foot of a setup step: Back on the left, the step's forward action on
-  // the right.
   interface Props {
-    /** Absent on the first step. */
     onBack?: () => void;
     backDisabled?: boolean;
     nextLabel?: string;
     onNext: () => void;
     nextDisabled?: boolean;
-    /** The forward action is under way. */
     busy?: boolean;
   }
 

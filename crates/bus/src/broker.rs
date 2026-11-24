@@ -1,5 +1,3 @@
-//! Broker task and `BusHandle` factory.
-
 use std::any::TypeId;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -13,31 +11,14 @@ use super::topics::{Carries, DeliveryMode, Topic};
 use super::types::{BusError, TopicId};
 use residuum_core::util::spawn_monitored;
 
-/// Command channel capacity for the broker.
 const BROKER_COMMAND_CAPACITY: usize = 256;
 
-/// Per-subscriber event channel capacity on a [`DeliveryMode::Lossy`] route.
-/// Lossless routes are unbounded — see [`EventSender::Lossless`].
 const LOSSY_SUBSCRIBER_CAPACITY: usize = 1024;
 
-/// Queue depth on a [`DeliveryMode::Lossless`] subscriber's channel that
-/// flags a stuck consumer rather than a merely slow one. The channel is
-/// unbounded so it can never force a drop, but a consumer that stops
-/// draining it entirely would otherwise grow that queue forever with
-/// nothing making the leak visible.
 const LOSSLESS_BACKLOG_WARN_THRESHOLD: usize = 10_000;
 
-/// Composite routing key: (topic, event type).
 type RouteKey = (TopicId, TypeId);
 
-// ---------------------------------------------------------------------------
-// BusHandle
-// ---------------------------------------------------------------------------
-
-/// Factory handle for creating publishers and subscribers.
-///
-/// Cloning a `BusHandle` is cheap — it shares the command channel and the
-/// atomic subscriber-id counter.
 #[derive(Clone)]
 pub struct BusHandle {
     cmd_tx: mpsc::Sender<BrokerCommand>,
@@ -45,20 +26,11 @@ pub struct BusHandle {
 }
 
 impl BusHandle {
-    /// Create a [`Publisher`] that can send events to the bus.
     #[must_use]
     pub fn publisher(&self) -> Publisher {
         Publisher::new(self.cmd_tx.clone())
     }
 
-    /// Create a typed [`Subscriber`] for the given topic and event type.
-    ///
-    /// The topic must implement `Carries<E>` for the desired event type,
-    /// ensuring compile-time safety for the subscription.
-    ///
-    /// # Errors
-    ///
-    /// Returns `BusError::BrokerShutdown` if the broker has stopped.
     #[tracing::instrument(skip_all, fields(topic = %topic.topic_id()))]
     pub async fn subscribe<T, E>(&self, topic: T) -> Result<Subscriber<E>, BusError>
     where
@@ -102,11 +74,6 @@ impl BusHandle {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Broker task
-// ---------------------------------------------------------------------------
-
-/// Spawn the broker task and return a [`BusHandle`].
 #[must_use]
 pub fn spawn_broker() -> BusHandle {
     let (cmd_tx, cmd_rx) = mpsc::channel(BROKER_COMMAND_CAPACITY);
@@ -119,21 +86,12 @@ pub fn spawn_broker() -> BusHandle {
     }
 }
 
-/// An edge in one subscriber's drop run worth logging — the run's start, or
-/// its end together with how many events it cost. Every drop in between is
-/// silent: per `AGENTS.md` "Avoid log spam", only the edges are logged.
 #[derive(Debug, PartialEq, Eq)]
 enum DropTransition {
-    /// The first drop after the subscriber was keeping up.
     Started,
-    /// The subscriber caught back up after dropping `count` events.
     Stopped { count: u64 },
 }
 
-/// Update `dropping`'s bookkeeping for one subscriber's send `outcome`,
-/// returning the transition to log, if any. Pure and side-effect-free
-/// besides the map update, so the logging policy above is unit-testable
-/// without a running broker.
 fn record_drop_outcome(
     dropping: &mut HashMap<u64, u64>,
     id: u64,
@@ -155,10 +113,6 @@ fn record_drop_outcome(
     }
 }
 
-/// Track a lossless subscriber's backlog against
-/// [`LOSSLESS_BACKLOG_WARN_THRESHOLD`], returning `true` exactly once per
-/// time the backlog crosses into "large" — not on every event while it
-/// stays there — so a stuck consumer is flagged without spamming.
 fn record_backlog_len(large_backlogs: &mut HashSet<u64>, id: u64, len: usize) -> bool {
     if len >= LOSSLESS_BACKLOG_WARN_THRESHOLD {
         large_backlogs.insert(id)
@@ -168,23 +122,11 @@ fn record_backlog_len(large_backlogs: &mut HashSet<u64>, id: u64, len: usize) ->
     }
 }
 
-/// Broker event loop — owns all subscription state.
-///
-/// Routes events by `(TopicId, TypeId)` composite key to matching
-/// subscribers. Each subscriber's channel is shaped by the delivery mode its
-/// `Carries` impl declared at subscribe time (see [`DeliveryMode`]):
-/// unbounded and never-drop for `Lossless`, a bounded ring that drops and
-/// counts for `Lossy`. Exits naturally when every `BusHandle` (and derived
-/// sender) is dropped.
 #[tracing::instrument(skip_all)]
 async fn run_broker(mut cmd_rx: mpsc::Receiver<BrokerCommand>) {
     debug!("bus broker running");
     let mut subscriptions: HashMap<RouteKey, Vec<(u64, EventSender)>> = HashMap::new();
-    // Subscriber ids currently in the middle of a drop run on a lossy route,
-    // mapped to how many events that run has dropped so far.
     let mut dropping: HashMap<u64, u64> = HashMap::new();
-    // Subscriber ids currently flagged for a large backlog on a lossless
-    // route.
     let mut large_backlogs: HashSet<u64> = HashSet::new();
 
     while let Some(cmd) = cmd_rx.recv().await {
@@ -276,10 +218,6 @@ async fn run_broker(mut cmd_rx: mpsc::Receiver<BrokerCommand>) {
     debug!("bus broker shut down");
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use chrono::NaiveDate;
@@ -318,8 +256,6 @@ mod tests {
         }
     }
 
-    /// A `WorkbenchEvent` on `Workbench`, a [`DeliveryMode::Lossy`] route,
-    /// for tests exercising drop/backpressure behavior.
     fn test_artifact_update(name: &str) -> WorkbenchEvent {
         WorkbenchEvent::Updated { name: name.into() }
     }
@@ -370,7 +306,6 @@ mod tests {
             conversation: None,
         };
 
-        // Publishing to a topic with no subscribers should not error.
         let result = pub_.publish(topics::Endpoint(ep), event).await;
         assert!(result.is_ok());
     }
@@ -381,7 +316,6 @@ mod tests {
         let pub_ = handle.publisher();
         let sub: Subscriber<MessageEvent> = handle.subscribe(topics::UserMessage).await.unwrap();
 
-        // Drop subscriber, then publish — should not error.
         drop(sub);
 
         let result = pub_
@@ -399,8 +333,6 @@ mod tests {
 
         drop(handle);
 
-        // The broker is still alive because sub holds a cmd_tx clone.
-        // Verify recv doesn't immediately return None (it would block).
         let result = clock::within(tokio::time::Duration::from_millis(50), sub.recv()).await;
         assert!(result.is_none(), "recv should wait while broker is alive");
     }
@@ -448,10 +380,8 @@ mod tests {
         let mut sub2: Subscriber<MessageEvent> =
             handle.subscribe(topics::UserMessage).await.unwrap();
 
-        // Close sub1's receiver by dropping it.
         drop(sub1);
 
-        // Publish — sub1 is pruned when the broker sees its channel is closed, sub2 should receive.
         pub_.publish(topics::UserMessage, test_message("7", "after prune"))
             .await
             .unwrap();
@@ -460,7 +390,6 @@ mod tests {
         assert_eq!(msg.content, "after prune");
     }
 
-    /// Verify that different event types on the same topic are routed independently.
     #[tokio::test(start_paused = true)]
     async fn multi_event_routing_on_same_topic() {
         let handle = spawn_broker();
@@ -476,7 +405,6 @@ mod tests {
             .await
             .unwrap();
 
-        // Publish a ResponseEvent — only sub_resp should receive it
         pub_.publish(
             topics::Endpoint(ep.clone()),
             ResponseEvent {
@@ -493,7 +421,6 @@ mod tests {
         let resp = sub_resp.recv().await.unwrap().unwrap();
         assert_eq!(resp.content, "hello");
 
-        // sub_lifecycle should NOT have received anything
         let timeout_result: Option<Result<Option<TurnLifecycleEvent>, _>> =
             clock::within(tokio::time::Duration::from_millis(50), sub_lifecycle.recv()).await;
         assert!(
@@ -502,7 +429,6 @@ mod tests {
         );
     }
 
-    /// Verify that system notices on Notification("system") are routed correctly.
     #[tokio::test]
     async fn system_notice_routing() {
         let handle = spawn_broker();
@@ -524,20 +450,15 @@ mod tests {
         assert_eq!(notice.message, "config reloaded");
     }
 
-    /// `WorkbenchEvent` on `Workbench` is a lossy route: a subscriber that
-    /// falls behind past its capacity drops the overflow instead of blocking
-    /// the broker, and catches up once drained.
     #[tokio::test(start_paused = true)]
     async fn backpressure_drops_and_recovers() {
         let handle = spawn_broker();
         let pub_ = handle.publisher();
         let mut sub: Subscriber<WorkbenchEvent> =
             handle.subscribe(topics::Workbench).await.unwrap();
-        // sync_sub confirms the broker has processed each publish before we proceed.
         let mut sync_sub: Subscriber<WorkbenchEvent> =
             handle.subscribe(topics::Workbench).await.unwrap();
 
-        // Fill sub's channel to capacity.
         for _ in 0..LOSSY_SUBSCRIBER_CAPACITY {
             pub_.publish(topics::Workbench, test_artifact_update("fill"))
                 .await
@@ -547,25 +468,21 @@ mod tests {
             sync_sub.recv().await.unwrap().unwrap();
         }
 
-        // Sub's channel is full — overflow message should be dropped for sub.
         pub_.publish(topics::Workbench, test_artifact_update("overflow"))
             .await
             .unwrap();
         sync_sub.recv().await.unwrap().unwrap();
 
-        // Drain all fill messages from sub.
         for _ in 0..LOSSY_SUBSCRIBER_CAPACITY {
             sub.recv().await.unwrap().unwrap();
         }
 
-        // Overflow must not appear in sub's channel.
         let result = clock::within(tokio::time::Duration::from_millis(50), sub.recv()).await;
         assert!(
             result.is_none(),
             "full subscriber should not receive overflow event"
         );
 
-        // After recovery, subsequent publishes are received.
         pub_.publish(topics::Workbench, test_artifact_update("after"))
             .await
             .unwrap();
@@ -573,10 +490,6 @@ mod tests {
         assert_eq!(msg, test_artifact_update("after"));
     }
 
-    /// `MessageEvent` on `UserMessage` is a lossless route: a subscriber
-    /// that never drains while a burst far larger than a lossy channel's
-    /// capacity is published still receives every single event, in order,
-    /// once it starts draining.
     #[tokio::test]
     async fn lossless_subscriber_receives_every_event_far_beyond_lossy_capacity() {
         let handle = spawn_broker();
@@ -605,7 +518,6 @@ mod tests {
         let handle = spawn_broker();
         let pub_ = handle.publisher();
 
-        // Create a subscriber with channel capacity 1 to trigger backpressure.
         let id = handle.next_id.fetch_add(1, Ordering::Relaxed);
         let (event_tx, event_rx) = mpsc::channel::<ErasedEvent>(1);
         let topic_id = topics::UserMessage.topic_id();
@@ -622,13 +534,9 @@ mod tests {
         let mut small_sub =
             Subscriber::<MessageEvent>::new_lossy(id, topic_id, event_rx, handle.cmd_tx.clone());
 
-        // The broker handles commands one at a time in order, so once this
-        // subscriber has seen the marker published after `bp2`, the broker has
-        // finished offering `bp2` to the capacity-1 subscriber.
         let mut barrier: Subscriber<MessageEvent> =
             handle.subscribe(topics::UserMessage).await.unwrap();
 
-        // Fill the capacity-1 channel with one event, then publish a second that must be dropped.
         pub_.publish(topics::UserMessage, test_message("bp1", "fill"))
             .await
             .unwrap();
@@ -645,7 +553,6 @@ mod tests {
             }
         }
 
-        // bp1 got through; bp2 was dropped (channel was full).
         let first = small_sub.recv().await.unwrap().unwrap();
         assert_eq!(first.id, "bp1");
 
@@ -655,7 +562,6 @@ mod tests {
             "second event should have been dropped due to backpressure"
         );
 
-        // Recovery: now that the channel is drained, the next publish succeeds.
         pub_.publish(topics::UserMessage, test_message("bp3", "recovered"))
             .await
             .unwrap();
@@ -672,7 +578,6 @@ mod tests {
         let ep = EndpointName::from("ws");
         let topic_id = topics::Endpoint(ep).topic_id();
 
-        // Manually register an event channel with the broker.
         let (event_tx, event_rx) = mpsc::channel::<ErasedEvent>(16);
         handle
             .cmd_tx
@@ -685,33 +590,24 @@ mod tests {
             .await
             .unwrap();
 
-        // Create subscriber with a disconnected cmd_tx so it does not keep the broker alive.
         let (dead_cmd_tx, dead_cmd_rx) = mpsc::channel::<BrokerCommand>(1);
         drop(dead_cmd_rx);
         let mut sub = Subscriber::<ResponseEvent>::new_lossy(99, topic_id, event_rx, dead_cmd_tx);
 
-        // Drop the handle — no remaining cmd_tx senders; broker will exit.
         drop(handle);
 
-        // Broker exits and drops subscriptions, closing event_tx; recv returns Ok(None).
         let result = sub.recv().await;
         assert!(matches!(result, Ok(None)));
     }
-
-    // -----------------------------------------------------------------------
-    // Drop/backlog bookkeeping (pure functions, no broker needed)
-    // -----------------------------------------------------------------------
 
     #[test]
     fn record_drop_outcome_counts_and_logs_edges_only() {
         let mut dropping = HashMap::new();
 
-        // First drop in a run: log the start.
         assert_eq!(
             record_drop_outcome(&mut dropping, 1, &SendOutcome::Dropped),
             Some(DropTransition::Started)
         );
-        // Every further drop in the same run is silent...
         assert_eq!(
             record_drop_outcome(&mut dropping, 1, &SendOutcome::Dropped),
             None
@@ -720,7 +616,6 @@ mod tests {
             record_drop_outcome(&mut dropping, 1, &SendOutcome::Dropped),
             None
         );
-        // ...but the run's total is still counted internally.
         match record_drop_outcome(&mut dropping, 1, &SendOutcome::Sent) {
             Some(DropTransition::Stopped { count }) => assert_eq!(count, 3),
             other => panic!("expected Stopped{{count: 3}}, got {other:?}"),
@@ -736,8 +631,6 @@ mod tests {
         let mut dropping = HashMap::new();
         record_drop_outcome(&mut dropping, 2, &SendOutcome::Dropped);
 
-        // A subscriber that disconnects mid-drop-run isn't "recovered" —
-        // no Stopped transition, just silent cleanup.
         assert_eq!(
             record_drop_outcome(&mut dropping, 2, &SendOutcome::Closed),
             None
@@ -780,18 +673,12 @@ mod tests {
         );
     }
 
-    /// A lossless subscriber that never drains grows an unbounded backlog
-    /// rather than causing a publish to fail or the broker to stall — the
-    /// backlog-warning bookkeeping (unit-tested above) rides alongside this
-    /// without changing that behavior, and other subscribers on other
-    /// routes are unaffected.
     #[tokio::test]
     async fn broker_keeps_running_when_a_lossless_subscriber_has_a_large_backlog() {
         let handle = spawn_broker();
         let pub_ = handle.publisher();
         let ep = EndpointName::from("ws");
 
-        // A lossless subscriber that never drains.
         let _stuck: Subscriber<ResponseEvent> = handle
             .subscribe(topics::Endpoint(ep.clone()))
             .await
@@ -812,8 +699,6 @@ mod tests {
             .unwrap();
         }
 
-        // The broker is still alive and processing — a lossless route never
-        // rejects a publish, it just piles up in the unbounded channel.
         let ep2 = EndpointName::from("still-alive");
         let mut sub2: Subscriber<ResponseEvent> = handle
             .subscribe(topics::Endpoint(ep2.clone()))

@@ -1,5 +1,3 @@
-//! Server command handler in the event loop.
-
 use crate::types::AgentRuntime;
 use residuum_bus::control::ServerCommand;
 use residuum_bus::{InlineOutputEvent, NoticeEvent, NotifyName, SYSTEM_CHANNEL, topics};
@@ -7,7 +5,6 @@ use residuum_bus::{InlineOutputEvent, NoticeEvent, NotifyName, SYSTEM_CHANNEL, t
 use super::turns::load_prompt_context_strings;
 use crate::memory::MemorySubsystems;
 
-/// Dispatch a named server command from any client channel.
 #[tracing::instrument(skip_all, fields(command = %cmd.name))]
 pub async fn handle_server_command(
     cmd: ServerCommand,
@@ -48,9 +45,6 @@ pub async fn handle_server_command(
         unknown => {
             tracing::debug!(command = %unknown, "received unknown server command");
             let reason = format!("unknown server command: {unknown}");
-            // Route the rejection back to whoever sent it, not to every
-            // connected client — an unknown command is specific to one
-            // sender's mistake, not system-wide news.
             if let Some(tx) = cmd.reply_tx {
                 tx.send(Err(reason)).ok();
             } else if let Err(e) = rt
@@ -67,7 +61,6 @@ pub async fn handle_server_command(
     }
 }
 
-/// The `/context` reply: the request's estimated total, then each part.
 fn render_context_breakdown(bd: &residuum_agent::context::ContextBreakdown) -> String {
     format!(
         "[context] ~{} tokens in the next request\n  \
@@ -99,13 +92,8 @@ fn render_context_breakdown(bd: &residuum_agent::context::ContextBreakdown) -> S
     )
 }
 
-/// Faults the `hub_host` integration tests (`tests/it/hub_host/`) inject into
-/// an agent's event loop to prove the loop's failure stays that agent's own.
-/// Those tests turn on this crate's `test-support`, so the command exists only
-/// in test builds.
 #[cfg(any(test, feature = "test-support"))]
 mod fault_injection {
-    /// Panic the way an internal bug in the event loop would.
     #[expect(
         clippy::panic,
         reason = "test-support helper: the fault the hub_host tests inject into the event loop"

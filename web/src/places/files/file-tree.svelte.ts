@@ -1,8 +1,3 @@
-// A file tree that lists folders as they open and follows the disk: it
-// watches its whole tree (through the agent's socket, or the hub's team watch
-// for the team's folder) and lists again the folders whose contents changed.
-// Renaming and deleting a file happen here too, with Undo for a delete.
-
 import { SvelteSet } from "svelte/reactivity";
 import { deleteWorkspaceFile, fetchWorkspaceFiles, moveWorkspaceFile } from "../../lib/api";
 import { userErrorMessage } from "../../lib/errors";
@@ -16,13 +11,11 @@ import { ws } from "../../lib/ws.svelte";
 import { panelFile } from "./file-buffer.svelte";
 import { fileName, parentDir, type FileSource } from "./file-source";
 
-/** One line of the tree: a folder, a file, or a note under a folder that is empty or couldn't be listed. */
 export type TreeRow =
   | { kind: "folder" | "file"; path: string; depth: number; entry: WorkspaceEntry }
   | { kind: "empty"; path: string; depth: number }
   | { kind: "error"; path: string; depth: number; message: string };
 
-/** Folders first, then files, each by name. */
 function byKindThenName(a: WorkspaceEntry, b: WorkspaceEntry): number {
   if (a.entry_type !== b.entry_type) return a.entry_type === "directory" ? -1 : 1;
   return a.name.localeCompare(b.name);
@@ -33,9 +26,7 @@ function join(dir: string, name: string): string {
 }
 
 export class FileTree {
-  /** Each listed folder's entries, by path (`""` is the root). */
   listings = $state<Record<string, WorkspaceEntry[]>>({});
-  /** Why a folder couldn't be listed, by path. */
   errors = $state<Record<string, string>>({});
   readonly expanded = new SvelteSet<string>();
 
@@ -60,7 +51,6 @@ export class FileTree {
 
   constructor(readonly source: FileSource) {}
 
-  /** List `dir` (again), replacing what was shown for it. */
   async list(dir: string): Promise<void> {
     const { agent, scope } = this.source;
     try {
@@ -73,7 +63,6 @@ export class FileTree {
     }
   }
 
-  /** Open a folder, listing it the first time, or close it. */
   async toggle(dir: string): Promise<void> {
     if (this.expanded.has(dir)) {
       this.expanded.delete(dir);
@@ -83,7 +72,6 @@ export class FileTree {
     if (!(dir in this.listings)) await this.list(dir);
   }
 
-  /** Open the folders `path` is in, so a file linked to directly shows in the tree. */
   async reveal(path: string): Promise<void> {
     const folders = path.split("/").slice(0, -1);
     for (const [index] of folders.entries()) {
@@ -93,7 +81,6 @@ export class FileTree {
     }
   }
 
-  /** List every folder shown again: nothing listed can be trusted. */
   refreshAll(): void {
     const dirs = ["", ...Object.keys(this.listings), ...Object.keys(this.errors)];
     for (const [index, dir] of dirs.entries()) {
@@ -101,7 +88,6 @@ export class FileTree {
     }
   }
 
-  /** List again the folders a batch of changes touched, and forget the ones that are gone. */
   applyChanges(changes: readonly WorkspaceChange[]): void {
     const update = treeUpdateFor(changes, this.source.scope, Object.keys(this.listings));
     if (update.forget.length > 0) {
@@ -111,11 +97,6 @@ export class FileTree {
     for (const dir of update.reload) void this.list(dir);
   }
 
-  /**
-   * Follow changes to the whole tree until the returned function is called.
-   * After a resync or a reconnect, changes may have been missed, so every
-   * folder shown is listed again.
-   */
   watch(): () => void {
     const handler: WatchHandler = {
       changed: (changes) => {
@@ -136,11 +117,6 @@ export class FileTree {
     return () => owner?.release();
   }
 
-  /**
-   * Rename or move a file. `name` is the new name in the same folder; a `/`
-   * in it moves the file into a folder below. Resolves to the file's new
-   * path, or null when nothing moved.
-   */
   async rename(path: string, name: string): Promise<string | null> {
     const target = name.trim().replace(/^\/+|\/+$/g, "");
     if (target === "" || target === fileName(path)) return null;
@@ -160,7 +136,6 @@ export class FileTree {
     return to;
   }
 
-  /** Delete a file at once; the toast offers Undo from the checkpoint taken just before. */
   async remove(path: string): Promise<void> {
     const { agent, scope } = this.source;
     let checkpoints;
@@ -184,7 +159,6 @@ export class FileTree {
     );
   }
 
-  /** List `dir` again if it is shown. */
   async relist(dir: string): Promise<void> {
     if (dir in this.listings) await this.list(dir);
   }

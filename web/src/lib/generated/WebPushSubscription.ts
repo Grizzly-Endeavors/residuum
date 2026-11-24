@@ -9,8 +9,4 @@ export type WebPushSubscription = {
  * The push service's URL for this subscription. Whoever holds it can
  * send to the device, so the API never returns it.
  */
-endpoint: string, 
-/**
- * The keys notifications are encrypted with.
- */
-keys: WebPushSubscriptionKeys, };
+endpoint: string, keys: WebPushSubscriptionKeys, };

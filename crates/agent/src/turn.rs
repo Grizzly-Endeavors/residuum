@@ -1,5 +1,3 @@
-//! Turn execution: the tool loop that drives the agent.
-
 use async_trait::async_trait;
 use serde_json::Value;
 #[cfg(test)]
@@ -35,30 +33,19 @@ use super::usage::{TurnUsage, UsageSink};
 use residuum_bus::interrupt::{Interrupt, InterruptSource};
 use residuum_bus::usage::SessionUsageTotals;
 
-/// Told each time one of a main turn's replies reaches the main
-/// conversation on its way to an endpoint. Whoever counts unread replies
-/// decides then whether someone was there to see it, rather than at the end
-/// of the turn, when the reader may already have left.
 pub trait ReplyAudience: Send + Sync {
-    /// A reply for an endpoint was just published to the main conversation.
     fn reply_published(&self);
 }
 
-/// The endpoint a main-agent turn delivers to, which can change while the
-/// turn runs: an agent-started turn follows the owner to the interface they
-/// write from mid-turn. The turn reads it each time it publishes.
 #[derive(Debug, Default)]
 pub struct LiveOutputEndpoint(std::sync::Mutex<Option<EndpointName>>);
 
 impl LiveOutputEndpoint {
-    /// Start out delivering to `endpoint` (`None`: nowhere but the web UI's
-    /// main conversation).
     #[must_use]
     pub fn new(endpoint: Option<EndpointName>) -> Self {
         Self(std::sync::Mutex::new(endpoint))
     }
 
-    /// Where the turn delivers now.
     #[must_use]
     pub fn get(&self) -> Option<EndpointName> {
         self.0
@@ -67,7 +54,6 @@ impl LiveOutputEndpoint {
             .clone()
     }
 
-    /// Deliver the rest of the turn to `endpoint`. Returns where it went before.
     pub fn replace(&self, endpoint: EndpointName) -> Option<EndpointName> {
         self.0
             .lock()
@@ -76,18 +62,13 @@ impl LiveOutputEndpoint {
     }
 }
 
-/// Where a main-agent turn's output goes: an endpoint fixed for the whole
-/// turn, or one the gateway may move while the turn runs.
 #[derive(Debug, Clone, Copy)]
 pub enum TurnOutput<'a> {
-    /// The same endpoint for the whole turn (`None`: no endpoint).
     Fixed(Option<&'a EndpointName>),
-    /// Read at each publish.
     Live(&'a LiveOutputEndpoint),
 }
 
 impl TurnOutput<'_> {
-    /// Where the turn delivers at this moment.
     #[must_use]
     pub fn current(&self) -> Option<EndpointName> {
         match self {
@@ -109,47 +90,23 @@ impl<'a> From<&'a LiveOutputEndpoint> for TurnOutput<'a> {
     }
 }
 
-/// Context for publishing streaming events during a turn.
 pub struct EventContext<'a> {
     pub publisher: &'a Publisher,
-    /// Told as each of a main turn's endpoint replies is published. `None`
-    /// for a session's turn, and where nothing counts unread replies.
     pub reply_audience: Option<&'a dyn ReplyAudience>,
     pub target: EventTarget<'a>,
-    /// When this turn belongs to a conversation session, its own address and
-    /// the conversation it replies to on its interface. Intermediate
-    /// (pre-tool-call) text is then *additionally* published as a
-    /// [`SessionResponseEvent`] to that conversation — the same event, and
-    /// the same "never falls back to the owner's DM" delivery, its turn
-    /// responses use — alongside the ordinary session-stream event every
-    /// [`EventTarget::Session`] turn publishes. `None` for the main agent's
-    /// own turns and for a session with no conversation of its own to reply
-    /// to.
     pub session_conversation: Option<SessionConversationTarget<'a>>,
 }
 
-/// A tool call or its result, as a turn publishes it.
 enum ToolActivity {
-    /// A tool was invoked by the agent.
     Call(ToolCallEvent),
-    /// A tool execution completed.
     Result(ToolResultEvent),
 }
 
-/// Where a turn's streaming events (tool activity, intermediate text) go.
 pub enum EventTarget<'a> {
-    /// The main agent: the main conversation, and for a turn delivered to a
-    /// chat interface that interface's endpoint topic, correlated to the
-    /// message that started the turn. The endpoint may be absent (e.g. a
-    /// background turn with nowhere to show its output), and an
-    /// agent-started turn's can move mid-turn (see [`TurnOutput`]).
     Endpoint {
         output_endpoint: TurnOutput<'a>,
         correlation_id: &'a str,
     },
-    /// An agent session: the sessions topic, tagged with the session's
-    /// address and run id. `turn_id` is the id the turn's `TurnStarted`
-    /// carried.
     Session {
         address: &'a SessionAddress,
         run_id: &'a str,
@@ -157,10 +114,6 @@ pub enum EventTarget<'a> {
     },
 }
 
-/// Where a conversation session's intermediate turn text is *additionally*
-/// delivered, alongside the ordinary session-stream event — the interface
-/// endpoint its conversation lives on, and the conversation id itself. See
-/// [`EventContext::session_conversation`].
 #[derive(Debug, Clone, Copy)]
 pub struct SessionConversationTarget<'a> {
     pub session_address: &'a SessionAddress,
@@ -169,9 +122,6 @@ pub struct SessionConversationTarget<'a> {
 }
 
 impl EventContext<'_> {
-    /// Correlation id stamped on tool activity events. Sessions have no
-    /// inbound message to correlate to; their events are identified by the
-    /// session address and run id instead.
     fn correlation_id(&self) -> &str {
         match self.target {
             EventTarget::Endpoint { correlation_id, .. } => correlation_id,
@@ -179,14 +129,10 @@ impl EventContext<'_> {
         }
     }
 
-    /// Whether this is a main-agent turn, whose output streams to the main
-    /// conversation. A session's does not.
     fn streams_to_main(&self) -> bool {
         matches!(self.target, EventTarget::Endpoint { .. })
     }
 
-    /// Publish one event of the main agent's conversation, built from the
-    /// turn's id. A session's turn has no main conversation to publish to.
     async fn publish_main(&self, build: impl FnOnce(&str) -> MainConversationEvent) {
         let EventTarget::Endpoint { correlation_id, .. } = self.target else {
             return;
@@ -200,9 +146,6 @@ impl EventContext<'_> {
         }
     }
 
-    /// Publish a tool call or result of model call `call`: to the main
-    /// conversation for the main agent, to the session stream for a session.
-    /// No endpoint topic carries it.
     async fn publish_tool_activity(&self, event: ToolActivity, call: u32) {
         match self.target {
             EventTarget::Endpoint { .. } => {
@@ -228,14 +171,6 @@ impl EventContext<'_> {
         }
     }
 
-    /// Publish this turn's intermediate (pre-tool-call) text from model call
-    /// `call`: to the main conversation and, when the turn is delivered to a
-    /// chat interface, that interface's endpoint topic for
-    /// [`EventTarget::Endpoint`], or the session-stream topic for
-    /// [`EventTarget::Session`]; and — when [`Self::session_conversation`]
-    /// is set — additionally as a [`SessionResponseEvent`] to the
-    /// conversation session's own conversation, never falling back to the
-    /// owner's DM, the same rule its turn responses follow.
     async fn publish_intermediate(&self, content: &str, call: u32) {
         match self.target {
             EventTarget::Endpoint {
@@ -300,10 +235,6 @@ impl EventContext<'_> {
         }
     }
 
-    /// Publish a main-agent turn's reply text to the main conversation. The
-    /// endpoint topic gets its copy when the turn ends, from the event loop;
-    /// `call` is the model call that wrote the text, `None` for a notice the
-    /// turn itself wrote.
     async fn publish_reply(&self, call: Option<u32>, content: &str) {
         let endpoint = match self.target {
             EventTarget::Endpoint {
@@ -327,8 +258,6 @@ impl EventContext<'_> {
         }
     }
 
-    /// Publish the complete readable reasoning of model call `call` to the
-    /// main conversation.
     async fn publish_thinking(&self, call: u32, content: String) {
         self.publish_main(|turn_id| MainConversationEvent::Thinking {
             turn_id: turn_id.to_owned(),
@@ -338,8 +267,6 @@ impl EventContext<'_> {
         .await;
     }
 
-    /// Publish one batched piece of model call `call`'s streamed output to
-    /// the main conversation.
     async fn publish_stream_piece(&self, call: u32, piece: StreamPiece) {
         self.publish_main(|turn_id| {
             let turn_id = turn_id.to_owned();
@@ -360,9 +287,6 @@ impl EventContext<'_> {
         .await;
     }
 
-    /// Announce a person's or an agent's message joining this main-agent
-    /// turn mid-turn (see [`MainConversationEvent::user_message`]). Not for a
-    /// session's turn.
     async fn publish_user_message(&self, message: &MessageEvent) {
         let EventTarget::Endpoint { correlation_id, .. } = self.target else {
             return;
@@ -373,10 +297,6 @@ impl EventContext<'_> {
         self.publish_main(|_| event).await;
     }
 
-    /// Announce that a session's turn read `message`, another agent's, the
-    /// owner's or an artifact's message to it, either mid-turn or as the
-    /// input that started the turn. Not for a main-agent turn, whose
-    /// messages arrive as [`MessageEvent`]s.
     pub async fn publish_message_read(&self, message: &AgentMessageEvent) {
         let EventTarget::Session {
             address,
@@ -395,11 +315,6 @@ impl EventContext<'_> {
         .await;
     }
 
-    /// Publish this turn's live usage progress after a model call: this
-    /// turn's own output tokens so far (for the activity line)
-    /// and, when the caller tracks cumulative session totals, the updated
-    /// totals (for the conversation size). Never reaches the agent itself — see
-    /// `docs/systems-usage/turn-control.md`.
     async fn publish_usage(&self, turn: TurnUsage, session_totals: Option<SessionUsageTotals>) {
         match self.target {
             EventTarget::Endpoint { correlation_id, .. } => {
@@ -433,72 +348,29 @@ impl EventContext<'_> {
     }
 }
 
-/// Maximum retries for empty responses (transient API glitches).
 const MAX_EMPTY_RESPONSE_RETRIES: u32 = 2;
 
-/// Sink for incremental transcript persistence.
-///
-/// Called after every model response and every tool result is appended to
-/// `recent_messages`, so a crash mid-turn loses at most the message
-/// currently in flight rather than the whole turn. The main agent's own
-/// persistence path is separate (`recent_messages.json`, written after the
-/// whole turn), so its turns pass `None`; a session's turn passes a sink
-/// bound to its run so the session store's transcript stays durable as the
-/// run progresses.
 #[async_trait]
 pub trait TranscriptSink: Send + Sync {
-    /// Append newly-produced messages to the durable transcript.
     async fn append(&self, messages: &[Message]);
 }
 
-/// Shared subsystem references needed for each turn iteration.
 pub struct TurnResources<'a> {
     pub provider: &'a dyn InferenceProvider,
     pub tools: &'a ToolRegistry,
     pub mcp_registry: &'a SharedMcpRegistry,
     pub identity: &'a IdentityFiles,
     pub options: &'a CompletionOptions,
-    /// Maximum tool-call iterations before the turn stops itself
-    /// gracefully. `None` (the default) means unlimited — the user's own
-    /// Cancel / `stop_agent` is the intended safety valve for a runaway
-    /// turn. See [`residuum_config::AgentAbilitiesConfig::max_tool_iterations`].
     pub max_tool_iterations: Option<usize>,
-    /// Guards against a model repeating the exact same tool call over and
-    /// over. See [`residuum_config::AgentAbilitiesConfig::repeat_call_guard`].
     pub repeat_call_guard: residuum_config::RepeatCallGuardConfig,
-    /// Cancelled when the user asks to stop this turn. Raced directly
-    /// against the in-flight model call so generation aborts immediately;
-    /// turns that don't support being stopped (system/wake turns) pass a
-    /// token nobody ever cancels.
     pub stop_token: &'a CancellationToken,
-    /// Incremental transcript persistence, or `None` when the caller
-    /// persists the transcript some other way (the main agent).
     pub transcript_sink: Option<&'a dyn TranscriptSink>,
-    /// Durable session-level usage totals to accumulate this turn's model
-    /// calls into, for the web UI's conversation size, and where each call's
-    /// usage records go. `None` for a turn that doesn't track them (tests,
-    /// and any turn kind that never surfaces to a web client). The per-turn
-    /// progress the activity line shows publishes regardless of whether this
-    /// is set.
     pub usage_sink: Option<&'a dyn UsageSink>,
-    /// This turn's current hop count: set by the caller to the kickoff
-    /// input's hop count before the turn starts, and raised here whenever an
-    /// `Interrupt::AgentMessage` is drained mid-turn — that message becomes
-    /// one more input driving the turn, alongside the kickoff.
     pub hop_counter: &'a HopCounter,
 }
 
-/// System note injected into the conversation when a turn is stopped
-/// mid-flight, so the next turn knows the work above was cut short rather
-/// than completed or abandoned.
 const STOP_NOTE: &str = "[Stopped] the user stopped this turn before it finished; review what's already been done above before continuing or repeating any of it.";
 
-/// A model response was cut off by the configured output-token limit: tell
-/// the user (a transient notice, not an error — the turn otherwise
-/// completed normally) and leave a system note in the transcript so the
-/// agent knows its own last response was truncated. There is no automatic
-/// continuation — whether to pick up where it left off is the agent's own
-/// call, made the same way any other turn decision is.
 async fn handle_output_truncated(
     response: &InferenceResponse,
     resources: &TurnResources<'_>,
@@ -534,11 +406,6 @@ async fn handle_output_truncated(
     push_and_record(recent_messages, resources.transcript_sink, note).await;
 }
 
-/// Tell the user, once per turn, that images this turn brought in (the
-/// triggering message, an interrupt, a tool result) were left out because
-/// the model can't take them. Images from earlier turns are left out of every
-/// request too, quietly: the user heard about them when they arrived.
-/// `noticed` records that this turn already has.
 async fn notice_images_omitted(
     response: &InferenceResponse,
     turn_messages: &[Message],
@@ -581,17 +448,9 @@ async fn notice_images_omitted(
     }
 }
 
-/// The notice for reasoning the provider dropped from a request.
 const THINKING_DROPPED_NOTICE: &str =
     "Some of the model's earlier reasoning couldn't be reused, so it continued without it.";
 
-/// Tell the user, once per turn, that the provider dropped some of the
-/// model's earlier reasoning from a request instead of reading it, because
-/// what came before that reasoning changed since it was written. The turn
-/// carries on; the model just answers without that reasoning. Every later
-/// request in the exchange resends the same blocks and has them dropped
-/// again, so only the first report of a turn is raised. `noticed` records
-/// that this turn already has.
 async fn notice_thinking_dropped(
     response: &InferenceResponse,
     events: &EventContext<'_>,
@@ -616,7 +475,6 @@ async fn notice_thinking_dropped(
     }
 }
 
-/// The plain-language notice for images a request left out.
 fn images_omitted_notice(omitted: &residuum_inference::ImagesOmitted, count: usize) -> String {
     let count = match count {
         1 => "1 image was".to_string(),
@@ -634,9 +492,6 @@ fn images_omitted_notice(omitted: &residuum_inference::ImagesOmitted, count: usi
     )
 }
 
-/// Push a message onto the turn's history and, when a sink is configured,
-/// durably record it in the same step — the one place every message that
-/// enters `recent_messages` during a turn also reaches the transcript sink.
 async fn push_and_record(
     recent_messages: &mut RecentMessages,
     sink: Option<&dyn TranscriptSink>,
@@ -648,9 +503,6 @@ async fn push_and_record(
     }
 }
 
-/// Same as [`push_and_record`], for a batch of messages produced together
-/// (e.g. the history messages an injected mid-turn user message expands
-/// into).
 async fn push_and_record_many(
     recent_messages: &mut RecentMessages,
     sink: Option<&dyn TranscriptSink>,
@@ -662,21 +514,14 @@ async fn push_and_record_many(
     recent_messages.extend(messages);
 }
 
-/// How one model call ended.
 enum ModelCall {
-    /// The call returned a response.
     Completed {
         response: Box<InferenceResponse>,
-        /// Whether text or reasoning streamed to the main conversation while
-        /// the call ran and has not been voided since: when the response
-        /// turns out to be one the turn discards, it must void them.
         streamed: bool,
     },
-    /// The user stopped the turn while the call was in flight.
     Stopped,
 }
 
-/// Wait until `deadline`, or forever when there is none.
 async fn sleep_until_deadline(deadline: Option<tokio::time::Instant>) {
     match deadline {
         Some(at) => tokio::time::sleep_until(at).await,
@@ -684,8 +529,6 @@ async fn sleep_until_deadline(deadline: Option<tokio::time::Instant>) {
     }
 }
 
-/// Publish batched stream pieces, tracking whether any non-void streamed
-/// output has been published for the call.
 async fn publish_stream_pieces(
     events: &EventContext<'_>,
     call: u32,
@@ -698,37 +541,14 @@ async fn publish_stream_pieces(
     }
 }
 
-/// The request one model call sends: the messages, the tool definitions
-/// (built-in tools first, then MCP tools), and the call's options.
 #[derive(Debug)]
 pub struct ModelRequest {
-    /// The system prompt, carrying its cache boundary, then the
-    /// conversation with each stored status line ahead of its message.
     pub messages: Vec<Message>,
     pub tools: Vec<ToolDefinition>,
-    /// The turn's options, whose cache hints name the conversation and how
-    /// long this turn's cached prefix should be kept.
     pub options: CompletionOptions,
-    /// What each part of the messages and tools is, for the context
-    /// breakdown.
     pub(crate) layout: RequestLayout,
 }
 
-/// Build the request a model call sends from the turn's current state.
-///
-/// The turn loop calls this every iteration, and the test seam
-/// (`residuum_agent::testing::render_model_request`) calls it too, so a test
-/// sees the bytes production sends. The system prompt is reassembled each
-/// time to pick up MCP changes. Identity is a snapshot taken at turn entry
-/// (reloaded from disk each turn), so mid-turn identity-file edits apply on
-/// the next turn.
-///
-/// Everything a provider caches on comes from here: the system prompt's
-/// cache boundary (set by its builder), the stored status lines, the tool
-/// order, and `options`' cache hints. The conversation key in those hints is
-/// set where the conversation's options are made (the main agent's at
-/// startup, a session's when its run starts), and the main agent sets each
-/// turn's retention from who started the turn.
 pub(crate) async fn build_model_request(
     identity: &IdentityFiles,
     recent_messages: &RecentMessages,
@@ -741,11 +561,6 @@ pub(crate) async fn build_model_request(
     let mut tool_definitions = tools.definitions();
     let builtin_tools = tool_definitions.len();
 
-    // Merge MCP tool definitions from all connected servers. The registry
-    // has already dropped any MCP tool whose name collides with a built-in
-    // or with a tool of a server whose name sorts first, so this union
-    // never carries a duplicate name (collision policy:
-    // crates/mcp/src/CLAUDE.md).
     let mcp_guard = mcp_registry.read().await;
     tool_definitions.extend(mcp_guard.tool_definitions());
     drop(mcp_guard);
@@ -764,16 +579,6 @@ pub(crate) async fn build_model_request(
     }
 }
 
-/// Make one model request, raced against the stop token.
-///
-/// A main-agent turn hands the provider a sink that forwards its streamed
-/// text and reasoning to the main conversation, batched (see
-/// [`DeltaCoalescer`]) and tagged with `call`; a session's turn hands it a
-/// sink that discards them. The sink never blocks, so a slow bus can't stall
-/// the provider's read loop. Whatever was streamed is published before this
-/// returns — also when the call fails or is stopped — so the authoritative
-/// frames that follow always come after it, and a stopped turn keeps the
-/// partial text on the page.
 async fn call_model(
     resources: &TurnResources<'_>,
     events: &EventContext<'_>,
@@ -812,7 +617,6 @@ async fn call_model(
         }
     };
 
-    // Whatever the provider pushed just before returning is still queued.
     while let Ok(delta) = deltas.try_recv() {
         let ready = coalescer.push(delta, tokio::time::Instant::now());
         publish_stream_pieces(events, call, ready, &mut streamed).await;
@@ -833,9 +637,6 @@ async fn call_model(
     }
 }
 
-/// Prepare to ask the model again after an empty response (a transient API
-/// glitch), voiding what the empty attempt streamed. Errors once the retries
-/// are used up.
 async fn retry_empty_response(
     empty_retries: &mut u32,
     streamed: bool,
@@ -860,7 +661,6 @@ async fn retry_empty_response(
     Ok(())
 }
 
-/// Leave a system note in the conversation that the user stopped the turn.
 async fn record_stop(recent_messages: &mut RecentMessages, resources: &TurnResources<'_>) {
     push_and_record(
         recent_messages,
@@ -870,10 +670,6 @@ async fn record_stop(recent_messages: &mut RecentMessages, resources: &TurnResou
     .await;
 }
 
-/// Tidy a model response before the turn acts on it: strip inline think
-/// tags from its text and publish its reasoning to the main conversation,
-/// ahead of the text and tool calls it led to. An empty response is retried
-/// by the turn, so its reasoning is not kept or published.
 async fn settle_response(response: &mut InferenceResponse, events: &EventContext<'_>, call: u32) {
     if !response.thinking.is_empty() {
         tracing::debug!(
@@ -893,11 +689,6 @@ async fn settle_response(response: &mut InferenceResponse, events: &EventContext
     }
 }
 
-/// Push `notice` as the turn's one final assistant message and return it as
-/// the turn's whole result. Shared by every "end the turn here with a
-/// message the user sees" path in [`execute_turn`]'s loop (the
-/// `max_tool_iterations` cutoff, the repeat-call guard's stop threshold) so
-/// the push/record/return sequence lives in one place.
 async fn finish_turn_with_notice(
     notice: String,
     recent_messages: &mut RecentMessages,
@@ -910,11 +701,6 @@ async fn finish_turn_with_notice(
     Ok(vec![notice])
 }
 
-/// Build the request for one loop iteration and make the model call.
-///
-/// Returns the response and whether it streamed to the main conversation,
-/// or `None` when the user stopped the turn during the call; the stop note
-/// is recorded before returning `None`.
 async fn request_model_response(
     resources: &TurnResources<'_>,
     memory_ctx: &MemoryContext<'_>,
@@ -945,38 +731,6 @@ async fn request_model_response(
     }
 }
 
-/// Execute the tool loop against the given message buffer.
-///
-/// Calls the provider repeatedly until it returns a text response (no tool calls),
-/// executing any requested tools in between. Updates `recent_messages` in place.
-///
-/// MCP tool definitions are merged into the built-in tool list, and tool calls
-/// fall back to MCP servers when no built-in tool matches. Name collisions are
-/// resolved by the MCP registry before this merge: a built-in always wins and
-/// the colliding MCP tool is dropped from the union, so the model is never
-/// offered two definitions under one name. See `crates/mcp/src/CLAUDE.md`.
-///
-/// Returns a vec containing the final text-only response. Intermediate texts
-/// emitted alongside tool calls are published through `events` as they are
-/// produced but not included in the return value.
-///
-/// A main-agent turn streams each model call's text and reasoning to the
-/// main conversation while the call runs (see `call_model`); the frames
-/// that follow it carry the authoritative text.
-///
-/// # Errors
-///
-/// Returns an error when a model call fails, or when the model still returns
-/// an empty response with no tool calls once the turn's retries are used up.
-///
-/// `turn_start` is the index in `recent_messages` of the (first) message
-/// that triggered the turn. Everything after it already belongs to the turn:
-/// usually the triggering messages were pushed just before this call and are
-/// the last ones, while a rerun of a failed turn starts from the message that
-/// started it, with the failed attempt's work still in history after it.
-///
-/// `status_clock` is `Some` for the main conversation, which stamps each
-/// message folded in mid-turn with its status line.
 #[tracing::instrument(skip_all, fields(operation = "execute_turn"))]
 #[expect(
     clippy::too_many_arguments,
@@ -995,8 +749,6 @@ pub async fn execute_turn(
 ) -> anyhow::Result<Vec<String>> {
     let mut texts: Vec<String> = Vec::new();
     let mut empty_retries: u32 = 0;
-    // This turn's own running totals for the activity line of the turn in
-    // progress. Never exposed to the agent — see `docs/systems-usage/turn-control.md`.
     let mut turn_usage = TurnUsage::default();
     let mut repeat_guard = RepeatCallGuard::new();
     let mut images_noticed = false;
@@ -1023,8 +775,6 @@ pub async fn execute_turn(
             return Ok(texts);
         }
 
-        // The model request this iteration makes; an empty-response retry
-        // repeats it, so it always equals the iteration.
         let call = u32::try_from(iteration).unwrap_or(u32::MAX);
 
         let Some((mut response, streamed)) = request_model_response(
@@ -1099,15 +849,6 @@ pub async fn execute_turn(
     }
 }
 
-/// Run a response's tool-call batch, then fold its token usage and this
-/// batch's executed tool-call count into the turn (and, when tracked, the
-/// durable session) totals and publish the result. Published for every
-/// batch — including one that ends the turn via the repeat-call guard's
-/// notice, which [`handle_tool_call_response`] surfaces through the return
-/// value here too — so neither the tool-call count nor this response's own
-/// token usage is ever silently dropped from the turn's progress or
-/// the durable session totals. Split out of [`execute_turn`] purely to keep
-/// that function's line count down.
 async fn process_tool_call_batch(
     response: &InferenceResponse,
     recent_messages: &mut RecentMessages,
@@ -1133,11 +874,6 @@ async fn process_tool_call_batch(
     notice
 }
 
-/// Check whether this iteration has reached the configured
-/// `max_tool_iterations` limit and, if so, end the turn gracefully with an
-/// explanatory final message. Returns `true` when the turn should stop
-/// (its result is already pushed onto `texts`). Split out of
-/// [`execute_turn`] purely to keep that function's line count down.
 async fn check_tool_iteration_limit(
     resources: &TurnResources<'_>,
     recent_messages: &mut RecentMessages,
@@ -1167,29 +903,15 @@ async fn check_tool_iteration_limit(
     true
 }
 
-/// Per-iteration locals [`handle_tool_call_response`] needs from
-/// [`execute_turn`]'s loop, bundled so the function itself stays within a
-/// normal argument count.
 struct ToolCallResponseContext<'a> {
     resources: &'a TurnResources<'a>,
     events: &'a EventContext<'a>,
     subconscious: Option<&'a crate::subconscious::SubconsciousWatch>,
     iteration: usize,
-    /// Index of the model call whose response is being handled.
     call: u32,
     turn_start: usize,
 }
 
-/// Handle a model response that carries tool calls: publish the
-/// intermediate text, record the assistant message, kick off a mid-turn
-/// subconscious evaluation, and run the tool-call batch. Split out of
-/// [`execute_turn`] purely to keep that function's line count down.
-///
-/// Returns how many of this batch's tool calls actually ran (see
-/// [`run_tool_call_batch`]), and `Some(notice)` when the repeat-call
-/// guard's stop threshold ended the turn on this batch — the caller turns
-/// that into the turn's final user-visible message. `None` means the loop
-/// should continue as normal.
 async fn handle_tool_call_response(
     response: &InferenceResponse,
     recent_messages: &mut RecentMessages,
@@ -1209,8 +931,6 @@ async fn handle_tool_call_response(
         .with_thinking(response.thinking.clone());
     push_and_record(recent_messages, ctx.resources.transcript_sink, msg).await;
 
-    // Classification runs concurrently with tool execution; a correction
-    // lands at a later drain_interrupts poll.
     if let Some(watch) = ctx.subconscious {
         watch.maybe_spawn(
             ctx.iteration,
@@ -1248,9 +968,6 @@ async fn handle_tool_call_response(
     )
 }
 
-/// Drain interrupts at a tool-loop checkpoint and report whether the turn
-/// should stop, logging the reason. Split out of [`execute_turn`] purely to
-/// keep that function's line count down.
 async fn check_interrupts_and_stop(
     interrupt_rx: &mut dyn InterruptSource,
     recent_messages: &mut RecentMessages,
@@ -1269,10 +986,6 @@ async fn check_interrupts_and_stop(
     )
     .await;
 
-    // A stop that has no matching `Interrupt::Stopped` marker still needs to
-    // end the turn here — e.g. daemon shutdown cancels the turn's own
-    // `stop_token` directly (see `run_agent_turn_with_interrupts`) without
-    // routing anything through this interrupt channel.
     if !stopped && resources.stop_token.is_cancelled() {
         push_and_record(
             recent_messages,
@@ -1292,20 +1005,6 @@ async fn check_interrupts_and_stop(
     stopped
 }
 
-/// Drain any interrupt messages that arrived while tools were executing.
-///
-/// Returns `true` if a stop was observed among the drained interrupts, so
-/// the caller can end the turn gracefully at this checkpoint. Draining
-/// continues to the end of the buffered batch even after a stop is seen, so
-/// any interrupts queued just before it are still folded into history.
-///
-/// A person's or an agent's message is announced to the main conversation
-/// at the moment it is folded in, so a client sees it at the position the
-/// model does. A message to a session is announced on the session's stream
-/// the same way (see [`EventContext::publish_message_read`]).
-///
-/// With a `status_clock` (the main conversation), each person's or agent's
-/// message is stamped with its own status line as it is folded in.
 async fn drain_interrupts(
     interrupt_rx: &mut dyn InterruptSource,
     recent_messages: &mut RecentMessages,
@@ -1339,8 +1038,6 @@ async fn drain_interrupts(
                     clock.stamp(&mut entry, None);
                 }
                 push_and_record(recent_messages, sink, entry).await;
-                // After the transcript records it, so a client reading the
-                // transcript on this event finds the message there.
                 events.publish_message_read(&msg).await;
             }
             Interrupt::Subconscious(content) => {
@@ -1357,17 +1054,6 @@ async fn drain_interrupts(
     stopped
 }
 
-/// Tracks the current streak of consecutive identical tool calls within a
-/// turn, for [`run_tool_call_batch`]'s repeat-call guard.
-///
-/// Observed failure this guards against: GLM 5.3 Flash has been seen calling
-/// a tool with byte-identical arguments hundreds of times in a row — the
-/// result cannot change, so repeating the call again never makes progress.
-/// A call "repeats" the previous one when it names the same tool and its
-/// raw argument JSON (as received from the model) is identical; any other
-/// call — a different tool, or different arguments — resets the streak back
-/// to a single call. Calls within a single model response's batch count in
-/// order, exactly like calls from separate model responses.
 struct RepeatCallGuard {
     last: Option<(String, Value)>,
     consecutive: u32,
@@ -1381,8 +1067,6 @@ impl RepeatCallGuard {
         }
     }
 
-    /// Record the next call about to be considered and return the updated
-    /// streak length (1 for a call that doesn't repeat the previous one).
     fn record(&mut self, name: &str, arguments: &Value) -> u32 {
         let repeats_last = self
             .last
@@ -1398,10 +1082,6 @@ impl RepeatCallGuard {
     }
 }
 
-/// Attach each call's owning MCP server name (`None` for a built-in) before
-/// the batch is recorded or dispatched, so the assistant message, the
-/// `tool_call` event, and the repeat-call guard all see the same value
-/// without re-querying the registry per call.
 async fn annotate_tool_call_servers(
     tool_calls: &[ToolCall],
     mcp_registry: &SharedMcpRegistry,
@@ -1420,22 +1100,6 @@ async fn annotate_tool_call_servers(
         .collect()
 }
 
-/// Run every tool call a model response carries, in order.
-///
-/// Once the turn is stopped — whether that happens during one of these
-/// calls or was already true going in — every remaining call in the batch
-/// is skipped rather than run, but still gets a recorded result (see
-/// `skip_tool_call`) so the transcript stays valid for the next provider
-/// call. The same happens once the repeat-call guard's stop threshold is
-/// reached; when that happens this returns `Some((tool_name, consecutive))`
-/// so the caller can end the turn with a user-visible notice.
-///
-/// Also returns how many calls in this batch were actually executed (via
-/// `execute_tool`, steered or not) — every call the model made in parallel
-/// within this one response counts individually, for the turn and session
-/// tool-call counters. A skipped call (the turn already stopping) or the
-/// call that tripped the repeat-call guard's stop threshold never ran, so
-/// neither counts.
 async fn run_tool_call_batch(
     tool_calls: &[ToolCall],
     resources: &TurnResources<'_>,
@@ -1507,16 +1171,6 @@ async fn run_tool_call_batch(
     (executed, stopped_by_repeat_guard)
 }
 
-/// Dispatch a tool call to the built-in registry, falling back to MCP.
-///
-/// Returns the result alongside whether the MCP fallback was used, so the
-/// caller's error-source logging can distinguish a built-in failure from an
-/// MCP one. A malformed name means the inference provider failed to parse
-/// the model's tool-call syntax into structured JSON (e.g. GLM's
-/// `<arg_key>`/`<arg_value>` template leaking through unparsed) — dispatch
-/// to the built-in or MCP registry would only ever produce a confusing
-/// "unknown tool" lookup failure, so this short-circuits with a clear error
-/// instead of trying both registries first.
 async fn dispatch_tool_call(
     tool_call: &ToolCall,
     resources: &TurnResources<'_>,
@@ -1539,11 +1193,6 @@ async fn dispatch_tool_call(
         )
         .await
     {
-        // Try built-in tools first, fall back to MCP servers. This ordering
-        // is the dispatch half of the collision policy: a built-in always
-        // wins its name, and the registry has already hidden any shadowed
-        // MCP tool from the model (crates/mcp/src/CLAUDE.md), so the fallback only
-        // ever reaches genuinely MCP-owned names.
         Err(ToolError::NotFound(_)) => {
             tracing::debug!(tool_name = %tool_call.name, "tool not found in built-in registry, falling back to MCP");
             (execute_mcp_tool(tool_call, resources).await, true)
@@ -1552,18 +1201,6 @@ async fn dispatch_tool_call(
     }
 }
 
-/// Dispatch a tool call to whichever MCP server owns it.
-///
-/// The MCP registry has no cancellation awareness of its own (unlike
-/// `execute_cancellable`'s built-in path), so this races the call directly:
-/// on a stop, the call is dropped and a cancellation result reported
-/// instead of waiting for an MCP server that may never answer.
-///
-/// The registry's read lock is held only long enough to resolve the tool to
-/// a cheap-to-clone client handle, then dropped before the call is awaited
-/// — otherwise a slow or hung MCP server would hold the lock for the call's
-/// whole duration, blocking a config reload's write lock and every other
-/// agent's next iteration behind it.
 async fn execute_mcp_tool(
     tool_call: &ToolCall,
     resources: &TurnResources<'_>,
@@ -1582,8 +1219,6 @@ async fn execute_mcp_tool(
     }
 }
 
-/// Dispatch a tool call and flatten its outcome into the output text,
-/// whether it is an error, and any images, logging a failure with its source.
 async fn run_dispatched_tool_call(
     tool_call: &ToolCall,
     resources: &TurnResources<'_>,
@@ -1609,14 +1244,6 @@ async fn run_dispatched_tool_call(
     }
 }
 
-/// Execute a single tool call, falling back to MCP servers.
-///
-/// When the agent's Auto Mode is on, the call is checked against its rules
-/// first; a blocked call never dispatches, and its result names the rule.
-///
-/// `steering_note`, when set, is appended to the tool's own result — used by
-/// the repeat-call guard to nudge a model that keeps calling this tool with
-/// the same arguments, without altering whether the call itself succeeded.
 #[tracing::instrument(skip_all, fields(tool.name = %tool_call.name, tool.id = %tool_call.id))]
 async fn execute_tool(
     tool_call: &ToolCall,
@@ -1656,10 +1283,6 @@ async fn execute_tool(
         run_dispatched_tool_call(tool_call, resources).await
     };
 
-    // Reached only when the dispatch above actually raced against the stop
-    // (built-in default `execute_cancellable`, `ExecTool`'s own override, or
-    // the MCP race just above) and lost — i.e. this call was running when
-    // the turn was stopped, not merely one that happened to run after.
     if resources.stop_token.is_cancelled() {
         tracing::info!(
             tool_name = %tool_call.name,
@@ -1668,9 +1291,6 @@ async fn execute_tool(
         );
     }
 
-    // The one redaction point for tool output: everything downstream (the
-    // web UI activity feed, recent_messages, transcripts, episodes, the
-    // search index, and the next provider call) reads this string.
     if resources
         .tools
         .redactor()
@@ -1684,18 +1304,12 @@ async fn execute_tool(
         );
     }
 
-    // A result too long for history is saved whole (already redacted) and
-    // replaced by an excerpt naming the file. This string is what history
-    // stores, so replay sends the same bytes; it is never re-derived.
     if let Some(store) = resources.tools.result_store() {
         output = store
             .keep_for_history(output, &tool_call.name, &tool_call.id)
             .await;
     }
 
-    // Repeat-call guard steering note, appended after redaction and the
-    // excerpt so it never gets mistaken for agent-key-bearing tool output
-    // and always stays visible.
     if let Some(note) = steering_note {
         output.push_str("\n\n");
         output.push_str(&note);
@@ -1723,11 +1337,6 @@ async fn execute_tool(
     push_and_record(recent_messages, resources.transcript_sink, tool_message).await;
 }
 
-/// Record a tool call that never ran, publishing the same call/result event
-/// pair a real execution would, with a cancellation notice standing in for
-/// the result. Shared by [`skip_tool_call`] and [`stop_repeated_tool_call`]:
-/// every tool call a response carries still needs a matching tool result —
-/// providers reject a transcript with a call left unanswered.
 async fn record_cancelled_tool_call(
     tool_call: &ToolCall,
     output: String,
@@ -1769,9 +1378,6 @@ async fn record_cancelled_tool_call(
     push_and_record(recent_messages, resources.transcript_sink, tool_message).await;
 }
 
-/// Record a tool call that never ran because the turn had already been
-/// stopped (or the repeat-call guard had already fired) by the time its
-/// turn came up in this response's batch.
 async fn skip_tool_call(
     tool_call: &ToolCall,
     resources: &TurnResources<'_>,
@@ -1795,10 +1401,6 @@ async fn skip_tool_call(
     .await;
 }
 
-/// Record a tool call that the repeat-call guard did not run because its
-/// stop threshold was reached: the model has called this tool with
-/// byte-identical arguments `consecutive` times in a row, and repeating it
-/// again cannot produce a different result.
 async fn stop_repeated_tool_call(
     tool_call: &ToolCall,
     consecutive: u32,
@@ -1815,7 +1417,6 @@ async fn stop_repeated_tool_call(
     record_cancelled_tool_call(tool_call, output, resources, recent_messages, events, call).await;
 }
 
-/// Log token usage from a model response at debug level.
 fn log_usage(response: &InferenceResponse) {
     if let Some(usage) = response.usage {
         tracing::debug!(
@@ -1832,11 +1433,6 @@ fn log_usage(response: &InferenceResponse) {
     }
 }
 
-/// Fold a model call's usage and the tool calls its batch just executed
-/// into this turn's running totals, into the durable session totals when
-/// the turn tracks them, and publish the result for the web UI's
-/// activity line and conversation size. Never delivered to the agent
-/// itself — see `docs/systems-usage/turn-control.md`.
 async fn update_and_publish_usage(
     response: &InferenceResponse,
     tool_calls_executed: u32,
@@ -1913,8 +1509,6 @@ mod tests {
         );
     }
 
-    /// The request a turn sends with the echo tool built in and `registry`'s
-    /// MCP servers.
     async fn request_with_mcp_servers(registry: &SharedMcpRegistry) -> ModelRequest {
         let mut tools = ToolRegistry::new();
         tools.register(Box::new(crate::testing::EchoTool));
@@ -1925,8 +1519,6 @@ mod tests {
         crate::testing::render_model_request(&inputs, &tools).await
     }
 
-    /// The bytes a provider caches on in `request`: its tool list and its
-    /// system prompt.
     fn cached_bytes(request: &ModelRequest) -> (String, String) {
         (
             serde_json::to_string(&request.tools).unwrap(),
@@ -1958,10 +1550,6 @@ mod tests {
 
     #[tokio::test]
     async fn mcp_tools_reach_the_request_grouped_by_server_in_name_order() {
-        // Five servers, so an order that depends on hashing rather than on
-        // names fails almost surely: two random orders of five agree once in
-        // 120 times. The tools are named so that a sort over all of them
-        // would interleave the servers, which the explicit order rules out.
         let zeta_first = connect_in_order(&[
             ("zeta", &["page", "annotate"]),
             ("bravo", &["ping", "count"]),
@@ -2000,7 +1588,6 @@ mod tests {
         let registry = connect_in_order(&[("alpha", &["a_search"]), ("zeta", &["z_lookup"])]).await;
         let before = cached_bytes(&request_with_mcp_servers(&registry).await);
 
-        // A reload that restarts a server whose config didn't change.
         registry
             .write()
             .await
@@ -2013,7 +1600,6 @@ mod tests {
         );
     }
 
-    /// Counts the replies it is told went out.
     #[derive(Default)]
     struct CountingAudience(AtomicUsize);
 
@@ -2058,7 +1644,6 @@ mod tests {
             "a reply bound for no endpoint is not one to count"
         );
 
-        // Both still reach the main conversation.
         for want in ["hello", "a note"] {
             let event = next_event("a reply in the main conversation", &mut main).await;
             assert!(
@@ -2068,8 +1653,6 @@ mod tests {
         }
     }
 
-    /// A main-turn context whose events go nowhere, for tests of code that
-    /// only needs one to hand along.
     fn silent_events(publisher: &Publisher) -> EventContext<'_> {
         EventContext {
             publisher,
@@ -2082,8 +1665,6 @@ mod tests {
         }
     }
 
-    /// Collects every message it's asked to record, so a test can assert the
-    /// incremental transcript sink saw exactly what `recent_messages` did.
     #[derive(Default)]
     struct MockSink {
         recorded: StdMutex<Vec<Message>>,
@@ -2330,8 +1911,6 @@ mod tests {
         );
     }
 
-    /// Text content of each message, for comparing two message lists without
-    /// requiring `Message: PartialEq`.
     fn contents(messages: &[Message]) -> Vec<&str> {
         messages.iter().map(|m| m.content.as_str()).collect()
     }
@@ -2501,9 +2080,6 @@ mod tests {
 
     #[tokio::test]
     async fn execute_tool_rejects_malformed_name_without_registry_lookup() {
-        // Mirrors a Fireworks/GLM response whose native `<arg_key>`/`<arg_value>`
-        // tool-call template leaked through unparsed into the structured
-        // `tool_calls` name field, instead of a clean `write_file`.
         let tool_call = ToolCall {
             id: "call-1".to_string(),
             name: "write_file\tcontent</arg_key><arg_value># Hello".to_string(),
@@ -2577,9 +2153,6 @@ mod tests {
         .await
         .unwrap();
 
-        // The tool hands back the raw key value, as a command that printed
-        // an exposed key would; only the registry's redactor stands between
-        // it and history.
         let mut tools = ToolRegistry::new();
         tools.set_agent_keys(keys);
         tools.register(Box::new(FixedOutputTool::new(
@@ -2644,8 +2217,6 @@ mod tests {
         );
     }
 
-    /// Run one call to `name` through `execute_tool` and return the tool
-    /// message it recorded.
     async fn record_one_tool_call(
         tools: &ToolRegistry,
         mcp_registry: &SharedMcpRegistry,
@@ -2697,7 +2268,6 @@ mod tests {
         msg.content.clone()
     }
 
-    /// The one file a store holds after a single offloaded result.
     fn only_saved_result(store: &crate::ToolResultStore) -> std::path::PathBuf {
         let files: Vec<_> = std::fs::read_dir(store.dir())
             .expect("the store's directory should exist once a result is saved")
@@ -2787,10 +2357,6 @@ mod tests {
         );
     }
 
-    /// A stdio MCP server, as a `sh` script, offering one tool,
-    /// `big_output`, whose result is `MCP-HEAD`, 40,000 `x`s and `MCP-TAIL`.
-    /// It answers the requests a connect and one call send: `initialize`,
-    /// `tools/list` and `tools/call`; notifications get no reply.
     #[cfg(unix)]
     const BIG_OUTPUT_MCP_SERVER: &str = r#"
 big=$(head -c 40000 /dev/zero | tr '\000' x)
@@ -2861,10 +2427,6 @@ done
         mcp_registry.write().await.disconnect_all().await;
     }
 
-    /// Run `counting_tool` once through `execute_tool` with an Auto Mode
-    /// that denies "Running the counting tool", against a decision model
-    /// answering `deny_0` with `probability` (or an unreachable one when
-    /// `None`). Returns how many times the tool ran and the recorded result.
     async fn run_counting_tool_under_auto_mode(probability: Option<f64>) -> (usize, String) {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -3114,9 +2676,6 @@ done
         assert_eq!(msg.content, crate::tool::CANCELLED_BEFORE_START);
     }
 
-    /// Returns a two-tool-call response exactly once; a second call means
-    /// the turn looped back for another model call instead of stopping,
-    /// which this test must catch.
     struct TwoToolCallsProvider {
         served: AtomicBool,
     }
@@ -3280,17 +2839,11 @@ done
         }
     }
 
-    /// A [`UsageSink`] test double that records every call it's asked to
-    /// accumulate — token usage and tool-call batches alike — and returns
-    /// pre-set cumulative totals in sequence, drawn from the same queue
-    /// either kind of call advances, matching how a real sink's single
-    /// running total is shared between them.
     #[derive(Default)]
     struct MockUsageSink {
         calls: StdMutex<Vec<Option<residuum_inference::Usage>>>,
         tool_call_batches: StdMutex<Vec<u32>>,
         totals_to_return: StdMutex<Vec<SessionUsageTotals>>,
-        /// Each recorded model call: the provider's model and whether it answered.
         recorded_calls: StdMutex<Vec<(String, bool)>>,
     }
 
@@ -3346,8 +2899,6 @@ done
         }
     }
 
-    // ── RepeatCallGuard ──────────────────────────────────────────────────────
-
     #[test]
     fn repeat_call_guard_counts_consecutive_identical_calls() {
         let mut guard = RepeatCallGuard::new();
@@ -3383,8 +2934,6 @@ done
         );
     }
 
-    /// Build a `counting_tool` call with the given id, always carrying the
-    /// same arguments — used to drive the repeat-call guard's streak.
     fn counting_tool_call(id: &str) -> ToolCall {
         ToolCall {
             id: id.to_string(),
@@ -3394,8 +2943,6 @@ done
         }
     }
 
-    /// The usage progress a turn publishes to the main conversation, which is
-    /// the only place it goes.
     struct UsageFeed(residuum_bus::Subscriber<MainConversationEvent>);
 
     impl UsageFeed {
@@ -3408,7 +2955,6 @@ done
             )
         }
 
-        /// The next usage event, passing over the conversation's other events.
         async fn next(&mut self) -> TurnUsageEvent {
             loop {
                 let event = next_event("a usage event to be published", &mut self.0).await;
@@ -3665,9 +3211,6 @@ done
         assert_eq!(event.output_tokens, 0);
     }
 
-    /// Always returns a text-only response (no tool calls) with usage set —
-    /// used to check that a turn with zero tool calls reports a zero tool
-    /// count rather than never publishing one.
     struct TextOnlyProvider;
 
     #[async_trait]
@@ -3764,7 +3307,6 @@ done
         );
     }
 
-    /// Fails every call, as a provider that's down does.
     struct FailingProvider;
 
     #[async_trait]
@@ -3849,10 +3391,6 @@ done
         );
     }
 
-    /// Returns two parallel tool calls on the first turn, then a text-only
-    /// response on the second — used to check that a turn's tool-call
-    /// count accumulates correctly across a batch of parallel calls and
-    /// stays put once the turn moves on to its final response.
     struct ToolsThenTextProvider {
         served: AtomicBool,
     }
@@ -3972,16 +3510,12 @@ done
             "all three calls should have run"
         );
 
-        // First TurnUsageEvent, published right after the tool batch: the
-        // three parallel calls should already be reflected.
         let after_batch = sub.next().await;
         assert_eq!(
             after_batch.tool_calls, 3,
             "every parallel call in the batch should count individually"
         );
 
-        // Second TurnUsageEvent, published after the final text-only
-        // response: the count must not be reset or double-counted.
         let after_final = sub.next().await;
         assert_eq!(
             after_final.tool_calls, 3,
@@ -4317,9 +3851,6 @@ done
         );
     }
 
-    /// Always returns the same single `counting_tool` call, counting how
-    /// many times `complete()` was invoked — a test asserts this stays at
-    /// the configured stop threshold instead of growing without bound.
     struct RepeatingCallProvider {
         completions: AtomicUsize,
     }
@@ -4421,9 +3952,6 @@ done
         );
     }
 
-    /// Answers every call as if images were left out of the request (nine,
-    /// counted over the whole history): a tool call first, then text. From
-    /// the fourth call on, the model's text-only verdict is a learned one.
     struct ImagesOmittedProvider {
         calls: AtomicUsize,
     }
@@ -4506,8 +4034,6 @@ done
         let (_interrupt_tx, mut interrupt_rx) = mpsc::unbounded_channel::<Interrupt>();
         let mut recent = RecentMessages::new();
 
-        // A turn with one new image and two model requests, a turn with only
-        // that old image in history, and a turn with two new images.
         let turns = [
             Message::user_with_images("look at this", vec![png()]),
             Message::user("and again"),
@@ -4563,8 +4089,6 @@ done
         assert_eq!(next().await, "end of turn 2");
     }
 
-    /// Answers every call as if the provider dropped a replayed thinking
-    /// block: a tool call first, then text.
     struct ThinkingDroppedProvider {
         calls: AtomicUsize,
     }
@@ -4636,8 +4160,6 @@ done
         let (_interrupt_tx, mut interrupt_rx) = mpsc::unbounded_channel::<Interrupt>();
         let mut recent = RecentMessages::new();
 
-        // Two turns of two model requests each, every request reporting a
-        // dropped block.
         for n in 0..2 {
             recent.push(Message::user("go"));
             execute_turn(

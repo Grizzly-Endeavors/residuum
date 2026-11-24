@@ -99,7 +99,6 @@ describe("the Residuum Cloud routes", () => {
     expect((await call("POST", "/api/mock/cloud-callback", { token: "" })).status).toBe(422);
   });
 
-  /** Start a sign-in as Connect does; the relay's sign-in address and its `state`. */
   async function startSignIn(body: unknown = {}): Promise<{ url: URL; state: string }> {
     const answer = await call("POST", "/api/hub/cloud/connect", body);
     expect(answer.status).toBe(200);
@@ -107,7 +106,6 @@ describe("the Residuum Cloud routes", () => {
     return { url, state: url.searchParams.get("state") ?? "" };
   }
 
-  /** Where the gateway's callback sends the browser for `query`. */
   async function callback(query: string): Promise<string | null> {
     const handedOff = await fetch(`${harness.baseUrl}/cloud/callback${query}`, {
       redirect: "manual",

@@ -13,7 +13,6 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
-/** Answers the page's reads; each upload gets the next id, `upload_1` first. */
 function installServer(): { uploads: string[] } {
   const uploads: string[] = [];
   vi.stubGlobal(
@@ -58,7 +57,6 @@ async function flush(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-/** The id of the last message the page sent, which names the turn it starts. */
 function sentMessageId(socket: FakeWebSocket): string {
   const sent = socket
     .sentFrames()
@@ -167,7 +165,6 @@ describe("an error naming a message the agent hasn't confirmed yet", () => {
     ws.sendChat("Hello");
     const id = sentMessageId(socket);
 
-    // The turn's failure overtook its `user_message` and `turn_started`.
     socket.simulateMessage({ type: "error", reply_to: id, message: "The model isn't reachable." });
     stop();
 
@@ -179,7 +176,6 @@ describe("an error naming a message the agent hasn't confirmed yet", () => {
 });
 
 describe("Try again on a turn that couldn't finish", () => {
-  /** A message sent, its turn started and failed: the id of the message. */
   function failedTurn(content = "Read this"): string {
     ws.sendChat(content);
     const id = sentMessageId(socket);
@@ -242,8 +238,6 @@ describe("Try again on a turn that couldn't finish", () => {
   });
 
   it("says nothing of a refusal once the rerun has taken the failure's place", () => {
-    // Try again was asked twice across a dropped connection: the first
-    // started the rerun, and the second is refused while it runs.
     const id = failedTurn();
     ws.retryTurn(id);
     socket.simulateMessage({

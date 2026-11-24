@@ -6,18 +6,12 @@
   import SettingsGroup from "./SettingsGroup.svelte";
   import SettingsSection from "./SettingsSection.svelte";
 
-  // General: the timezone every agent shares, and under More options the
-  // address Residuum serves this app on. Both are staged and saved with the
-  // rest of the install-wide settings.
-
   let { scope, section }: AllSectionProps = $props();
 
   const deviceZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const zoneChoices = $derived(timeZoneChoices(scope.config.timezone));
 
   const zone = $derived(scope.config.timezone.trim());
-  // A flag, not a block: the save is still the server's to refuse. The
-  // dropdown only offers real names, so this is a value already in the file.
   const zoneError = $derived(
     fieldError(scope, { kind: "config", field: "timezone" }) ??
       (zone !== "" && !isTimeZoneName(zone)

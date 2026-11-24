@@ -15,7 +15,6 @@ import type { MockAgent, MockHub } from "./state";
 import { TestSocket, fetchJson, fetchText } from "./test-support";
 import { writeFile } from "./workspace-tree";
 
-/** The mock's own server, where the web app is served, and the artifacts listener beside it, both on real ports. */
 describe("the artifacts origin", () => {
   let appServer: Server;
   let listener: Server;
@@ -27,9 +26,7 @@ describe("the artifacts origin", () => {
     return `127.0.0.1:${(server.address() as AddressInfo).port}`;
   };
 
-  /** The app's origin, where requests are not marked as arriving through the artifacts origin. */
   let app: string;
-  /** The artifacts origin. */
   let artifacts: string;
 
   beforeEach(async () => {

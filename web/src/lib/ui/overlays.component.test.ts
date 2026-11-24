@@ -18,7 +18,6 @@ function scrim(): HTMLElement {
   return top;
 }
 
-/** A one-finger touch at `y` (and `x`), as the browser reports it. */
 function touch(type: string, x: number, y: number): Event {
   const event = new Event(type, { bubbles: true, cancelable: true });
   const points = type === "touchend" ? [] : [{ clientX: x, clientY: y }];
@@ -40,8 +39,6 @@ beforeEach(() => {
   router.startForOverlays();
 });
 
-// Unmounting closes what a test left open, and that goes back in the history:
-// let it land before the next test opens anything.
 afterEach(async () => {
   cleanup();
   await waitFor(() => {
@@ -61,7 +58,6 @@ describe("Dialog", () => {
     expect(dialog).toHaveAttribute("aria-modal", "true");
     expect(dialog).toHaveAccessibleDescription("The first layer.");
     expect(dialog.closest("[data-overlay-host]")).not.toBeNull();
-    // The close button comes first, but a dialog starts on its content.
     expect(screen.getByRole("button", { name: "First control" })).toHaveFocus();
   });
 
@@ -236,7 +232,6 @@ describe("Sheet and Drawer", () => {
     render(OverlayHarness, { kind: "sheet", onclose });
     await user.click(screen.getByRole("button", { name: "Open" }));
     const sheet = sized(screen.getByRole("dialog", { name: "Switch agent" }), 400);
-    // Slow and short: under a third of its height, so it stays.
     vi.spyOn(Event.prototype, "timeStamp", "get").mockReturnValueOnce(0).mockReturnValue(1000);
     drag(sheet, [100, 500], [100, 560]);
     await act();

@@ -1,5 +1,3 @@
-//! In-place root config reload: diff old vs new config and update changed subsystems.
-
 use std::sync::Arc;
 
 use tokio::time::Duration;
@@ -17,79 +15,33 @@ use residuum_inference::SharedHttpClient;
 use crate::types::AgentRuntime;
 use residuum_config::ProviderSpec;
 
-/// What the event loop should do with the idle timer after a config reload.
 pub(super) enum IdleAction {
-    /// No idle-related changes.
     None,
-    /// Idle system was disabled (timeout set to zero).
     Disable,
-    /// Idle timeout changed; recalculate the deadline.
     Recalculate { new_timeout: Duration },
 }
 
-/// Which subsystems differ between two `Config` snapshots.
-///
-/// Only operations that are expensive or user-visibly disruptive get a
-/// dedicated flag: restarting the Discord/Telegram/Teams adapters and
-/// rebuilding the A2A state. Idle timeout/channel changes also get a
-/// dedicated flag because they control which `IdleAction` variant
-/// `handle_root_reload` returns, not a rebuild. The gateway bind, the cloud
-/// tunnel, and tracing belong to the hub, which applies them itself.
-///
-/// Every other subsystem (provider chains, memory thresholds, subconscious,
-/// background config, skills, tool PATH, agent ability gates, tracing, the
-/// pulse toggle, HTTP client timeout, webhooks, web search, the endpoint
-/// registry) is cheap to rebuild and
-/// `handle_root_reload` rebuilds all of them unconditionally whenever
-/// `changed` is true, in one fixed order — see `rebuild_cheap_components`.
-/// Web search is fully live: `provider_native` is folded into the
-/// unconditional provider rebuild, `standalone_backend` naming `"ollama"`
-/// reloads the native tool in place, and a `"brave"`/`"tavily"` backend
-/// reconnects its MCP server — see `reload_web_search`.
-///
-/// A credential-only change (a provider's resolved `api_key` differs while
-/// its name, model, and URL stay the same) already flips `changed` through
-/// the same per-role equality checks as any other provider edit, but the
-/// generic "providers"/"background"/"subconscious" label doesn't say *which*
-/// provider rotated. `summary` calls that out by name (never by value) —
-/// see `provider_credential_changes` — so the reload log/notice reflects
-/// what actually happened instead of reading like a no-op.
 #[expect(
     clippy::struct_excessive_bools,
     reason = "diff struct deliberately uses bool flags for each subsystem that needs gating"
 )]
 pub(super) struct ConfigDiff {
-    /// True if anything at all differs between old and new config.
     pub changed: bool,
-    /// Discord token added/removed/changed — restarting the adapter is user-visible.
     pub discord_changed: bool,
-    /// Telegram token added/removed/changed — restarting the adapter is user-visible.
     pub telegram_changed: bool,
-    /// Teams config (or the gateway bind it listens on) changed — restarts its listener.
     pub teams_changed: bool,
-    /// A2A config (or the gateway bind it listens on) changed — restarts its listener.
     pub a2a_changed: bool,
-    /// The hub's `timezone` changed — applied live where possible, see
-    /// `apply_timezone`.
     pub timezone_changed: bool,
-    /// Idle timeout or `idle_channel` changed — controls the `IdleAction` returned to the caller.
     pub idle_changed: bool,
-    /// Human-readable summary of every subsystem that changed, for the reload log line.
     summary: String,
 }
 
 impl ConfigDiff {
-    /// Human-readable summary of what changed between old and new config.
     fn summary(&self) -> &str {
         &self.summary
     }
 }
 
-/// Compare two configs and return which subsystems differ.
-///
-/// The granular per-subsystem comparisons below build `summary` for
-/// operator-facing logging; only the fields documented on `ConfigDiff`
-/// itself are used to gate any actual reload work.
 pub(super) fn diff_config(old: &Config, new: &Config) -> ConfigDiff {
     let discord_changed = old.discord != new.discord;
     let telegram_changed = old.telegram != new.telegram;
@@ -128,11 +80,6 @@ pub(super) fn diff_config(old: &Config, new: &Config) -> ConfigDiff {
     }
 }
 
-/// Human-readable labels for every subsystem that differs between `old` and
-/// `new`, in the order shown in the reload log line. Split out of
-/// `diff_config` purely to keep that function's line count bounded; each
-/// check here is independent and re-derives its own condition rather than
-/// taking `ConfigDiff`'s flags as parameters.
 fn summary_parts(old: &Config, new: &Config) -> Vec<&'static str> {
     let mut parts = Vec::new();
     if old.main != new.main
@@ -215,14 +162,6 @@ fn summary_parts(old: &Config, new: &Config) -> Vec<&'static str> {
     parts
 }
 
-/// Provider names (each tagged with its role) whose resolved credential
-/// differs between `old` and `new`, across every role that carries a
-/// provider chain.
-///
-/// Reports only that a named provider's credential changed, never the
-/// credential values themselves — those stay behind `ProviderSpec`'s
-/// redacting `Debug` impl and are never compared by content here beyond a
-/// `!=` check.
 fn provider_credential_changes(old: &Config, new: &Config) -> Vec<String> {
     let mut changes = Vec::new();
     changes.extend(credential_change_labels("main", &old.main, &new.main));
@@ -279,14 +218,6 @@ fn provider_credential_changes(old: &Config, new: &Config) -> Vec<String> {
     changes
 }
 
-/// Provider names whose credential (only) differs between two same-length,
-/// same-order provider chains for one role.
-///
-/// Skips chains that differ in length or provider identity at a position —
-/// that's a structural change the per-role equality check already folds
-/// into the generic summary label, and pairing by position across a
-/// resized or reordered chain would misattribute the change to the wrong
-/// provider.
 fn credential_change_labels(role: &str, old: &[ProviderSpec], new: &[ProviderSpec]) -> Vec<String> {
     if old.len() != new.len() {
         return Vec::new();
@@ -298,19 +229,9 @@ fn credential_change_labels(role: &str, old: &[ProviderSpec], new: &[ProviderSpe
         .collect()
 }
 
-/// Handle an in-place root config reload.
-///
-/// Loads the new config, diffs old vs new, and applies only the changed
-/// subsystems. On failure the running config stays in effect, the files on
-/// disk are left as the user wrote them, and clients are notified.
 pub(super) async fn handle_root_reload(rt: &mut AgentRuntime) -> IdleAction {
     tracing::info!("handling root config reload in-place");
 
-    // Consumed once, up front: whether this specific reload is the one the
-    // agent's own `write_file`/`edit_file` call to config.toml/providers.toml
-    // caused — see `ConfigWriteWatch`. Every exit path below delivers the
-    // same text it already publishes as a user notice into the agent's own
-    // transcript too, when this is `true`.
     let deliver_to_agent = rt
         .config_reload_tracker
         .take_if_matches(residuum_tools::config_reload_tracker::ConfigReloadKind::Agent);
@@ -333,9 +254,6 @@ pub(super) async fn handle_root_reload(rt: &mut AgentRuntime) -> IdleAction {
             return IdleAction::None;
         }
     };
-    // Each is already a complete, standalone sentence describing one
-    // config.toml/providers.toml entry the new load skipped or degraded
-    // (see `config::resolve` and `config::tolerant`).
     for notice in &new_cfg.load_notices {
         publish_notice(&rt.publisher, notice.clone()).await;
     }
@@ -343,9 +261,6 @@ pub(super) async fn handle_root_reload(rt: &mut AgentRuntime) -> IdleAction {
     let diff = diff_config(&rt.cfg, &new_cfg);
 
     if !diff.changed {
-        // The live files still load and resolve fine even though nothing
-        // changed — worth saving as last-known-good too, in case the
-        // previous save predates a since-reverted edit.
         last_known_good::save(&rt.config_dir);
         let message = "configuration reloaded: no changes detected".to_string();
         publish_reload_notice(
@@ -364,10 +279,6 @@ pub(super) async fn handle_root_reload(rt: &mut AgentRuntime) -> IdleAction {
 
     let summary = diff.summary().to_string();
 
-    // Cheap, stateless subsystems are rebuilt unconditionally, in one fixed
-    // order, regardless of which of them actually changed — see
-    // `rebuild_cheap_components`. Only the genuinely disruptive operations
-    // below stay flag-gated so they don't fire spuriously.
     rebuild_cheap_components(rt, &new_cfg).await;
 
     if diff.discord_changed {
@@ -383,12 +294,8 @@ pub(super) async fn handle_root_reload(rt: &mut AgentRuntime) -> IdleAction {
         reload_a2a(rt, &new_cfg).await;
     }
 
-    // ── Store new config ────────────────────────────────────────────────
     rt.cfg = new_cfg;
 
-    // Every subsystem above degrades independently and never fails this
-    // function outright, so reaching here means the reload fully applied —
-    // exactly what "last-known-good" means.
     last_known_good::save(&rt.config_dir);
 
     let message = format!("configuration reloaded: {summary}");
@@ -417,26 +324,9 @@ pub(super) async fn handle_root_reload(rt: &mut AgentRuntime) -> IdleAction {
     }
 }
 
-/// Handle an in-place hub config reload (`hub/config.toml` changed) for this
-/// agent.
-///
-/// The hub applies what it owns itself: the HTTP listener's address, the
-/// relay tunnel, tracing, the A2A listener, and the shared session budget.
-/// What reaches an agent is the hub-owned values its own subsystems read: the
-/// `timezone`, the A2A settings its card advertises, and the hop limits.
-/// They are copied into a clone of the currently running agent `Config` so
-/// the existing diff/rebuild machinery in [`handle_root_reload`] above —
-/// built to compare two `Config` snapshots — can be reused unchanged: since
-/// every other field is identical to `rt.cfg`, [`diff_config`] only ever
-/// reports a change here for a hub-owned field. On failure the running hub
-/// config stays in effect, `hub/config.toml` is left as the user wrote it,
-/// and clients are notified — the same contract as [`handle_root_reload`].
 pub(super) async fn handle_hub_reload(rt: &mut AgentRuntime) {
     tracing::info!("handling hub config reload in-place");
 
-    // Consumed once, up front, like `handle_root_reload`: whether the agent's
-    // own write to `hub/config.toml` caused this reload. Its outcome is
-    // delivered into the agent's transcript too when so.
     let deliver_to_agent = rt
         .config_reload_tracker
         .take_if_matches(residuum_tools::config_reload_tracker::ConfigReloadKind::Hub);
@@ -492,8 +382,6 @@ pub(super) async fn handle_hub_reload(rt: &mut AgentRuntime) {
 
     let summary = diff.summary().to_string();
 
-    // Set before the rebuild so every component built from `rt.tz`
-    // (providers, observers, the spawn context) picks up the new value.
     if diff.timezone_changed {
         rt.tz = new_cfg.timezone;
     }
@@ -524,17 +412,6 @@ pub(super) async fn handle_hub_reload(rt: &mut AgentRuntime) {
     tracing::info!(changes = %summary, "hub configuration reloaded successfully");
 }
 
-/// Push a changed hub timezone into every holder that can take it live, and
-/// publish a notice for the ones that only pick it up on restart.
-///
-/// Live: `rt.tz` (read at call time by turns, pulse, idle, commands and the
-/// subconscious hook), the agent's turn timestamps and its timezone-aware
-/// tools (`schedule_action`, `list_actions`, `user_inbox_add`), the observer
-/// and reflector, the provider components, the spawn context that seeds new
-/// background sessions, and the chat adapters (restarted so their message
-/// timestamps use it). Restart-only: the HTTP/webhook state, the inbox
-/// notification channel and the session runtime, which are shared handles
-/// built once at startup.
 async fn apply_timezone(rt: &mut AgentRuntime, new_cfg: &Config) {
     rt.agent.set_timezone(new_cfg.timezone);
     residuum_tools::registration::reload_timezone_tools(
@@ -567,27 +444,11 @@ async fn apply_timezone(rt: &mut AgentRuntime, new_cfg: &Config) {
     .await;
 }
 
-/// Build a fresh HTTP client for the given request timeout.
-///
-/// Pure aside from the `reqwest::Client` construction: no `AgentRuntime`
-/// access, so it can be tested directly and so its only output — the new
-/// client — is what callers thread into everything downstream.
 fn rebuild_http_client(timeout_secs: u64) -> Result<SharedHttpClient, InferenceError> {
     let client_config = residuum_inference::HttpClientConfig::with_timeout(timeout_secs);
     SharedHttpClient::new(&client_config)
 }
 
-/// Rebuild every cheap, stateless subsystem from `new_cfg`, in the one fixed
-/// order that keeps dependencies correct.
-///
-/// The HTTP client is rebuilt first and threaded explicitly into everything
-/// that needs it (providers, the subconscious classifier, the spawn
-/// context) as a function parameter rather than read back off `rt` —
-/// `SharedHttpClient::clone` shares the underlying `Arc<reqwest::Client>`,
-/// so anything built from a stale client would keep the old `timeout_secs`
-/// forever. Passing the freshly built client by value makes that ordering
-/// structural: there is no `rt.http_client` to accidentally read from until
-/// this function assigns it.
 async fn rebuild_cheap_components(rt: &mut AgentRuntime, new_cfg: &Config) {
     let http_client = match rebuild_http_client(new_cfg.timeout_secs) {
         Ok(client) => {
@@ -609,16 +470,8 @@ async fn rebuild_cheap_components(rt: &mut AgentRuntime, new_cfg: &Config) {
     reload_providers(rt, new_cfg, http_client.clone()).await;
     reload_model_catalog(rt, new_cfg).await;
     rt.spawn_context = build_spawn_context(rt, new_cfg, http_client.clone());
-    // Push the rebuilt `SpawnContext` to the background spawn listener so
-    // sessions forked after this reload (`subagent_spawn`, pulses, scheduled
-    // actions, A2A turns, resumed conversations) use the reloaded provider
-    // chains, credentials, and session tools instead of the startup snapshot.
     rt.spawn_context_tx
         .send_replace(Arc::clone(&rt.spawn_context));
-    // Pushes to the model-call HTTP endpoint's watch receiver, so `POST
-    // /api/agents/{name}/model/complete` resolves providers from this reload without the
-    // HTTP router being rebuilt. `.ok()`: the only way this fails is no
-    // receiver remaining, which can't happen while the server is running.
     rt.model_call_resources_tx
         .send(Arc::new(
             crate::web::model::ModelCallResources::from_spawn_context(&rt.spawn_context),
@@ -641,24 +494,14 @@ async fn rebuild_cheap_components(rt: &mut AgentRuntime, new_cfg: &Config) {
     reload_tools_path(rt, new_cfg).await;
     reload_agent_abilities(rt, new_cfg).await;
     rt.webhooks.replace_from_config(&new_cfg.webhooks);
-    // Adapters added or removed by this reload must show up in list_endpoints,
-    // send_message, and idle switching without a restart.
     rt.endpoint_registry.refresh(new_cfg, &rt.channel_configs);
 }
 
-/// Build a new `SpawnContext`, with a new session tool factory, from the
-/// current runtime and new config. A session already running keeps the
-/// registry it was built with.
 fn build_spawn_context(
     rt: &AgentRuntime,
     new_cfg: &Config,
     http_client: SharedHttpClient,
 ) -> Arc<SpawnContext> {
-    // Updated in place on the shared `Arc<Observer>` so both sessions forked
-    // after this reload and any session already holding a clone pick up the
-    // new `[observer]` config and cleared backoff wait while preserving their
-    // failure-streak recovery tracking. A failed rebuild keeps the previous
-    // instance (stale config) rather than losing session extraction entirely.
     let observer = match startup::init_session_observer(new_cfg, rt.tz, http_client.clone()) {
         Ok(observer) => {
             rt.spawn_context.observer.replace_from(observer);
@@ -681,20 +524,12 @@ fn build_spawn_context(
         action_store: Arc::clone(&rt.action_store),
         action_notify: Arc::clone(&rt.action_notify),
         hybrid_searcher: Arc::clone(&rt.hybrid_searcher),
-        // Shared `Arc`, same instance `reload_tracing` updates in place —
-        // sessions forked after this reload see the same config, no rebuild
-        // needed here.
         tracing_service: Arc::clone(&rt.tracing_service),
-        // Rebuilt fresh from `new_cfg`, mirroring the snapshot `reload_gateway`
-        // builds for the HTTP tracing API, so a session forked after this
-        // reload reports the currently active model/provider.
         tracing_client_context: Arc::new(
             residuum_tracing_service::client_context::gather_for_bug_report(rt.build, new_cfg),
         ),
         build: rt.build,
         web_search_backend: new_cfg.web_search.standalone_backend.clone(),
-        // The same live catalog as before the reload, which main's tools hold
-        // too; `reload_model_catalog` has already replaced its contents.
         model_catalog: Arc::clone(&rt.spawn_context.model_catalog),
         a2a_hub: Arc::clone(&rt.a2a_hub),
         a2a_tracker: Arc::clone(&rt.a2a_tracker),
@@ -706,15 +541,12 @@ fn build_spawn_context(
         tz: rt.tz,
         depth_cap: new_cfg.background.subagent_depth_cap,
         auto_mode: Some(Arc::clone(&rt.auto_mode)),
-        // The same mailboxes main's tools were given at startup.
         mailboxes: rt.tool_injections.mailboxes.clone(),
     });
 
     Arc::new(SpawnContext {
         background_config: new_cfg.background.clone(),
         main_provider_specs: new_cfg.main.clone(),
-        // The same live catalog as before the reload, which the tools hold
-        // too; `reload_model_catalog` has already replaced its contents.
         model_catalog: Arc::clone(&rt.spawn_context.model_catalog),
         http_client,
         max_tokens: new_cfg.max_tokens,
@@ -744,11 +576,6 @@ fn build_spawn_context(
     })
 }
 
-/// Rebuild providers and swap them into the runtime.
-///
-/// `http_client` must be the already-rebuilt client (see
-/// `rebuild_cheap_components`), not `rt.http_client` read fresh here, so a
-/// timeout change can't be silently dropped by construction order.
 async fn reload_providers(rt: &mut AgentRuntime, new_cfg: &Config, http_client: SharedHttpClient) {
     let mut degradations: Vec<String> = Vec::new();
     match startup::init_providers(
@@ -761,9 +588,6 @@ async fn reload_providers(rt: &mut AgentRuntime, new_cfg: &Config, http_client: 
         Ok(components) => {
             rt.agent
                 .swap_provider(components.provider, components.options);
-            // Mutate the shared `Arc<Observer>` in place so any already-queued
-            // `MemoryWorker` task sees the new provider and cleared backoff
-            // wait without losing its failure-streak recovery state.
             rt.observer.replace_from(components.observer);
             rt.merge_writer.swap_reflector(components.reflector).await;
             rt.merge_writer
@@ -795,25 +619,6 @@ async fn reload_providers(rt: &mut AgentRuntime, new_cfg: &Config, http_client: 
     }
 }
 
-/// Reload main's standalone web search setup from the new config.
-///
-/// `ollama_web_search` is a native tool, so it reloads in place via
-/// `tools::registration::reload_ollama_web_search_tool` — called unconditionally, like
-/// every other cheap component, since removing and re-adding a
-/// not-actually-changed tool is harmless.
-///
-/// A `"brave"`/`"tavily"` backend is an MCP server instead: when the
-/// standalone backend actually changed, this disconnects whichever brave/
-/// tavily server was previously running (by name — `connect_servers` skips
-/// a name it already tracks, even if the entry behind it, e.g. the API key,
-/// changed, so a stale connection would otherwise survive silently) and
-/// reconnects via `connect_web_search_mcp`, the same helper startup uses.
-/// The MCP registry is shared with every session (see
-/// `docs/systems-usage/background-tasks.md`), so this one reconnect updates
-/// the tools available to main and every live or future session — no
-/// separate per-session step needed. A connect failure surfaces the same
-/// way `reload_providers`'s does: a `warn` log plus an operator-facing
-/// notice, rather than silently leaving the old (or no) server running.
 async fn reload_web_search(rt: &mut AgentRuntime, new_cfg: &Config) {
     residuum_tools::registration::reload_ollama_web_search_tool(
         rt.agent.tools_mut(),
@@ -850,9 +655,6 @@ async fn reload_web_search(rt: &mut AgentRuntime, new_cfg: &Config) {
     }
 }
 
-/// The MCP server name `connect_web_search_mcp` uses for a given standalone
-/// backend, or `None` when there's no backend or it names `"ollama"` (a
-/// native tool, not an MCP server).
 fn web_search_mcp_server_name(
     backend: Option<&residuum_config::StandaloneBackendConfig>,
 ) -> Option<&'static str> {
@@ -863,7 +665,6 @@ fn web_search_mcp_server_name(
     }
 }
 
-/// Update observer and reflector thresholds from the new config.
 async fn reload_memory_thresholds(rt: &mut AgentRuntime, new_cfg: &Config) {
     use residuum_memory::observer::ObserverConfig;
     use residuum_memory::reflector::ReflectorConfig;
@@ -890,9 +691,6 @@ async fn reload_memory_thresholds(rt: &mut AgentRuntime, new_cfg: &Config) {
     tracing::debug!("memory thresholds updated");
 }
 
-/// Rescan skill directories and publish what the rescan reports (active
-/// skills it dropped, an unreadable directory, a skill skipped for invalid
-/// frontmatter) so they reach the user, not just the logs.
 async fn reload_skills(rt: &mut AgentRuntime) {
     let report = {
         let mut skill_guard = rt.skill_state.lock().await;
@@ -910,27 +708,16 @@ async fn reload_skills(rt: &mut AgentRuntime) {
     }
 }
 
-/// Replace the live model catalog's contents from the new config, so
-/// sessions, `subagent_spawn`, `schedule_action`, and the pulse and action
-/// checks resolve explicit models against the reloaded `providers.toml`.
 async fn reload_model_catalog(rt: &AgentRuntime, new_cfg: &Config) {
     *rt.spawn_context.model_catalog.write().await = new_cfg.model_catalog.clone();
     tracing::debug!("model catalog updated from new config");
 }
 
-/// Update the shared tools-`PATH` handle from the new config.
-///
-/// The `exec` tool and the MCP stdio spawner read this handle at spawn time, so
-/// the `exec` tool picks up the change on its next call. Already-running stdio
-/// MCP servers keep the `PATH` they were launched with until they next
-/// (re)connect — their environment is fixed at spawn.
 async fn reload_tools_path(rt: &AgentRuntime, new_cfg: &Config) {
     *rt.tools_path.write().await = new_cfg.tools.effective_path();
     tracing::debug!("tool PATH updated from new config");
 }
 
-/// Update path policy and the main agent's tool-iteration limit from new
-/// agent ability gates.
 async fn reload_agent_abilities(rt: &mut AgentRuntime, new_cfg: &Config) {
     rt.path_policy.write().await.set_blocked_paths(
         residuum_tools::path_policy::blocked_write_paths(new_cfg, &rt.layout, &rt.hub_dir),
@@ -949,8 +736,6 @@ async fn reload_agent_abilities(rt: &mut AgentRuntime, new_cfg: &Config) {
     );
 }
 
-/// Senders a reloaded chat adapter needs. Built once per adapter because the
-/// closure that starts it has to own them.
 fn chat_adapter_senders(rt: &AgentRuntime) -> residuum_interfaces::AdapterSenders {
     residuum_interfaces::AdapterSenders {
         publisher: rt.publisher.clone(),
@@ -963,7 +748,6 @@ fn chat_adapter_senders(rt: &AgentRuntime) -> residuum_interfaces::AdapterSender
     }
 }
 
-/// Stop the existing Discord adapter (if running) and start a new one if configured.
 async fn reload_discord_adapter(rt: &mut AgentRuntime, new_cfg: &Config) {
     let senders = chat_adapter_senders(rt);
     rt.chat_adapters
@@ -990,7 +774,6 @@ async fn reload_discord_adapter(rt: &mut AgentRuntime, new_cfg: &Config) {
         .await;
 }
 
-/// Stop the existing Telegram adapter (if running) and start a new one if configured.
 async fn reload_telegram_adapter(rt: &mut AgentRuntime, new_cfg: &Config) {
     let senders = chat_adapter_senders(rt);
     rt.chat_adapters
@@ -1017,7 +800,6 @@ async fn reload_telegram_adapter(rt: &mut AgentRuntime, new_cfg: &Config) {
         .await;
 }
 
-/// Stop the existing Teams adapter (if running) and start a new one if configured.
 async fn reload_teams_adapter(rt: &mut AgentRuntime, new_cfg: &Config) {
     let senders = chat_adapter_senders(rt);
     rt.chat_adapters
@@ -1046,13 +828,6 @@ async fn reload_teams_adapter(rt: &mut AgentRuntime, new_cfg: &Config) {
         .await;
 }
 
-/// Rebuild the agent's A2A state after an `[a2a]` change, or drop it when A2A
-/// is disabled.
-///
-/// The card, its public URL, and the router are built from the new settings,
-/// so a base-URL change reaches the card. The hub's A2A listener reads the
-/// agent's router and visibility per request, so it needs no restart for
-/// this agent.
 async fn reload_a2a(rt: &mut AgentRuntime, new_cfg: &Config) {
     rt.a2a = None;
     if new_cfg.a2a.enabled {
@@ -1061,7 +836,6 @@ async fn reload_a2a(rt: &mut AgentRuntime, new_cfg: &Config) {
             agent_messenger: Arc::clone(&rt.agent_messenger),
             skill_state: Arc::clone(&rt.skill_state),
             bus_handle: rt.bus_handle.clone(),
-            // The session spawner has been running since startup.
             sessions_ready: tokio::sync::watch::channel(true).1,
             tunnel_status_rx: rt.services.tunnel_status_rx.clone(),
         };
@@ -1087,8 +861,6 @@ mod tests {
 
     use crate::testing::test_config;
 
-    /// A disruptive-flags-all-false assertion helper: confirms a change didn't
-    /// spuriously trip an adapter restart.
     fn assert_no_disruptive_flags(diff: &ConfigDiff) {
         assert!(!diff.discord_changed, "should not flag discord restart");
         assert!(!diff.telegram_changed, "should not flag telegram restart");
@@ -1268,7 +1040,6 @@ mod tests {
         new.gateway.bind = "0.0.0.0".to_string();
         assert!(diff_config(&old, &new).teams_changed);
 
-        // Without Teams configured, a bind change is only a gateway change.
         old.teams = None;
         new.teams = None;
         assert!(!diff_config(&old, &new).teams_changed);
@@ -1294,7 +1065,6 @@ mod tests {
         new.gateway.bind = "0.0.0.0".to_string();
         assert!(diff_config(&old, &new).a2a_changed);
 
-        // Disabled, a bind change is only a gateway change.
         old.a2a.enabled = false;
         new.a2a.enabled = false;
         assert!(!diff_config(&old, &new).a2a_changed);
@@ -1501,8 +1271,6 @@ mod tests {
         let mut old = test_config();
         old.main = vec![fireworks_spec("real-key")];
         let mut new = old.clone();
-        // Simulates a settings save corrupting the credential into an
-        // unexpanded env reference: same provider/model/url, different key.
         new.main = vec![fireworks_spec("${FIREWORKS_API_KEY}")];
 
         let diff = diff_config(&old, &new);

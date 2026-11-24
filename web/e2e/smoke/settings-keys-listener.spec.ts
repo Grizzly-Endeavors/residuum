@@ -4,12 +4,6 @@ import { expectNoAxeViolations } from "../support/axe";
 import { expect, test } from "../support/fixtures";
 import { expectSettingsOpen } from "../support/lazy";
 
-/**
- * The All agents scope's Saved keys, Agent-to-agent listener (with its caller
- * keys), Notifications, Raw config and History sections. The keys act at once
- * through their own endpoints; the listener's switch and port are staged.
- */
-
 const HUB_CONFIG = "/api/hub/config/raw";
 const OVERLAY = "[data-overlay-host]";
 
@@ -224,8 +218,6 @@ test.describe("Agent-to-agent listener", () => {
 });
 
 test.describe("Notifications", () => {
-  // Turning push on needs the service worker, which the dev server doesn't run:
-  // `push.spec.ts` covers it on the production build.
   const thisDevice = (page: Page): Locator => page.getByRole("region", { name: "This device" });
 
   test(
@@ -322,8 +314,6 @@ test.describe("Raw config and History", () => {
   test("History shows the shared files and the install's config, and restores a key store through its checkpoint", async ({
     page,
   }) => {
-    // A checkpoint holds the key store as it was before the action, so the one before the removal
-    // shows the store changed by the key added just ahead of it.
     await page.request.post("/api/hub/agent-keys", {
       data: { name: "tmp_key", value: "abcdefghij", description: "" },
     });

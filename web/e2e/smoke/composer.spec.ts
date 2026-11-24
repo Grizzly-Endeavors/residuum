@@ -3,24 +3,12 @@ import { expectNoAxeViolations } from "../support/axe";
 import { FIRST_RECONNECT_MS, reconnectingLine, sendFromComposer } from "../support/composer";
 import { expect, test } from "../support/fixtures";
 
-/**
- * The composer: the chat actions under `/`, files attached by button and by
- * drop (uploads, chips, removal, the 50 MB limit, chips kept on the sent
- * bubble through a reload, a Markdown chip opening the Files panel), a draft
- * kept per agent across navigation and reload,
- * the model and thinking control (a popover, a sheet on phones), messages
- * waiting while the connection is down, and the conversation size in the
- * context panel for a running agent and a stopped one.
- */
-
 const GREETING = "Hi, this is atlas. You are in my conversation, not scout's.";
 const OVERLAYS = "[data-overlay-host]";
-/** A 1×1 PNG. */
 const PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
   "base64",
 );
-/** The start of a PDF; the mock keeps it as a stand-in, so it needn't be a whole one. */
 const PDF = Buffer.from("%PDF-1.4\n%mock\n");
 
 function box(page: Page, agent = "atlas"): Locator {
@@ -52,7 +40,6 @@ test.describe("the / menu", () => {
     await expect(menu.getByRole("option")).toHaveCount(1);
     await page.keyboard.press("Enter");
     await expect(menu).toBeHidden();
-    // That it started, then the agent's own word that it's done.
     await expect(page.getByText("atlas is condensing its memories…")).toBeVisible();
     await expect(page.getByText("Command 'reflect' executed. (mock)")).toBeVisible();
     await expect(box(page)).toHaveValue("");
@@ -66,7 +53,6 @@ test.describe("the / menu", () => {
     await expect(box(page)).toHaveValue("/inbox ");
     await page.keyboard.type("water the plants");
     await sendFromComposer(box(page));
-    // One message: the agent's own, once the note is in its inbox.
     await expect(page.getByText("Added a note to the inbox.")).toBeVisible();
   });
 
@@ -83,7 +69,6 @@ test.describe("the / menu", () => {
     ).toBeVisible();
     await expect(box(page)).toHaveValue("");
 
-    // Stop reply names an action, which can't run while atlas isn't replying.
     await page.keyboard.type("/stop now");
     await sendFromComposer(box(page));
     await expect(
@@ -107,7 +92,6 @@ test.describe("the / menu", () => {
   });
 });
 
-/** The user's message whose text holds `text`, so a picture in another message doesn't match. */
 function sent(conversation: Locator, text: string): Locator {
   return conversation.locator(".user-message").filter({ hasText: text });
 }
@@ -173,7 +157,6 @@ test.describe("files", () => {
 
   test("a file over 50 MB is refused in plain words, and nothing uploads", async ({ page }) => {
     await openChat(page);
-    // A File that claims 51 MB without holding the bytes: the composer reads only its size before refusing it.
     const files = await page.evaluateHandle(() => {
       const huge = new File(["x"], "archive.zip", { type: "application/zip" });
       Object.defineProperty(huge, "size", { value: 51 * 1024 * 1024 });
@@ -209,11 +192,9 @@ test.describe("files", () => {
     const overlay = page.getByText("Drop files to attach");
     await expect(overlay).toHaveCount(0);
 
-    // Over the conversation, nowhere near the composer.
     const feed = page.getByRole("region", { name: "Conversation with atlas" });
     await feed.dispatchEvent("dragover", { dataTransfer: files });
     await expect(overlay).toBeVisible();
-    // The overlay covers the whole place, the header too.
     const place = await page.locator(".chat-place").boundingBox();
     const covering = await overlay.locator("xpath=..").boundingBox();
     if (!place || !covering) throw new Error("the chat place or its overlay isn't laid out");
@@ -225,7 +206,6 @@ test.describe("files", () => {
     await expect(attached.getByRole("listitem")).toHaveCount(2);
     await expect(attached.locator('[data-state="ready"]')).toHaveCount(2);
 
-    // Over the header, where nothing used to take files.
     await page.getByRole("heading", { level: 1, name: "atlas" }).dispatchEvent("dragover", {
       dataTransfer: files,
     });
@@ -240,7 +220,6 @@ test.describe("files", () => {
     page,
   }) => {
     await openChat(page);
-    // The shell around the chat takes no files: its drop must be cancelled, or the browser opens the file.
     const refused = await page.evaluate(() => {
       const transfer = new DataTransfer();
       transfer.items.add(new File(["x"], "stray.png", { type: "image/png" }));
@@ -303,7 +282,6 @@ test("the model control switches the model and keeps its failover list", async (
 
   const trigger = page.getByRole("button", { name: "Model: Claude Sonnet 4.6, low thinking" });
   if (isMobile) {
-    // The model name may truncate on a phone; the thinking level keeps its badge.
     await expect(trigger.getByText("Low", { exact: true })).toBeVisible();
   }
   await trigger.click();
@@ -315,7 +293,6 @@ test("the model control switches the model and keeps its failover list", async (
   );
   await expectNoAxeViolations(page, { within: OVERLAYS });
   if (isMobile) {
-    // A sheet over the bottom bar, not a popover beside the button.
     const card = await chooser.boundingBox();
     expect(card?.width).toBeCloseTo(390, 0);
   }
@@ -359,11 +336,9 @@ test("messages wait while the connection is down, and say so", async ({ page, mo
     page.getByText("Reconnecting — 1 message will send once back online."),
   ).toBeVisible();
 
-  // The page tries again once its backoff has run out on the mock's time, and connects.
   online = true;
   await mock.advance(FIRST_RECONNECT_MS);
   await expect(reconnectingLine(page)).toHaveCount(0);
-  // The queued message reaches the mock on reconnect, and its turn's start shows; then time runs on.
   const feed = page.getByRole("region", { name: "Conversation with atlas" });
   await expect(feed.getByText("Working")).toBeVisible();
   await mock.advance(60_000);
@@ -432,7 +407,6 @@ test.describe("the conversation size", () => {
 test("the memory work after a reply shows under it until it's done", async ({ page, mock }) => {
   await openChat(page);
   await mock.manualTime();
-  // The reply waits before its end, so the memory work starts when the spec lets the turn finish.
   await mock.post("/api/mock/turn-hold", { data: { held: "reply" } });
   await box(page).fill("remember that the plants need water");
   await sendFromComposer(box(page));
@@ -443,7 +417,6 @@ test("the memory work after a reply shows under it until it's done", async ({ pa
   await mock.post("/api/mock/turn-hold", { data: { held: false } });
   const status = page.getByRole("status").filter({ hasText: "Noting what matters" });
   await expect(status).toHaveText("Noting what matters from this conversation");
-  // The memory work is done two seconds of simulated time after the reply ends.
   await mock.advance(2_000);
   await expect(status).toHaveCount(0);
 });

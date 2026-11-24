@@ -1,6 +1,3 @@
-//! [`RelayLink`]: the handler's request channel to the relay over the live
-//! tunnel (pin grants and challenge claims).
-
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -12,20 +9,14 @@ use super::frames::V2Frame;
 use super::stream::Outbox;
 use crate::remote_access::types::normalize_host;
 
-/// How long a pin grant request waits for the relay's answer.
 const GRANT_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// How long a challenge claim waits for the relay's answer.
 const CLAIM_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// Why a challenge claim did not succeed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ClaimError {
-    /// Another instance of the user holds the claim.
     Busy,
-    /// The relay did not answer in time.
     Timeout,
-    /// The tunnel ended.
     Closed,
 }
 
@@ -68,7 +59,6 @@ impl LinkShared {
         self.pending.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// The relay answered a grant request.
     pub(super) fn resolve_grant(&self, purpose: &str, result: Result<String, String>) {
         let waiter = self.pending().grants.remove(purpose);
         let Some(tx) = waiter else {
@@ -80,7 +70,6 @@ impl LinkShared {
         }
     }
 
-    /// The relay answered a challenge claim.
     pub(super) fn resolve_claim(&self, names: &[String], granted: bool) {
         let wanted: HashSet<String> = names.iter().map(|n| normalize_host(n)).collect();
         let waiter = {
@@ -102,7 +91,6 @@ impl LinkShared {
         }
     }
 
-    /// The tunnel ended: every waiter fails now and later requests fail fast.
     pub(super) fn close(&self) {
         let mut pending = self.pending();
         pending.closed = true;
@@ -111,7 +99,6 @@ impl LinkShared {
     }
 }
 
-/// The handler's way to ask the relay for things over the live tunnel.
 #[derive(Clone)]
 pub(crate) struct RelayLink {
     shared: Arc<LinkShared>,
@@ -122,13 +109,6 @@ impl RelayLink {
         Self { shared }
     }
 
-    /// Ask the relay for a pin-service grant for `purpose` (`enroll` or
-    /// `reset`).
-    ///
-    /// # Errors
-    ///
-    /// The relay's reason when it refuses, or why no answer came (timeout,
-    /// tunnel lost, a request for this purpose already in flight).
     pub(crate) async fn request_grant(&self, purpose: &str) -> Result<String, String> {
         let (tx, rx) = oneshot::channel();
         {
@@ -156,12 +136,6 @@ impl RelayLink {
         }
     }
 
-    /// Ask the relay to route TLS-ALPN-01 validation for `names` here.
-    ///
-    /// # Errors
-    ///
-    /// [`ClaimError`] when another instance holds the claim, the relay is
-    /// silent, or the tunnel is gone.
     pub(crate) async fn claim_challenge(&self, names: &[String]) -> Result<(), ClaimError> {
         let (tx, rx) = oneshot::channel();
         let id = {
@@ -192,7 +166,6 @@ impl RelayLink {
         }
     }
 
-    /// Tell the relay validation for `names` no longer comes here.
     pub(crate) fn release_challenge(&self, names: &[String]) {
         if self.shared.pending().closed {
             tracing::debug!("challenge release skipped: the tunnel is gone");
@@ -203,8 +176,6 @@ impl RelayLink {
         });
     }
 
-    /// Ask the relay to make `slug` the user's active instance. The relay
-    /// answers with a new instance list, not with a reply to this.
     pub(crate) fn activate_instance(&self, slug: &str) {
         if self.shared.pending().closed {
             tracing::debug!("instance switch skipped: the tunnel is gone");
@@ -215,7 +186,6 @@ impl RelayLink {
         });
     }
 
-    /// Whether the tunnel this link belongs to has ended.
     #[cfg(test)]
     pub(crate) fn is_closed(&self) -> bool {
         self.shared.pending().closed

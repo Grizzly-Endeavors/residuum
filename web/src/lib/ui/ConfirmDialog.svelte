@@ -3,16 +3,11 @@
   import Dialog from "./Dialog.svelte";
   import type { ConfirmTone } from "./types";
 
-  // A question before an action: go ahead, or don't. Esc, the scrim and Back
-  // count as don't. Focus starts on the safer choice.
-
   interface Props {
     open: boolean;
     title: string;
     message?: string;
-    /** What going ahead affects, one line each. */
     items?: readonly string[];
-    /** Names the action, such as "Delete atlas". */
     confirmLabel: string;
     cancelLabel?: string;
     tone?: ConfirmTone;

@@ -7,27 +7,14 @@
   import { stack } from "./overlay/stack";
   import type { FloatAlign, FloatShape, FloatSide } from "./types";
 
-  // The base menus, popovers and tooltips are drawn on: a card in the overlay
-  // host, beside its anchor and inside the viewport, that joins the overlay
-  // stack as a float. It is controlled: it asks to close through `onclose`,
-  // and closes when the owner sets `open` false.
-
   interface Props extends Omit<HTMLAttributes<HTMLDivElement>, "children" | "style"> {
     open: boolean;
-    /** What the layer sits beside. A pointer on it doesn't count as outside, and focus returns to it. */
     anchor: HTMLElement | null | undefined;
     shape: FloatShape;
     side?: FloatSide;
     align?: FloatAlign;
-    /** The card's width, for a popover. */
     width?: string;
-    /**
-     * What takes focus on open: a selector's match (`[data-autofocus]` by
-     * default, else the first control, else the card), a function that moves
-     * focus itself, or false to leave focus where it is, as a tooltip does.
-     */
     initialFocus?: string | false | ((layer: HTMLElement) => void);
-    /** The user asked to close it: Esc, a pointer outside, or Tab out of it. */
     onclose: () => void;
     children: Snippet;
   }
@@ -46,7 +33,6 @@
     ...rest
   }: Props = $props();
 
-  /** Space between the anchor and the card, and the closest the card comes to the viewport's edge. */
   const GAP = 6;
   const MARGIN = 8;
 
@@ -68,7 +54,6 @@
       // scrolling Home a pixel back and forth while a menu was open.
       let room = "";
       const place = (): void => {
-        // A trigger that went away (its row re-rendered) leaves nothing to sit beside.
         if (!from?.isConnected) {
           onclose();
           return;
@@ -89,8 +74,6 @@
         if (element.dataset.side !== placed.side) element.dataset.side = placed.side;
       };
 
-      // Tab past either end leaves the layer for its trigger; Tab in a menu,
-      // whose items take focus by arrow keys, always does.
       const tabOut = (event: KeyboardEvent): void => {
         if (event.key !== "Tab" || event.defaultPrevented || event.isComposing) return;
         const items = focusables(element);
@@ -143,7 +126,6 @@
 
 <style>
   .ui-float {
-    /* Quiet buttons hover to stone-4 on the stone-3 card. */
     --ui-quiet-hover: var(--color-stone-4);
     --float-from: translateY(-4px);
 
@@ -164,7 +146,6 @@
     }
   }
 
-  /* It leans in from the side it opens toward. */
   .ui-float[data-side="top"] {
     --float-from: translateY(4px);
   }

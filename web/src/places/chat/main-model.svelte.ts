@@ -1,8 +1,3 @@
-// The composer's model and thinking control: what an agent's main model and
-// its thinking level are, the models its provider offers, and changing either
-// through the config write coordinator. The value follows `providers.toml`, so
-// a change made in Settings, by a restore, or outside the page shows here.
-
 import { agentConfigFile, configCoordinator, type ConfigFile } from "../../lib/config-coordinator";
 import { userErrorMessage } from "../../lib/errors";
 import { providerOptions, providerTypeLabel, splitModel } from "../../lib/model-roles";
@@ -11,15 +6,10 @@ import { notifications } from "../../lib/notifications.svelte";
 import type * as SettingsToml from "../../lib/settings-toml";
 import type { SettingsModelAssignments } from "../../lib/types";
 
-/**
- * Reading and writing the file's TOML. It loads when the control first reads
- * its file, not with the page: the parser is most of Settings' weight.
- */
 function loadSettingsToml(): Promise<typeof SettingsToml> {
   return import("../../lib/settings-toml");
 }
 
-/** The levels the composer offers. None chosen leaves thinking to the agent's default. */
 export const COMPOSER_THINKING: readonly { value: string; label: string }[] = [
   { value: "off", label: "Off" },
   { value: "low", label: "Low" },
@@ -27,38 +17,28 @@ export const COMPOSER_THINKING: readonly { value: string; label: string }[] = [
   { value: "high", label: "High" },
 ];
 
-/** The trigger's words: the model, and the thinking level when one is set. */
 export function modelControlLabel(model: string, thinking: string): string {
   if (thinking === "") return model;
   return thinking === "off" ? `${model}, no extra thinking` : `${model}, ${thinking} thinking`;
 }
 
-/** The thinking level's short word for the trigger on phones, or "" when none is set. */
 export function thinkingBadge(thinking: string): string {
   return COMPOSER_THINKING.find((level) => level.value === thinking)?.label ?? "";
 }
 
 export class MainModel {
-  /** The main role's `provider/model`, or "" while unread or unset. */
   value = $state("");
   thinking = $state("");
   loaded = $state(false);
   loadError = $state<string | null>(null);
-  /** The main provider's models, or common ones when its list can't be read. */
   models = $state<ModelEntry[]>([]);
   listError = $state<string | null>(null);
   providerLabel = $state("");
-  /** Writes under way. The coordinator runs them one at a time, each on the file as the last left it. */
   private writes = $state(0);
 
   private readonly source = Symbol("composer model control");
-  /** Sequences reads, so a slow one can't overwrite what a later one found. */
   private reads = 0;
 
-  /**
-   * @param onWritten Runs after a change is written, so the agent takes it up
-   *   from its next reply.
-   */
   constructor(
     readonly agent: string,
     private readonly onWritten: () => void,
@@ -72,7 +52,6 @@ export class MainModel {
     return this.writes > 0;
   }
 
-  /** The model's name as its provider lists it, or its id. */
   get modelName(): string {
     const model = this.model;
     return this.models.find((entry) => entry.id === model)?.name || model;
@@ -82,7 +61,6 @@ export class MainModel {
     return agentConfigFile(this.agent, "providers");
   }
 
-  /** Read the file now and after every change made elsewhere. Returns the function that stops following. */
   follow(): () => void {
     void this.load();
     return configCoordinator.subscribe(this.file, (change) => {
@@ -127,7 +105,6 @@ export class MainModel {
     this.listError = list.error;
   }
 
-  /** Make `modelId`, from the main provider, the main model. Its failover list and thinking stay. */
   choose(modelId: string): Promise<void> {
     if (modelId === this.model) return Promise.resolve();
     const { provider } = splitModel(this.value);
@@ -138,7 +115,6 @@ export class MainModel {
     );
   }
 
-  /** Set the thinking level; choosing the level already set clears it. */
   toggleThinking(level: string): Promise<void> {
     const next = level === this.thinking ? "" : level;
     return this.write((models, toml) => {
@@ -147,7 +123,6 @@ export class MainModel {
     }, "Couldn't change the thinking level.");
   }
 
-  /** Write the main role, built from the file as it is now so nothing else in it is lost. */
   private async write(
     buildMain: (models: SettingsModelAssignments, toml: typeof SettingsToml) => unknown,
     failure: string,
@@ -181,7 +156,6 @@ export class MainModel {
   }
 }
 
-/** The agent's main model, in the same words as the composer's control. */
 export async function readMainModelLabel(agent: string): Promise<string> {
   const raw = await configCoordinator.read(agentConfigFile(agent, "providers"));
   const toml = await loadSettingsToml();

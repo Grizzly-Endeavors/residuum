@@ -1,5 +1,3 @@
-//! System prompt content builders.
-
 use std::ops::Range;
 
 use residuum_inference::Message;
@@ -11,13 +9,6 @@ fn section(tag: &str, content: &str) -> String {
     format!("<{tag}>\n{content}\n</{tag}>")
 }
 
-/// Code-owned harness orientation, always present in the main prompt, up to
-/// the sentences [`harness`] renders from the agent's chat settings.
-///
-/// Unlike the other sections, this is not user-editable content from a
-/// workspace file — it describes what the harness provides, injected
-/// unconditionally so the agent always knows its own capabilities regardless
-/// of what the user has (or hasn't) written into AGENTS.md.
 const HARNESS_HEAD: &str = "You run on Residuum, a personal-agent harness. These systems are always available; use them without being asked:
 
 - **Memory**: memory_search finds past conversations, observations, and wiki pages, and memory_get retrieves an episode's transcript — search before saying you don't know or don't remember. Session runs (pulses, scheduled actions, sub-agents) merge their own findings into this same searchable memory once they complete. An automatic observer archives conversations into episodes.
@@ -33,28 +24,19 @@ const HARNESS_HEAD: &str = "You run on Residuum, a personal-agent harness. These
 - **Notifications**: background results are filed to the inbox; a sub-agent that ends its summary with `HEARTBEAT_URGENT` also pushes to every configured notification channel.
 - **Senders**: a message from a chat interface starts with a `[From: name via interface (location)]` line naming who sent it and where. In shared spaces such as team channels, people other than the user can talk to you; that line is how you tell them apart. Messages from the web UI carry no such line and always come from the user. Keep the user's private information out of replies to other people unless the user has said otherwise. ";
 
-/// The harness orientation after the rendered chat-delivery sentences.
 const HARNESS_TAIL: &str = "
 
 The residuum-system skill is the authoritative reference for all of the above. Activate it before answering any question about what you can do, and whenever you are unsure whether the harness supports something.
 
 Extend, don't just operate: authoring pulses and skills for the user's recurring needs is part of your job.";
 
-/// Separates the system prompt's sections.
 const SECTION_SEPARATOR: &str = "\n\n";
 
-/// The system prompt message, and what each part of its text is.
 pub(super) struct SystemPrompt {
     pub(super) message: Message,
-    /// Each section's kind and the byte range of the message's text it
-    /// covers, the separator ahead of it included: in order, together
-    /// covering the whole text.
     pub(super) sections: Vec<(SectionKind, Range<usize>)>,
 }
 
-/// The `HARNESS` section, with the Senders bullet telling the agent what
-/// reaches each chat under that chat's `deliver_intermediate` setting. The
-/// text is the same for every turn of an agent with the same settings.
 fn harness(delivery: IntermediateDelivery) -> String {
     use std::fmt::Write as _;
 
@@ -85,8 +67,6 @@ fn harness(delivery: IntermediateDelivery) -> String {
     text
 }
 
-/// The names of the chats whose intermediate delivery is `posted`, joined
-/// as prose ("Telegram, Discord and Teams").
 fn chat_names(chats: &[(&str, bool)], posted: bool) -> String {
     let names: Vec<&str> = chats
         .iter()
@@ -100,33 +80,6 @@ fn chat_names(chats: &[(&str, bool)], posted: bool) -> String {
     }
 }
 
-/// Build the system prompt message from identity files, memory and skills.
-///
-/// Assembly order:
-/// 1. `SOUL.md`
-/// 2. `AGENTS.md` (team)
-/// 3. `HARNESS` (code-owned, always present; fixed for a given chat config)
-/// 4. `BOOTSTRAP.md` (first-run only, deleted after first conversation)
-/// 5. `USER.md` (team)
-/// 6. `WIKI_INDEX` (the team wiki's root `index.md`)
-/// 7. `TEAM` (teammates with state and role line, when the agent has any)
-/// 8. `OBSERVATION_LOG` (if present)
-/// 9. `RECENT_CONTEXT` (if present)
-/// 10. `SKILLS_INDEX` (available skills listing)
-/// 11. `ACTIVE_SKILLS` (when skills are loaded)
-///
-/// Providers cache a request by its exact byte prefix, and the system prompt
-/// comes before the conversation, so a change to any section invalidates the
-/// cached prefix from that section on, the conversation included. Sections
-/// 1-7 change rarely (identity and wiki edits, a teammate starting or
-/// stopping); sections 8-11 change as memory is observed and skills are
-/// activated. The message's cache boundary sits after section 7: Anthropic
-/// puts an explicit cache breakpoint there, so a change to sections 8-11
-/// still reads the tools and sections 1-7 from the cache. Providers that
-/// reuse the longest matching prefix (OpenAI-compatible hosts, Gemini, local
-/// models) get the same effect from the order alone. The skills index (10)
-/// comes before the active skills (11) so activating a skill leaves the
-/// index cached.
 pub(super) fn build_system_prompt(
     identity: &IdentityFiles,
     memory_ctx: &MemoryContext<'_>,
@@ -200,8 +153,6 @@ pub(super) fn build_system_prompt(
         stable_text.push_str(part);
         sections.push((*kind, start..stable_text.len()));
     }
-    // The separator opens the changing part rather than closing the stable
-    // one, so the stable part's bytes don't depend on what follows it.
     let boundary = stable_text.len();
     let mut rest = String::new();
     for (kind, part) in &changing {
@@ -221,7 +172,6 @@ mod tests {
     use super::*;
     use crate::context::types::SkillsContext;
 
-    /// The system prompt's text, as every provider sends it.
     fn system_text(
         identity: &IdentityFiles,
         memory_ctx: &MemoryContext<'_>,
@@ -232,7 +182,6 @@ mod tests {
             .content
     }
 
-    /// The system message's text on either side of its cache boundary.
     fn split(message: &Message) -> (&str, &str) {
         message.content.split_at(message.cache_boundary.unwrap())
     }
@@ -427,7 +376,6 @@ mod tests {
             "observations should be wrapped in OBSERVATION_LOG tags"
         );
 
-        // Wiki index and observation log should be clearly separate sections
         let wiki_close = content.find("</WIKI_INDEX>");
         let obs_open = content.find("<OBSERVATION_LOG>");
         assert!(
@@ -662,8 +610,6 @@ mod tests {
         );
     }
 
-    // ── Bootstrap context tests ───────────────────────────────────────────────
-
     #[test]
     fn bootstrap_injected_between_agents_and_user() {
         let identity = IdentityFiles {
@@ -748,8 +694,6 @@ mod tests {
             "None bootstrap should not appear in prompt"
         );
     }
-
-    // ── Skills context tests ─────────────────────────────────────────────────
 
     #[test]
     fn skills_index_in_prompt() {

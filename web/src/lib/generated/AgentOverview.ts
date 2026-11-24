@@ -4,33 +4,4 @@ import type { LiveSession } from "./LiveSession";
 import type { OutboundProblem } from "./OutboundProblem";
 import type { UpcomingRun } from "./UpcomingRun";
 
-/**
- * What Home shows about one agent beyond its state, activity and summary.
- */
-export type AgentOverview = { 
-/**
- * The agent's name.
- */
-name: string, 
-/**
- * The newest message the user saw in the main conversation, if any.
- */
-last_message: LastMessage | null, 
-/**
- * The session runs going on now, oldest first. None for an agent that
- * isn't running.
- */
-live_sessions: Array<LiveSession>, 
-/**
- * The next runs of the agent's pulses and scheduled actions, soonest
- * first, at most three.
- */
-upcoming: Array<UpcomingRun>, 
-/**
- * How many items in the agent's user inbox are unread.
- */
-inbox_unread: number, 
-/**
- * Remote agents the running agent has been unable to reach for a while.
- */
-outbound_problems: Array<OutboundProblem>, };
+export type AgentOverview = { name: string, last_message: LastMessage | null, live_sessions: Array<LiveSession>, upcoming: Array<UpcomingRun>, inbox_unread: number, outbound_problems: Array<OutboundProblem>, };

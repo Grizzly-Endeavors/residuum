@@ -1,19 +1,5 @@
-//! Publishing session activity on the bus's [`topics::Sessions`] topic.
-//!
-//! Every place in the session machinery that changes a run's lifecycle state
-//! or produces a turn event funnels through [`publish_session_event`], so the
-//! web UI sees the same stream regardless of which code path produced it.
-
 use crate::{Publisher, SessionAddress, SessionEvent, SessionEventKind, topics};
 
-/// Publish one event for `address`'s run `run_id`.
-///
-/// A publish only fails when the broker has shut down (gateway teardown), so
-/// the failure is logged rather than propagated: losing a UI event must never
-/// affect the run itself. Lifecycle and error events log at `warn`; the
-/// high-frequency turn-stream events (tool activity, intermediate text) log
-/// at `debug`, matching how the main agent treats its own turn events, so a
-/// shutting-down broker doesn't produce a warning per tool call.
 pub async fn publish_session_event(
     publisher: &Publisher,
     address: &SessionAddress,

@@ -3,17 +3,10 @@
   import { Icon } from "../lib/icons";
   import { StatusDot } from "../lib/ui";
 
-  // One action in a list the keyboard drives from a text field: the palette
-  // and the composer's `/` menu. Focus stays in the field, which points at
-  // the active option, so pointer and keyboard share one highlight. A
-  // disabled action can be reached, its reason in place of its hint, and does
-  // nothing.
-
   interface Props {
     action: AppAction;
     id: string;
     active: boolean;
-    /** The quiet text at the end of the row. A disabled action shows its reason instead. */
     hint?: string;
     onpick: () => void;
     onhover: () => void;
@@ -33,7 +26,6 @@
   aria-selected={active}
   aria-disabled={action.disabled === undefined ? undefined : true}
   onpointerdown={(event) => {
-    // Keep focus in the field that drives the list.
     event.preventDefault();
   }}
   onpointermove={() => {
@@ -55,7 +47,6 @@
 </button>
 
 <style>
-  /* Set out in full: the composer's menu sits where the base styles don't reach. */
   .action-option {
     position: relative;
     display: flex;
@@ -82,7 +73,6 @@
       }
     }
 
-    /* The active row lights its icon and carries a short vein at its edge, as the rail's current place does. */
     &[aria-selected="true"] {
       background: var(--color-vein-tint);
       color: var(--color-text);

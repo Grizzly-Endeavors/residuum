@@ -9,7 +9,6 @@ function applyDiff(doc: Record<string, unknown>, diff: Record<string, unknown>):
         doc[key] = value.$inline;
         continue;
       }
-      // Whatever is there that isn't a table (a model list, a string) becomes one.
       const existing = doc[key];
       const child =
         typeof existing === "object" && existing !== null && !Array.isArray(existing)
@@ -23,12 +22,6 @@ function applyDiff(doc: Record<string, unknown>, diff: Record<string, unknown>):
   }
 }
 
-/**
- * Apply a PATCH diff to a config file's text, the way the server does: `null`
- * removes a key, an object recurses into a table, `{$inline: {...}}` sets a
- * table, anything else sets the value. The result is the document written out
- * again.
- */
 export function applyPatch(
   text: string,
   diff: Record<string, unknown>,

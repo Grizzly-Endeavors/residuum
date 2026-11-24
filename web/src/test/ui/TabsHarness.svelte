@@ -2,7 +2,6 @@
   import Tabs from "../../lib/ui/Tabs.svelte";
   import type { TabItem } from "../../lib/ui/types";
 
-  // Tabs whose panel names the selected tab, so a test can see it follow.
   let {
     tabs,
     selected,

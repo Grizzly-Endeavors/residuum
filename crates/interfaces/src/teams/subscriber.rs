@@ -1,5 +1,3 @@
-//! Delivers agent output from the bus to Teams conversations.
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -15,7 +13,6 @@ use super::store::ConversationRef;
 /// Per-message text budget. Teams rejects activities over ~28 KB; this
 /// leaves room for the JSON envelope and multi-byte characters.
 pub(super) const MAX_MESSAGE_BYTES: usize = 20_000;
-/// Teams shows a typing indicator for roughly three seconds.
 const TYPING_INTERVAL: Duration = Duration::from_secs(3);
 
 pub(super) async fn run_teams_subscriber(rt: Arc<TeamsRuntime>, subs: crate::BaseSubscribers) {
@@ -84,7 +81,6 @@ impl ChatOutbound for Arc<TeamsRuntime> {
                 }
                 tokio::select! {
                     () = tokio::time::sleep(TYPING_INTERVAL) => {}
-                    // Resolves with an error once the sender is dropped at turn end.
                     _ = stop_rx.changed() => break,
                 }
             }

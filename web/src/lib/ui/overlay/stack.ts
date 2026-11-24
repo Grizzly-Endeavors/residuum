@@ -1,57 +1,26 @@
-/**
- * The one stack every overlay layer joins: the topmost layer
- * takes Esc, an outside pointer closes floating layers from the top down,
- * focus is trapped in the topmost modal and returns where it came from, and
- * behind a modal the page is inert and doesn't scroll.
- *
- * A layer's component owns its open state. The stack only asks it to close
- * (`dismiss`); the component releases its layer once it has.
- */
-
 import { focusables, focusInitial, overlayHost } from "./host";
 
-/**
- * A modal traps focus and makes everything below it inert. A float (menu,
- * popover, tooltip) does neither, and closes when a pointer goes down outside
- * it.
- */
 export type LayerKind = "modal" | "float";
 
 export interface LayerOptions {
   kind: LayerKind;
-  /** The layer's root, inside the overlay host. */
   element: HTMLElement;
-  /** Ask the layer's owner to close it: Esc, or for a float a pointer outside it. */
   dismiss: () => void;
-  /** For a float: what opened it. A pointer on it doesn't count as outside, so the trigger can toggle. */
   anchor?: HTMLElement | null;
-  /**
-   * Where focus goes when the layer closes. The element focused when it
-   * opened, by default. `false` for a layer that never takes focus (a
-   * tooltip): closing it leaves focus where it is.
-   */
   returnFocus?: HTMLElement | null | false;
-  /**
-   * For a modal: something on the page that stays live while the modal is on
-   * top, such as the phone's bottom bar beside a layer that stops above it.
-   */
   spare?: Element | null;
 }
 
 export interface LayerHandle {
-  /** Whether this layer is on top of every other open layer. */
   readonly topmost: boolean;
-  /** Leave the stack. Focus returns to `returnFocus` if it was inside the layer or nowhere. */
   release: () => void;
 }
 
 interface Layer extends LayerOptions {
   returnTo: HTMLElement | null;
-  /** The layer `returnTo` is in, if any: when both close at once, focus goes on to where that one returns. */
   returnLayer: Layer | undefined;
 }
 
-/** The elements to make inert so `root` is covered except for `spared`: inside `root`, everything off the path down to it. */
 function coverAround(root: Element, spared: Element | null): Element[] {
   if (spared === null || !root.contains(spared)) return [root];
   if (root === spared) return [];
@@ -64,14 +33,11 @@ function focusedElement(): HTMLElement | null {
 }
 
 class OverlayStack {
-  /** Open layers, bottom to top. */
   private readonly layers: Layer[] = [];
-  /** Elements this stack made inert, so it never clears inertness someone else set. */
   private readonly inerted = new Set<Element>();
   private savedScroll: { overflow: string; gutter: string } | null = null;
   private caught: Event | null = null;
 
-  /** Join the stack. A new modal closes the floats that were open. */
   open(options: LayerOptions): LayerHandle {
     if (options.kind === "modal") {
       for (const layer of this.topFloats()) layer.dismiss();
@@ -93,12 +59,10 @@ class OverlayStack {
     };
   }
 
-  /** Whether any layer is open, which would take an Esc pressed now. */
   get anyOpen(): boolean {
     return this.layers.length > 0;
   }
 
-  /** Whether `event`, a pointer press, already closed a float; a scrim under it then stays put. */
   caughtBy(event: Event): boolean {
     return this.caught === event;
   }
@@ -108,9 +72,7 @@ class OverlayStack {
     if (at < 0) return;
     this.layers.splice(at, 1);
     this.update();
-    // Focus can't have been lost with a layer that never held it.
     if (layer.returnFocus === false) return;
-    // Focus stays wherever the user moved it; only focus lost with the layer goes back.
     const focused = focusedElement();
     if (focused !== null && !layer.element.contains(focused)) return;
     let from = layer;
@@ -127,7 +89,6 @@ class OverlayStack {
     if (top !== undefined) focusInitial(top.element);
   }
 
-  /** The floats above the topmost modal, topmost first. */
   private topFloats(): Layer[] {
     const floats: Layer[] = [];
     for (const layer of [...this.layers].reverse()) {
@@ -182,7 +143,6 @@ class OverlayStack {
         overflow: root.style.overflow,
         gutter: root.style.getPropertyValue("scrollbar-gutter"),
       };
-      // Keep the page from shifting sideways when its scrollbar goes away.
       if (window.innerWidth > root.clientWidth)
         root.style.setProperty("scrollbar-gutter", "stable");
       root.style.overflow = "hidden";
@@ -193,13 +153,10 @@ class OverlayStack {
     }
   }
 
-  // Esc and Tab are heard as they bubble to the document, so a control
-  // inside a layer that uses Esc itself can claim it with preventDefault.
   private readonly onKeydown = (event: KeyboardEvent): void => {
     const top = this.layers.at(-1);
     if (top === undefined || event.defaultPrevented || event.isComposing) return;
     if (event.key === "Escape") {
-      // Closing the overlay is all Esc does: it doesn't also stop a reply.
       event.preventDefault();
       event.stopPropagation();
       top.dismiss();
@@ -209,12 +166,6 @@ class OverlayStack {
     }
   };
 
-  /**
-   * The modal that holds Tab: the topmost one, unless focus is in a float
-   * above it (a menu or a popover, which carry Tab on themselves). A float
-   * that never takes focus, such as the tooltip a focused button shows,
-   * doesn't count, or Tab past the modal's last control would leave it.
-   */
   private trappingModal(): Layer | undefined {
     const active = focusedElement();
     const holdsFocus = this.topFloats().some(
@@ -224,7 +175,6 @@ class OverlayStack {
     return this.layers.findLast((layer) => layer.kind === "modal");
   }
 
-  /** Tab past either end of a modal comes round to the other end. */
   private wrapFocus(container: HTMLElement, event: KeyboardEvent): void {
     const items = focusables(container);
     const first = items[0];
@@ -242,7 +192,6 @@ class OverlayStack {
     }
   }
 
-  // Captured, so a float closes before whatever is under the pointer reacts.
   private readonly onPointerdown = (event: PointerEvent): void => {
     const target = event.target;
     if (!(target instanceof Node)) return;
@@ -259,14 +208,8 @@ class OverlayStack {
   ];
 }
 
-/** The overlay stack. Layer components join it; nothing else needs to. */
 export const stack = new OverlayStack();
 
-/**
- * Whether an overlay is open. A control outside the overlays that answers
- * Esc itself checks this first, so an Esc that closes an overlay does
- * nothing else.
- */
 export function overlayOpen(): boolean {
   return stack.anyOpen;
 }

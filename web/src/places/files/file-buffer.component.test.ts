@@ -5,9 +5,6 @@ import { jsonResponse, mockFetch } from "../../test/component";
 import { FileBuffer } from "./file-buffer.svelte";
 import { waitFor } from "../../test/wait";
 
-// A fake workspace: files by path with a version that changes on each write,
-// the agent's config.toml behind its raw route, and every request made.
-
 interface Disk {
   files: Map<string, string>;
   versions: Map<string, number>;
@@ -214,7 +211,6 @@ describe("changes made elsewhere", () => {
 
   it("hears its own write come back as no change, so the next save doesn't conflict", async () => {
     const buffer = await opened();
-    // Another writer leaves the text the same and moves the version on.
     write("notes.md", "first\n");
     buffer.text = "mine\n";
     await buffer.refresh();

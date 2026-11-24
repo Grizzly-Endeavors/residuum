@@ -6,11 +6,7 @@
   import type { McpCatalogEntry, McpServerEntry } from "../../lib/types";
   import { Badge, Banner, Button, EmptyState, Skeleton, TextField } from "../../lib/ui";
 
-  // Common tool servers, added with a press. One that needs a key asks for
-  // it first. A catalog that can't be read says why, with Try again.
-
   interface Props {
-    /** Whether the form already has a server of this name. */
     isAdded: (name: string) => boolean;
     onadd: (server: McpServerEntry) => void;
   }
@@ -20,13 +16,11 @@
   let catalog = $state.raw<McpCatalogEntry[] | null>(null);
   let loadError = $state<string | null>(null);
   let loading = $state(false);
-  /** The entry asking for its inputs. */
   let asking = $state<string | null>(null);
   let inputs = $state<Record<string, string>>({});
   let tried = $state(false);
   let list = $state<HTMLElement>();
 
-  /** Read the catalog. A failed read stays on screen while Try again reads it once more. */
   async function load(): Promise<void> {
     loading = true;
     try {

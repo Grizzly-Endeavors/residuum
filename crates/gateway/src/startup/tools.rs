@@ -1,5 +1,3 @@
-//! Agent creation: wraps main's tool registry in the agent that runs its turns.
-
 use std::sync::Arc;
 
 use residuum_agent::{Agent, AgentConfig, ToolRegistry};
@@ -8,33 +6,16 @@ use residuum_mcp::SharedMcpRegistry;
 use residuum_memory::recent_messages::load_messages_for_agent;
 use residuum_workspace::identity::IdentityFiles;
 
-/// Arguments for creating the agent, bundled to stay under the argument limit.
 pub(super) struct CreateAgentArgs {
     pub provider: Box<dyn residuum_inference::InferenceProvider>,
     pub options: residuum_inference::CompletionOptions,
-    /// Maximum tool-call iterations for the agent's turns, from
-    /// `cfg.agent.max_tool_iterations`. `None` means unlimited.
     pub max_tool_iterations: Option<usize>,
-    /// Guards against a model repeating the exact same tool call, from
-    /// `cfg.agent.repeat_call_guard`.
     pub repeat_call_guard: residuum_config::RepeatCallGuardConfig,
     pub tools: ToolRegistry,
     pub identity: IdentityFiles,
-    /// Main's current-turn hop counter — the same instance already handed to
-    /// the `message_agent`/`subagent_spawn` tools in `args.tools` at
-    /// registration time, so the agent and its tools always agree on the
-    /// current turn's hop count.
     pub hop_counter: residuum_agent::HopCounter,
 }
 
-/// Create the agent, load observations, recent context, and restore messages.
-///
-/// Each of the three loads below degrades independently rather than failing
-/// agent construction — a missing or corrupt snapshot means the agent starts
-/// with less context, not that it fails to start — but each is still folded
-/// into `degradations` as a plain-language line for the caller's grouped
-/// startup-degradation notice (see `super::degradation_notice`), so a
-/// silently emptier agent is still visible to the user.
 pub(super) async fn create_agent(
     args: CreateAgentArgs,
     mcp_registry: &SharedMcpRegistry,
@@ -102,8 +83,6 @@ mod tests {
     use residuum_background::team::TeamDirectory as _;
     use residuum_tools::testing::RegistryHarness;
 
-    /// A spawned session's `agent_create` reaches the hub as the agent it
-    /// belongs to, so a session can create a teammate.
     #[tokio::test]
     async fn a_session_fork_can_create_a_teammate() {
         use residuum_hub::testing::{mount_reply, write_agent};
@@ -145,10 +124,6 @@ mod tests {
         assert!(host.summary("nova").is_ok());
     }
 
-    /// A malformed observations/recent-context/recent-messages snapshot each
-    /// degrades `create_agent` independently (the agent still starts) and
-    /// each lands its own plain-language line in the caller's grouped
-    /// startup-degradation notice, rather than only a log line no one sees.
     #[tokio::test]
     async fn create_agent_degradations_are_collected_for_the_caller() {
         let dir = tempfile::tempdir().expect("tempdir");

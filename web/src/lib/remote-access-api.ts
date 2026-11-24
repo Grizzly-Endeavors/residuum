@@ -1,8 +1,3 @@
-// ── Remote access API wrappers ───────────────────────────────────────
-//
-// The secure tunnel's status and the actions on it. Kept apart from `api.ts`
-// like the pairing wrappers: they belong to one settings group.
-
 import { ApiError } from "./api";
 import type { RemoteAccessStatus } from "./generated/RemoteAccessStatus";
 import { isInstanceSlug } from "./instance-slug";
@@ -14,22 +9,18 @@ async function send(path: string, init?: RequestInit): Promise<Response> {
   return resp;
 }
 
-/** Where remote access stands. The recovery code is included only on the machine Residuum runs on. */
 export async function fetchRemoteAccess(): Promise<RemoteAccessStatus> {
   return (await (await send(hubPath("/remote-access/status"))).json()) as RemoteAccessStatus;
 }
 
-/** Look again now instead of waiting for the next scheduled check. */
 export async function retryRemoteAccess(): Promise<void> {
   await send(hubPath("/remote-access/retry"), { method: "POST" });
 }
 
-/** The recovery code is saved; Residuum forgets it. */
 export async function acknowledgeRecoveryCode(): Promise<void> {
   await send(hubPath("/remote-access/recovery-code/saved"), { method: "POST" });
 }
 
-/** Take the address back with the recovery code, pinning this instance's account. */
 export async function resetPins(recoveryCode: string): Promise<void> {
   await send(hubPath("/remote-access/reset-pins"), {
     method: "POST",
@@ -38,17 +29,11 @@ export async function resetPins(recoveryCode: string): Promise<void> {
   });
 }
 
-/**
- * Have the pin service email a link that takes the address back for this
- * instance, for when the recovery code is lost. Resolves with the masked
- * address the mail went to.
- */
 export async function requestEmailReset(): Promise<string> {
   const resp = await send(hubPath("/remote-access/email-reset"), { method: "POST" });
   return ((await resp.json()) as { email: string }).email;
 }
 
-/** Cancel the reset by email that is waiting to take effect. */
 export async function cancelPendingReset(): Promise<void> {
   await send(hubPath("/remote-access/cancel-reset"), { method: "POST" });
 }
@@ -61,29 +46,24 @@ async function sendJson(path: string, body: unknown): Promise<void> {
   });
 }
 
-/** Ask the existing instance `instance` to approve this one. Progress shows in the status. */
 export async function startJoin(instance: string): Promise<void> {
   await sendJson(hubPath("/remote-access/join"), { instance });
 }
 
-/** Approve another instance's join request, after its six digits matched. */
 export async function approveJoin(id: string): Promise<void> {
   await send(hubPath(`/remote-access/joins/${encodeURIComponent(id)}/approve`), {
     method: "POST",
   });
 }
 
-/** Refuse another instance's join request. */
 export async function denyJoin(id: string): Promise<void> {
   await send(hubPath(`/remote-access/joins/${encodeURIComponent(id)}/deny`), { method: "POST" });
 }
 
-/** Remove a certificate account the status marks removable. */
 export async function removePin(accountUri: string): Promise<void> {
   await sendJson(hubPath("/remote-access/pins/remove"), { account_uri: accountUri });
 }
 
-/** Make `slug` the instance the user's address goes to. The slug must pass `isInstanceSlug`. */
 export async function activateInstance(slug: string): Promise<void> {
   if (!isInstanceSlug(slug)) throw new Error("Not an instance slug.");
   await send(hubPath(`/remote-access/instances/${encodeURIComponent(slug)}/activate`), {

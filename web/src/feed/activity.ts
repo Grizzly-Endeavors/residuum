@@ -1,26 +1,15 @@
-// The activity line's words: each tool call as a step in plain
-// language, and a turn's steps as one summary with repeats merged and
-// counted. Labels come from one table keyed by tool name. Any other tool
-// reads "Used <tool>", and a tool server's tool "Used <server>: <tool>".
-
 import { formatElapsed } from "../lib/format-usage";
 import type { IconName } from "../lib/icons";
 import { isWorkspacePath } from "../lib/markdown";
 import type { ObservedTurn, TurnEnding } from "../lib/observed-turns.svelte";
 import type { ThinkingFeedItem, ToolCallState } from "../lib/types";
 
-/** A tool call as the line reads it. `server` names the tool server a tool came from, when known. */
 export interface StepCall extends ToolCallState {
   server?: string | null;
 }
 
 export type StepStatus = "running" | "done" | "failed" | "stopped";
 
-/**
- * What a step acted on: a workspace `path` (a link into the panel), a
- * `session` address (opens the session), a `query` (quoted), `code` (a
- * command, an address, an id) or a plain `name`.
- */
 export interface StepTarget {
   kind: "path" | "session" | "query" | "code" | "name";
   text: string;
@@ -29,7 +18,6 @@ export interface StepTarget {
 export interface ActivityStep {
   id: string;
   icon: IconName;
-  /** The words before the target: "Reading" while it runs, "Read" once it has. */
   verb: string;
   target: StepTarget | null;
   status: StepStatus;
@@ -40,19 +28,14 @@ type Args = Record<string, unknown>;
 
 interface ToolWords {
   icon: IconName;
-  /** Before the target while the call runs, and once it has; the whole label when there's no target, unless `bare` says otherwise. */
   running: string;
   done: string;
-  /** Joins the verb to the target: "for" in "Searched memory for “x”". */
   by?: string;
-  /** The label when there's no target, where the verbs alone don't read whole. */
   bare?: readonly [running: string, done: string];
   target?: (args: Args, result: string | undefined) => StepTarget | null;
-  /** What `n` calls of this tool did, for the summary: "read 2 files". */
   summary: (n: number) => string;
 }
 
-/** Targets longer than this are cut in the line; the step's details hold them whole. */
 const TARGET_MAX_CHARS = 120;
 
 function argText(args: Args, key: string): string | null {
@@ -76,7 +59,6 @@ function targetOf(kind: StepTarget["kind"], ...keys: string[]) {
   };
 }
 
-/** A path argument: a link when it is a workspace path, plain code otherwise. */
 function pathTarget(key = "path") {
   return (args: Args): StepTarget | null => {
     const text = argText(args, key);
@@ -85,13 +67,11 @@ function pathTarget(key = "path") {
   };
 }
 
-/** The session `subagent_spawn` started, named in its result ("Session spawned-x-3f9a spawned."). */
 function spawnedSession(_args: Args, result: string | undefined): StepTarget | null {
   const address = /Session (\S+) spawned/.exec(result ?? "")?.[1];
   return address === undefined ? null : { kind: "session", text: address };
 }
 
-/** A session address to stop, or an agent-to-agent call (`a2a:<name>`), which opens nothing. */
 function stoppedSession(args: Args): StepTarget | null {
   const address = argText(args, "address");
   if (address === null) return null;
@@ -106,7 +86,6 @@ function repeated(phrase: string) {
   return (n: number): string => (n === 1 ? phrase : `${phrase} ${String(n)} times`);
 }
 
-/** Every built-in tool, in plain words. */
 const TOOL_WORDS: Readonly<Record<string, ToolWords>> = {
   read_file: {
     icon: "file",
@@ -372,7 +351,6 @@ const TOOL_WORDS: Readonly<Record<string, ToolWords>> = {
   },
 };
 
-/** A tool the table doesn't know: by its name, and its server's when it came from one. */
 function otherToolWords(call: StepCall): ToolWords {
   const tool = call.server ? `${call.server}: ${call.name}` : call.name;
   return {
@@ -393,7 +371,6 @@ function statusOf(call: ToolCallState): StepStatus {
   return call.status;
 }
 
-/** Each call of a turn as a step, in order. */
 export function activitySteps(calls: readonly StepCall[]): ActivityStep[] {
   return calls.map((call) => {
     const words = wordsFor(call);
@@ -407,17 +384,14 @@ export function activitySteps(calls: readonly StepCall[]): ActivityStep[] {
   });
 }
 
-/** A step's label in plain text, the way the line shows it. */
 export function stepText(step: ActivityStep): string {
   if (step.target === null) return step.verb;
   const target = step.target.kind === "query" ? `“${step.target.text}”` : step.target.text;
   return `${step.verb} ${target}`;
 }
 
-/** Summaries name this many kinds of step before folding the rest into "and N more steps". */
 const SUMMARY_PHRASES = 4;
 
-/** The steps in one phrase, repeats merged and counted: "Searched memory, read 2 files". */
 export function stepsPhrase(calls: readonly StepCall[]): string {
   const groups = new Map<string, { words: ToolWords; count: number }>();
   for (const call of calls) {
@@ -436,30 +410,23 @@ export function stepsPhrase(calls: readonly StepCall[]): string {
 }
 
 export interface ActivitySummary {
-  /** What the segment did, or that the page missed it when the segment holds no steps. */
   text: string;
-  /** How long its steps took, for steps the page watched, when that was a second or more. */
   duration: string | null;
-  /** "1 step failed", for steps the page watched. */
   failures: string | null;
 }
 
-/** A length of time in words, or null when it was under a second and not worth a mention. */
 export function durationWords(ms: number): string | null {
   return ms >= 1000 ? formatElapsed(ms) : null;
 }
 
-/** One step of an activity segment: a tool call, or the agent's reasoning. */
 export type SegmentStep =
   | { kind: "call"; call: StepCall }
   | { kind: "thought"; item: ThinkingFeedItem };
 
-/** `calls` as the steps of a segment. */
 export function callSteps(calls: readonly StepCall[]): SegmentStep[] {
   return calls.map((call) => ({ kind: "call", call }));
 }
 
-/** The tool calls among `steps`. */
 export function callsOf(steps: readonly SegmentStep[]): StepCall[] {
   return steps.flatMap((step) => (step.kind === "call" ? [step.call] : []));
 }
@@ -468,14 +435,12 @@ function thoughtsOf(steps: readonly SegmentStep[]): ThinkingFeedItem[] {
   return steps.flatMap((step) => (step.kind === "thought" ? [step.item] : []));
 }
 
-/** How long a thought took, in milliseconds, for one the page watched. */
 function thoughtMs(item: ThinkingFeedItem): number | null {
   return item.startedAt === undefined || item.endedAt === undefined
     ? null
     : item.endedAt - item.startedAt;
 }
 
-/** A thought's line: "Thinking" while it streams, then "Thought for 6s", or "Thought" when no time is known or it was brief. */
 export function thoughtLabel(item: ThinkingFeedItem): string {
   if (item.streaming === true) return "Thinking";
   const ms = thoughtMs(item);
@@ -483,11 +448,6 @@ export function thoughtLabel(item: ThinkingFeedItem): string {
   return took === null ? "Thought" : `Thought for ${took}`;
 }
 
-/**
- * The thoughts of a segment in one phrase: "thought 6s" after its tool calls,
- * or "Thought for 6s" when the segment holds nothing else. The time is the
- * total, left out when any of them wasn't watched or it came to under a second.
- */
 function thoughtsPhrase(thoughts: readonly ThinkingFeedItem[], alone: boolean): string {
   const times = thoughts.map(thoughtMs);
   const total = times.every((ms): ms is number => ms !== null)
@@ -498,11 +458,6 @@ function thoughtsPhrase(thoughts: readonly ThinkingFeedItem[], alone: boolean): 
   return took === null ? "thought" : `thought ${took}`;
 }
 
-/**
- * How long a segment's steps took, from the first starting to the last
- * ending, for steps the page watched. Null when any step wasn't (history
- * records no timing), or when it came to under a second.
- */
 export function segmentDuration(steps: readonly SegmentStep[]): string | null {
   if (steps.length === 0) return null;
   let started = Infinity;
@@ -516,17 +471,12 @@ export function segmentDuration(steps: readonly SegmentStep[]): string | null {
   return durationWords(ended - started);
 }
 
-/** What a segment did, in one phrase: its tool calls, then its reasoning. */
 function segmentText(calls: readonly StepCall[], thoughts: readonly ThinkingFeedItem[]): string {
   if (calls.length === 0) return thoughtsPhrase(thoughts, true);
   if (thoughts.length === 0) return stepsPhrase(calls);
   return `${stepsPhrase(calls)}, ${thoughtsPhrase(thoughts, false)}`;
 }
 
-/**
- * A segment's line, collapsed. `missed` says the page may have missed steps
- * in it. Null when there is nothing to show: no steps, and no gap to note.
- */
 export function summarizeSegment(
   steps: readonly SegmentStep[],
   missed: boolean,
@@ -537,7 +487,6 @@ export function summarizeSegment(
   const failures =
     failed === 0 ? null : `${String(failed)} ${failed === 1 ? "step" : "steps"} failed`;
   if (steps.length > 0) {
-    // A segment of reasoning alone says how long it took in its words already.
     const duration = calls.length === 0 ? null : segmentDuration(steps);
     return { text: segmentText(calls, thoughts), duration, failures };
   }
@@ -545,20 +494,12 @@ export function summarizeSegment(
   return null;
 }
 
-/** How a watched turn ended, when it wasn't on its own. */
 const ENDING_WORDS: Readonly<Record<TurnEnding, string | null>> = {
   finished: null,
   stopped: "Stopped by you",
   interrupted: "Didn't finish",
 };
 
-/**
- * The line that closes a turn the page watched to its end: how it ended and
- * how long it took. A turn that ended on its own gets one only when it did
- * work worth timing (`worked`: it made tool calls, and it took a second or
- * more). History records neither timing nor endings, so a turn the page
- * didn't watch has none.
- */
 export function turnEndingLine(observed: ObservedTurn | undefined, worked: boolean): string | null {
   if (observed?.ending == null || observed.endedAt === null) return null;
   const took =
@@ -568,7 +509,6 @@ export function turnEndingLine(observed: ObservedTurn | undefined, worked: boole
   return worked && took !== null ? `Worked for ${took}` : null;
 }
 
-/** The note shown where the page may have missed steps. */
 export function gapNote(stepsSeen: number): string {
   return stepsSeen === 0
     ? "Earlier steps happened before this page connected"

@@ -1,5 +1,3 @@
-//! Null model provider for disabled observer/reflector instances.
-
 use async_trait::async_trait;
 
 use crate::{
@@ -7,10 +5,6 @@ use crate::{
     ToolDefinition,
 };
 
-/// A placeholder provider that always returns an error.
-///
-/// Used by disabled observer/reflector instances to satisfy the type system
-/// without requiring a real model configuration.
 pub struct NullProvider;
 
 #[async_trait]

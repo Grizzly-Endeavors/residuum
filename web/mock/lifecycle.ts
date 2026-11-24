@@ -16,21 +16,14 @@ import { modelProblems } from "./provider-models";
 import type { MockAgent, MockDeletedAgent, MockHub } from "./state";
 import { byName } from "./util";
 
-/** How long an agent takes to start. */
 const STARTUP_MS = 400;
 
-/** How long a running agent takes to stop, which it spends listed as stopping. */
 const STOP_MS = 250;
 
-/** The backend's error for a body it can't use (`parse_body` in `crates/hub/src/http/lifecycle.rs`). */
 function badBodyMessage(err: unknown): string {
   return `the request body isn't valid for this route: ${err instanceof Error ? err.message : String(err)}`;
 }
 
-/**
- * Read a JSON object body. A body that isn't one, or that lacks the string
- * field `required`, is answered `400` and `null` comes back.
- */
 async function readBodyOr400(ctx: RouteContext, required?: string): Promise<JsonObject | null> {
   try {
     const body = await readJsonObject(ctx.req);
@@ -44,7 +37,6 @@ async function readBodyOr400(ctx: RouteContext, required?: string): Promise<Json
   }
 }
 
-/** The agent the route's first capture group names, or `null` after answering `404`. */
 function namedAgent(ctx: RouteContext): MockAgent | null {
   const name = decodedParam(ctx, 0);
   const agent = findAgent(ctx.hub, name);
@@ -52,7 +44,6 @@ function namedAgent(ctx: RouteContext): MockAgent | null {
   return agent ?? null;
 }
 
-/** The agent `raw` names, by folder or by the name people type. */
 function findAgent(hub: MockHub, raw: string): MockAgent | undefined {
   const direct = hub.agents.get(raw);
   if (direct) return direct;
@@ -65,7 +56,6 @@ function findAgent(hub: MockHub, raw: string): MockAgent | undefined {
   return matches.length === 1 ? matches[0] : undefined;
 }
 
-/** The deleted agent `raw` names, by folder or by the name people saw. */
 function findDeleted(hub: MockHub, raw: string): MockDeletedAgent | undefined {
   const direct = hub.deleted.get(raw);
   if (direct) return direct;
@@ -83,7 +73,6 @@ function listAgents(ctx: RouteContext): void {
   json(ctx.res, 200, ctx.hub.listing());
 }
 
-/** Newest deletion first, like the backend. */
 function listDeletedAgents(ctx: RouteContext): void {
   const agents = [...ctx.hub.deleted.values()]
     .sort((a, b) => byName(b.deletedAt, a.deletedAt) || byName(a.agent.name, b.agent.name))
@@ -130,7 +119,6 @@ async function restoreAgent(ctx: RouteContext): Promise<void> {
   json(res, 201, hub.summary(agent));
 }
 
-/** `POST /api/hub/agents`: `CreateAgentRequest`, where `name` is required and the rest may be absent or null. */
 async function createAgent(ctx: RouteContext): Promise<void> {
   const { res, hub } = ctx;
   const body = await readBodyOr400(ctx, "name");
@@ -156,7 +144,6 @@ async function createAgent(ctx: RouteContext): Promise<void> {
     json(res, 400, { error: "give models_from or providers_toml" });
     return;
   }
-  // A new agent replaces the deleted one of that name, whose socket route would answer for it too.
   const sameGone = findDeleted(hub, canonical);
   const slug = sameGone
     ? sameGone.agent.name
@@ -178,7 +165,6 @@ async function createAgent(ctx: RouteContext): Promise<void> {
   json(res, 201, hub.summary(agent));
 }
 
-/** `GET /api/hub/status`: version, uptime, tunnel, and how many agents are in each state. */
 function hubStatus(ctx: RouteContext): void {
   const counts = { starting: 0, running: 0, stopped: 0, failed: 0 };
   for (const agent of ctx.hub.agents.values()) counts[agent.runState]++;
@@ -190,14 +176,8 @@ function hubStatus(ctx: RouteContext): void {
   } satisfies HubStatusResponse);
 }
 
-/** The stops in progress, so a second request to stop an agent waits for the first, as the hub's per-agent lock makes it. */
 const stopsInProgress = new WeakMap<MockAgent, Promise<void>>();
 
-/**
- * Stop an agent. A running agent is announced as stopping, winds down for a
- * moment, and is then reported stopped. Asking again while it winds down waits
- * for that stop.
- */
 function stopAgent(hub: MockHub, agent: MockAgent): Promise<void> {
   const inProgress = stopsInProgress.get(agent);
   if (inProgress !== undefined) return inProgress;
@@ -214,7 +194,6 @@ function stopAgent(hub: MockHub, agent: MockAgent): Promise<void> {
   return stop;
 }
 
-/** `POST /api/hub/stop-all`: stop every running or starting agent and leave the hub running. */
 async function stopAll(ctx: RouteContext): Promise<void> {
   const { hub } = ctx;
   const stopped: AgentSummary[] = [];
@@ -226,16 +205,11 @@ async function stopAll(ctx: RouteContext): Promise<void> {
   json(ctx.res, 200, { stopped, failed: [] } satisfies StopAllResponse);
 }
 
-/**
- * `DELETE /api/hub/agents/{name}`: stop, checkpoint and remove an agent, keeping it for a restore.
- * A running agent stops the way `stopAgent` stops it, so it is listed as stopping first.
- */
 async function deleteAgent(ctx: RouteContext): Promise<void> {
   const agent = namedAgent(ctx);
   if (agent === null) return;
   const { hub } = ctx;
   if (agent.runState === "running") await stopAgent(hub, agent);
-  // Another delete of the same agent finished while this one waited for it to stop.
   if (hub.agents.get(agent.name) !== agent) {
     json(ctx.res, 404, { error: `no agent named '${agent.name}'` });
     return;
@@ -251,7 +225,6 @@ async function deleteAgent(ctx: RouteContext): Promise<void> {
   json(ctx.res, 200, { deleted: true, checkpoint_id: checkpointId } satisfies DeleteOutcome);
 }
 
-/** `PATCH /api/hub/agents/{name}`: change autostart and/or A2A visibility. */
 async function patchAgent(ctx: RouteContext): Promise<void> {
   const agent = namedAgent(ctx);
   if (agent === null) return;
@@ -267,7 +240,6 @@ async function patchAgent(ctx: RouteContext): Promise<void> {
   }
   if (typeof autostart === "boolean") agent.autostart = autostart;
   if (newVisibility !== null) agent.visibility = newVisibility;
-  // The hub writes both to the agent's config.toml, checkpointing it first.
   const { state } = agent;
   checkpointBeforeAction(state, "agent_config", "patch config.toml");
   const doc = state.configToml.trim() ? parseToml(state.configToml) : {};
@@ -295,7 +267,6 @@ async function runAgentAction(ctx: RouteContext): Promise<void> {
   if (action === "stop") {
     await stopAgent(hub, agent);
   } else if (action !== "start" || agent.runState !== "running") {
-    // A restart stops the agent first, like the hub.
     if (action === "restart" && agent.runState === "running") await stopAgent(hub, agent);
     hub.transition(agent, "starting");
     await hub.env.sleep(STARTUP_MS);
@@ -311,7 +282,6 @@ async function runAgentAction(ctx: RouteContext): Promise<void> {
   json(res, 200, hub.summary(agent));
 }
 
-/** The agent lifecycle routes and hub status, in the `/api/hub/...` spelling the hub keeps. */
 export const lifecycleRoutes: readonly Route[] = [
   { method: "GET", pattern: "/api/hub/agents", handler: listAgents },
   { method: "GET", pattern: "/api/hub/agents/deleted", handler: listDeletedAgents },

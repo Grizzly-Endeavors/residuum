@@ -1,9 +1,3 @@
-/**
- * Runs the real workbench SDK (`assets/workbench/sdk.js`) the way an artifact
- * page on the artifacts origin does, against stand-ins for its window: a
- * `fetch` whose requests the test answers by hand, and `FakeWebSocket`s for the
- * hub socket and any agent socket the page opens.
- */
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import { vi } from "vitest";
@@ -14,7 +8,6 @@ const SDK_SOURCE = readFileSync(
   "utf8",
 );
 
-/** The origin the page is served from, in every test. */
 export const ARTIFACTS_ORIGIN = "http://localhost:7702";
 
 export interface Frame {
@@ -52,7 +45,6 @@ export interface Sdk {
   };
 }
 
-/** One request the SDK sent, waiting for the test to answer it. */
 export interface HeldRequest {
   url: string;
   method: string;
@@ -64,15 +56,10 @@ export interface HeldRequest {
 
 export interface LoadedSdk {
   sdk: Sdk;
-  /** Every request the SDK sent, oldest first. */
   requests: HeldRequest[];
-  /** `location.reload`. */
   reload: ReturnType<typeof vi.fn>;
-  /** The page's console, where the SDK reports what it can't tell the page. */
   console: { warn: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn> };
-  /** The newest socket the SDK opened at `path`, such as `/api/hub/ws`. */
   socket: (path: string) => FakeWebSocket;
-  /** How many sockets the SDK opened at `path`. */
   socketCount: (path: string) => number;
 }
 
@@ -85,7 +72,6 @@ function responseOf(status: number, body: unknown): Response {
   });
 }
 
-/** Load the SDK into a fresh page of artifact `artifact`. */
 export function loadSdk(artifact = "chart"): LoadedSdk {
   FakeWebSocket.sockets = [];
   const requests: HeldRequest[] = [];
@@ -119,7 +105,6 @@ export function loadSdk(artifact = "chart"): LoadedSdk {
     Response,
     URL,
     Blob,
-    // Looked up on every call, so a test's fake timers apply.
     setTimeout: (fn: () => void, ms?: number) => setTimeout(fn, ms),
     clearTimeout: (id?: ReturnType<typeof setTimeout>) => {
       clearTimeout(id);
@@ -150,38 +135,25 @@ export function loadSdk(artifact = "chart"): LoadedSdk {
   };
 }
 
-/**
- * The real `setImmediate`, taken before any test installs fake timers, which
- * replace the global one.
- */
 const realSetImmediate = setImmediate;
 
-/**
- * Let the SDK's promise chains and queued microtasks run. An immediate runs
- * only once the microtask queue is empty, so waiting for one lets every chain
- * finish however many turns it takes. It is the real one, so it also works
- * under fake timers, and it moves no fake clock.
- */
 export function settle(): Promise<void> {
   return new Promise((resolve) => {
     realSetImmediate(resolve);
   });
 }
 
-/** The newest request the SDK sent. */
 export function lastRequest(requests: HeldRequest[]): HeldRequest {
   const last = requests.at(-1);
   if (last === undefined) throw new Error("no request was sent");
   return last;
 }
 
-/** A thrown or rejected value's name and message, which survive the SDK's own realm. */
 export function described(err: unknown): { name: string; message: string } {
   const { name, message } = err as Error;
   return { name, message };
 }
 
-/** What `fn` threw, or a failure when it threw nothing. */
 export function thrownBy(fn: () => unknown): { name: string; message: string } {
   try {
     fn();

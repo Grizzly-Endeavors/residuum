@@ -3,13 +3,6 @@ import { expectNoAxeViolations } from "../support/axe";
 import { expect, test } from "../support/fixtures";
 import { expectPaletteOpen, expectSettingsOpen, expectSetupOpen } from "../support/lazy";
 
-/**
- * The shell: every place from the rail (the drawer on phones) and the phone's
- * bottom bar, the agent accordion, history, the redirects from old URLs, and
- * the hub banner.
- */
-
-/** The rail, opened in its drawer on a phone. */
 async function openRail(page: Page, isMobile: boolean): Promise<Locator> {
   if (isMobile) {
     await page
@@ -21,30 +14,25 @@ async function openRail(page: Page, isMobile: boolean): Promise<Locator> {
   return page.getByRole("navigation", { name: "Places and agents" });
 }
 
-/** An agent's name in the rail: a link to its Chat that also opens its places. */
 function agentRow(rail: Locator, name: string): Locator {
   return rail.getByRole("link", { name: new RegExp(`^${name}\\b`) });
 }
 
-/** The chevron beside an agent's name: it opens and closes the places without navigating. */
 function agentChevron(rail: Locator, name: string): Locator {
   return rail.getByRole("button", { name: new RegExp(`^${name} places$`) });
 }
 
-/** Open an agent's places in the rail, unless they already are. */
 async function expandAgent(rail: Locator, name: string): Promise<void> {
   const chevron = agentChevron(rail, name);
   if ((await chevron.getAttribute("aria-expanded")) !== "true") await chevron.click();
 }
 
-/** The rail's page link for `place`: an agent's Chat is its name, the other places are sub-rows. */
 function placeLink(rail: Locator, place: { name: string; agent?: string; link: RegExp }): Locator {
   return place.agent !== undefined && place.name === "Chat"
     ? agentRow(rail, place.agent)
     : rail.getByRole("link", { name: place.link });
 }
 
-/** Path and query of the page's URL, decoded, so a test can compare them exactly. */
 function address(page: Page): string {
   const url = new URL(page.url());
   return decodeURIComponent(`${url.pathname}${url.search}`);
@@ -113,7 +101,6 @@ const PLACES: readonly PlaceCase[] = [
   },
 ];
 
-// One test for each place, with its own timeout: opening a place and scanning it runs for seconds on a loaded machine, so all of them in one test overrun it.
 test.describe("every place opens from the rail, or the drawer on a phone", () => {
   for (const place of PLACES) {
     test(place.name, async ({ page, isMobile }) => {
@@ -127,7 +114,6 @@ test.describe("every place opens from the rail, or the drawer on a phone", () =>
       await expect.poll(() => address(page), place.name).toBe(place.path);
       await expect(place.shows(page), place.name).toBeVisible();
       await expect(page.getByRole("dialog", { name: "Agents and places" })).toBeHidden();
-      // The rail marks the current place with aria-current; an agent's name marks its Chat.
       if (!isMobile) await expect(placeLink(rail, place)).toHaveAttribute("aria-current", "page");
       await expectNoAxeViolations(page);
     });
@@ -190,7 +176,6 @@ test.describe("the agent accordion", () => {
     await page.goto("/agent/atlas");
     const rail = await openRail(page, isMobile);
 
-    // The viewed agent starts open, and has no Chat sub-row.
     await expect(agentChevron(rail, "atlas")).toHaveAttribute("aria-expanded", "true");
     await expect(rail.getByRole("link", { name: /^Chat$/ })).toHaveCount(0);
     await expect(rail.getByRole("link", { name: /^Activity/ })).toHaveAttribute(
@@ -210,7 +195,6 @@ test.describe("the agent accordion", () => {
     await expect(agentChevron(rail, "scout")).toHaveAttribute("aria-expanded", "false");
     await expect(rail.getByRole("link", { name: /^Activity/ })).toBeHidden();
 
-    // Collapsed, the viewed agent keeps its highlight, and the page stays.
     await expect(agentRow(rail, "atlas")).toHaveAttribute("data-viewed");
     expect(address(page)).toBe("/agent/atlas");
     await expectNoAxeViolations(page);
@@ -247,7 +231,6 @@ test.describe("the agent accordion", () => {
     await page.keyboard.press("Enter");
     await expect(agentChevron(rail, "atlas")).toHaveAttribute("aria-expanded", "true");
 
-    // The rows are the links: the name, then its places.
     await agentRow(rail, "atlas").focus();
     await page.keyboard.press("ArrowDown");
     await expect(rail.getByRole("link", { name: /^Activity/ })).toBeFocused();
@@ -287,7 +270,6 @@ test("Back and Forward move between places", async ({ page, isMobile }) => {
   await expect.poll(() => address(page)).toBe("/agent/atlas");
 });
 
-// Old URLs, read with no last-used agent saved: it is the first agent by name, atlas.
 const REDIRECTS: readonly (readonly [from: string, to: string])[] = [
   ["/", "/home"],
   ["/team", "/home"],
@@ -312,7 +294,6 @@ const REDIRECTS: readonly (readonly [from: string, to: string])[] = [
   ["/notification/abc123", "/agent/atlas/files"],
 ];
 
-// One test for each URL: every one is a full page load, so a single test over all of them spends its timeout on the sum of the loads.
 test.describe("old URLs redirect to where they lead now", () => {
   for (const [from, to] of REDIRECTS) {
     test(`${from} leads to ${to}`, async ({ page }) => {
@@ -332,7 +313,6 @@ test("an address the app doesn't have shows Not Found inside the shell, with the
   await expect(page.getByText("/agent/atlas/old-notes", { exact: true })).toBeVisible();
   expect(address(page)).toBe("/agent/atlas/old-notes");
   await expect(page).toHaveTitle("Page not found · Residuum");
-  // The shell's own navigation stays in reach.
   await expect(
     page.getByRole("navigation", { name: isMobile ? "Main" : "Places and agents" }),
   ).toBeVisible();
@@ -359,8 +339,6 @@ test("the hub banner shows while the hub can't be reached, and Retry reconnects"
   await expect(page.getByRole("heading", { name: "atlas", level: 1 })).toBeVisible();
   const banner = page.getByRole("status").filter({ hasText: "Can't reach Residuum." });
   await expect(banner).toBeHidden();
-  // Manual time holds the socket's own reconnect timer, which would otherwise
-  // race the click below once the hub is back, so only Retry can reconnect it.
   await mock.manualTime();
 
   await mock.post("/api/mock/hub-socket", { data: { online: false } });

@@ -2,14 +2,9 @@
   import { diffLineKind } from "../../lib/checkpoints";
   import { keyboardScrollable } from "../../lib/ui";
 
-  // A file at a checkpoint: what changed, its lines colored as added or
-  // removed, or its whole text. A file's history and Settings → History show
-  // it. While it scrolls, it takes focus for the keyboard.
-
   interface Props {
     text: string;
     as: "diff" | "file";
-    /** Names the region: "Changes to SOUL.md". */
     label: string;
   }
 

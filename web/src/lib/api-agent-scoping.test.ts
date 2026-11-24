@@ -24,7 +24,6 @@ function stubStorage(): void {
   });
 }
 
-/** Answer every request with an empty success and record "METHOD url" for each. */
 function recordRequests(): string[] {
   const seen: string[] = [];
   vi.stubGlobal(
@@ -52,7 +51,6 @@ function recordRequests(): string[] {
   return seen;
 }
 
-/** The requests `call` makes. */
 async function requestsOf(call: () => Promise<unknown>): Promise<string[]> {
   const seen = recordRequests();
   await call().catch(() => undefined);
@@ -61,7 +59,6 @@ async function requestsOf(call: () => Promise<unknown>): Promise<string[]> {
 
 beforeEach(() => {
   stubStorage();
-  // The fetch cache lives for the module's lifetime; each test starts empty.
   for (const agent of AGENTS) {
     for (const key of [
       api.cacheKeyStatus,
@@ -81,7 +78,6 @@ afterEach(() => {
 
 const AGENTS = ["scout", "atlas"] as const;
 
-/** One area's calls: a label, how to make the call for `agent`, and the request it makes. */
 type Row = [string, (agent: string) => Promise<unknown>, string];
 
 const AREAS: Record<string, Row[]> = {

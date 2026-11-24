@@ -5,18 +5,4 @@ import type { SessionSummary } from "./SessionSummary";
  * `GET /api/agents/{name}/sessions` response: live sessions plus one page of completed
  * runs.
  */
-export type SessionListResponse = { 
-/**
- * Every live session (forking, running, idle, or completing) matching
- * the filter, newest first. Not paginated.
- */
-live: Array<SessionSummary>, 
-/**
- * One page of completed runs from the session store, newest first.
- */
-completed: Array<SessionSummary>, 
-/**
- * Opaque cursor for the next page of completed runs (pass back as
- * `?before=`), or `null` when there are no more.
- */
-next_cursor: string | null, };
+export type SessionListResponse = { live: Array<SessionSummary>, completed: Array<SessionSummary>, next_cursor: string | null, };

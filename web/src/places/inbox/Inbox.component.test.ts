@@ -67,19 +67,14 @@ function overviewOf(name: string, unread: number): AgentOverview {
 }
 
 interface Server {
-  /** The list each folder answers with. */
   folders: Partial<Record<MailFolder, MailThreadPage>>;
-  /** Threads by every ref that opens them. */
   threads: Record<string, MailThread>;
   failList: boolean;
-  /** Hold list requests until released, to see the loading state. */
   holdList: boolean;
-  /** Answer thread requests only once this settles. */
   threadGate: Promise<void> | null;
   requests: SeenRequest[];
 }
 
-/** A promise settled from outside, to hold a request until the test lets it go. */
 function gate(): { promise: Promise<void>; release: () => void } {
   let release: () => void = () => {};
   const promise = new Promise<void>((resolve) => {
@@ -129,7 +124,6 @@ function inbox(overrides: Partial<InboxPlace> = {}): InboxPlace {
   return { ...INBOX, ...overrides };
 }
 
-/** Put the router where the place is, with `panel` open, as the app would be. */
 function at(place: InboxPlace, panel: Panel | null = null): void {
   router.location = { ...locationAt(place), panel };
 }
@@ -157,7 +151,6 @@ function show(place: InboxPlace, panel: Panel | null = null): View {
   return render(Inbox, { place });
 }
 
-/** Let the spied navigation take effect as the router does: the address moves and the place re-renders. */
 function followNavigation(nav: NavigationSpies, view: View): void {
   const go = async (next: Place): Promise<boolean> => {
     if (next.kind !== "inbox") return true;
@@ -169,7 +162,6 @@ function followNavigation(nav: NavigationSpies, view: View): void {
   nav.replace.mockImplementation(go);
 }
 
-/** The list column, which the narrow layout hides (jsdom runs no container queries). */
 function listColumn(): HTMLElement {
   return screen.getByRole("region", { name: "Conversations" });
 }
@@ -185,7 +177,6 @@ const DEPLOY = mailSummary("atlas/user/mock_1", { unread: true, subject: "Deploy
 const DIGEST = mailSummary("scout/user/mock_2", { subject: "", has_attachments: true });
 const INBOX_PAGE: MailThreadPage = { threads: [DEPLOY, DIGEST], next: null };
 
-/** Open DEPLOY from the address, once its thread and the list have arrived. */
 async function openDeploy(panel: Panel | null = null): Promise<NavigationSpies> {
   serve({
     folders: { inbox: INBOX_PAGE },
@@ -444,7 +435,6 @@ describe("Inbox", () => {
     await view.rerender({ place: inbox() });
     expect(mail.newMessage).toBeNull();
 
-    // Once the Inbox is gone, its check no longer answers for the store.
     view.unmount();
     mail.openNewMessage().body = "Again";
     expect(router.guard.losses(locationAt(HOME))).toEqual([]);

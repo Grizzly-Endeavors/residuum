@@ -7,16 +7,11 @@
   import { configFileAt, fileName, isIdentityFile } from "./file-source";
   import type { FileTree } from "./file-tree.svelte";
 
-  // The rows of a file tree: folders that open and close, files that open in
-  // the context panel, and each file's History, Rename and Delete.
-
   interface Props {
     tree: FileTree;
-    /** The path the context panel shows, which the tree marks. */
     shown: string | null;
     onopen: (path: string) => void;
     onhistory: (path: string) => void;
-    /** A file was renamed or moved from `from` to `to`. */
     onmoved: (from: string, to: string) => void;
   }
 
@@ -204,7 +199,6 @@
       font-size: var(--font-size-xs);
     }
 
-    /* Identity files: the agent's soul and heartbeat, the team's rules and user facts. */
     &[data-identity] .file-tree-row {
       color: var(--color-vein-bright);
     }
@@ -225,7 +219,6 @@
       }
     }
 
-    /* The row's menu stays out of the way until the row is in play. */
     & > :global(.ui-icon-button) {
       flex: none;
       margin-right: var(--space-4);

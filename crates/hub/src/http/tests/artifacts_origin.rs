@@ -1,10 +1,6 @@
-//! Requests the artifacts listener forwards to the hub router: the routes
-//! they are refused, and what a client can't fake.
-
 use super::*;
 use residuum_net::workbench::ArtifactsOrigin;
 
-/// The routes a request through the artifacts origin is refused.
 const BLOCKED: [&str; 8] = [
     "/api/hub/shutdown",
     "/api/hub/stop-all",
@@ -16,7 +12,6 @@ const BLOCKED: [&str; 8] = [
     "/api/hub/cloud/disconnect",
 ];
 
-/// `request` as the artifacts listener forwards it.
 fn through_the_artifacts_origin(mut request: Request<Body>) -> Request<Body> {
     request.extensions_mut().insert(ArtifactsOrigin);
     request
@@ -34,8 +29,6 @@ fn request(method: Method, uri: &str) -> Request<Body> {
 async fn every_blocked_route_is_refused_through_the_artifacts_origin() {
     let mut h = Harness::new();
     for uri in BLOCKED {
-        // The route is real: it answers a method it doesn't serve with 405,
-        // not 404, so the refusal below isn't a missing route in disguise.
         let exists = h.status(request(Method::GET, uri)).await;
         assert_eq!(exists, StatusCode::METHOD_NOT_ALLOWED, "{uri}");
 
@@ -69,11 +62,9 @@ async fn the_blocked_routes_work_without_the_marker() {
         .await;
     assert_eq!(restart, json!({ "restarting": true }));
 
-    // With no check made, there is no version to install.
     h.post_expect("/api/hub/update/apply", StatusCode::BAD_REQUEST)
         .await;
 
-    // Onboarding's own refusal, not the block list's.
     let setup = h
         .expect(
             Method::POST,
@@ -101,10 +92,6 @@ async fn the_blocked_routes_work_without_the_marker() {
 
     h.post_expect("/api/hub/cloud/disconnect", StatusCode::OK)
         .await;
-
-    // `POST /api/hub/update/check` is left out: unmarked, it asks GitHub for
-    // the latest release, which a test must not do. Its route exists (the
-    // 405 above) and the block list's unit test covers its path.
 }
 
 #[tokio::test]
@@ -121,7 +108,6 @@ async fn a_page_on_the_artifacts_origin_cannot_start_a_cloud_sign_in() {
     let body: Value = serde_json::from_slice(&body).unwrap();
     assert!(body.get("url").is_none(), "{body}");
 
-    // No state was handed out, so no callback can be completed with one.
     let (_, headers, _) = h
         .send(request(
             Method::GET,

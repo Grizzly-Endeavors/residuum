@@ -1,12 +1,3 @@
-//! The hub process: everything that is one-per-process rather than
-//! one-per-agent.
-//!
-//! [`run_hub`] starts the HTTP server, the relay tunnel, the A2A listener,
-//! the workbench server, tracing, and the updater, builds the services every
-//! agent shares (see `HubServices`), and hands the agents to the
-//! [`AgentHost`]. It runs until the process is told to stop, then stops every
-//! agent gracefully.
-
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -37,43 +28,23 @@ use super::team_events::{TeamEventLog, TeamEventRecorder, record_hub_started};
 use super::types::{HubEvent, HubNoticeKind, NoticeLevel};
 use super::web::WebAssetSource;
 
-/// How often the hub checks for a newer version.
 const UPDATE_CHECK_INTERVAL: Duration = Duration::from_hours(6);
 
-/// What the process hands the hub to run with.
 pub struct HubInputs {
-    /// The residuum root, which holds `hub/` and one directory per agent.
     pub root: PathBuf,
-    /// The version and commit of the running binary.
     pub build: BuildInfo,
-    /// Starts each agent's runtime.
     pub launcher: Arc<dyn AgentLauncher>,
-    /// The embedded web app, which the static routes and the MCP catalog serve.
     pub assets: WebAssetSource,
-    /// Called once the servers are bound and the autostart agents have started
-    /// or failed; the process uses it to write its readiness marker.
     pub on_ready: Box<dyn FnOnce(&Path) + Send>,
-    /// The global log filter, which a `[tracing]` reload changes.
     pub log_filter: Option<&'static dyn FilterReload>,
 }
 
-/// Runtime log level switching.
-///
-/// Type-erases the `tracing_subscriber::reload::Handle` so it can be stored
-/// globally without naming the full subscriber stack type.
 pub trait FilterReload: Send + Sync {
-    /// Replace the active `EnvFilter` with one for the given log level.
-    ///
-    /// # Errors
-    /// Returns an error if the filter cannot be applied.
     fn set_filter(&self, level: LogLevel) -> Result<(), String>;
 }
 
-/// Outcome of the hub's main loop.
 pub enum HubExit {
-    /// Clean shutdown (inbound channel closed).
     Shutdown,
-    /// Restart requested (binary updated, re-exec needed).
     Restart,
 }
 
@@ -88,18 +59,12 @@ struct TermSignal {
 }
 
 impl TermSignal {
-    /// Register the SIGTERM listener.
-    ///
-    /// # Errors
-    ///
-    /// Returns an I/O error if the signal handler cannot be registered.
     #[cfg(unix)]
     fn new() -> std::io::Result<Self> {
         let inner = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         Ok(Self { inner })
     }
 
-    /// Create the termination signal. Nothing to register on this platform.
     #[cfg(not(unix))]
     #[must_use]
     fn new() -> Self {
@@ -119,19 +84,16 @@ impl TermSignal {
     }
 }
 
-/// A running HTTP server task and the switch that stops it.
 struct HttpServer {
     handle: JoinHandle<()>,
     shutdown_tx: watch::Sender<bool>,
 }
 
-/// The relay tunnel task and the switch that stops it.
 struct TunnelTask {
     handle: JoinHandle<()>,
     shutdown_tx: watch::Sender<bool>,
 }
 
-/// The hub's A2A listener task and the switch that stops it.
 struct A2aListenerTask {
     handle: JoinHandle<()>,
     shutdown_tx: watch::Sender<bool>,
@@ -155,10 +117,6 @@ fn register_term_signal() -> Result<TermSignal, FatalError> {
     Ok(sigterm)
 }
 
-/// Load the hub config, falling back to its last-known-good copy if the live
-/// file fails to load. Returns the hub config actually used and — only when
-/// the fallback was used — a description of what was wrong with the live
-/// file.
 fn load_hub_with_fallback(hub_dir: &Path) -> Result<(HubConfig, Option<String>), FatalError> {
     let Some(root) = hub_dir.parent() else {
         return Err(FatalError::Config(format!(
@@ -175,19 +133,11 @@ fn load_hub_with_fallback(hub_dir: &Path) -> Result<(HubConfig, Option<String>),
     }
 }
 
-/// What the hub learns about its agents before any of them starts.
 struct AgentScan {
-    /// Teams adapter ports the agents are configured for, which the
-    /// workbench listener must stay off.
     teams_ports: Vec<u16>,
-    /// The embedding model the team wiki uses: the first agent (by name) with
-    /// one configured.
     team_embedding: Option<EmbeddingSource>,
 }
 
-/// Load every agent's config, best effort, for the settings that are shared
-/// across the hub. An agent whose config doesn't load is left out here; it
-/// reports its own problem when it starts.
 fn scan_agents(root: &Path, hub: &HubConfig) -> AgentScan {
     let mut scan = AgentScan {
         teams_ports: Vec::new(),
@@ -219,8 +169,6 @@ fn scan_agents(root: &Path, hub: &HubConfig) -> AgentScan {
     scan
 }
 
-/// Build the provider for the team wiki's embedding model. A provider that
-/// can't be built leaves wiki search text only.
 fn build_team_embedding(source: &EmbeddingSource) -> Option<Arc<dyn EmbeddingProvider>> {
     match source.build() {
         Ok(provider) => Some(provider),
@@ -231,11 +179,6 @@ fn build_team_embedding(source: &EmbeddingSource) -> Option<Arc<dyn EmbeddingPro
     }
 }
 
-/// Bind the gateway's address from its config. The hub serves on the bound
-/// listener, so binding happens before the hub's other services start.
-///
-/// # Errors
-/// Returns `FatalError::Gateway` if the address cannot be bound.
 async fn bind_gateway(
     gateway: &residuum_config::GatewayConfig,
 ) -> Result<tokio::net::TcpListener, FatalError> {
@@ -253,7 +196,6 @@ async fn bind_gateway(
     Ok(listener)
 }
 
-/// Serve `app` on the gateway's bound `listener`.
 fn spawn_http_server(listener: tokio::net::TcpListener, app: axum::Router) -> HttpServer {
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
     let handle = residuum_core::util::spawn_in_span(async move {
@@ -272,17 +214,12 @@ fn spawn_http_server(listener: tokio::net::TcpListener, app: axum::Router) -> Ht
     }
 }
 
-/// What the secure tunnel serves and reports through, kept for the hub's
-/// lifetime and handed to each tunnel task.
 #[derive(Clone)]
 struct RemoteWiring {
-    /// The main gateway router, served in-process for the UI host.
     ui_router: axum::Router,
-    /// The workbench router, served in-process for the workbench host.
     workbench_router: axum::Router,
     pairing: residuum_net::pairing::DevicePairing,
     slot: residuum_net::remote_access::slot::RemoteAccessSlot,
-    /// Delivers a warning to the user as a hub notice.
     notify: residuum_net::remote_access::manager::Notifier,
 }
 
@@ -306,7 +243,6 @@ impl RemoteWiring {
     }
 }
 
-/// The handles a relay tunnel is started with.
 struct TunnelInputs<'a> {
     remote: &'a RemoteWiring,
     status_tx: &'a Arc<watch::Sender<TunnelStatus>>,
@@ -314,9 +250,6 @@ struct TunnelInputs<'a> {
     teams_ports: watch::Receiver<std::collections::BTreeMap<String, u16>>,
 }
 
-/// Start the relay tunnel for `cloud`, which keeps the relay's agent list
-/// current from `relay_agents`. `None` when the secure tunnel's manager can't
-/// be built (logged, and reported through the remote access status).
 fn spawn_tunnel(
     hub: &HubConfig,
     cloud: &residuum_config::CloudConfig,
@@ -346,16 +279,12 @@ fn spawn_tunnel(
     })
 }
 
-/// Start the tunnel the hub config asks for at startup, if it asks for one.
 fn spawn_initial_tunnel(hub: &HubConfig, inputs: &TunnelInputs<'_>) -> Option<TunnelTask> {
     hub.cloud
         .as_ref()
         .and_then(|cloud| spawn_tunnel(hub, cloud, inputs))
 }
 
-/// Bind the A2A listener's address from its config, when A2A is enabled. A
-/// bind that fails is logged and left to the listener, which tries again when
-/// it starts.
 async fn bind_a2a(hub: &HubConfig) -> Option<tokio::net::TcpListener> {
     if !hub.a2a.enabled {
         return None;
@@ -370,8 +299,6 @@ async fn bind_a2a(hub: &HubConfig) -> Option<tokio::net::TcpListener> {
     }
 }
 
-/// Start the hub's A2A listener over `host`, serving every agent under
-/// `/agents/{name}/`. It serves on `bound` when the caller bound it.
 fn spawn_a2a_listener(
     hub: &HubConfig,
     host: &Arc<AgentHost>,
@@ -379,8 +306,6 @@ fn spawn_a2a_listener(
     bound: Option<tokio::net::TcpListener>,
 ) -> A2aListenerTask {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    // Nothing the relay says names a caller: siblings present the keys they
-    // were issued when they joined.
     let mut listener = residuum_a2a::A2aListener::new(
         hub.gateway.bind.clone(),
         hub.a2a.port,
@@ -406,8 +331,6 @@ fn spawn_a2a_listener(
     }
 }
 
-/// The user's notice for an A2A listener that could not serve on `port`. The
-/// reason comes from the io error under `error`, put in plain words.
 fn a2a_failure_message(port: u16, error: &anyhow::Error) -> String {
     let reason = match error
         .chain()
@@ -425,7 +348,6 @@ fn a2a_failure_message(port: u16, error: &anyhow::Error) -> String {
     format!("The agent-to-agent listener couldn't start on port {port}: {reason}")
 }
 
-/// Stop a task by its switch and wait up to five seconds for it to finish.
 async fn stop_task(name: &str, shutdown_tx: &watch::Sender<bool>, handle: JoinHandle<()>) {
     shutdown_tx.send(true).ok();
     if tokio::time::timeout(Duration::from_secs(5), handle)
@@ -436,14 +358,8 @@ async fn stop_task(name: &str, shutdown_tx: &watch::Sender<bool>, handle: JoinHa
     }
 }
 
-/// What the hub tells its clients about the team, and what keeps it current:
-/// the event log, the overview and the Web Push notifications, each fed from
-/// the host's events and from the feed of agent changes for as long as this
-/// lives.
 struct TeamTracking {
-    /// What has happened across the team since this process started.
     events: Arc<TeamEventLog>,
-    /// What Home shows about each agent.
     overview: Arc<TeamOverview>,
     _recorder: TeamEventRecorder,
     _tracker: OverviewTracker,
@@ -451,9 +367,6 @@ struct TeamTracking {
 }
 
 impl TeamTracking {
-    /// Start tracking `host`. The log is the process's: its boot id is the
-    /// one the hub socket announces, and the overview names it too. `push`
-    /// sends the notifications that what the host reports calls for.
     fn start(host: &Arc<AgentHost>, push: &Arc<PushService>) -> Self {
         let events = TeamEventLog::new(uuid::Uuid::new_v4().to_string());
         record_hub_started(&events);
@@ -490,19 +403,14 @@ impl TeamTracking {
     }
 }
 
-/// The hub's process-level state.
 pub struct HubRuntime {
     hub_dir: std::path::PathBuf,
     hub_cfg: HubConfig,
     services: HubServices,
     host: Arc<AgentHost>,
-    /// Records what happens across the team and keeps every agent's
-    /// overview current, for as long as the hub runs.
     _team_tracking: TeamTracking,
     app: axum::Router,
     server: HttpServer,
-    /// Resolves when onboarding has written the first agent; `None` once the
-    /// hub has agents (or from the start, if it began with some).
     setup_done_rx: Option<watch::Receiver<bool>>,
     tunnel: Option<TunnelTask>,
     tunnel_status_tx: Arc<watch::Sender<TunnelStatus>>,
@@ -519,23 +427,16 @@ pub struct HubRuntime {
 }
 
 impl HubRuntime {
-    /// The services every hosted agent receives.
     #[must_use]
     pub fn services(&self) -> &HubServices {
         &self.services
     }
 
-    /// The host that runs the hub's agents.
     #[must_use]
     pub fn host(&self) -> &Arc<AgentHost> {
         &self.host
     }
 
-    /// Start the hub on the residuum root in `inputs`: build the shared services
-    /// and the host, bring up the servers, and start the `autostart` agents.
-    ///
-    /// # Errors
-    /// A [`FatalError`] when the shared services or the servers cannot start.
     pub async fn start(
         inputs: HubInputs,
         hub_cfg: HubConfig,
@@ -575,9 +476,6 @@ impl HubRuntime {
         .await?;
 
         let host = AgentHost::new(services.clone(), hub_cfg.clone(), launcher);
-        // Tracking comes first, so the hub's startup notices and every
-        // agent's start reach the log, the overview and the push triggers:
-        // nothing they listen to is replayed.
         let team = TeamTracking::start(&host, &services.push);
         host.note_team_embedding(scan.team_embedding).await;
         let agents = host.discover()?;
@@ -585,8 +483,6 @@ impl HubRuntime {
         publish_startup_notices(&host, &hub_cfg, fallback_problem.as_deref());
 
         let (reload_tx, reload_rx) = tokio::sync::mpsc::unbounded_channel();
-        // With no agents the web app runs onboarding, whose last step signals
-        // this once the first agent is on disk.
         let setup_done = agents.is_empty().then(|| Arc::new(watch::channel(false).0));
         let setup_done_rx = setup_done.as_ref().map(|tx| tx.subscribe());
         let app = build_app(
@@ -624,8 +520,6 @@ impl HubRuntime {
 
         host.start_autostart().await;
 
-        // Reaching this point means the servers are bound and every
-        // autostart agent has either started or been recorded as failed.
         on_ready(&hub_dir);
         if fallback_problem.is_none() {
             last_known_good::hub::save(&hub_dir);
@@ -655,8 +549,6 @@ impl HubRuntime {
         })
     }
 
-    /// Run until told to stop, then stop every agent and the servers.
-    /// `check_updates` turns the periodic version check on.
     pub async fn run(mut self, check_updates: bool) -> HubExit {
         if check_updates {
             spawn_update_check(&self.services.control.update_status);
@@ -700,11 +592,8 @@ impl HubRuntime {
         exit
     }
 
-    /// Stop every agent, then the servers.
     async fn shut_down(mut self) {
         tracing::info!("beginning hub shutdown");
-        // Refuse starts before stopping agents, so nothing can start after
-        // the sweep and be left running when the servers go down.
         self.host.begin_shutdown();
         self.host.stop_all().await;
         self.watcher.abort();
@@ -722,7 +611,6 @@ impl HubRuntime {
         tracing::info!("hub shutdown complete");
     }
 
-    /// Log the tunnel task's unexpected exit, auto-report it, and respawn it.
     async fn respawn_tunnel(&mut self, exit: &Result<(), tokio::task::JoinError>) {
         let described = match exit {
             Ok(()) => {
@@ -763,16 +651,11 @@ impl HubRuntime {
         }
     }
 
-    /// Act on the reload signals queued behind `first`: one hub reload
-    /// covers every hub config edit, and one workspace signal per running
-    /// agent covers every team identity edit.
     async fn handle_reload_signals(&mut self, first: ReloadSignal) {
         let mut hub_changed = false;
         let mut team_changed = false;
         let mut note = |signal: ReloadSignal| match signal {
             ReloadSignal::Workspace => team_changed = true,
-            // Nothing sends an agent-scoped signal to the hub; one that
-            // arrives is read as a hub reload so it isn't dropped.
             ReloadSignal::Hub | ReloadSignal::Agent => hub_changed = true,
         };
         note(first);
@@ -787,8 +670,6 @@ impl HubRuntime {
         }
     }
 
-    /// Onboarding wrote the first agent: apply the hub config it wrote, find
-    /// the agent, and start it.
     async fn start_first_agents(&mut self) {
         self.reload().await;
         match self.host.discover() {
@@ -810,12 +691,6 @@ impl HubRuntime {
         self.host.start_autostart().await;
     }
 
-    /// Reload `hub/config.toml` in place.
-    ///
-    /// A config that fails to load keeps the running one in effect. What
-    /// changed is applied here where the hub owns it (the HTTP address, the
-    /// relay tunnel, tracing, the A2A listener), and every running agent is
-    /// told to reload against the new config for the rest.
     async fn reload(&mut self) {
         tracing::info!("handling hub config reload");
         let new_hub = match HubConfig::load_at(&self.hub_dir) {
@@ -903,8 +778,6 @@ impl HubRuntime {
         });
     }
 
-    /// Serve the hub's HTTP app on the new address, then retire the old
-    /// server. A bind failure keeps the current server and tells the user.
     async fn rebind_http(&mut self, new_hub: &HubConfig) {
         let listener = match bind_gateway(&new_hub.gateway).await {
             Ok(listener) => listener,
@@ -927,8 +800,6 @@ impl HubRuntime {
         tracing::info!(addr = %new_hub.gateway.addr(), "gateway rebound to new address");
     }
 
-    /// Push a changed `[tracing]` section into the tracing service and the
-    /// global log filter.
     async fn apply_tracing(&self, new_hub: &HubConfig) {
         self.services
             .tracing_service
@@ -942,7 +813,6 @@ impl HubRuntime {
         tracing::debug!(level = %new_hub.tracing.log_level, "tracing config updated");
     }
 
-    /// Stop the tunnel (if running) and start one for the new config.
     async fn restart_tunnel(&mut self, new_hub: &HubConfig) {
         if let Some(tunnel) = self.tunnel.take() {
             stop_task("tunnel", &tunnel.shutdown_tx, tunnel.handle).await;
@@ -968,7 +838,6 @@ impl HubRuntime {
         }
     }
 
-    /// Stop the A2A listener (if running) and start one for the new config.
     async fn restart_a2a_listener(&mut self, new_hub: &HubConfig) {
         if let Some(a2a) = self.a2a.take() {
             stop_task("a2a", &a2a.shutdown_tx, a2a.handle).await;
@@ -987,27 +856,17 @@ impl HubRuntime {
     }
 }
 
-/// Resolves once onboarding signals that the first agent is written, then
-/// clears the slot; pends forever when there is nothing to wait for.
 async fn setup_finished(setup_done_rx: &mut Option<watch::Receiver<bool>>) {
     let Some(rx) = setup_done_rx else {
         return std::future::pending().await;
     };
     if rx.wait_for(|done| *done).await.is_err() {
-        // Every sender is gone, so no client can finish onboarding.
         *setup_done_rx = None;
         return std::future::pending().await;
     }
     *setup_done_rx = None;
 }
 
-/// Build the hub's HTTP app over `host`, with the process-wide handles from
-/// `services`, the team event log `team_events`, whose boot id the hub socket
-/// announces, and the team `overview`.
-///
-/// # Errors
-/// Returns `FatalError::Gateway` if the hub-level checkpoint repositories
-/// can't be opened.
 pub fn build_app(
     host: &Arc<AgentHost>,
     services: &HubServices,
@@ -1061,8 +920,6 @@ pub fn build_app(
     ))
 }
 
-/// Await the tunnel task if there is one, clearing the slot when it ends;
-/// pends forever otherwise.
 async fn poll_tunnel(tunnel: &mut Option<TunnelTask>) -> Result<(), tokio::task::JoinError> {
     match tunnel {
         Some(task) => {
@@ -1074,13 +931,6 @@ async fn poll_tunnel(tunnel: &mut Option<TunnelTask>) -> Result<(), tokio::task:
     }
 }
 
-/// Start the workbench artifacts listener beside the gateway. Teams' and
-/// A2A's configured ports stay free for them, and so do their defaults, so
-/// enabling either later can't collide with the artifacts listener.
-///
-/// The listener forwards `/api` to the hub router, which needs the listener's
-/// port and so is built after it. The returned handle is where the caller
-/// binds that router once it exists.
 async fn start_workbench_listener(
     root: &Path,
     build: BuildInfo,
@@ -1116,8 +966,6 @@ async fn start_workbench_listener(
     (serving, shutdown_tx, api, router)
 }
 
-/// The SDK the artifacts listener injects into every served page: this
-/// build's version and the features it supports.
 fn workbench_sdk(build: BuildInfo) -> SdkContext {
     SdkContext {
         version: build.version,
@@ -1125,8 +973,6 @@ fn workbench_sdk(build: BuildInfo) -> SdkContext {
     }
 }
 
-/// Report what the hub itself found wrong while starting: a fallback to its
-/// last-known-good config, load notices, and removed environment overrides.
 fn publish_startup_notices(host: &AgentHost, hub: &HubConfig, fallback_problem: Option<&str>) {
     if let Some(problem) = fallback_problem {
         tracing::error!(error = %problem, "hub startup fell back to the last-known-good config");
@@ -1148,7 +994,6 @@ fn publish_startup_notices(host: &AgentHost, hub: &HubConfig, fallback_problem: 
     }
 }
 
-/// Spawn a fire-and-forget update check task.
 fn spawn_update_check(status: &crate::update::SharedUpdateStatus) {
     let status = Arc::clone(status);
     residuum_core::util::spawn_monitored("update-check", async move {
@@ -1156,20 +1001,6 @@ fn spawn_update_check(status: &crate::update::SharedUpdateStatus) {
     });
 }
 
-/// Run the hub on the residuum root in `inputs` until it is told to stop.
-///
-/// Loads the hub config (falling back to its last-known-good copy; a missing
-/// timezone is allowed when no agent exists, so onboarding can ask for one),
-/// starts the servers and the shared services, and starts every agent whose
-/// `autostart` is on. Returns [`HubExit::Restart`] when the binary was
-/// updated and the process should relaunch.
-///
-/// # Errors
-///
-/// Returns `FatalError` if the hub config can't be loaded and has no working
-/// last-known-good copy, or a hub-level service (the HTTP server, the team
-/// wiki index, the checkpoint repositories) cannot start. An agent that
-/// can't start does not fail the hub; it is `failed` and the rest run.
 pub async fn run_hub(inputs: HubInputs) -> Result<HubExit, FatalError> {
     let hub_dir = residuum_config::paths::hub_dir(&inputs.root);
     let (hub_cfg, fallback_problem) = load_hub_with_fallback(&hub_dir)?;

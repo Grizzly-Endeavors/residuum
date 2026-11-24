@@ -1,5 +1,3 @@
-//! Provider and model specification types.
-
 use std::fmt;
 use std::str::FromStr;
 
@@ -8,44 +6,22 @@ use super::constants::{
     DEFAULT_OPENAI_URL,
 };
 
-/// Resolved provider configuration for a specific role.
-///
-/// Every role (main, observer, reflector, pulse) gets a fully resolved
-/// `ProviderSpec` at config load time — no `Option` chains at use sites.
 #[derive(Clone, PartialEq)]
 pub struct ProviderSpec {
-    /// Human-readable identifier (provider entry name or implicit kind).
     pub name: String,
-    /// Model spec for this role.
     pub model: ModelSpec,
-    /// Base URL for the provider.
     pub provider_url: String,
-    /// API key (redacted in Debug output).
     pub api_key: Option<String>,
-    /// Ollama `keep_alive` duration (e.g. `"5m"`, `"0"` to unload immediately).
     pub keep_alive: Option<String>,
-    /// Stable per-workspace, per-role routing key.
-    ///
-    /// Providers that serve from per-replica prompt caches (Fireworks) send it
-    /// so a role's long, stable prompt prefix keeps landing on a warm replica.
     pub session_affinity: Option<String>,
-    /// Whether the model takes images, as declared under its provider entry.
     pub image_input: ImageInput,
 }
 
-/// Whether a model accepts images in its input, as declared by the model's
-/// `input` list under its provider entry in `providers.toml`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ImageInput {
-    /// Nothing declared. Images are sent; a provider that turns a request
-    /// down for carrying them marks the model text-only for the rest of the
-    /// run (see inference's `image_input`).
     #[default]
     Undeclared,
-    /// The `input` list includes `"image"`.
     Accepted,
-    /// The `input` list leaves out `"image"`: images are replaced with a
-    /// placeholder in every request to the model.
     TextOnly,
 }
 
@@ -63,12 +39,9 @@ impl fmt::Debug for ProviderSpec {
     }
 }
 
-/// Parsed model specification from `"provider/model"` format.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelSpec {
-    /// The provider kind.
     pub kind: ProviderKind,
-    /// The model name (e.g. `"claude-sonnet-4-5"`).
     pub model: String,
 }
 
@@ -99,24 +72,18 @@ impl FromStr for ModelSpec {
     }
 }
 
-/// Supported model provider backends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderKind {
-    /// Anthropic Messages API.
     Anthropic,
     /// Fireworks AI (OpenAI-compatible wire format with Fireworks-specific
     /// prompt-cache reporting and replica affinity).
     Fireworks,
-    /// Google Gemini `generateContent` API.
     Gemini,
-    /// Ollama local inference.
     Ollama,
-    /// OpenAI-compatible chat completions (also vLLM, LM Studio, etc.).
     OpenAi,
 }
 
 impl ProviderKind {
-    /// Default base URL for this provider.
     #[must_use]
     pub fn default_url(self) -> &'static str {
         match self {

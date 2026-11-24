@@ -1,8 +1,3 @@
-//! Persistence for recent observation context (narrative + episode ID).
-//!
-//! Saved to `memory/recent_context.json` after each observation so the
-//! agent can maintain conversational continuity across restarts.
-
 use std::path::Path;
 
 use chrono::NaiveDateTime;
@@ -10,37 +5,20 @@ use serde::{Deserialize, Serialize};
 
 use anyhow::Context;
 
-/// Persisted narrative context from the most recent observation.
-///
-/// Saved to `memory/recent_context.json` after each observation so the
-/// agent can maintain conversational continuity.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecentContext {
-    /// Narrative summary of the conversation at observation time.
     pub narrative: String,
-    /// When this context was created.
     #[serde(with = "residuum_core::time::minute_format")]
     pub created_at: NaiveDateTime,
-    /// Episode ID that produced this context.
     pub episode_id: String,
 }
 
-/// Save a recent context to disk atomically.
-///
-/// # Errors
-/// Returns an error if the file cannot be written.
 pub async fn save_recent_context(path: &Path, ctx: &RecentContext) -> anyhow::Result<()> {
     let json = serde_json::to_string_pretty(ctx).context("failed to serialize recent context")?;
 
     residuum_core::util::fs::atomic_write(path, &json).await
 }
 
-/// Load a recent context from disk.
-///
-/// Returns `None` if the file does not exist or is empty.
-///
-/// # Errors
-/// Returns an error if the file exists but cannot be parsed.
 pub async fn load_recent_context(path: &Path) -> anyhow::Result<Option<RecentContext>> {
     match tokio::fs::read_to_string(path).await {
         Ok(contents) if contents.trim().is_empty() => Ok(None),

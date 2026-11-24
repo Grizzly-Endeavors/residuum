@@ -2,12 +2,10 @@ import type { RemoteAccessStatus } from "../src/lib/generated/RemoteAccessStatus
 import { json, readJsonObject, stringField } from "./http";
 import { decodedParam, type Route, type RouteContext } from "./routes";
 
-/** What the hub knows about the secure tunnel: its status and a recovery code not yet saved. */
 export interface MockRemoteAccess {
   status: RemoteAccessStatus;
 }
 
-/** An install without Residuum Cloud set up, where the remote access group stays hidden. */
 export function defaultRemoteAccess(): MockRemoteAccess {
   return {
     status: {
@@ -45,12 +43,6 @@ export function defaultRemoteAccess(): MockRemoteAccess {
   };
 }
 
-/**
- * An install on the secure tunnel with the user's other instances around it:
- * two instances (the desktop is active, this laptop is not), one instance
- * asking to join, a join this one started and is waiting on, a joined
- * sibling, and a certificate account whose instance is gone.
- */
 export function clusterRemoteAccess(): MockRemoteAccess {
   const base = defaultRemoteAccess().status;
   return {
@@ -105,7 +97,6 @@ function held(ctx: RouteContext): MockRemoteAccess {
   return ctx.state.remoteAccess;
 }
 
-/** `GET /api/hub/remote-access/status`: the mock is served locally, so the recovery code is included. */
 function status(ctx: RouteContext): void {
   const { status: current } = held(ctx);
   json(ctx.res, 200, {
@@ -119,13 +110,11 @@ function noContent(ctx: RouteContext): void {
   ctx.res.end();
 }
 
-/** `POST /api/hub/remote-access/recovery-code/saved`. */
 function saved(ctx: RouteContext): void {
   held(ctx).status.recovery_code_pending = false;
   noContent(ctx);
 }
 
-/** `POST /api/hub/remote-access/reset-pins`. */
 async function reset(ctx: RouteContext): Promise<void> {
   const body = await readJsonObject(ctx.req).catch(() => ({}));
   if (stringField(body, "recovery_code")?.length !== 20) {
@@ -136,7 +125,6 @@ async function reset(ctx: RouteContext): Promise<void> {
   noContent(ctx);
 }
 
-/** `POST /api/hub/remote-access/email-reset`: the reset link is "sent", and the reset waits for confirmation. */
 function emailReset(ctx: RouteContext): void {
   const { status: current } = held(ctx);
   current.pending_reset = {
@@ -150,7 +138,6 @@ function emailReset(ctx: RouteContext): void {
   json(ctx.res, 200, { email: "b***@example.com" });
 }
 
-/** `POST /api/hub/remote-access/cancel-reset`: only a reset that is waiting can be cancelled. */
 function cancelReset(ctx: RouteContext): void {
   const { status: current } = held(ctx);
   if (current.pending_reset === null) {
@@ -161,7 +148,6 @@ function cancelReset(ctx: RouteContext): void {
   noContent(ctx);
 }
 
-/** `POST /api/hub/remote-access/join`: the other instance is asked, and its code shows while it waits. */
 async function join(ctx: RouteContext): Promise<void> {
   const body = await readJsonObject(ctx.req).catch(() => ({}));
   const instance = stringField(body, "instance");
@@ -173,7 +159,6 @@ async function join(ctx: RouteContext): Promise<void> {
   noContent(ctx);
 }
 
-/** `POST /api/hub/remote-access/joins/{id}/approve` and `.../deny`. */
 function answerJoin(ctx: RouteContext): void {
   const id = decodedParam(ctx, 0);
   const { status: current } = held(ctx);
@@ -185,7 +170,6 @@ function answerJoin(ctx: RouteContext): void {
   noContent(ctx);
 }
 
-/** `POST /api/hub/remote-access/pins/remove`: only a removable account goes. */
 async function removeAccount(ctx: RouteContext): Promise<void> {
   const body = await readJsonObject(ctx.req).catch(() => ({}));
   const uri = stringField(body, "account_uri");
@@ -198,7 +182,6 @@ async function removeAccount(ctx: RouteContext): Promise<void> {
   noContent(ctx);
 }
 
-/** `POST /api/hub/remote-access/instances/{slug}/activate`. */
 function activate(ctx: RouteContext): void {
   const slug = decodedParam(ctx, 0);
   const { status: current } = held(ctx);
@@ -213,7 +196,6 @@ function activate(ctx: RouteContext): void {
   noContent(ctx);
 }
 
-/** `POST /api/mock/remote-access` with `{ "scenario": "cluster" }`: the secure tunnel with other instances, joins and a removable account. Any other scenario is the older tunnel. */
 async function scenario(ctx: RouteContext): Promise<void> {
   const body = await readJsonObject(ctx.req).catch(() => ({}));
   ctx.hub.hubState.remoteAccess =
@@ -221,7 +203,6 @@ async function scenario(ctx: RouteContext): Promise<void> {
   noContent(ctx);
 }
 
-/** The remote access routes, in the unscoped `/api/...` spelling of the hub's `/api/hub/...`. */
 export const remoteAccessRoutes: readonly Route[] = [
   { method: "GET", pattern: "/api/remote-access/status", handler: status },
   { method: "POST", pattern: "/api/remote-access/retry", handler: noContent },

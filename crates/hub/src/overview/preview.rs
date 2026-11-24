@@ -1,26 +1,14 @@
-//! A message as one short line of plain text, for the places that show only
-//! the start of it.
-
 use pulldown_cmark::{Event, Options, Parser, TagEnd};
 
-/// The most characters a preview holds, the ellipsis that marks a cut
-/// included.
 pub const PREVIEW_CHARS: usize = 200;
 
-/// What a cut preview ends with.
 const ELLIPSIS: char = '…';
 
-/// `markdown` as plain text on one line: its syntax removed (links and images
-/// keep their text, code keeps its characters, raw HTML goes), every run of
-/// whitespace one space, and cut to [`PREVIEW_CHARS`] characters with a
-/// trailing `…` when it is longer. Empty when the text has nothing to show.
 #[must_use]
 pub fn plain_preview(markdown: &str) -> String {
     plain_preview_within(markdown, PREVIEW_CHARS)
 }
 
-/// [`plain_preview`] cut to `max_chars` characters instead, the ellipsis
-/// included.
 #[must_use]
 pub fn plain_preview_within(markdown: &str, max_chars: usize) -> String {
     let options =
@@ -30,8 +18,6 @@ pub fn plain_preview_within(markdown: &str, max_chars: usize) -> String {
         match event {
             Event::Text(part) | Event::Code(part) => text.push_str(&part),
             Event::SoftBreak | Event::HardBreak | Event::Rule => text.push(' '),
-            // Inline styling ends inside a word ("**bold**ly"); a block, row
-            // or cell ends between words.
             Event::End(end) if !is_inline(end) => text.push(' '),
             Event::End(_)
             | Event::Start(_)
@@ -49,7 +35,6 @@ pub fn plain_preview_within(markdown: &str, max_chars: usize) -> String {
     )
 }
 
-/// Whether `end` closes something inside a line of text.
 fn is_inline(end: TagEnd) -> bool {
     matches!(
         end,
@@ -63,7 +48,6 @@ fn is_inline(end: TagEnd) -> bool {
     )
 }
 
-/// `line`, or its start and an ellipsis when it is over `max_chars`.
 fn cut(line: &str, max_chars: usize) -> String {
     if line.chars().count() <= max_chars {
         return line.to_string();

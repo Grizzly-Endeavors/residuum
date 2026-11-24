@@ -7,9 +7,6 @@ import { router } from "../lib/router.svelte";
 import { HOME } from "../lib/routes";
 import TabTitle from "./TabTitle.svelte";
 
-// The tab's title follows the router, the hub's activity and the page's
-// visibility through effects, so this lives with the component tests.
-
 function agent(name: string, displayName: string = name): AgentSummary {
   return {
     name,

@@ -1,23 +1,18 @@
 <script lang="ts" module>
   import type { WaitingMessage } from "../../lib/types";
 
-  /** What a waiting message shows: main's carry more, a session's only its text. */
   export type WaitingBubble = Pick<
     WaitingMessage,
     "id" | "content" | "images" | "attachments" | "sender" | "asked"
   >;
 
-  /** What can be asked of a waiting message in the main conversation. */
   export interface WaitingActions<M extends WaitingBubble> {
-    /** The agent's connection is down: nothing can be asked of a message. */
     offline: boolean;
     onsendnow: (message: M) => void;
     onmultitask: (message: M) => void;
   }
 
-  /** What can be asked of a message waiting for a session to read it. */
   export interface SessionWaitingActions<M extends WaitingBubble> {
-    /** Stop showing it as waiting, for one nothing will read. */
     ondismiss: (message: M) => void;
   }
 </script>
@@ -25,20 +20,9 @@
 <script lang="ts" generics="M extends WaitingBubble">
   import { AttachmentChip, IconButton } from "../../lib/ui";
 
-  // The messages the agent or a session hasn't read yet, at the foot of the
-  // transcript under the turn they wait on. Each is the user's bubble, a
-  // little faded until it is read, when it joins the transcript where it was
-  // read. In the main conversation, beside it, Send now stops the turn in
-  // flight so the message starts the next one, and Multitask sends it to a
-  // session forked from the conversation instead. While one of them is under
-  // way, both wait. In a session panel, Dismiss stops showing it as waiting,
-  // for one the session will never read.
-
   interface Props {
     messages: M[];
-    /** Who reads them, as shown: the agent's name, or "this session". */
     reader: string;
-    /** Send now and Multitask for the main conversation's messages, Dismiss for a session's. */
     actions?: WaitingActions<M> | SessionWaitingActions<M>;
   }
 
@@ -183,7 +167,6 @@
     font-size: var(--font-size-xs);
   }
 
-  /* The actions (Send now and Multitask, or Dismiss) left of the bubble, on its last line, the way a sent message keeps its time. */
   .waiting-row {
     display: flex;
     align-items: flex-end;
@@ -198,7 +181,6 @@
     gap: var(--space-2);
   }
 
-  /* The user's bubble, faded a little: the agent hasn't read it yet. */
   .waiting-bubble {
     display: flex;
     flex: 0 1 auto;

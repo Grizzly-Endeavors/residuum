@@ -3,36 +3,4 @@ import type { TeamEventKind } from "./TeamEventKind";
 import type { TeamEventLevel } from "./TeamEventLevel";
 import type { TeamEventTarget } from "./TeamEventTarget";
 
-/**
- * One entry of the team event log.
- */
-export type TeamEvent = { 
-/**
- * Increases with every entry within one hub process; ids are not
- * reused, but evicted entries leave gaps.
- */
-id: number, 
-/**
- * When it happened.
- */
-at: string, 
-/**
- * The agent it is about, when there is one.
- */
-agent: string | null, 
-/**
- * What happened.
- */
-kind: TeamEventKind, 
-/**
- * How serious it is.
- */
-level: TeamEventLevel, 
-/**
- * One plain-language sentence saying what happened.
- */
-summary: string, 
-/**
- * Where to take the user to see it, when there is such a place.
- */
-target: TeamEventTarget | null, };
+export type TeamEvent = { id: number, at: string, agent: string | null, kind: TeamEventKind, level: TeamEventLevel, summary: string, target: TeamEventTarget | null, };

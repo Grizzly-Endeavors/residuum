@@ -7,19 +7,10 @@
   import Prose from "./Prose.svelte";
   import Timestamp from "./Timestamp.svelte";
 
-  // An agent's reply as unboxed prose. While it streams in, its prose ends in
-  // a blinking caret. One cut short by a stop keeps what arrived and says so,
-  // and a reply delivered to a chat interface says where it went. Its quiet
-  // details, Copy (the reply's Markdown to the clipboard) and when it was
-  // sent, take no room of their own: they sit in the margin left of the
-  // reply's last line where the conversation has one, and otherwise float
-  // over the gap below it. Both wait until the reply is whole.
-
   let { item, agent }: { item: AssistantFeedItem; agent: string } = $props();
 
   const COPIED_MS = 2000;
 
-  /** The reply was just copied: the button says so, and a polite status does. */
   let copied = $state(false);
   let reset: ReturnType<typeof setTimeout> | undefined;
 

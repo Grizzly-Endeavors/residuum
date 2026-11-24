@@ -1,26 +1,17 @@
-//! One request to a push service, and what its answer means.
-
 use std::time::Duration;
 
 use super::encrypt::{Recipient, encrypt};
 use super::keys::VapidKey;
 use super::types::{PushMessage, WebPushSubscription};
 
-/// How long one request may take, connecting and answering together.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// How much of a push service's answer is kept for the log.
 const LOGGED_RESPONSE_BYTES: usize = 300;
 
-/// Why a delivery didn't succeed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Failure {
-    /// The HTTP status the push service answered, when it answered.
     pub(super) status: Option<u16>,
-    /// What went wrong and what to do, in plain words.
     pub(super) message: String,
-    /// What the push service said, for the log. It can hold anything, so it
-    /// is never shown to the user.
     pub(super) response: Option<String>,
 }
 
@@ -34,22 +25,16 @@ impl Failure {
     }
 }
 
-/// What one request to a push service came to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Attempt {
-    /// The push service accepted the message.
     Delivered,
     /// The push service no longer knows the subscription (404 or 410): the
     /// browser revoked it or it expired.
     Gone,
-    /// A 429, a 5xx, or no answer at all: trying again later may work.
     Retryable(Failure),
-    /// Anything else. The same request would fail the same way.
     Rejected(Failure),
 }
 
-/// Encrypt `message` for `subscription`, sign the request with `key` as
-/// `subject`, and send it.
 pub(super) async fn send_once(
     subscription: &WebPushSubscription,
     key: &VapidKey,
@@ -92,7 +77,6 @@ pub(super) async fn send_once(
     }
 }
 
-/// Everything a request needs, before it is sent.
 struct PreparedRequest {
     url: reqwest::Url,
     authorization: String,
@@ -133,7 +117,6 @@ fn build_request(
     })
 }
 
-/// Sort a push service's answer into what to do next.
 async fn classify(response: reqwest::Response) -> Attempt {
     let status = response.status();
     if status.is_success() {
@@ -155,7 +138,6 @@ async fn classify(response: reqwest::Response) -> Attempt {
     }
 }
 
-/// The start of a response body, as text for the log.
 async fn first_bytes_of(mut response: reqwest::Response) -> Option<String> {
     let chunk = response.chunk().await.ok().flatten()?;
     let kept: Vec<u8> = chunk.iter().take(LOGGED_RESPONSE_BYTES).copied().collect();
@@ -211,8 +193,6 @@ mod tests {
         (dir, key)
     }
 
-    /// A subscription to `endpoint` whose keys are well-formed: the public
-    /// key is the hub's own, which is a valid P-256 point.
     fn subscription(endpoint: &str, key: &VapidKey) -> WebPushSubscription {
         WebPushSubscription {
             endpoint: endpoint.to_string(),
@@ -395,7 +375,6 @@ mod tests {
     #[tokio::test]
     async fn an_unreachable_service_is_worth_retrying_and_the_message_hides_its_address() {
         let (_dir, key) = key().await;
-        // Nothing listens on port 1.
         let sub = subscription("http://127.0.0.1:1/secret-capability-url", &key);
 
         let Attempt::Retryable(failure) =

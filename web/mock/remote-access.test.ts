@@ -17,7 +17,6 @@ describe("the remote access routes", () => {
         : { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
     });
 
-  /** The status code of a request whose answer has no body. */
   const statusOf = async (method: string, path: string, body?: unknown): Promise<number> => {
     const res = await fetch(`${harness.baseUrl}${path}`, {
       method,

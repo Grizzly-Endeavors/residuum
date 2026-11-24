@@ -1,12 +1,3 @@
-// The chat actions, run as `/name` in the composer or from the palette. Each
-// has a plain label and a command, so `/observe` runs "Summarize older
-// messages now". They act on the bound agent, and the ones that go to it
-// need it running. Each says one thing of its own at most: Summarize and
-// Condense say they've started, and the agent's notice says when they're
-// done; Reload and New message leave it all to the agent's notice, which comes
-// at once; Fork this conversation names the session it started, with Open
-// session, or says why it couldn't.
-
 import type { AppAction } from "./action-registry.svelte";
 import type { AgentDisplayState } from "./agent-display-state";
 import type { StartSessionRequest } from "./api";
@@ -18,30 +9,21 @@ import type { ClientMessage, ConnectionStatus } from "./types";
 export const CHAT_GROUP = "Actions";
 
 export interface ChatActionContext {
-  /** The bound agent, or null before there is one. */
   agent: string | null;
-  /** Its state as shown, or null when the hub hasn't listed it yet. */
   state: AgentDisplayState | null;
-  /** A reply is under way in its chat. */
   replying: boolean;
   hubConnection: ConnectionStatus;
   agentConnection: ConnectionStatus;
   send: (msg: ClientMessage) => void;
   stopReply: () => void;
   surface: (kind: NotificationKind, message: string, action?: ToastAction) => void;
-  /** Start a session of the owner's own on an agent; resolves to its address. */
   startSession: (agent: string, request: StartSessionRequest) => Promise<string>;
-  /** Show an agent's session in the context panel. */
   openSession: (agent: string, address: string) => void;
-  /** Show the agent's conversation size in the context panel. */
   showConversationSize: (agent: string) => void;
-  /** Open the New message view addressed to `agent`. */
   composeMailTo: (agent: string) => void;
-  /** Open the connection status dialog. */
   showConnectionStatus: () => void;
 }
 
-/** Why an action that goes over the agent's connection can't run, or undefined when it can. */
 export function needsRunningAgent(ctx: ChatActionContext): string | undefined {
   if (ctx.agent === null) return "Open an agent first";
   if (ctx.state === "stopping") return `${ctx.agent} is stopping`;
@@ -50,11 +32,6 @@ export function needsRunningAgent(ctx: ChatActionContext): string | undefined {
   return undefined;
 }
 
-/**
- * Fork the agent's conversation into a session that works on `task` while
- * the conversation carries on. Its replies stay in the session. Says which
- * session it started, or why it couldn't; resolves to whether it started one.
- */
 export async function forkIntoSession(
   ctx: Pick<ChatActionContext, "surface" | "startSession" | "openSession">,
   agent: string,
@@ -148,7 +125,6 @@ export function chatActions(ctx: ChatActionContext): AppAction[] {
       icon: "inbox",
       command: "inbox",
       takesText: true,
-      // Composing works with the agent stopped; only a note sent to its inbox needs it running.
       disabled: ctx.agent === null ? offline : undefined,
       disabledWithText: offline,
       run: (text) => {

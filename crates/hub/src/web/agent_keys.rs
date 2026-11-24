@@ -1,9 +1,3 @@
-//! Agent key management API endpoints.
-//!
-//! Each request opens its own handle on the store; writes are serialized
-//! across handles and processes by the store's file lock, so the web UI,
-//! the CLI, and the running agent never lose each other's updates.
-
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::Json;
@@ -15,7 +9,6 @@ use residuum_config::agent_keys::{
 
 use super::HubApiState;
 
-/// Request body for `POST /api/hub/agent-keys`.
 #[derive(Deserialize)]
 pub(super) struct SetAgentKeyRequest {
     pub name: String,
@@ -29,25 +22,18 @@ pub(super) struct SetAgentKeyRequest {
 pub(super) struct SetAgentKeyResponse {
     pub name: String,
     pub env_var: String,
-    /// Present when the value is short enough that redaction by substring
-    /// match becomes unreliable. The key is stored either way.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warning: Option<String>,
 }
 
-/// Response from `GET /api/hub/agent-keys`.
 #[derive(Serialize)]
 pub(super) struct ListAgentKeysResponse {
     pub keys: Vec<AgentKeyInfo>,
 }
 
-/// Response from `DELETE /api/hub/agent-keys/{name}`.
 #[derive(Serialize)]
 pub(super) struct DeleteAgentKeyResponse {
     pub deleted: bool,
-    /// Checkpoint holding the key store as it was before this delete.
-    /// `None` when that checkpoint could not be recorded; the delete still
-    /// succeeded, and the UI should not offer Undo.
     pub checkpoint_id: Option<String>,
 }
 
@@ -63,7 +49,6 @@ fn error_response(e: &AgentKeyError) -> (StatusCode, String) {
     (status, e.to_string())
 }
 
-/// `GET /api/hub/agent-keys` — list keys (metadata only, never values).
 pub(super) async fn api_agent_keys_list(
     State(state): State<HubApiState>,
 ) -> Result<Json<ListAgentKeysResponse>, (StatusCode, String)> {
@@ -76,7 +61,6 @@ pub(super) async fn api_agent_keys_list(
     }))
 }
 
-/// `POST /api/hub/agent-keys` — store a key as user-created.
 pub(super) async fn api_agent_keys_set(
     State(state): State<HubApiState>,
     Json(req): Json<SetAgentKeyRequest>,
@@ -100,7 +84,6 @@ pub(super) async fn api_agent_keys_set(
     }))
 }
 
-/// `DELETE /api/hub/agent-keys/{name}` — remove a key.
 pub(super) async fn api_agent_keys_delete(
     State(state): State<HubApiState>,
     Path(name): Path<String>,

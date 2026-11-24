@@ -1,13 +1,3 @@
-//! `workspace_history` / `workspace_restore`: agent-facing access to the
-//! workspace checkpoint history (see `residuum_checkpoints`).
-//!
-//! Scoped to the workspace and team checkpoint repositories (the optional
-//! `repo` argument picks one; the default is the workspace) — the config
-//! repositories (`config.toml`, `providers.toml`, and the encrypted
-//! secret/agent-key/A2A-key stores) are never reachable from either tool, so
-//! these tools can't be used to read or restore something `PathPolicy`
-//! already blocks the agent from touching directly.
-
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -21,9 +11,6 @@ use super::require_str;
 use residuum_agent::Tool;
 use residuum_inference::{ToolError, ToolResult};
 
-/// The checkpoint repository a tool call targets: the `repo` argument
-/// (`"workspace"`, the default, or `"team"`). Config repositories are not
-/// selectable.
 fn repo_arg(arguments: &Value) -> Result<RepoKind, ToolError> {
     match arguments.get("repo").and_then(Value::as_str) {
         None | Some("workspace") => Ok(RepoKind::Workspace),
@@ -34,7 +21,6 @@ fn repo_arg(arguments: &Value) -> Result<RepoKind, ToolError> {
     }
 }
 
-/// JSON-schema fragment for the `repo` argument both tools accept.
 fn repo_schema() -> Value {
     serde_json::json!({
         "type": "string",
@@ -43,8 +29,6 @@ fn repo_schema() -> Value {
     })
 }
 
-/// Rejects a caller-supplied relative path that could escape the workspace
-/// root (`..` components or an absolute path).
 fn validate_relative_path(path: &str) -> Result<(), ToolError> {
     if !residuum_checkpoints::is_root_relative(path) {
         return Err(ToolError::InvalidArguments(format!(
@@ -54,8 +38,6 @@ fn validate_relative_path(path: &str) -> Result<(), ToolError> {
     Ok(())
 }
 
-/// Caller identity recorded on any checkpoint a tool call itself produces
-/// (a restore or an undo).
 fn agent_context(trigger: CheckpointTrigger, summary: impl Into<String>) -> CheckpointContext {
     CheckpointContext {
         address: "main".to_string(),
@@ -66,24 +48,17 @@ fn agent_context(trigger: CheckpointTrigger, summary: impl Into<String>) -> Chec
     }
 }
 
-// ─── workspace_history ───────────────────────────────────────────────────
-
-/// The most checkpoints one `list` call returns.
 const MAX_LIST_LIMIT: usize = 200;
 
-/// How many changed paths `show` lists when the call names no `limit`.
 const DEFAULT_SHOWN_PATHS: usize = 50;
 
-/// The most changed paths one `show` call lists.
 const MAX_SHOWN_PATHS: usize = 200;
 
-/// Tool for listing checkpoints and showing what a checkpoint changed.
 pub struct WorkspaceHistoryTool {
     engine: Arc<CheckpointEngine>,
 }
 
 impl WorkspaceHistoryTool {
-    /// Create a new `WorkspaceHistoryTool`.
     #[must_use]
     pub fn new(engine: Arc<CheckpointEngine>) -> Self {
         Self { engine }
@@ -219,27 +194,17 @@ impl Tool for WorkspaceHistoryTool {
     }
 }
 
-// ─── workspace_restore ───────────────────────────────────────────────────
-
-/// Tool for restoring a path to a checkpoint, or undoing a checkpoint's
-/// changes.
 pub struct WorkspaceRestoreTool {
     engine: Arc<CheckpointEngine>,
-    /// Supplies the agent's team identity, which a restore into the team
-    /// repository is recorded under.
     policy: super::SharedPathPolicy,
 }
 
 impl WorkspaceRestoreTool {
-    /// Create a new `WorkspaceRestoreTool`.
     #[must_use]
     pub fn new(engine: Arc<CheckpointEngine>, policy: super::SharedPathPolicy) -> Self {
         Self { engine, policy }
     }
 
-    /// The identity a restore is recorded under: the agent's team identity,
-    /// or a generic agent label when it has no team view (the team
-    /// repository is then never restored into a coordinated directory).
     async fn writer(&self) -> TeamWriter {
         self.policy.read().await.team().map_or_else(
             || TeamWriter::Agent("agent".to_string()),
@@ -359,7 +324,6 @@ impl Tool for WorkspaceRestoreTool {
     }
 }
 
-/// First 12 hex characters of a checkpoint id, for compact display.
 fn short_id(id: &str) -> String {
     id.chars().take(12).collect()
 }

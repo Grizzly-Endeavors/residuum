@@ -1,10 +1,3 @@
-//! A [`TeamDirectory`] over a fixed set of A2A routers.
-//!
-//! It answers what the A2A listener asks of a directory (`summary`,
-//! `agent_a2a_router`) and refuses creating and deleting agents, so the
-//! listener can serve agents whose routers were built elsewhere, and be
-//! tested against agents with chosen visibility and state.
-
 use std::collections::BTreeMap;
 use std::sync::RwLock;
 
@@ -22,20 +15,17 @@ struct Entry {
     router: Router,
 }
 
-/// A directory of agents whose A2A routers are supplied up front.
 #[derive(Default)]
 pub struct StaticAgentDirectory {
     agents: RwLock<BTreeMap<String, Entry>>,
 }
 
 impl StaticAgentDirectory {
-    /// An empty directory.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Add a running agent serving `router` (its A2A routes, rooted at `/`).
     #[must_use]
     pub fn with_agent(
         self,
@@ -47,18 +37,14 @@ impl StaticAgentDirectory {
         self
     }
 
-    /// Move an agent to `state`, as a stop or failure would.
     pub fn set_state(&self, name: &str, state: AgentState) {
         self.change(name, |entry| entry.state = state);
     }
 
-    /// Change an agent's A2A visibility.
     pub fn set_visibility(&self, name: &str, visibility: A2aVisibility) {
         self.change(name, |entry| entry.visibility = visibility);
     }
 
-    /// Add a running agent after construction, replacing one of the same
-    /// name.
     pub fn add_agent(&self, name: &str, visibility: A2aVisibility, router: Router) {
         self.agents
             .write()
@@ -73,7 +59,6 @@ impl StaticAgentDirectory {
             );
     }
 
-    /// Remove an agent.
     pub fn remove_agent(&self, name: &str) {
         self.agents
             .write()

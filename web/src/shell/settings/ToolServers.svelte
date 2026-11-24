@@ -19,10 +19,6 @@
   import SettingsGroup from "./SettingsGroup.svelte";
   import SettingsSection from "./SettingsSection.svelte";
 
-  // Advanced → Tool servers: the agent's MCP servers, from its `mcp.json`.
-  // Adding, editing and removing a server are all staged in the scope's form
-  // and written by Save changes; Discard brings the list back as it was.
-
   let { scope, section }: AgentSectionProps = $props();
 
   type Transport = "stdio" | "http";
@@ -35,7 +31,6 @@
     http: "It runs somewhere else, and Residuum connects to its address.",
   };
 
-  /** Open servers, by name, so they stay open when a save gives the form new objects. */
   const open = new SvelteSet<string>();
 
   const blankServer = (): McpServerEntry => ({

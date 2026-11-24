@@ -16,12 +16,6 @@
   import { panelFileSource } from "../../places/files/file-source";
   import Schedule from "../../places/schedule/Schedule.svelte";
 
-  // The context panel, open while the URL names a `panel` its place can show
-  // (the router removes any other). Each kind's content renders inside the
-  // frame and starts with a `PanelHeader`. The file view, with its editor,
-  // loads the first time a file opens, and the new-session panel the first
-  // time a session is started from Activity.
-
   const filePanel = new LazyComponent<{ buffer: FileBuffer; path: string; agentNamed: boolean }>(
     () => import("../../places/files/FilePanel.svelte"),
     "the file",
@@ -38,11 +32,6 @@
       ? `${fileSource.scope}:${fileSource.agent ?? ""}`
       : null,
   );
-  // The open file, the shown run and a new session live here, not in their
-  // views: the frame draws its content again when the layout changes (a
-  // phone's sheet, a column), and the edits, transcript, subscription and
-  // task typed stay. A new one starts when the panel shows a file from
-  // another tree, another run, or a new session on another agent.
   const fileBuffer = $derived.by(() => {
     if (fileTree === null) return null;
     return untrack(() => (fileSource === null ? null : new FileBuffer(fileSource)));
@@ -53,7 +42,6 @@
     if (panel?.kind !== "session") return (shownRun = null);
     const { agent, runId } = panel;
     return untrack(() => {
-      // The run following its session into a new run moved the URL along.
       if (shownRun?.agent === agent && shownRun.runId === runId) return shownRun;
       const known = ws.agent === agent ? ws.sessions.findRun(runId) : undefined;
       const live = overview.overviewOf(agent)?.live_sessions.find((s) => s.run_id === runId);
@@ -75,7 +63,6 @@
     });
   });
 
-  // If a panel's code can't load, the panel closes so it can be asked for again.
   $effect(() => {
     if (panel?.kind === "file") filePanel.ensure(() => void router.closePanel());
     if (panel?.kind === "new-session") newSessionPanel.ensure(() => void router.closePanel());
@@ -84,7 +71,6 @@
   $effect(() => {
     const run = sessionRun;
     if (run === null) return;
-    // Opening reads the run's state; the run following a new one mustn't reopen it.
     return untrack(() => run.open());
   });
 

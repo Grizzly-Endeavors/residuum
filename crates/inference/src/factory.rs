@@ -1,5 +1,3 @@
-//! Provider factory functions for constructing `InferenceProvider` instances from config.
-
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 
@@ -16,12 +14,6 @@ use super::providers::openai::OpenAiClient;
 use super::{InferenceProvider, SharedHttpClient};
 use residuum_config::RetryConfig;
 
-/// Build a model provider from a resolved `ProviderSpec`, wrapped so images
-/// never reach a model that can't take them (see [`ImageInputGuard`]).
-///
-/// # Errors
-/// Returns `FatalError::Config` if the API key is missing for providers
-/// that require it.
 pub(crate) fn build_provider_from_provider_spec(
     spec: &ProviderSpec,
     max_tokens: u32,
@@ -36,11 +28,6 @@ pub(crate) fn build_provider_from_provider_spec(
     )))
 }
 
-/// Build the client that speaks `spec`'s provider protocol.
-///
-/// # Errors
-/// Returns `FatalError::Config` if the API key is missing for providers
-/// that require it.
 fn build_provider_client(
     spec: &ProviderSpec,
     max_tokens: u32,
@@ -147,25 +134,13 @@ fn build_provider_client(
     }
 }
 
-/// A fallback provider that failed to build and was dropped from a chain,
-/// e.g. a deleted `secret:` reference or a missing env key.
 pub struct DroppedFallback {
     pub name: String,
     pub error: FatalError,
 }
 
-/// The providers a chain successfully built, plus any fallback dropped
-/// along the way — see [`build_provider_list`].
 type BuiltProviderList = (Vec<Box<dyn InferenceProvider>>, Vec<DroppedFallback>);
 
-/// Build every provider in `specs`, dropping (not failing) an unbuildable
-/// fallback — any spec after the first — instead of failing the whole
-/// chain over it: a deleted `secret:` reference or a missing env key on
-/// one fallback shouldn't take down a chain whose primary and other
-/// fallbacks still work. Returns `Err` only if the primary itself can't be
-/// built. Shared by [`build_provider_chain`] and
-/// [`build_provider_chain_with_notices`], which differ only in how they
-/// wrap the resulting list.
 fn build_provider_list(
     specs: &[ProviderSpec],
     max_tokens: u32,
@@ -194,14 +169,6 @@ fn build_provider_list(
     Ok((providers, dropped))
 }
 
-/// Build a provider from a chain of specs.
-///
-/// Single spec → direct provider. Multiple specs → `FailoverProvider`.
-/// Callers surface any dropped fallback to the user with a notice where
-/// they have a notice sink in scope.
-///
-/// # Errors
-/// Returns `FatalError::Config` if the primary provider cannot be built.
 pub fn build_provider_chain(
     specs: &[ProviderSpec],
     max_tokens: u32,
@@ -217,15 +184,6 @@ pub fn build_provider_chain(
     Ok((Box::new(FailoverProvider::new(providers)), dropped))
 }
 
-/// Build the main model's provider chain, with a user notice wired to
-/// `role` on a fallback/recovery transition (see
-/// `FailoverProvider::with_notices`). Single-provider specs have nothing
-/// to fail over to, so `notices`/`role` are simply unused in that case.
-/// Like [`build_provider_chain`], an unbuildable fallback is dropped
-/// rather than failing the whole chain.
-///
-/// # Errors
-/// Returns `FatalError::Config` if the primary provider cannot be built.
 pub fn build_provider_chain_with_notices(
     specs: &[ProviderSpec],
     max_tokens: u32,
@@ -246,20 +204,6 @@ pub fn build_provider_chain_with_notices(
     ))
 }
 
-/// Build a provider chain with a user notice on a fallback/recovery
-/// transition, tracked in a caller-supplied shared counter instead of one
-/// owned by the returned `FailoverProvider`.
-///
-/// For roles whose chain is rebuilt fresh per call site — background-session
-/// tiers are built anew for every session spawn — the caller holds one
-/// `active_index` per role/tier (e.g. on `SpawnContext`) and passes it here
-/// each time, so many short-lived providers for the same role notice on a
-/// transition exactly once rather than each re-announcing a fallback that's
-/// already in effect. Single-spec chains have nothing to fail over to, so
-/// `notices`/`role`/`active_index` are unused in that case.
-///
-/// # Errors
-/// Returns `FatalError::Config` if the primary provider cannot be built.
 pub fn build_provider_chain_with_shared_notices(
     specs: &[ProviderSpec],
     max_tokens: u32,
@@ -442,7 +386,6 @@ mod tests {
         let http = SharedHttpClient::new(&HttpClientConfig::default()).unwrap();
         let specs = vec![
             make_spec(ProviderKind::Ollama, "primary-model", None),
-            // Fireworks fallback with no API key can't build.
             make_spec(ProviderKind::Fireworks, "broken-fallback", None),
         ];
         let (provider, dropped) = build_provider_chain(&specs, 1024, http, RetryConfig::no_retry())

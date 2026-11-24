@@ -1,10 +1,3 @@
-//! Web Push against a real hub: what agents do reaches registered devices as
-//! encrypted pushes, each trigger fires once by its own rule, each device's
-//! preferences decide whether it hears, and a device whose user is looking at
-//! the app (reported over the hub WebSocket) is left alone.
-//!
-//! Each device is a fake push service that accepts everything, with the
-//! browser keys that can read what reaches it.
 #![expect(
     clippy::tests_outside_test_module,
     reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
@@ -24,16 +17,8 @@ use residuum::hub::push::{
 };
 use residuum::memory::types::Visibility;
 
-/// One decision a test waits for, by what it is about.
 type Decided = Box<dyn Fn(&TriggerDecision) -> bool>;
 
-/// Read the triggers' decisions until one has been seen for each of
-/// `expected`, in any order (two alike need two decisions), then wait until
-/// every push those decisions started has finished delivering. After that
-/// the devices have received everything the inputs behind them will send.
-///
-/// Returns every push the decisions read here started, for a failed count
-/// to say where each push came from.
 async fn until_decided(
     hub: &Fixture,
     decisions: &mut broadcast::Receiver<TriggerDecision>,
@@ -57,7 +42,6 @@ async fn until_decided(
     started
 }
 
-/// The decision about an inbox item `item_id` the tool announced.
 fn inbox_item(item_id: &'static str) -> Decided {
     Box::new(move |decision| {
         matches!(&decision.input, TriggerInput::Change(change)
@@ -65,7 +49,6 @@ fn inbox_item(item_id: &'static str) -> Decided {
     })
 }
 
-/// The decision about a turn of `visibility` ending.
 fn turn_ended(visibility: Visibility) -> Decided {
     Box::new(move |decision| {
         matches!(&decision.input, TriggerInput::Change(change)
@@ -73,7 +56,6 @@ fn turn_ended(visibility: Visibility) -> Decided {
     })
 }
 
-/// The decision about an outbound task announcement.
 fn outbound_announced() -> Decided {
     Box::new(|decision| {
         matches!(&decision.input, TriggerInput::Change(change)
@@ -81,7 +63,6 @@ fn outbound_announced() -> Decided {
     })
 }
 
-/// The decision that `agent` failed, and that started its push.
 fn failed(agent: &'static str) -> Decided {
     Box::new(move |decision| {
         decision.triggers.iter().any(
@@ -93,7 +74,6 @@ fn failed(agent: &'static str) -> Decided {
 type HubSocketStream =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
-/// Every preference on.
 fn all_on() -> PushPreferencesPatch {
     PushPreferencesPatch {
         inbox_item: Some(true),
@@ -103,7 +83,6 @@ fn all_on() -> PushPreferencesPatch {
     }
 }
 
-/// A device the hub can push to.
 struct Phone {
     id: String,
     server: MockServer,
@@ -143,7 +122,6 @@ impl Phone {
         self.server.received_requests().await.unwrap().len()
     }
 
-    /// Wait until `count` pushes have arrived.
     async fn until_pushes(&self, count: usize) {
         wait::until(&format!("{count} push(es) to arrive"), || async {
             (self.pushes().await >= count).then_some(())
@@ -151,8 +129,6 @@ impl Phone {
         .await;
     }
 
-    /// What the push that arrived first says. A browser's key opens one
-    /// message, so this reads one push per device.
     async fn first_payload(&mut self) -> Value {
         let requests = self.server.received_requests().await.unwrap();
         let body = &requests.first().expect("a push arrived").body;
@@ -165,8 +141,6 @@ impl Phone {
     }
 }
 
-/// An agent saves an item in its user inbox and announces it, as its
-/// `user_inbox_add` tool does.
 async fn file_item(hub: &Fixture, agent: &str, id: &str) {
     hub.add_inbox_item(agent, id);
     agent_bus(hub, agent)
@@ -181,7 +155,6 @@ async fn file_item(hub: &Fixture, agent: &str, id: &str) {
         .unwrap();
 }
 
-/// A task sent to `laptop` whose unreachable streak is eleven minutes old.
 fn outbound_task(unreachable_notified: bool) -> residuum::bus::remote_task::TrackedTask {
     let now = Utc::now();
     residuum::bus::remote_task::TrackedTask {
@@ -216,7 +189,6 @@ async fn announce_outbound(
         .unwrap();
 }
 
-/// Open the hub WebSocket, which presence is reported on.
 async fn open_hub_socket(hub: &Fixture) -> HubSocketStream {
     tokio_tungstenite::connect_async(format!("ws://{}/api/hub/ws", hub.addr))
         .await
@@ -233,7 +205,6 @@ async fn report_presence(socket: &mut HubSocketStream, device_id: &str, active: 
         .unwrap();
 }
 
-/// Wait until the hub's book says whether `device_id` is present.
 async fn until_present(hub: &Fixture, device_id: &str, present: bool) {
     wait::until("the hub to record the device's presence", || async {
         (hub.services
@@ -246,8 +217,6 @@ async fn until_present(hub: &Fixture, device_id: &str, present: bool) {
     })
     .await;
 }
-
-// ─── inbox_item ───────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn an_item_an_agent_files_is_one_push_whose_badge_is_every_agents_unread_count() {
@@ -262,7 +231,6 @@ async fn an_item_an_agent_files_is_one_push_whose_badge_is_every_agents_unread_c
     })
     .await;
     hub.host.start("scout").await.unwrap();
-    // A stopped agent's unread items count toward the badge too.
     hub.add_inbox_item("atlas", "20260930_heron");
     let mut phone = Phone::register(&hub, "Phone", all_on()).await;
     let mut decisions = hub.push_decisions.subscribe();
@@ -286,8 +254,6 @@ async fn an_item_an_agent_files_is_one_push_whose_badge_is_every_agents_unread_c
             "badge": 2,
         })
     );
-    // The turn that filed it ended with the web client connected, and the
-    // file change beside the announcement is not another item.
     let started = until_decided(
         &hub,
         &mut decisions,
@@ -341,8 +307,6 @@ async fn each_device_hears_only_the_events_its_preferences_turn_on() {
         "with inbox items off it hears only the unreachable remote"
     );
 }
-
-// ─── agent_failed ─────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn an_agent_that_cant_start_is_one_push_and_nothing_in_its_inbox() {
@@ -412,8 +376,6 @@ async fn an_agent_that_crashes_while_running_says_it_stopped_unexpectedly() {
     assert_eq!(str_at(&payload, "tag"), "failed:scout");
 }
 
-// ─── outbound_unreachable ─────────────────────────────────────────────
-
 #[tokio::test]
 async fn an_unreachable_streak_is_one_push_when_it_passes_the_threshold() {
     let hub = Fixture::new(&["scout"], "").await;
@@ -421,8 +383,6 @@ async fn an_unreachable_streak_is_one_push_when_it_passes_the_threshold() {
     let mut phone = Phone::register(&hub, "Phone", all_on()).await;
     let mut decisions = hub.push_decisions.subscribe();
 
-    // The streak starts and passes the threshold, and then the tracker
-    // announces the same streak once more.
     announce_outbound(&hub, "scout", outbound_task(false)).await;
     announce_outbound(&hub, "scout", outbound_task(true)).await;
     phone.until_pushes(1).await;
@@ -455,8 +415,6 @@ async fn an_unreachable_streak_is_one_push_when_it_passes_the_threshold() {
     assert_eq!(str_at(&payload, "target"), "/agent/scout/activity");
 }
 
-// ─── reply_while_away ─────────────────────────────────────────────────
-
 #[tokio::test]
 async fn a_reply_is_pushed_once_when_no_client_was_connected_and_never_for_a_background_turn() {
     use residuum::background::team::{TeamLink, parse_team_address};
@@ -466,11 +424,8 @@ async fn a_reply_is_pushed_once_when_no_client_was_connected_and_never_for_a_bac
     let mut phone = Phone::register(&hub, "Phone", all_on()).await;
     let mut decisions = hub.push_decisions.subscribe();
 
-    // A reply the connected client saw.
     assert_eq!(hub.chat("scout", "hello").await, "scout here");
 
-    // A reply the client left before: the model holds its reply, and the
-    // client closes its socket while the turn runs.
     hub.mock("scout").reset().await;
     mount_reply(hub.mock("scout"), "**Away** reply").await;
     hub.gate("scout").close();
@@ -493,7 +448,6 @@ async fn a_reply_is_pushed_once_when_no_client_was_connected_and_never_for_a_bac
     hub.gate("scout").open_all();
     phone.until_pushes(1).await;
 
-    // A teammate's message starts a background turn that still replies.
     let mut changes = hub.host.agent_changes().subscribe();
     let link = TeamLink::new("guest", Arc::clone(&hub.services.team_router));
     let target = parse_team_address("agent:scout").unwrap().unwrap();
@@ -550,8 +504,6 @@ async fn a_reply_the_reader_saw_is_not_pushed_or_unread_when_they_leave_before_t
     ))
     .await
     .unwrap();
-    // The reader sees the reply, then closes the page while the rest of the
-    // turn (writing history, the endpoint copy) is still to come.
     wait::guarded("the reply to reach the page", async {
         while let Some(frame) = ws.next().await {
             if let WsMessage::Text(raw) = frame.unwrap()
@@ -598,8 +550,6 @@ async fn a_reply_the_reader_saw_is_not_pushed_or_unread_when_they_leave_before_t
     assert_eq!(hub.activity_of("scout").unread, 0);
 }
 
-// ─── Presence ─────────────────────────────────────────────────────────
-
 #[tokio::test]
 async fn a_device_in_front_of_its_user_hears_nothing_until_it_isnt() {
     let hub = Fixture::new(&["scout"], "").await;
@@ -609,7 +559,6 @@ async fn a_device_in_front_of_its_user_hears_nothing_until_it_isnt() {
     let mut socket = open_hub_socket(&hub).await;
     let mut decisions = hub.push_decisions.subscribe();
 
-    // The window is visible and focused.
     report_presence(&mut socket, &phone.id, true).await;
     until_present(&hub, &phone.id, true).await;
     file_item(&hub, "scout", "20260930_first").await;
@@ -627,13 +576,11 @@ async fn a_device_in_front_of_its_user_hears_nothing_until_it_isnt() {
         "the device in front of its user is skipped, and the other one is not; pushes started: {first_started:?}"
     );
 
-    // The window loses focus.
     report_presence(&mut socket, &phone.id, false).await;
     until_present(&hub, &phone.id, false).await;
     file_item(&hub, "scout", "20260930_second").await;
     phone.until_pushes(1).await;
 
-    // It is active again, so the next item skips it.
     report_presence(&mut socket, &phone.id, true).await;
     until_present(&hub, &phone.id, true).await;
     file_item(&hub, "scout", "20260930_third").await;
@@ -651,7 +598,6 @@ async fn a_device_in_front_of_its_user_hears_nothing_until_it_isnt() {
         "present again, so the third item is skipped; pushes started: {third_started:?}"
     );
 
-    // Its socket closes without another word.
     socket.close(None).await.unwrap();
     drop(socket);
     until_present(&hub, &phone.id, false).await;
@@ -683,8 +629,6 @@ async fn presence_that_cant_be_read_is_refused_like_any_other_message() {
     assert_eq!(str_at(&notice, "level"), "warn");
     assert!(hub.services.push.presence().active_devices().is_empty());
 }
-
-// ─── Delivery notices ─────────────────────────────────────────────────
 
 #[tokio::test]
 async fn a_device_that_stops_receiving_is_told_to_the_user() {

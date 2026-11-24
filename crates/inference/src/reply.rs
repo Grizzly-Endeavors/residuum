@@ -1,7 +1,3 @@
-//! Assembling a reply's text and reasoning for providers that return the two
-//! separately or interleave them, whether the reply arrives whole or in
-//! pieces.
-
 use super::{
     ReplayScope, StreamDelta, StreamSink, ThinkingBlock, ThinkingOrigin, blocks_produced_at,
 };
@@ -9,34 +5,21 @@ use super::{
 const OPEN_TAG: &str = "<think>";
 const CLOSE_TAG: &str = "</think>";
 
-/// A piece of a reply, classified.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Piece {
     Text(String),
     Thinking(String),
 }
 
-/// Separates inline `<think>…</think>` reasoning from a reply's text. Some
-/// models (and servers that don't parse reasoning out themselves) put their
-/// reasoning in the text between these tags.
-///
-/// Fed in pieces of any size: a tag split across two pieces is recognized,
-/// and the split points never change what comes out.
 #[derive(Default)]
 pub(crate) struct ThinkSplitter {
     inside: bool,
-    /// The end of the input so far that might still turn out to be the start
-    /// of a tag, held back until the next piece settles it.
     held: String,
-    /// Some text other than whitespace has been emitted.
     emitted_text: bool,
-    /// Whitespace at the start of the text that follows a reasoning block
-    /// that opened the reply is dropped.
     trim_leading: bool,
 }
 
 impl ThinkSplitter {
-    /// Take the next piece of the reply; returns what it settles.
     pub(crate) fn push(&mut self, piece: &str) -> Vec<Piece> {
         self.held.push_str(piece);
         let mut out = Vec::new();
@@ -61,7 +44,6 @@ impl ThinkSplitter {
         }
     }
 
-    /// The reply is over: release anything held back.
     pub(crate) fn finish(&mut self) -> Vec<Piece> {
         let mut out = Vec::new();
         let rest = std::mem::take(&mut self.held);
@@ -95,8 +77,6 @@ impl ThinkSplitter {
     }
 }
 
-/// How many bytes at the end of `text` are the start of `tag` (and so might
-/// be completed by the next piece).
 fn partial_tag_len(text: &str, tag: &str) -> usize {
     (1..tag.len())
         .rev()
@@ -104,9 +84,6 @@ fn partial_tag_len(text: &str, tag: &str) -> usize {
         .unwrap_or(0)
 }
 
-/// The readable reasoning of an assistant message that can go back to a host
-/// as plain text: what the same provider API (`reader`) returned for it,
-/// joined by a blank line. Reasoning another provider produced is left out.
 pub(crate) fn plain_reasoning(
     thinking: &[ThinkingBlock],
     reader: &ThinkingOrigin,
@@ -119,8 +96,6 @@ pub(crate) fn plain_reasoning(
     (!text.is_empty()).then(|| text.join("\n\n"))
 }
 
-/// Collects a reply's text and reasoning, pushing both to a sink as they
-/// arrive when there is one.
 pub(crate) struct ReplyAssembler<'a> {
     sink: Option<&'a dyn StreamSink>,
     splitter: ThinkSplitter,
@@ -129,7 +104,6 @@ pub(crate) struct ReplyAssembler<'a> {
 }
 
 impl<'a> ReplyAssembler<'a> {
-    /// Assemble a reply, streaming it to `sink` if given.
     pub(crate) fn new(sink: Option<&'a dyn StreamSink>) -> Self {
         Self {
             sink,
@@ -139,19 +113,16 @@ impl<'a> ReplyAssembler<'a> {
         }
     }
 
-    /// Reasoning the provider returned apart from the reply's text.
     pub(crate) fn reasoning(&mut self, text: &str) {
         self.take(Piece::Thinking(text.to_string()));
     }
 
-    /// Text of the reply, which may carry inline `<think>` blocks.
     pub(crate) fn content(&mut self, text: &str) {
         for piece in self.splitter.push(text) {
             self.take(piece);
         }
     }
 
-    /// The reply's text with no reasoning tags in it, and its reasoning.
     pub(crate) fn finish(mut self) -> (String, Vec<ThinkingBlock>) {
         for piece in self.splitter.finish() {
             self.take(piece);
@@ -183,9 +154,6 @@ impl<'a> ReplyAssembler<'a> {
     }
 }
 
-/// Strip markdown code fences (```` ```json ... ``` ````) from LLM responses.
-///
-/// Returns the inner content trimmed, or the original string if no fences found.
 #[must_use]
 pub fn strip_code_fences(s: &str) -> &str {
     s.strip_prefix("```json")
@@ -199,8 +167,6 @@ mod tests {
     use super::*;
     use crate::test_support::RecordingSink;
 
-    /// Run `input` through a splitter in pieces of `size` characters and
-    /// return the text and the reasoning.
     fn split(input: &str, size: usize) -> (String, String) {
         let mut splitter = ThinkSplitter::default();
         let chars: Vec<char> = input.chars().collect();

@@ -2,12 +2,9 @@
   import type { Snippet } from "svelte";
   import { Icon } from "../icons";
 
-  // A button that shows and hides the content under it. Closed content stays
-  // mounted but hidden, so fields inside keep what was typed.
   interface Props {
     summary: string;
     open?: boolean;
-    /** `quiet` for secondary detail such as an error's full text. */
     tone?: "default" | "quiet";
     ontoggle?: (open: boolean) => void;
     children: Snippet;

@@ -1,8 +1,3 @@
-//! Shared scaffolding for the registry tests: one set of handles from which
-//! both the main registry and a session registry are built, so a comparison
-//! between them isolates what it cares about (which tools got registered)
-//! rather than incidental config drift between two hand-built setups.
-
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
@@ -29,10 +24,6 @@ use residuum_skills::{SharedSkillState, SkillIndex, SkillState};
 use residuum_tracing_service::TracingService;
 use residuum_workspace::testing::TeamHub;
 
-/// A minimal but fully populated `Config`, with every optional
-/// tool-gating switch turned on (here: an Ollama standalone web search
-/// backend), so the parity test exercises every conditionally-registered
-/// tool on both surfaces.
 fn test_config(dir: &Path) -> Config {
     Config {
         agent_name: "test-agent".to_string(),
@@ -83,7 +74,6 @@ fn test_config(dir: &Path) -> Config {
     }
 }
 
-/// The shared handles both registries are built from.
 pub struct RegistryHarness {
     pub cfg: Config,
     pub layout: WorkspaceLayout,
@@ -110,12 +100,6 @@ pub struct RegistryHarness {
 }
 
 impl RegistryHarness {
-    /// Build the handles over a fresh config rooted at `dir`.
-    ///
-    /// # Panics
-    ///
-    /// Panics when the search index, the checkpoint repositories or the
-    /// A2A task tracker cannot be opened under `dir`.
     #[must_use]
     #[expect(
         clippy::expect_used,
@@ -213,14 +197,6 @@ impl RegistryHarness {
         }
     }
 
-    /// Build a session's tool registry, as the fork path does for a session
-    /// at `address` in `category`. `conversation_target` mirrors what a
-    /// conversation-triggered session carries (`None` for every other
-    /// trigger) — it gates `a2a_task_update`.
-    ///
-    /// # Panics
-    ///
-    /// Panics when `category` is not a known session category.
     #[must_use]
     #[expect(
         clippy::expect_used,
@@ -272,9 +248,6 @@ impl RegistryHarness {
         })
     }
 
-    /// Build the main agent's tool registry over these handles, the way
-    /// [`crate::main_tools::init_tool_registry`] builds it at startup, with
-    /// the UTC timezone and the default model catalog.
     #[cfg(test)]
     #[must_use]
     pub(crate) fn main_registry(&self) -> ToolRegistry {
@@ -321,8 +294,6 @@ impl RegistryHarness {
     }
 }
 
-/// A fresh tool set for the agent `name` over `hub`: its own read tracker,
-/// sharing the hub's coordinator.
 #[must_use]
 pub fn tools_for(hub: &TeamHub, name: &str) -> ToolRegistry {
     let agent_dir = hub.agent_dir(name);

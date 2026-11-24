@@ -1,7 +1,3 @@
-//! Tests of the overview's pure parts. Its behavior with agents, files and
-//! clients is tested through the hub (`hub/http/tests/overview.rs` and
-//! `hub/host/tests/overview.rs`).
-
 use std::time::Duration;
 
 use super::*;
@@ -67,7 +63,6 @@ fn a_preview_over_the_limit_is_cut_with_an_ellipsis_and_stays_within_it() {
 
 #[test]
 fn a_cut_preview_counts_characters_not_bytes_and_drops_a_trailing_space() {
-    // The 199 characters kept end in the space between the two words.
     let text = format!("{} {}", "é".repeat(PREVIEW_CHARS - 2), "ü".repeat(50));
     let cut = plain_preview(&text);
     assert_eq!(cut, format!("{}…", "é".repeat(PREVIEW_CHARS - 2)));

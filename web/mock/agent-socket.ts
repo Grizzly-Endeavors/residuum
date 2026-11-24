@@ -23,7 +23,6 @@ import {
 import type { MockAgent, MockHub } from "./state";
 import { MockTurnJournal } from "./turn-journal";
 
-/** How long a reload takes before the page is told it finished. */
 const RELOAD_MS = 1000;
 
 function requiredString(body: JsonObject, key: string): string {
@@ -40,11 +39,6 @@ function requiredStrings(body: JsonObject, key: string): string[] {
   return value as string[];
 }
 
-/**
- * Read a client frame the way the backend's `ClientMessage` does: a known
- * `type` and the fields that type needs. Anything else throws, and the
- * message says why.
- */
 export function parseClientMessage(raw: string): ClientMessage {
   const body = parseJsonObject(raw);
   const type = requiredString(body, "type");
@@ -96,7 +90,6 @@ export function parseClientMessage(raw: string): ClientMessage {
   }
 }
 
-/** Frames only a client that turned verbose mode on receives: tool calls and results. */
 const VERBOSE_ONLY_FRAMES: ReadonlySet<ServerMessage["type"]> = new Set([
   "tool_call",
   "tool_result",
@@ -104,29 +97,17 @@ const VERBOSE_ONLY_FRAMES: ReadonlySet<ServerMessage["type"]> = new Set([
   "session_tool_result",
 ]);
 
-/** Whether the upgrade request asks for a connection that only watches files, which the agent doesn't count as a client. */
 function isWatchOnly(req: IncomingMessage): boolean {
   return new URL(req.url ?? "/", "http://mock.invalid").searchParams.get("watch_only") === "true";
 }
 
-/**
- * Open an agent's WebSocket, `/api/agents/{name}/ws`, on the HTTP server. It
- * refuses connections with `409` while the agent isn't running. The agent's
- * state then broadcasts to every connected page and can drop their connections.
- */
 export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: MockAgent): void {
   const { state } = agent;
   const wss = new WebSocketServer({ noServer: true });
   const chat = createChatSimulator(hub, agent);
   const journal = new MockTurnJournal(() => hub.env.clock.iso());
   const verbose = new WeakSet<WebSocket>();
-  /**
-   * The sockets that aren't the user reading the chat, so they don't count as
-   * clients: those opened through the artifacts origin (a workbench page) and
-   * those that ask to only watch files (`?watch_only=true`).
-   */
   const notClients = new WeakSet<WebSocket>();
-  /** What each page watches (`watch_workspace`); a page that never asked watches nothing. */
   const watching = new WeakMap<WebSocket, WatchSet>();
 
   const stopRouting = routeUpgrades(host, wss, agentSocketPath(agent.name), () =>
@@ -143,7 +124,6 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
   };
   state.broadcast = (frame) => {
     journal.record(frame);
-    // The hub's relay carries every session event too, to the pages that follow it.
     if (isSessionEventFrame(frame)) hub.relaySession(agent, frame);
     for (const client of wss.clients) {
       if (VERBOSE_ONLY_FRAMES.has(frame.type) && !verbose.has(client)) continue;
@@ -176,7 +156,6 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
         break;
 
       case "send_message": {
-        // Files come as uploads staged on the hub; one that isn't staged refuses the whole message.
         const saved = saveChatAttachments(hub, agent, msg.content, msg.attachments ?? []);
         if (saved === null) {
           reply({ type: "message_refused", id: msg.id, message: UPLOAD_GONE });
@@ -221,8 +200,6 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
       }
 
       case "watch_workspace": {
-        // Like the backend, it replaces what the page watches, unless a prefix
-        // can't be used: that is refused and the old set stays.
         const problem = msg.prefixes
           .map((prefix) => watchPrefixProblem(prefix))
           .find((p): p is string => p !== null);
@@ -263,7 +240,6 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
         break;
 
       case "inbox_add": {
-        // `/inbox <text>` is a message you sent the agent, so it shows in Sent.
         const title = deriveTitle(msg.body);
         state.agentInbox.push({
           id: agentInboxItemId([state], title),
@@ -282,7 +258,6 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
     if (arrivedThroughArtifactsOrigin(req) || isWatchOnly(req)) {
       notClients.add(ws);
     } else {
-      // Opening the agent's socket is what shows its messages.
       hub.clearUnread(agent);
     }
     ws.on("message", (raw) => {

@@ -1,17 +1,9 @@
-//! Context loading: reads observations, recent context, skill/subagent data from disk or shared state.
-
 use std::path::Path;
 
 use anyhow::Context;
 
 use residuum_skills::SharedSkillState;
 
-/// Load and format observations from the observation log JSON file.
-///
-/// Returns the formatted observation text, or `None` if the file is missing or empty.
-///
-/// # Errors
-/// Returns an error if the file exists but cannot be read or parsed.
 #[tracing::instrument(skip_all, fields(path = %path.display()))]
 pub async fn load_observations(path: &Path) -> anyhow::Result<Option<String>> {
     match tokio::fs::read_to_string(path).await {
@@ -38,12 +30,6 @@ pub async fn load_observations(path: &Path) -> anyhow::Result<Option<String>> {
     }
 }
 
-/// Load the narrative context from the `recent_context.json` file.
-///
-/// Returns the narrative string, or `None` if the file is missing or empty.
-///
-/// # Errors
-/// Returns an error if the file exists but cannot be parsed.
 #[tracing::instrument(skip_all, fields(path = %path.display()))]
 pub async fn load_recent_context_narrative(path: &Path) -> anyhow::Result<Option<String>> {
     let result = residuum_memory::recent_context::load_recent_context(path)
@@ -55,9 +41,6 @@ pub async fn load_recent_context_narrative(path: &Path) -> anyhow::Result<Option
     Ok(result)
 }
 
-/// Build formatted strings for skills context from shared skill state.
-///
-/// Returns `(index_text, active_instructions_text)` — each `Option<String>`.
 pub async fn build_skill_context_strings(
     skill_state: &SharedSkillState,
 ) -> (Option<String>, Option<String>) {

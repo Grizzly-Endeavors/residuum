@@ -5,8 +5,6 @@
   import type { A2aAgentCard } from "../../lib/types";
   import { Banner, Button, Skeleton } from "../../lib/ui";
 
-  // The card a running agent serves to agents that reach it, as they see it.
-
   let { agent }: { agent: string } = $props();
 
   let card = $state.raw<A2aAgentCard | null>(null);

@@ -1,10 +1,4 @@
 #!/usr/bin/env bash
-# Runs scripts/stress-issues.sh as a dry run over logs in scripts/ci-failures-fixtures
-# and checks which issues it would open: one per failing test, a test named in two
-# logs once, a crashed test binary under a title without its build hash, a member
-# crate's test under its crate's name and a member binary apart from the root's, one
-# suite-wide issue when no log names a test, one for the run when more than ten
-# tests are new, one for a cancelled job, and none for a job that did not fail.
 set -euo pipefail
 
 dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

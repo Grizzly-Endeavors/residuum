@@ -1,11 +1,3 @@
-//! The hub's VAPID key pair (RFC 8292).
-//!
-//! The key pair identifies the hub to push services: each subscription is
-//! bound to the public key it was created with (the `applicationServerKey`),
-//! and each push request carries a short-lived JWT signed with the private
-//! key. Replacing the key would make every existing subscription useless, so
-//! it is created once, on first use, and never regenerated automatically.
-
 use std::path::Path;
 
 use anyhow::{Context as _, anyhow};
@@ -18,22 +10,11 @@ use super::error::PushError;
 /// How long a signed JWT is valid. RFC 8292 caps it at 24 hours.
 const JWT_LIFETIME_SECS: i64 = 12 * 3600;
 
-/// The VAPID signing key, loaded.
 pub(super) struct VapidKey {
     pair: EcdsaKeyPair,
 }
 
 impl VapidKey {
-    /// Load the key at `path`, or generate one there (mode 0600) when the
-    /// file doesn't exist.
-    ///
-    /// A file that exists but can't be read as a key is an error and is left
-    /// where it is: replacing it would sign every device out of
-    /// notifications.
-    ///
-    /// # Errors
-    /// Returns [`PushError::Failed`] if the file can't be read or parsed, or
-    /// a new key can't be generated or saved.
     pub(super) async fn load_or_create(path: &Path) -> Result<Self, PushError> {
         match tokio::fs::read(path).await {
             Ok(pkcs8) => Self::from_pkcs8(&pkcs8).map_err(|e| {
@@ -85,22 +66,14 @@ impl VapidKey {
         Ok(Self { pair })
     }
 
-    /// The public key in uncompressed form, which a browser subscribes with.
     pub(super) fn public_key(&self) -> &[u8] {
         self.pair.public_key().as_ref()
     }
 
-    /// The public key as base64url, the form `applicationServerKey` takes.
     pub(super) fn public_key_base64url(&self) -> String {
         base64url_encode(self.public_key())
     }
 
-    /// The `Authorization` header for a push to a service at `audience` (the
-    /// origin of the subscription's endpoint): a JWT signed with this key,
-    /// naming `subject` as the contact, valid for 12 hours from `now_unix`.
-    ///
-    /// # Errors
-    /// Returns an error if signing fails.
     pub(super) fn authorization(
         &self,
         audience: &str,
@@ -235,8 +208,6 @@ mod tests {
             })
         );
 
-        // ES256 signatures are the 64-byte r||s form, verified against the
-        // public key a browser subscribes with.
         let signature = decode(signature_part);
         assert_eq!(signature.len(), 64);
         UnparsedPublicKey::new(&ECDSA_P256_SHA256_FIXED, key.public_key())

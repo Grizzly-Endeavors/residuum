@@ -1,41 +1,18 @@
-//! Identity file loading for agent context assembly.
-
 use residuum_core::util::FatalError;
 
 use residuum_config::WorkspaceLayout;
 
-/// Loaded identity files: the agent's own `SOUL.md` and `BOOTSTRAP.md`, plus
-/// the team layer's `AGENTS.md`, `USER.md` and wiki index.
-///
-/// Each field holds the file content if the file exists, or `None` if absent.
 #[derive(Debug, Clone, Default)]
 pub struct IdentityFiles {
-    /// SOUL.md -- core agent identity and personality.
     pub soul: Option<String>,
-    /// `team/AGENTS.md` -- team-wide rules shared by every agent.
     pub agents: Option<String>,
-    /// `team/USER.md` -- the user's core facts, shared by every agent.
     pub user: Option<String>,
-    /// `team/wiki/index.md` -- the team wiki's root catalog. Pages are read on demand.
     pub wiki_index: Option<String>,
-    /// BOOTSTRAP.md -- first-run guidance (present only on first conversation).
     pub bootstrap: Option<String>,
-    /// The `TEAM` roster: the agent's teammates with state and role line.
-    /// Comes from the hub, not from a file; [`Self::load`] leaves it `None`
-    /// and [`Self::with_team_roster`] fills it.
     pub team: Option<String>,
 }
 
 impl IdentityFiles {
-    /// Load the identity files: SOUL.md and BOOTSTRAP.md from the agent's
-    /// directory, AGENTS.md, USER.md and the wiki index from the team layer.
-    ///
-    /// Missing files are silently treated as `None`. This runs on every turn
-    /// (main agent and sub-agent spawn), so it stays quiet — call
-    /// [`Self::warn_missing`] once at startup to surface absent required files.
-    ///
-    /// # Errors
-    /// Returns `FatalError::Workspace` if a file exists but cannot be read.
     #[tracing::instrument(skip_all, fields(workspace = %layout.root().display()))]
     pub async fn load(layout: &WorkspaceLayout) -> Result<Self, FatalError> {
         let soul_result = read_optional(&layout.soul_md()).await?;
@@ -56,19 +33,12 @@ impl IdentityFiles {
         })
     }
 
-    /// These files with `team_block` as the `TEAM` block. `None` (an agent
-    /// with no teammates) leaves no `TEAM` block.
     #[must_use]
     pub fn with_team_roster(mut self, team_block: Option<String>) -> Self {
         self.team = team_block;
         self
     }
 
-    /// Log a warning for each absent required identity file.
-    ///
-    /// Called once at startup (not per turn) so the diagnostic is visible
-    /// without spamming the logs on every turn's reload. BOOTSTRAP.md is
-    /// excluded — it is expected to be absent after the first conversation.
     pub fn warn_missing(&self, layout: &WorkspaceLayout) {
         if self.soul.is_none() {
             tracing::warn!(path = %layout.soul_md().display(), "SOUL.md is missing or empty; expected after bootstrap");
@@ -101,7 +71,6 @@ impl ReadResult {
     }
 }
 
-/// Read a file if it exists, returning `None` if missing.
 async fn read_optional(path: &std::path::Path) -> Result<ReadResult, FatalError> {
     match tokio::fs::read_to_string(path).await {
         Ok(content) => {

@@ -1,40 +1,19 @@
-//! Telling a remotely delivered request from a local one, and the checks only
-//! a remote request gets.
-//!
-//! A request is remote when the transport that terminates TLS inside
-//! Residuum marked it, by adding a [`RemoteTransport`] extension before the
-//! request enters the router. The extension can't be sent by a client, so it
-//! needs no secret.
-//!
-//! Anything else arrived on a local port and is not subject to the gate.
-
 use axum::http::{Extensions, HeaderMap, Method, header};
 
-/// Added to a request's extensions by the transport that delivers remote
-/// traffic in-process.
 #[derive(Debug, Clone, Default)]
 pub struct RemoteTransport {
-    /// The browser's address, when the transport knows it.
     pub peer_ip: Option<String>,
-    /// The origin the browser used to reach this request's host.
     pub origin: Option<String>,
 }
 
-/// What is known about a remotely delivered request.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RemoteContext {
-    /// The browser's address, when the transport knows it.
     pub(crate) peer_ip: Option<String>,
     /// The origin the browser used, when the transport says. Otherwise the
     /// origin Residuum Cloud announced for the surface stands in for it.
     pub(crate) origin: Option<String>,
 }
 
-/// Whether the request was delivered remotely, and if so what is known of it.
-///
-/// Only the [`RemoteTransport`] extension counts. Headers a client sends
-/// (`X-Real-IP`, `X-Forwarded-For`, anything naming the tunnel) never mark a
-/// request remote, and never name its peer.
 #[must_use]
 pub fn remote_context(extensions: &Extensions) -> Option<RemoteContext> {
     extensions
@@ -45,8 +24,6 @@ pub fn remote_context(extensions: &Extensions) -> Option<RemoteContext> {
         })
 }
 
-/// Whether the request changes state or opens a socket: anything but a plain
-/// `GET`, `HEAD` or `OPTIONS`, and any WebSocket upgrade.
 pub(crate) fn is_state_changing(method: &Method, headers: &HeaderMap) -> bool {
     let is_websocket_upgrade = headers
         .get(header::UPGRADE)
@@ -89,13 +66,6 @@ fn origins_equal(a: &str, b: &str) -> bool {
         .eq_ignore_ascii_case(b.trim().trim_end_matches('/'))
 }
 
-/// Whether the request loads a page a person will see, which gets a redirect
-/// to the pairing page where a script's request gets a `401`.
-///
-/// Any one sign is enough: fetch metadata saying it navigates or loads a
-/// document or frame, or an `Accept` asking for HTML. A page load a service
-/// worker passes on may arrive with its fetch metadata changed but keeps its
-/// `Accept`, and a script's `fetch` asks for HTML only if it means to show it.
 pub(crate) fn is_navigation(method: &Method, headers: &HeaderMap) -> bool {
     if !matches!(*method, Method::GET | Method::HEAD) || is_state_changing(method, headers) {
         return false;
@@ -115,8 +85,6 @@ pub(crate) fn is_navigation(method: &Method, headers: &HeaderMap) -> bool {
         || accepts_html
 }
 
-/// Normalize an origin Residuum Cloud announced to `scheme://host[:port]`, or
-/// `None` when it isn't one.
 pub(crate) fn normalize_origin(raw: &str) -> Option<String> {
     let url = url::Url::parse(raw.trim()).ok()?;
     if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {

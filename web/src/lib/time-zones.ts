@@ -12,7 +12,6 @@ export interface TimeZoneChoices {
  */
 const PINNED = ["UTC"] as const;
 
-/** Whether `name` is an IANA time zone this runtime accepts. */
 export function isTimeZoneName(name: string): boolean {
   try {
     Intl.DateTimeFormat(undefined, { timeZone: name });
@@ -22,12 +21,6 @@ export function isTimeZoneName(name: string): boolean {
   }
 }
 
-/**
- * Choices for the time zone dropdown.
- *
- * A `current` value the runtime doesn't list (a name saved by hand that isn't
- * a real zone) is included so the control can still show it.
- */
 export function timeZoneChoices(current: string): TimeZoneChoices {
   const names = Intl.supportedValuesOf("timeZone");
   const known = new Set<string>(names);

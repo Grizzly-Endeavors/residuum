@@ -1,19 +1,4 @@
 #!/usr/bin/env bash
-# Run a command in the Windows VM's logged-on desktop session, where toasts
-# and windows actually appear, and optionally screenshot the desktop.
-#
-#   run-interactive.sh [--screenshot FILE] [--detach] [--delay SECS] [--timeout SECS] [--no-sync] -- COMMAND...
-#   run-interactive.sh --stop      stop a detached command and everything it started
-#
-#   # Show an urgent toast, then capture the screen 5s later:
-#   run-interactive.sh --screenshot /tmp/toast.png --detach --delay 5 -- cargo run -- serve --foreground
-#   # Screenshot only:
-#   run-interactive.sh --screenshot /tmp/desktop.png
-#
-# Without --detach it waits for the command to exit and returns its exit
-# code. With --detach it returns after --delay seconds and leaves the command
-# running; only one detached command runs at a time. See
-# docs/runbooks/windows-harness.md.
 set -euo pipefail
 
 # shellcheck source=scripts/windows-vm/common.sh

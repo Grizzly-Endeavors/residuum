@@ -59,11 +59,9 @@ export class TeamsSetupState {
   lastSuccessfulUpdate = $state<number | null>(null);
   now = $state(Date.now());
 
-  // Step 1: Pre-requisites & Consent
   replaceExisting = $state(false);
   consentInstallCli = $state(false);
 
-  // Step 2: Form fields
   botName = $state("");
   shortDescription = $state("");
   longDescription = $state("");
@@ -81,18 +79,15 @@ export class TeamsSetupState {
   formSubmitting = $state(false);
   formError = $state<string | null>(null);
 
-  // Step 3: Progress & Redirect
   redirectUrl = $state("");
   redirectSubmitting = $state(false);
   redirectError = $state<string | null>(null);
   logsOpen = $state(false);
   cancelling = $state(false);
 
-  // Step 4: Failed & Retry
   retrying = $state(false);
   errorDetailsOpen = $state(false);
 
-  // Step 5: Done & Post-setup
   installingApp = $state(false);
   installError = $state<string | null>(null);
   cleanupLoading = $state(false);
@@ -108,7 +103,6 @@ export class TeamsSetupState {
     this.getAgent = getAgent;
   }
 
-  // Derived validations for Step 1
   get nodeMissing(): boolean {
     return (
       this.prereqs !== null && (!this.prereqs.node.found || this.prereqs.node.version === null)
@@ -131,7 +125,6 @@ export class TeamsSetupState {
     return true;
   }
 
-  // Derived validations for Step 2
   get formValid(): boolean {
     if (this.botName.trim() === "") return false;
     if (this.shortDescription.trim() === "" || this.shortDescription.length > 80) return false;
@@ -263,7 +256,6 @@ export class TeamsSetupState {
     this.lostContact = false;
 
     try {
-      // Reopen fetches from 0 per contract
       const [existingJob, p] = await Promise.all([
         fetchTeamsSetupJob(this.agent, 0),
         fetchTeamsSetupPrereqs(this.agent),
@@ -484,7 +476,6 @@ export class TeamsSetupState {
       this.lostContact = false;
       this.currentStep = "failed";
     } catch {
-      // Polling or retry handles state
     } finally {
       this.cancelling = false;
     }
@@ -580,9 +571,7 @@ export class TeamsSetupState {
   async handleStartOver(): Promise<void> {
     try {
       await deleteTeamsSetupJob(this.agent);
-    } catch {
-      // Ignored
-    }
+    } catch {}
     this.job = null;
     this.logs = [];
     this.lastSeq = 0;

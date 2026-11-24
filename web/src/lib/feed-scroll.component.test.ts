@@ -1,10 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FeedScroller } from "./feed-scroll.svelte";
 
-// Opening and closing things in a feed, and Home and End pressed on what is
-// in it, against real elements. jsdom lays nothing out, so each element's top
-// is a number the test moves.
-
 class ManualObserver {
   static instances: ManualObserver[] = [];
   constructor(private readonly callback: () => void) {
@@ -21,7 +17,6 @@ interface Layout {
   tops: Map<Element, number>;
   scrollTop: number;
   scrollHeight: number;
-  /** The content's height, which a hold keeps from shrinking. */
   contentHeight: number;
 }
 
@@ -70,15 +65,10 @@ function feed(): Feed {
   return { scroll, content, item, button, layout, scroller, scrollTo };
 }
 
-/** Callbacks waiting for the next frame, by the id `requestAnimationFrame` returned. */
 const frameCallbacks = new Map<number, FrameRequestCallback>();
 let nextFrameId = 1;
 let frameTime = 1000;
 
-/**
- * Run the frames, 16ms apart: every callback requested before a frame runs
- * once in it, and any it requests waits for the next.
- */
 function runFrames(count: number): void {
   for (let n = 0; n < count; n++) {
     const due = [...frameCallbacks.values()];
@@ -88,7 +78,6 @@ function runFrames(count: number): void {
   }
 }
 
-/** Run frames until nothing waits for one. */
 function runAllFrames(): void {
   for (let n = 0; frameCallbacks.size > 0; n++) {
     if (n > 100) throw new Error("something still waits for a frame after 100 frames");
@@ -124,8 +113,6 @@ describe("FeedScroller, opening and closing things", () => {
     button.click();
     expect(scroller.isFollowing).toBe(false);
 
-    // What opened grows the content below the control: a following feed would
-    // have pinned to the new bottom and taken the control with it.
     layout.scrollHeight = 2300;
     ManualObserver.instances[0]?.notify();
     expect(scrollTo).not.toHaveBeenCalled();
@@ -136,7 +123,6 @@ describe("FeedScroller, opening and closing things", () => {
     const { button, layout, scrollTo } = feed();
     button.click();
 
-    // The control's body grew above it, as "Show all" does: it is 120px lower.
     place(button, layout, 560);
     ManualObserver.instances[0]?.notify();
     expect(scrollTo).toHaveBeenLastCalledWith({ top: 1620, behavior: "instant" });
@@ -148,7 +134,6 @@ describe("FeedScroller, opening and closing things", () => {
     place(button, layout, 470);
     runFrames(1);
     expect(scrollTo).toHaveBeenLastCalledWith({ top: 1530, behavior: "instant" });
-    // Back in place, so a later frame leaves it be.
     place(button, layout, 440);
     scrollTo.mockClear();
     runFrames(3);
@@ -158,7 +143,6 @@ describe("FeedScroller, opening and closing things", () => {
   it("finds the control again when what it opened redrew it", () => {
     const { button, item, layout, scrollTo } = feed();
     button.click();
-    // The same control, drawn again as a new element.
     const again = document.createElement("button");
     again.setAttribute("aria-expanded", "true");
     again.setAttribute("aria-controls", "body");
@@ -211,7 +195,6 @@ describe("FeedScroller, opening and closing things", () => {
     button.click();
     expect(scroller.isFollowing).toBe(false);
 
-    // Up to read what opened, then back down to the end.
     layout.scrollTop = 1000;
     scroll.dispatchEvent(new Event("scroll"));
     expect(scroller.isFollowing).toBe(false);
@@ -231,7 +214,6 @@ describe("FeedScroller, opening and closing things", () => {
 });
 
 describe("FeedScroller, Home and End on what is in the feed", () => {
-  /** Press `key` on `target`, as the browser does: the event bubbles up to the feed. */
   function press(target: Element, key: string): KeyboardEvent {
     const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
     target.dispatchEvent(event);

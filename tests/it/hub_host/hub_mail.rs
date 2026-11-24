@@ -1,5 +1,3 @@
-//! Mail against a real host: real agents, one running and one stopped, read,
-//! changed and written through the hub's HTTP wiring.
 #![expect(
     clippy::tests_outside_test_module,
     reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
@@ -8,7 +6,6 @@
 
 use super::*;
 
-/// The thread ids of a `GET /api/hub/mail/threads` body, in order.
 fn listed(body: &str) -> Vec<String> {
     let page: Value = serde_json::from_str(body).unwrap();
     array_at(&page, "threads")

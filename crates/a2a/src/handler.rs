@@ -1,7 +1,3 @@
-//! [`ResiduumA2aHandler`]: wraps `a2a_server::DefaultRequestHandler` with the
-//! caller-ownership and one-open-task-per-context rules the SDK doesn't
-//! enforce on its own. See `docs/systems-usage/a2a.md`.
-
 use std::sync::Arc;
 
 use a2a::{
@@ -22,19 +18,12 @@ use super::task_store::{
     ADDRESS_METADATA_KEY, CALLER_METADATA_KEY, FileTaskStore, SharedTaskStore,
 };
 
-/// Wraps [`DefaultRequestHandler`] with caller ownership checks, `list_tasks`
-/// scoped to the caller, follow-up history appends, and one non-terminal
-/// task per context — the gaps the SDK leaves to the embedder (see the
-/// plan's "SDK gaps we cover ourselves").
 pub struct ResiduumA2aHandler {
     inner: DefaultRequestHandler,
     task_store: SharedTaskStore,
 }
 
 impl ResiduumA2aHandler {
-    /// Wrap `inner`, sharing `task_store` with it so ownership metadata and
-    /// the one-open-task-per-context check can be read and written directly,
-    /// alongside whatever `inner` itself does with the same store.
     #[must_use]
     pub fn new(inner: DefaultRequestHandler, task_store: SharedTaskStore) -> Self {
         Self { inner, task_store }
@@ -48,9 +37,6 @@ impl ResiduumA2aHandler {
             .ok_or_else(|| A2AError::invalid_request("missing caller identity"))
     }
 
-    /// Verify `task_id` belongs to the caller in `params`, returning
-    /// `task_not_found` (never leaking whether a task exists for someone
-    /// else) when it doesn't.
     async fn check_ownership(&self, params: &ServiceParams, task_id: &str) -> Result<(), A2AError> {
         let caller = Self::caller_of(params)?;
         let task = self
@@ -64,22 +50,6 @@ impl ResiduumA2aHandler {
         }
     }
 
-    /// Prepare a `send_message`/`send_streaming_message` request: reject a
-    /// brand-new task in a context that already has an open one, ensure the
-    /// message carries a known `task_id`/`context_id`, append it to an
-    /// existing task's history (the SDK doesn't), and check ownership when
-    /// the task already exists.
-    ///
-    /// For a brand-new task, this creates the task record itself — with
-    /// `residuum.caller`/`residuum.address` metadata already set — *before*
-    /// delegating to the inner handler, rather than delegating first and
-    /// patching metadata on afterward. The inner handler's own execution
-    /// starts concurrently the moment it's called and immediately begins
-    /// overwriting the task's `status` (working, then terminal) from its own
-    /// in-memory copy of the very first snapshot it saw; a metadata patch
-    /// applied after that point would only win the race until the next
-    /// status update clobbers it. Creating the task with metadata already in
-    /// place means every update downstream carries it forward.
     async fn prepare_send(
         &self,
         params: &ServiceParams,
@@ -125,10 +95,6 @@ impl ResiduumA2aHandler {
             self.task_store.update(existing).await?;
             Ok(())
         } else {
-            // The caller named a task id nothing has created yet: treat it
-            // like a brand-new task at that id (the SDK itself would do the
-            // same for an unrecognized `task_id`), still gated on the
-            // one-open-task check above.
             let context_id = req
                 .message
                 .context_id
@@ -140,11 +106,6 @@ impl ResiduumA2aHandler {
         }
     }
 
-    /// Create a task record with `residuum.caller`/`residuum.address`
-    /// metadata already set, its history seeded with `message`, and status
-    /// `Submitted` — exactly the shape the SDK's own `prepare_task_for_execution`
-    /// would build for a task it doesn't find, so the inner handler simply
-    /// reuses it instead of creating a second, metadata-less copy.
     async fn create_owned_task(
         &self,
         task_id: &str,
@@ -320,9 +281,6 @@ impl RequestHandler for ResiduumA2aHandler {
     }
 }
 
-/// Build a synthetic continuation message for a task left `Submitted` or
-/// `Working` across a restart, marked `residuum.synthetic` in its metadata
-/// so the session can tell it apart from a real caller message.
 #[must_use]
 pub fn continuation_request(task: &Task) -> SendMessageRequest {
     let mut message = a2a::Message::new(
@@ -345,12 +303,6 @@ pub fn continuation_request(task: &Task) -> SendMessageRequest {
     }
 }
 
-/// The continuation prompt: what happened, plus the caller's own messages on
-/// the task, so the resumed session knows which task it is finishing even
-/// when the interrupted run left no episode behind.
-///
-/// Caller messages are passed in full, not excerpted: cutting them risked
-/// losing the instruction that matters most to finishing the task correctly.
 fn continuation_text(task: &Task) -> String {
     let mut text = String::from(
         "[Residuum restarted while this A2A task was in progress. Continue it where you \
@@ -395,9 +347,6 @@ fn is_synthetic(message: &a2a::Message) -> bool {
         .unwrap_or(false)
 }
 
-/// `ServiceParams` carrying just the caller header, for the restart
-/// continuation sweep, which calls the handler in-process rather than over
-/// HTTP.
 #[must_use]
 pub fn caller_service_params(caller: &str) -> ServiceParams {
     let mut params = ServiceParams::new();
@@ -405,11 +354,6 @@ pub fn caller_service_params(caller: &str) -> ServiceParams {
     params
 }
 
-/// Drive every task left `Submitted`/`Working` across a restart through a
-/// synthetic continuation message, so long-running work resumes on its own.
-/// Runs each task's continuation concurrently and logs failures — a
-/// continuation that can't be delivered still leaves the task itself intact
-/// for the next real message to it.
 pub async fn resume_in_progress_tasks(
     handler: Arc<ResiduumA2aHandler>,
     task_store: SharedTaskStore,

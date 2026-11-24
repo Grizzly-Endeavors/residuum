@@ -5,22 +5,12 @@
   import { IconButton } from "../../lib/ui";
   import { panelFrame } from "./panel-frame";
 
-  // The top of whatever the context panel shows: what it is, its title (which
-  // names the panel), a line of details, its own actions, and the way out:
-  // Close beside the main region, Back on a phone's full-screen sheet. When the
-  // panel replaced another one on this place, a Back before the title returns to
-  // that one.
-
   interface Props {
     icon: IconName;
     title: string;
-    /** A small line above the title saying what kind of thing this is, such as "File". */
     kind?: string;
-    /** Set the title in the code face, for a file name or an id. */
     code?: boolean;
-    /** Details under the title. */
     meta?: Snippet;
-    /** Buttons beside the way out, for what the panel shows. */
     actions?: Snippet;
   }
 
@@ -62,7 +52,6 @@
 </header>
 
 <style>
-  /* At least as tall as a place's header, so the two hairlines meet across the shell. */
   .context-panel-head {
     display: flex;
     flex: none;

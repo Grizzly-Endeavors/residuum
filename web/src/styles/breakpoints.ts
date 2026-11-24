@@ -1,8 +1,3 @@
-/**
- * The shell breakpoints from tokens.css (`--breakpoint-*`), for scripts that
- * need `matchMedia`. tokens.test.ts keeps the two in step.
- */
-
 export const PHONE_MAX_WIDTH = 760;
 export const WIDE_MIN_WIDTH = 1181;
 

@@ -1,9 +1,3 @@
-//! Changing a thread in the user's mailbox: reading, archiving and restoring it.
-//!
-//! Each changes the thread's user-inbox items (the agents' messages to the
-//! user) and nothing else: the agents' copies of the user's messages belong to
-//! the agents' own inboxes.
-
 use std::fmt;
 use std::path::Path;
 
@@ -12,21 +6,15 @@ use residuum_config::WorkspaceLayout;
 use super::{MailMessage, MailSender, MailThread, MailboxDirectory};
 use crate::inbox::{InboxKind, InboxRef, archive_item, mark_read, restore_item};
 
-/// One item a thread change couldn't update.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MailItemFailure {
-    /// The item.
     pub item: InboxRef,
-    /// Why it couldn't be updated.
     pub reason: String,
 }
 
-/// Some of a thread's items couldn't be updated. Every other item was.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub struct ThreadUpdateError {
-    /// How many items needed the change.
     pub attempted: usize,
-    /// The items that didn't get it.
     pub failures: Vec<MailItemFailure>,
 }
 
@@ -45,10 +33,6 @@ impl fmt::Display for ThreadUpdateError {
     }
 }
 
-/// Mark every unread message an agent sent in `thread` read, active or archived.
-///
-/// # Errors
-/// [`ThreadUpdateError`] naming each item that couldn't be marked; the rest are.
 pub async fn mark_thread_read(
     directory: &dyn MailboxDirectory,
     thread: &MailThread,
@@ -65,10 +49,6 @@ pub async fn mark_thread_read(
     .await
 }
 
-/// Archive every active message an agent sent in `thread`.
-///
-/// # Errors
-/// [`ThreadUpdateError`] naming each item that couldn't be archived; the rest are.
 pub async fn archive_thread(
     directory: &dyn MailboxDirectory,
     thread: &MailThread,
@@ -82,10 +62,6 @@ pub async fn archive_thread(
     .await
 }
 
-/// Restore every archived message an agent sent in `thread`.
-///
-/// # Errors
-/// [`ThreadUpdateError`] naming each item that couldn't be restored; the rest are.
 pub async fn restore_thread(
     directory: &dyn MailboxDirectory,
     thread: &MailThread,
@@ -114,8 +90,6 @@ async fn move_item(
     }
 }
 
-/// Apply `change` to each agent's message in `thread` that `needs` it, going
-/// on past failures and reporting them together.
 async fn update_agent_messages<'t, F, Fut>(
     directory: &dyn MailboxDirectory,
     thread: &'t MailThread,

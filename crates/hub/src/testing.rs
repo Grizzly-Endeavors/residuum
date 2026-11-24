@@ -1,9 +1,3 @@
-//! Helpers the hub's tests share: agents on disk that talk to a mock model
-//! server, API states whose checkpoint engine watches the directories the
-//! handlers write to, and a fixture web app for the asset routes. Behind
-//! `test-support` for the agent and fixture helpers other crates' tests use;
-//! the API states are this crate's own.
-
 use std::borrow::Cow;
 use std::path::Path;
 #[cfg(test)]
@@ -21,8 +15,6 @@ use crate::web::WebAsset;
 #[cfg(test)]
 use crate::web::{ConfigApiState, HubApiState, WorkspaceScope};
 
-/// Mount a model reply of `text` on `server`. A test that needs the reply to
-/// wait puts a gate in front of the server instead.
 pub async fn mount_reply(server: &MockServer, text: &str) {
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
@@ -33,11 +25,6 @@ pub async fn mount_reply(server: &MockServer, text: &str) {
         .await;
 }
 
-/// Write a bootstrapped agent directory `root/<name>` whose main model is
-/// the mock server at `model_url`.
-///
-/// # Panics
-/// When the directory cannot be written.
 #[expect(
     clippy::unwrap_used,
     reason = "test-support helper: a fixture that cannot be written fails the test that asked for it"
@@ -55,15 +42,10 @@ pub fn write_agent(root: &Path, name: &str, model_url: &str) {
     .unwrap();
 }
 
-/// The content-hashed build output the fixture web app serves for JavaScript,
-/// named as the real build names it.
 pub const FIXTURE_HASHED_JS: &str = "assets/fixture-app.js";
 
-/// The content-hashed build output the fixture web app serves for styles.
 pub const FIXTURE_HASHED_CSS: &str = "assets/fixture-app.css";
 
-/// The fixture's files that are not content-hashed. The real build holds each
-/// of them too, which the root's `wiring` tests check.
 pub const FIXTURE_PLAIN_FILES: [&str; 6] = [
     "index.html",
     "mcp-catalog.json",
@@ -73,9 +55,6 @@ pub const FIXTURE_PLAIN_FILES: [&str; 6] = [
     "icons/icon-192.png",
 ];
 
-/// A web app for the asset tests: the files the handler tests request, with
-/// the content types, cache classes and sizes those tests assert on. Each
-/// file has its own digest, so its `ETag` differs from the others.
 #[must_use]
 pub fn fixture_assets(asset_path: &str) -> Option<WebAsset> {
     let (data, digest): (Cow<'static, [u8]>, u8) = match asset_path {
@@ -146,7 +125,6 @@ fn watching_engine(root: &Path) -> (PathBuf, PathBuf, PathBuf, Arc<CheckpointEng
     (hub_dir, config_dir, workspace_dir, checkpoints)
 }
 
-/// An agent-scope [`ConfigApiState`] whose checkpoints watch `root`.
 #[cfg(test)]
 pub(crate) fn watching_state(root: &Path) -> ConfigApiState {
     let (hub_dir, config_dir, workspace_dir, checkpoints) = watching_engine(root);
@@ -163,7 +141,6 @@ pub(crate) fn watching_state(root: &Path) -> ConfigApiState {
     }
 }
 
-/// A [`HubApiState`] whose checkpoints watch `root`, serving [`fixture_assets`].
 #[cfg(test)]
 pub(crate) fn watching_hub_state(root: &Path) -> HubApiState {
     let (hub_dir, _config_dir, _workspace_dir, checkpoints) = watching_engine(root);

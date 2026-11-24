@@ -14,10 +14,6 @@ import { chooseOnConflict } from "./changed-on-disk.svelte";
 import ModelSection from "./ModelSection.svelte";
 import { waitFor } from "../../test/wait";
 
-// The Model section drawn on its own, with a real scope over a fake agent's
-// files: the roles it shows, what an edit stages, what a save writes, and
-// the field it focuses on arrival.
-
 let agent = "";
 let server: FakeAgentConfig;
 let count = 0;
@@ -38,13 +34,11 @@ async function loaded(files: { providers?: string; config?: string }): Promise<A
   return scope;
 }
 
-/** The JSON of every PATCH of `file` the page sent, in order. */
 const patches = (file: "providers" | "config"): unknown[] =>
   server.requests
     .filter((request) => request.method === "PATCH" && request.url.endsWith(`/${file}/patch`))
     .map((request) => JSON.parse(request.body ?? "null") as unknown);
 
-/** The provider and model selects of a job, by its name. */
 function job(name: string): { provider: HTMLSelectElement; model: () => HTMLSelectElement } {
   const group = screen.getByRole("group", { name });
   return {
@@ -53,7 +47,6 @@ function job(name: string): { provider: HTMLSelectElement; model: () => HTMLSele
   };
 }
 
-/** A thinking level's option inside `container`. */
 function level(container: HTMLElement, label: string): HTMLElement {
   const found = [...container.querySelectorAll<HTMLElement>('[role="radio"]')].find(
     (radio) => radio.textContent.trim() === label,

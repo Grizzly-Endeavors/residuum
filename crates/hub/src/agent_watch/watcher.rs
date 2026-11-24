@@ -1,6 +1,3 @@
-//! The per-agent watcher: one task per running agent that turns what happens
-//! on the agent's bus into [`AgentChange`]s on the hub's feed.
-
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use std::sync::Arc;
@@ -25,26 +22,14 @@ use residuum_bus::{
 };
 use residuum_workspace::watch::WatchHealth;
 
-/// How often an agent is recomputed while its file watcher is down.
 const RECOMPUTE_WHILE_UNAVAILABLE: Duration = Duration::from_secs(60);
 
-/// A running watcher of one agent. It stops when [`stop`](Self::stop)ped or
-/// dropped.
 pub(crate) struct AgentWatcher {
     cancel_on_drop: DropGuard,
     task: JoinHandle<()>,
 }
 
 impl AgentWatcher {
-    /// Subscribe to the agent's bus and start watching it, publishing on
-    /// `feed` under the agent's name.
-    ///
-    /// Call before the agent's event loop runs, so no session or inbox event
-    /// is missed.
-    ///
-    /// # Errors
-    /// Returns the bus error when a subscription can't be made; the agent
-    /// then has no watcher.
     pub(crate) async fn attach(
         agent: &str,
         control: &AgentControl,
@@ -70,9 +55,6 @@ impl AgentWatcher {
         let subscriptions = Subscriptions::open(bus).await?;
         let mut state = WatchState::new(agent, feed);
         state.learn_live_sessions(registry);
-        // Read after subscribing: a feed that went down before this point
-        // published its `Unavailable` where nobody was listening, but had
-        // already set its health.
         if *workspace_health.borrow() == WatchHealth::Off {
             state.workspace_unavailable();
         }
@@ -92,8 +74,6 @@ impl AgentWatcher {
         })
     }
 
-    /// Stop watching. Changes already queued are still published; once this
-    /// returns, nothing more is.
     pub(crate) async fn stop(self) {
         let Self {
             cancel_on_drop,
@@ -106,9 +86,6 @@ impl AgentWatcher {
     }
 }
 
-/// The agent-bus subscriptions the watcher reads. Every one is lossless but
-/// the workspace feed, and every one is drained for as long as the watcher
-/// runs, whether or not anyone reads the hub's feed.
 struct Subscriptions {
     sessions: Subscriber<SessionEvent>,
     outbound: Subscriber<OutboundA2aTaskEvent>,
@@ -117,12 +94,9 @@ struct Subscriptions {
     workspace: Subscriber<WorkspaceEvent>,
 }
 
-/// What one subscription's `recv` means for the watcher loop.
 enum Next<E> {
     Event(E),
-    /// An event that couldn't be read; `Subscriber::recv` already logged it.
     Skip,
-    /// The agent's broker shut down.
     Closed,
 }
 
@@ -151,8 +125,6 @@ impl Subscriptions {
         })
     }
 
-    /// Read every subscription until `cancel` fires, then publish what is
-    /// still queued.
     async fn run(mut self, mut state: WatchState, cancel: CancellationToken) {
         loop {
             tokio::select! {
@@ -203,7 +175,6 @@ impl Subscriptions {
     }
 }
 
-/// Waits for the next recompute tick, or forever while there is none.
 async fn next_recompute(recompute: &mut Option<Interval>) {
     match recompute {
         Some(interval) => {
@@ -213,15 +184,10 @@ async fn next_recompute(recompute: &mut Option<Interval>) {
     }
 }
 
-/// What the watcher keeps between events.
 struct WatchState {
     agent: String,
     feed: Arc<AgentChangeFeed>,
-    /// The source label of each live session run, from its start event, so a
-    /// session's later events can be matched to the label it started with.
     labels: HashMap<(SessionAddress, String), String>,
-    /// Ticks every 60 seconds while the agent's file watcher is down, until
-    /// its next batch or resync.
     recompute: Option<Interval>,
 }
 
@@ -242,8 +208,6 @@ impl WatchState {
         });
     }
 
-    /// Remember the label of every session already live, which started
-    /// before the watcher was listening.
     fn learn_live_sessions(&mut self, registry: &SessionRegistry) {
         for info in registry.list_live() {
             self.labels
@@ -251,8 +215,6 @@ impl WatchState {
         }
     }
 
-    /// Sessions: lifecycle events become changes; every event, lifecycle or
-    /// turn, goes to the session relay.
     fn on_session(&mut self, event: SessionEvent) {
         let key = (event.address.clone(), event.run_id.clone());
         let change = match &event.kind {
@@ -301,9 +263,6 @@ impl WatchState {
         self.publish(AgentChangeKind::OutboundTaskChanged(Box::new(event.task)));
     }
 
-    /// Pulse fires: one that finished without a session run becomes a
-    /// change. Every other fire change is the Schedule place's own, and a
-    /// fire that ran a session is told by its session's completion.
     fn on_pulse_fire(&self, event: PulseFireEvent) {
         if let PulseFireChange::Finished {
             outcome,
@@ -323,9 +282,6 @@ impl WatchState {
         });
     }
 
-    /// Workspace: a batch becomes one change per kind of watched file it
-    /// touched. A resync is passed on, and a batch after an outage ends the
-    /// recompute ticks.
     fn on_workspace(&mut self, event: WorkspaceEvent) {
         match event {
             WorkspaceEvent::Changed(changes) => {
@@ -346,8 +302,6 @@ impl WatchState {
         }
     }
 
-    /// The agent's file watcher is down: recompute every 60 seconds until a
-    /// batch or resync arrives. Logs once per outage.
     fn workspace_unavailable(&mut self) {
         if self.recompute.is_some() {
             return;
@@ -369,7 +323,6 @@ impl WatchState {
     }
 }
 
-/// The kinds of watched file a batch of changes touched, in a fixed order.
 fn touched(changes: &[WorkspaceChange]) -> BTreeSet<WatchedPath> {
     changes
         .iter()
@@ -377,10 +330,6 @@ fn touched(changes: &[WorkspaceChange]) -> BTreeSet<WatchedPath> {
         .collect()
 }
 
-/// Which watched file a workspace-relative path is, if any.
-///
-/// A change to a directory stands for everything under it, so the
-/// directories that hold watched files count too.
 fn watched_path(path: &str) -> Option<WatchedPath> {
     let segments: Vec<&str> = path.split('/').collect();
     match segments.as_slice() {
@@ -405,7 +354,6 @@ mod tests {
     use residuum_bus::{AgentResultStatus, SessionEventKind, ToolCallEvent};
     use residuum_core::testing::{clock, wait};
 
-    /// A watcher over a bare agent bus, with a receiver on the hub's feed.
     struct Rig {
         bus: BusHandle,
         feed: Arc<AgentChangeFeed>,
@@ -452,7 +400,6 @@ mod tests {
             self.publish(topics::Workspace, event).await;
         }
 
-        /// The next change, if one arrives within `within` of paused time.
         async fn next_within(&mut self, within: Duration) -> Option<AgentChange> {
             clock::within(within, self.changes.recv()).await.flatten()
         }
@@ -749,8 +696,6 @@ mod tests {
             assert_eq!(relayed.agent, "scout");
             assert_eq!(relayed.source_label.as_deref(), Some("artifact:notes"));
         }
-        // The run is over, so its label is forgotten; a later event of the
-        // same run has none.
         rig.publish(
             topics::Sessions,
             session_event(
@@ -764,8 +709,6 @@ mod tests {
         .await;
         let late = wait::next("the late relayed session event", &mut relay).await;
         assert_eq!(late.source_label, None);
-        // Only the start and the completion were changes; the turn, tool and
-        // response events were relayed and nothing else.
         assert!(matches!(
             rig.next().await,
             AgentChangeKind::SessionStarted(_)
@@ -797,7 +740,6 @@ mod tests {
     async fn an_unavailable_watcher_recomputes_every_minute_until_its_next_batch() {
         let mut rig = Rig::new().await;
         rig.workspace(WorkspaceEvent::Unavailable).await;
-        // A second notice in the same outage changes nothing.
         rig.workspace(WorkspaceEvent::Unavailable).await;
         rig.quiet().await;
 
@@ -817,8 +759,6 @@ mod tests {
             );
         }
 
-        // The first batch after the outage recomputes once more, then the
-        // ticks stop.
         rig.workspace(batch(&["HEARTBEAT.yml"])).await;
         assert!(matches!(rig.next().await, AgentChangeKind::Resync));
         assert!(matches!(
@@ -855,9 +795,6 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn the_watcher_keeps_draining_while_nothing_reads_its_output() {
         let mut rig = Rig::new().await;
-        // More than the bus's stuck-consumer threshold: a watcher that
-        // stopped reading would show up as a growing backlog, and its
-        // output would stall.
         let total = 12_000;
         for n in 0..total {
             rig.publish(
@@ -875,7 +812,6 @@ mod tests {
             },
         )
         .await;
-        // Nothing has read the feed so far, and nothing was lost.
         for n in 0..total {
             assert!(
                 matches!(rig.next().await, AgentChangeKind::UserInboxAdded { item_id } if item_id == n.to_string()),
@@ -913,9 +849,6 @@ mod tests {
                 .await
                 .unwrap();
         }
-        // A subscriber made now hears every change from here on: if the
-        // watcher has read all of the above (with no one listening to any of
-        // it) and is still reading, the change below reaches it.
         let mut late = feed.subscribe();
         bus.publisher()
             .publish(
@@ -979,9 +912,6 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn changes_queued_when_the_watcher_stops_are_still_published() {
         let mut rig = Rig::new().await;
-        // A second subscriber on the topic, registered after the watcher's,
-        // has an event only once the broker has already queued it for the
-        // watcher.
         let mut barrier: Subscriber<UserInboxAddedEvent> =
             rig.bus.subscribe(topics::UserInbox).await.unwrap();
         for n in 0..3 {

@@ -1,5 +1,3 @@
-//! Scheduled action tools: schedule, list, and cancel one-off actions.
-
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -15,19 +13,14 @@ use residuum_proactivity::actions::types::ScheduledAction;
 use residuum_agent::Tool;
 use residuum_inference::{ToolError, ToolResult};
 
-// ─── schedule_action ─────────────────────────────────────────────────────────
-
-/// Tool for scheduling a one-off action.
 pub struct ScheduleActionTool {
     store: Arc<Mutex<ActionStore>>,
     notify: Arc<Notify>,
     tz: chrono_tz::Tz,
-    /// The live catalog an explicit `model_tier` is checked against.
     models: SharedModelCatalog,
 }
 
 impl ScheduleActionTool {
-    /// Create a new `ScheduleActionTool`.
     #[must_use]
     pub fn new(
         store: Arc<Mutex<ActionStore>>,
@@ -96,10 +89,6 @@ impl Tool for ScheduleActionTool {
             ));
         }
 
-        // Normalized, not rejected: an empty or whitespace agent_name is a
-        // client bug whose intent was a plain session ("omit agent_name"),
-        // and an empty string here used to reach the fork and die there as
-        // `skill '' not found` — after the action had already been consumed.
         let agent_name = arguments
             .get("agent_name")
             .and_then(Value::as_str)
@@ -160,16 +149,12 @@ impl Tool for ScheduleActionTool {
     }
 }
 
-// ─── list_actions ────────────────────────────────────────────────────────────
-
-/// Tool for listing all pending scheduled actions.
 pub struct ListActionsTool {
     store: Arc<Mutex<ActionStore>>,
     tz: chrono_tz::Tz,
 }
 
 impl ListActionsTool {
-    /// Create a new `ListActionsTool`.
     #[must_use]
     pub fn new(store: Arc<Mutex<ActionStore>>, tz: chrono_tz::Tz) -> Self {
         Self { store, tz }
@@ -235,16 +220,12 @@ impl Tool for ListActionsTool {
     }
 }
 
-// ─── cancel_action ───────────────────────────────────────────────────────────
-
-/// Tool for cancelling a pending scheduled action.
 pub struct CancelActionTool {
     store: Arc<Mutex<ActionStore>>,
     notify: Arc<Notify>,
 }
 
 impl CancelActionTool {
-    /// Create a new `CancelActionTool`.
     #[must_use]
     pub fn new(store: Arc<Mutex<ActionStore>>, notify: Arc<Notify>) -> Self {
         Self { store, notify }
@@ -297,26 +278,15 @@ async fn save_action_store(store: &mut ActionStore) -> Result<(), ToolError> {
     })
 }
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-/// Parse a datetime string into a UTC `DateTime`.
-///
-/// Accepts:
-/// - Full ISO 8601 with offset: `2026-03-01T09:00:00Z` or `2026-03-01T09:00:00+05:00`
-/// - Naive datetime (interpreted in the configured timezone): `2026-03-01T09:00:00`
-/// - Naive datetime without seconds: `2026-03-01T09:00`
 fn parse_run_at(s: &str, tz: chrono_tz::Tz) -> Result<chrono::DateTime<Utc>, ToolError> {
-    // Try RFC 3339 / ISO with offset first
     if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
         return Ok(dt.with_timezone(&Utc));
     }
 
-    // Try naive datetime with seconds
     if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S") {
         return naive_to_utc(naive, tz);
     }
 
-    // Try naive datetime without seconds
     if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M") {
         return naive_to_utc(naive, tz);
     }
@@ -396,8 +366,6 @@ mod tests {
 
     #[test]
     fn parse_run_at_dst_gap() {
-        // America/New_York spring-forward on 2026-03-08: 2:00 AM → 3:00 AM
-        // 2:30 AM does not exist in that timezone
         let result = parse_run_at("2026-03-08T02:30:00", chrono_tz::Tz::America__New_York);
         assert!(result.is_err(), "datetime in DST gap should fail");
         let err = result.unwrap_err().to_string();
@@ -492,9 +460,6 @@ mod tests {
 
     #[tokio::test]
     async fn an_empty_agent_name_schedules_a_plain_session() {
-        // The quill cutover bug: a client passed `agent_name: ""` — a plain
-        // session's intent — which used to reach the fork and die there as
-        // `skill '' not found`, after the action was already consumed.
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(Mutex::new(ActionStore::new_empty(
             dir.path().join("test-empty-agent.json"),
@@ -644,7 +609,6 @@ mod tests {
         )));
         let notify = Arc::new(Notify::new());
 
-        // Add an action directly
         let action = ScheduledAction {
             id: "action-cancel01".to_string(),
             name: "to-cancel".to_string(),
@@ -710,7 +674,6 @@ mod tests {
             residuum_config::ModelCatalog::default().into_shared(),
         );
 
-        // Schedule an action 1 hour from now so it's in the future
         let future = Utc::now() + chrono::Duration::hours(1);
         let naive_local = future
             .with_timezone(&tz)
@@ -726,7 +689,6 @@ mod tests {
         let result = tool.execute(args).await.unwrap();
         let output = result.output;
 
-        // Output should contain the local time, not UTC
         assert!(
             output.contains(&naive_local),
             "expected local time '{naive_local}' in output, got: {output}"
@@ -745,7 +707,6 @@ mod tests {
         )));
         let tz = chrono_tz::Tz::America__New_York;
 
-        // Add an action with a known UTC time
         let run_at_utc = chrono::DateTime::parse_from_rfc3339("2026-06-15T18:00:00Z")
             .unwrap()
             .with_timezone(&Utc);
@@ -764,7 +725,6 @@ mod tests {
         let result = tool.execute(serde_json::json!({})).await.unwrap();
         let output = result.output;
 
-        // 18:00 UTC in June = 14:00 EDT (America/New_York)
         assert!(
             output.contains("2026-06-15T14:00:00"),
             "expected EDT time '2026-06-15T14:00:00' in output, got: {output}"

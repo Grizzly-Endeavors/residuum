@@ -1,19 +1,9 @@
-//! Persistence for the observation log (`observations.json`).
-//!
-//! Uses atomic write (temp file + rename) to prevent corruption.
-
 use std::path::Path;
 
 use anyhow::Context;
 
 use crate::types::{Observation, ObservationLog};
 
-/// Load the observation log from disk.
-///
-/// Returns an empty log if the file does not exist.
-///
-/// # Errors
-/// Returns an error if the file exists but cannot be read or parsed.
 pub async fn load_observation_log(path: &Path) -> anyhow::Result<ObservationLog> {
     match tokio::fs::read_to_string(path).await {
         Ok(contents) => serde_json::from_str(&contents).with_context(|| {
@@ -31,25 +21,12 @@ pub async fn load_observation_log(path: &Path) -> anyhow::Result<ObservationLog>
     }
 }
 
-/// Save the observation log to disk atomically.
-///
-/// Writes to a temporary file in the same directory, then renames
-/// to avoid partial writes on crash.
-///
-/// # Errors
-/// Returns an error if the file cannot be written.
 pub async fn save_observation_log(path: &Path, log: &ObservationLog) -> anyhow::Result<()> {
     let json = serde_json::to_string_pretty(log).context("failed to serialize observation log")?;
 
     residuum_core::util::fs::atomic_write(path, &json).await
 }
 
-/// Append observations to the observation log on disk.
-///
-/// Loads the existing log, extends with new observations, and saves atomically.
-///
-/// # Errors
-/// Returns an error if loading or saving fails.
 pub async fn append_observations(
     path: &Path,
     observations: Vec<Observation>,
@@ -61,12 +38,6 @@ pub async fn append_observations(
     save_observation_log(path, &log).await
 }
 
-/// Save per-episode observations to an archive file atomically.
-///
-/// Serializes `observations` as a JSON array and writes atomically via a temp file rename.
-///
-/// # Errors
-/// Returns an error if the file cannot be written.
 pub(crate) async fn save_episode_observations(
     path: &Path,
     observations: &[Observation],

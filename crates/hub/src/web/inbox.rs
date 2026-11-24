@@ -14,15 +14,6 @@ use residuum_workspace::inbox::{InboxKind, InboxRef};
 
 use super::AgentFilesState;
 
-/// Resolve `root/id/name`, confining it to `root/id`.
-///
-/// Canonicalizes both the item directory and the candidate file and requires the
-/// candidate to sit inside the item directory, and the item directory to sit
-/// inside `root` — two checks because `id` and `name` both ultimately come from
-/// data the agent controls (the inbox item ID and its stored attachment list) and
-/// neither is trusted as a literal filesystem path. Returns `None` on any
-/// resolution failure, which callers turn into a 404 rather than a 403 so an
-/// out-of-tree path is indistinguishable from one that simply doesn't exist.
 async fn confine(
     root: &std::path::Path,
     id: &str,
@@ -43,9 +34,6 @@ async fn confine(
         .then_some(candidate_canon)
 }
 
-/// `GET /api/agents/{name}/inbox/{id}/attachments/{index}` — Serve one of a
-/// user-inbox item's attachments by its position in the item's attachment
-/// list.
 pub(super) async fn api_inbox_attachment(
     method: Method,
     request_headers: HeaderMap,
@@ -63,9 +51,6 @@ pub(super) async fn api_inbox_attachment(
     .await
 }
 
-/// `GET /api/agents/{name}/inbox/agent/{id}/attachments/{index}` — Serve one
-/// of an agent-inbox item's attachments, such as a file the user sent the
-/// agent.
 pub(super) async fn api_agent_inbox_attachment(
     method: Method,
     request_headers: HeaderMap,
@@ -83,11 +68,6 @@ pub(super) async fn api_agent_inbox_attachment(
     .await
 }
 
-/// Serve attachment `index` of the `kind` inbox item `id`.
-///
-/// Checks the active inbox first, then the archive, so a link handed out before
-/// an item is archived keeps working afterward. Never trusts the item's stored
-/// attachment path as a literal filesystem path — see `confine`.
 async fn serve_attachment(
     state: &AgentFilesState,
     kind: InboxKind,
@@ -123,8 +103,6 @@ fn missing_attachment(
         "This attachment is no longer available. It may have been removed from its inbox item.";
     if browser_landing::is_top_level_navigation(method, headers) {
         let notice = ("notice", AppNotice::InboxAttachmentMissing.code());
-        // An id no ref can carry names no thread; the Inbox still shows the
-        // notice.
         let target = match InboxRef::new(&state.agent_name, kind, id) {
             Ok(item) => {
                 browser_landing::app_path("/inbox", &[("thread", &item.to_string()), notice])
@@ -146,16 +124,12 @@ fn missing_attachment(
         .into_response()
 }
 
-/// The file of attachment `index` of the `kind` inbox item `id` (active or
-/// archived), confined to the item's attachment directory, and its file name.
 async fn find_inbox_attachment(
     state: &AgentFilesState,
     kind: InboxKind,
     id: &str,
     index: usize,
 ) -> Option<(std::path::PathBuf, String)> {
-    // An id no ref can carry (a path separator, `..`) names no item, so it is
-    // never joined into a path.
     let item_ref = InboxRef::new(&state.agent_name, kind, id).ok()?;
     let layout = WorkspaceLayout::new(&state.workspace_dir);
     let found = match residuum_workspace::inbox::locate_item(&layout, &item_ref).await {
@@ -184,7 +158,6 @@ mod tests {
         AgentFilesState::for_test(workspace_dir, None)
     }
 
-    /// Write the `kind` item `id`, active or archived, with `attachments`.
     async fn write_item(
         layout: &WorkspaceLayout,
         kind: InboxKind,
@@ -195,7 +168,6 @@ mod tests {
         write_item_at(&kind.items_dir(layout, archived), id, attachments).await;
     }
 
-    /// Write item `id` with `attachments` into `dir`.
     async fn write_item_at(dir: &std::path::Path, id: &str, attachments: Vec<std::path::PathBuf>) {
         tokio::fs::create_dir_all(dir).await.unwrap();
         let item = InboxItem {
@@ -212,8 +184,6 @@ mod tests {
             .unwrap();
     }
 
-    /// Put `bytes` at `note.txt` in the `kind` item `id`'s attachment
-    /// directory, and return the path the item records.
     async fn write_attachment(
         layout: &WorkspaceLayout,
         kind: InboxKind,
@@ -287,8 +257,6 @@ mod tests {
     async fn an_id_no_ref_can_carry_is_not_found() {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path());
-        // An item one directory above the inbox, which `../planted` would
-        // reach if the id were joined into a path unchecked.
         let planted = InboxKind::User.items_dir(&layout, false).join("..");
         write_item_at(&planted, "planted", vec![]).await;
 
@@ -375,8 +343,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path());
 
-        // The item's own directory exists (so `confine` gets past the first
-        // canonicalize), but the file it names was never actually copied there.
         tokio::fs::create_dir_all(layout.user_inbox_attachments_dir().join("item1"))
             .await
             .unwrap();
@@ -405,11 +371,6 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn a_symlink_escaping_the_item_directory_is_refused() {
-        // The stored filename itself can never contain a traversal component
-        // (`Path::file_name` already strips those), so the realistic way a
-        // confined-looking path can still resolve outside the item directory is
-        // via a symlink planted inside it. `confine`'s canonicalize-then-`starts_with`
-        // check must catch that.
         for kind in [InboxKind::User, InboxKind::Agent] {
             let dir = tempfile::tempdir().unwrap();
             let layout = WorkspaceLayout::new(dir.path());

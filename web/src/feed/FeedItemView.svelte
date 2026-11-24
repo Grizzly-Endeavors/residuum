@@ -11,24 +11,10 @@
   import TurnFailure from "./TurnFailure.svelte";
   import UserMessage from "./UserMessage.svelte";
 
-  // One feed item, in the main chat or a session's transcript. `agent` is the
-  // agent the conversation belongs to, which its links and Undo act on. Tool
-  // calls show at the head of their turn (`FeedTurn`), not one by one here.
-  //
-  // A message keeps its quiet details (when it was sent, Copy) out of sight
-  // until the pointer is over it, keyboard focus is in it, or it has been tapped on a
-  // screen with no hover: `--message-meta` is 1 then, and 0 otherwise, for the
-  // parts that read it. They stay in the page the whole time, so assistive
-  // technology reaches them. `--message-meta-events` lets them take the
-  // pointer only while shown, so details floating over the next message never
-  // catch a click meant for it.
-
   let { item, agent }: { item: FeedItem; agent: string } = $props();
 
-  /** A tap on a touch screen showed the message's quiet details. */
   let revealed = $state(false);
 
-  /** What a tap is meant for rather than for the message around it. */
   const OWN_TAPS = "a, button, summary, input, textarea, select, audio, video";
 
   const revealOnTap: Attachment<HTMLElement> = (node) => {
@@ -37,7 +23,6 @@
         return;
       }
       if (event.target instanceof Element && event.target.closest(OWN_TAPS) !== null) return;
-      // Letting go of a text selection isn't a tap on the message.
       if (window.getSelection()?.isCollapsed === false) return;
       revealed = !revealed;
     };
@@ -75,7 +60,6 @@
 
     min-width: 0;
 
-    /* Keyboard focus only: a button pressed with the mouse keeps focus, and shouldn't pin the details open. */
     &:has(:global(:focus-visible)),
     &[data-revealed] {
       --message-meta: 1;

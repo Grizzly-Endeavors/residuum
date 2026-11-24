@@ -15,14 +15,10 @@ use super::types::{
 use crate::http::{SharedHttpClient, read_error_body, warn_if_insecure_remote};
 use residuum_config::{RetryConfig, SystemOneProvider};
 
-/// Where a System 1 model is served and how to call it.
 #[derive(Clone, PartialEq, Eq)]
 pub struct SystemOneEndpoint {
-    /// The provider kind, recorded as the provider id of each usage record.
     pub kind: SystemOneProvider,
-    /// Display name used in messages: `TypeSafe`, Ollama, or a host.
     pub provider: String,
-    /// Base URL without the `/v1/...` path.
     pub base_url: String,
     pub model: String,
     pub api_key: Option<String>,
@@ -43,7 +39,6 @@ impl std::fmt::Debug for SystemOneEndpoint {
     }
 }
 
-/// A client for one configured System 1 endpoint. Cheap to clone.
 #[derive(Clone)]
 pub struct SystemOneClient {
     http: SharedHttpClient,
@@ -52,7 +47,6 @@ pub struct SystemOneClient {
 }
 
 impl SystemOneClient {
-    /// Create a client for `endpoint` with the default retry policy.
     #[must_use]
     pub fn new(http: SharedHttpClient, endpoint: SystemOneEndpoint) -> Self {
         warn_if_insecure_remote(&endpoint.base_url);
@@ -63,7 +57,6 @@ impl SystemOneClient {
         }
     }
 
-    /// Replace the retry policy.
     #[must_use]
     pub(crate) fn with_retry(mut self, retry: RetryConfig) -> Self {
         self.retry = retry;
@@ -130,10 +123,6 @@ impl SystemOneClient {
         Ok(response)
     }
 
-    /// List the model names this endpoint accepts.
-    ///
-    /// # Errors
-    /// Returns a [`SystemOneError`] when the list can't be fetched or read.
     pub async fn list_models(&self) -> Result<Vec<SystemOneModel>, SystemOneError> {
         let url = self.url("models");
         let request = self.authorize(self.http.client().get(&url));
@@ -159,7 +148,6 @@ impl SystemOneClient {
         }
     }
 
-    /// Send a request and return the body of a successful response.
     async fn send(
         &self,
         request: reqwest::RequestBuilder,
@@ -221,7 +209,6 @@ impl SystemOneClient {
                     detail: body,
                 }
             }
-            // 529 is TypeSafe's "overloaded".
             500..=599 => SystemOneError::Overloaded {
                 provider,
                 detail: body,
@@ -233,8 +220,6 @@ impl SystemOneClient {
         }
     }
 
-    /// Run `operation`, retrying transient failures with exponential backoff.
-    /// Logs once when retries start and once if they run out.
     async fn retrying<F, Fut, T>(&self, operation: F) -> Result<T, SystemOneError>
     where
         F: Fn() -> Fut,

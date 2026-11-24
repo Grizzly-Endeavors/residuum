@@ -63,7 +63,6 @@ function summary(overrides: Partial<SessionSummary> = {}): SessionSummary {
 
 const relay = { connected: false, send: () => {}, onFrame: () => () => {} };
 
-/** The session routes the panel called, other than reading the transcript. */
 let calls: string[];
 
 async function show(session: SessionSummary): Promise<SessionRun> {
@@ -79,7 +78,6 @@ async function show(session: SessionSummary): Promise<SessionRun> {
   return run;
 }
 
-/** Whether the device reports a coarse pointer, as a touch screen does. */
 let coarsePointer = false;
 let unregister: () => void = () => {};
 
@@ -91,7 +89,6 @@ beforeEach(() => {
   vi.stubGlobal("IntersectionObserver", NoObserver);
   vi.stubGlobal("ResizeObserver", NoObserver);
   hub.handleFrame(snapshot([agent("atlas"), agent("drifter", "stopped")]));
-  // A chat action, which acts on the main conversation and so isn't a session's.
   unregister = actionRegistry.register("test", () => [
     {
       id: "chat:observe",
@@ -243,7 +240,6 @@ describe("the session's message box on a touch screen", () => {
     await settle();
     expect(calls).toEqual(["POST /api/agents/atlas/sessions/spawned-research-3f9a/messages"]);
     expect(run.draft).toBe("");
-    // The press leaves the keyboard in the box.
     expect(box).toHaveFocus();
   });
 

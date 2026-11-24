@@ -1,12 +1,4 @@
 #!/usr/bin/env bash
-# Day-to-day control of the Windows test VM.
-#
-#   vm.sh start | stop | restart | status
-#   vm.sh ssh [powershell...]      interactive shell, or run one command
-#   vm.sh provision [-Upgrade]     (re)install the toolchain in the guest
-#   vm.sh snapshot NAME | restore NAME | delete-snapshot NAME | snapshots
-#
-# See docs/runbooks/windows-harness.md.
 set -euo pipefail
 
 # shellcheck source=scripts/windows-vm/common.sh
@@ -41,8 +33,6 @@ require_stopped() {
     return 0
 }
 
-# Whether the disk has a snapshot named $1. qemu-img lists two header lines,
-# then one snapshot per line with its name in the second column.
 snapshot_exists() {
     qemu-img snapshot -l "$DISK" | awk -v name="$1" 'NR > 2 && $2 == name { found = 1 } END { exit !found }'
 }
@@ -87,7 +77,6 @@ case "$cmd" in
         ;;
     provision)
         require_ssh
-        # Install the compiler the git hooks and CI use, not whatever stable is.
         rust_toolchain="$(sed -n 's/^channel *= *"\(.*\)"$/\1/p' "$REPO_ROOT/rust-toolchain.toml")"
         [[ "$rust_toolchain" =~ ^[0-9A-Za-z._-]+$ ]] || die "no usable channel in $REPO_ROOT/rust-toolchain.toml"
         guest_ps "New-Item -ItemType Directory -Force '$GUEST_ROOT' | Out-Null"

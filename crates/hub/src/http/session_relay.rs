@@ -1,17 +1,3 @@
-//! The session relay of the hub WebSocket.
-//!
-//! A connection subscribes to one session of one agent, or to every session
-//! an artifact started on any agent. The hub watches each running agent's
-//! sessions (see [`crate::agent_watch`]) and sends the connection every
-//! event of the sessions it follows as a `session_frame`: the `session_*`
-//! frame the agent's own socket sends, tool frames included, because the hub
-//! socket has no verbose flag.
-//!
-//! Subscriptions belong to the connection and end with it. A connection reads
-//! the relay from the moment it opens and filters by what it subscribed to,
-//! so a subscription to an artifact also follows the sessions that start
-//! after it, on any agent, with no further message.
-
 use std::collections::{HashMap, HashSet};
 
 use tokio::sync::broadcast::{self, error::RecvError};
@@ -23,19 +9,13 @@ use crate::types::{HubSocketFrame, SessionSubscriptionKind};
 use residuum_bus::session::ARTIFACT_SENDER_PREFIX;
 use residuum_protocol::frames::session_event_to_server_message;
 
-/// What one hub socket connection follows, and its end of the relay.
 pub(super) struct SessionRelay {
     feed: broadcast::Receiver<AgentSessionEvent>,
-    /// The addresses followed on each agent.
     sessions: HashMap<String, HashSet<String>>,
-    /// The artifacts whose sessions are followed.
     artifacts: HashSet<String>,
 }
 
 impl SessionRelay {
-    /// A connection's relay, following nothing yet. It hears every session
-    /// event from now on, so a subscription made later misses none that
-    /// follow it.
     pub(super) fn new(changes: &AgentChangeFeed) -> Self {
         Self {
             feed: changes.subscribe_sessions(),
@@ -61,8 +41,6 @@ impl SessionRelay {
                 .is_some_and(|artifact| self.artifacts.contains(artifact))
     }
 
-    /// The next relayed event this connection follows, or the loss of
-    /// events. Events of sessions it doesn't follow are skipped.
     pub(super) async fn next(&mut self) -> Result<AgentSessionEvent, RecvError> {
         loop {
             let event = self.feed.recv().await?;
@@ -72,8 +50,6 @@ impl SessionRelay {
         }
     }
 
-    /// Send what [`Self::next`] returned. `false` when the connection should
-    /// end.
     pub(super) async fn forward(
         &self,
         outbound: &mut Outbound,
@@ -88,7 +64,6 @@ impl SessionRelay {
                 send_frame(outbound, &frame).await
             }
             Err(RecvError::Lagged(missed)) => {
-                // A connection that follows nothing has lost nothing.
                 if !self.follows_anything() {
                     return true;
                 }
@@ -102,8 +77,6 @@ impl SessionRelay {
         }
     }
 
-    /// Follow one session. An unknown agent is refused with a notice and
-    /// no acknowledgement. `false` when the connection should end.
     pub(super) async fn subscribe_session(
         &mut self,
         outbound: &mut Outbound,
@@ -127,8 +100,6 @@ impl SessionRelay {
         send_frame(outbound, &ack).await
     }
 
-    /// Stop following a session. Stopping one that isn't followed does
-    /// nothing.
     pub(super) fn unsubscribe_session(&mut self, agent: &str, address: &str) {
         if let Some(addresses) = self.sessions.get_mut(agent) {
             addresses.remove(address);
@@ -138,8 +109,6 @@ impl SessionRelay {
         }
     }
 
-    /// Follow every session of an artifact, on any agent, now and later.
-    /// `false` when the connection should end.
     pub(super) async fn subscribe_artifact_sessions(
         &mut self,
         outbound: &mut Outbound,
@@ -155,8 +124,6 @@ impl SessionRelay {
         send_frame(outbound, &ack).await
     }
 
-    /// Stop following an artifact's sessions. Stopping one that isn't
-    /// followed does nothing.
     pub(super) fn unsubscribe_artifact_sessions(&mut self, artifact: &str) {
         self.artifacts.remove(artifact);
     }

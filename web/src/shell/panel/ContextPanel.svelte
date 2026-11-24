@@ -16,12 +16,6 @@
     savePanelWidth,
   } from "./panel-width";
 
-  // The context panel's frame: a resizable column beside the main
-  // region at wide widths, floating over its right edge at medium widths, and
-  // a full-screen sheet on phones. The URL's `panel` parameter is its history
-  // entry, so closing goes through the router, and Back closes it. What it
-  // shows is its children, which start with a `PanelHeader`.
-
   let { children }: { children: Snippet } = $props();
 
   const uid = $props.id();
@@ -33,7 +27,6 @@
   const layout = $derived(panelLayout({ phone: phone.current, wide: wide.current }));
 
   let viewportWidth = $state(window.innerWidth);
-  /** The width the viewer chose; the panel shows it within what this viewport allows. */
   let chosenWidth = $state(readPanelWidth() ?? PANEL_DEFAULT_WIDTH);
   const width = $derived(clampPanelWidth(chosenWidth, viewportWidth));
   let resizing = $state(false);
@@ -57,11 +50,6 @@
     close();
   }
 
-  /**
-   * Beside or over the main region, the panel takes focus when it opens, Esc
-   * inside it closes it, and focus goes back to where it was when it closes.
-   * On phones the sheet's modal layer does all three.
-   */
   const holdFocus: Attachment<HTMLElement> = (element) => {
     const before = document.activeElement;
     const returnTo =
@@ -174,7 +162,6 @@
       width: var(--context-panel-width);
     }
 
-    /* Medium widths: the panel floats over the main region's right edge. */
     &[data-layout="medium"] {
       position: fixed;
       top: var(--safe-top);
@@ -186,18 +173,15 @@
       box-shadow: var(--shadow-float);
     }
 
-    /* It takes focus when it opens, as a modal card does, and is named by its title. */
     &:focus-visible {
       outline: none;
     }
 
-    /* Text doesn't select while the edge is dragged across it. */
     &.is-resizing {
       user-select: none;
     }
   }
 
-  /* The left edge: a hairline that lights up in the vein while held or focused. */
   .context-panel-grip {
     position: absolute;
     top: 0;
@@ -233,7 +217,6 @@
     }
   }
 
-  /* On phones: the full-screen sheet takes the panel's surface. */
   :global(.ui-modal-layer > .ui-modal.context-panel-sheet) {
     --ui-quiet-hover: var(--color-stone-3);
 

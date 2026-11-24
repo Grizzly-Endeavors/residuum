@@ -5,45 +5,14 @@ use residuum_config::{SkillDir, SkillSource};
 
 use super::{parser::parse_skill_md, types::SkillIndexEntry};
 
-/// In-memory index of discovered skills.
 #[derive(Debug, Clone, Default)]
 pub struct SkillIndex {
     entries: Vec<SkillIndexEntry>,
-    /// Directories that couldn't be read during the scan that built this
-    /// index (permission errors, etc. — a missing directory is not an
-    /// error and isn't recorded here), as `(dir, error message)` pairs. The
-    /// rest of the scan still ran; `SkillState::rescan` turns these into
-    /// notices.
     skipped: Vec<(PathBuf, String)>,
-    /// User-facing notices produced by the most recent scan: a skill with an
-    /// oversized description that loaded anyway, or a skill skipped for
-    /// invalid frontmatter. `SkillState::rescan` returns them for the caller
-    /// to publish, so they reach the user rather than only the logs.
     notices: Vec<String>,
 }
 
 impl SkillIndex {
-    /// Scan skill directories in layer priority order.
-    ///
-    /// For each subdirectory containing a `SKILL.md`, parses the frontmatter
-    /// and builds an index entry. Invalid or missing files are warned and
-    /// skipped. Duplicate names keep the first found; a skill hidden by a
-    /// higher-priority layer is logged at debug with both paths. A directory that
-    /// cannot be read (e.g. a permissions error) is skipped with a warning
-    /// — see [`Self::skipped_dirs`] — rather than discarding the rest of
-    /// the scan; a missing directory is skipped silently.
-    ///
-    /// # Arguments
-    /// - `dirs`: Skill directories in priority order, each tagged with the
-    ///   layer its skills are attributed to. The first skill found under a
-    ///   given name wins.
-    ///
-    /// # Errors
-    /// Never returns `Err` today — every failure a scan can hit (an
-    /// unreadable directory, a bad `SKILL.md`) is degraded internally and
-    /// reported through [`Self::skipped_dirs`] or a warning instead. Kept
-    /// as a `Result` so a future caller-facing failure mode doesn't need
-    /// another signature change.
     #[tracing::instrument(skip_all, fields(dirs_count = dirs.len()))]
     pub async fn scan(dirs: &[SkillDir]) -> anyhow::Result<Self> {
         let mut entries = Vec::new();
@@ -75,23 +44,17 @@ impl SkillIndex {
         })
     }
 
-    /// Directories skipped during the scan that built this index because
-    /// they couldn't be read, as `(dir, error message)` pairs.
     #[must_use]
     pub fn skipped_dirs(&self) -> &[(PathBuf, String)] {
         &self.skipped
     }
 
-    /// Look up a skill by name (case-insensitive).
     #[must_use]
     pub fn find_by_name(&self, name: &str) -> Option<&SkillIndexEntry> {
         let lower = name.to_lowercase();
         self.entries.iter().find(|e| e.name == lower)
     }
 
-    /// Format the index for the system prompt: one line per skill with its
-    /// layer and the path of its `SKILL.md`, since a skill can point to
-    /// files beside it.
     #[must_use]
     pub fn format_for_prompt(&self) -> String {
         self.entries
@@ -109,36 +72,26 @@ impl SkillIndex {
             .join("\n")
     }
 
-    /// Get all index entries.
     #[must_use]
     pub fn entries(&self) -> &[SkillIndexEntry] {
         &self.entries
     }
 
-    /// User-facing notices produced by the most recent scan.
-    ///
-    /// Covers a skill with an oversized description that loaded anyway, and
-    /// a skill skipped for invalid frontmatter. `SkillState::rescan` returns
-    /// them for the caller to publish, so they reach the user.
     #[must_use]
     pub fn notices(&self) -> &[String] {
         &self.notices
     }
 }
 
-/// The skill that won a name during a scan, kept to report what shadows it.
 struct SeenSkill {
     source: SkillSource,
     skill_md: PathBuf,
 }
 
-/// Collapse whitespace (including newlines) so a description stays on its
-/// skill's one index line.
 fn single_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Scan a single directory for skill subfolders.
 #[tracing::instrument(skip_all, fields(dir = %dir.display(), source = %source))]
 async fn scan_skill_directory(
     dir: &Path,
@@ -204,8 +157,6 @@ async fn scan_skill_directory(
     Ok(())
 }
 
-/// Read and index one candidate skill folder, updating `entries`, `notices`,
-/// and `seen_names` in place.
 async fn process_skill_folder(
     entry: &tokio::fs::DirEntry,
     source: SkillSource,
@@ -298,8 +249,6 @@ mod tests {
     use super::SkillIndex;
     use residuum_config::{SkillDir, SkillSource};
 
-    // ── SkillIndex ───────────────────────────────────────────────────────────
-
     #[tokio::test]
     async fn scan_empty_dir() {
         let dir = tempfile::tempdir().unwrap();
@@ -347,14 +296,12 @@ mod tests {
     async fn scan_skips_invalid_frontmatter() {
         let dir = tempfile::tempdir().unwrap();
 
-        // Invalid skill
         let bad_dir = dir.path().join("bad-skill");
         tokio::fs::create_dir(&bad_dir).await.unwrap();
         tokio::fs::write(bad_dir.join("SKILL.md"), "---\n: invalid [[\n---\n")
             .await
             .unwrap();
 
-        // Valid skill
         let good_dir = dir.path().join("good-skill");
         tokio::fs::create_dir(&good_dir).await.unwrap();
         tokio::fs::write(
@@ -416,7 +363,6 @@ mod tests {
         let ws_dir = tempfile::tempdir().unwrap();
         let user_dir = tempfile::tempdir().unwrap();
 
-        // Workspace skill
         let ws_skill = ws_dir.path().join("ws-skill");
         tokio::fs::create_dir(&ws_skill).await.unwrap();
         tokio::fs::write(
@@ -426,7 +372,6 @@ mod tests {
         .await
         .unwrap();
 
-        // User-global skill
         let user_skill = user_dir.path().join("user-skill");
         tokio::fs::create_dir(&user_skill).await.unwrap();
         tokio::fs::write(
@@ -457,7 +402,6 @@ mod tests {
         let ws_dir = tempfile::tempdir().unwrap();
         let user_dir = tempfile::tempdir().unwrap();
 
-        // Workspace skill named "shared"
         let ws_skill = ws_dir.path().join("shared");
         tokio::fs::create_dir(&ws_skill).await.unwrap();
         tokio::fs::write(
@@ -467,7 +411,6 @@ mod tests {
         .await
         .unwrap();
 
-        // User-global skill with same name "shared"
         let user_skill = user_dir.path().join("shared");
         tokio::fs::create_dir(&user_skill).await.unwrap();
         tokio::fs::write(
@@ -566,7 +509,6 @@ mod tests {
         let dir1 = tempfile::tempdir().unwrap();
         let dir2 = tempfile::tempdir().unwrap();
 
-        // Same name in both dirs
         let skill1 = dir1.path().join("dupe");
         tokio::fs::create_dir(&skill1).await.unwrap();
         tokio::fs::write(
@@ -603,11 +545,6 @@ mod tests {
     async fn scan_same_directory_duplicate_names_keeps_deterministic_first() {
         let dir = tempfile::tempdir().unwrap();
 
-        // Two skill folders in the SAME directory sharing a `name` — e.g. a
-        // copy-pasted skill folder the author forgot to rename. `read_dir`
-        // order is filesystem/platform-dependent, so without sorting the
-        // winner could flip across restarts or machines. Folder names are
-        // chosen so alphabetical order differs from likely creation order.
         let skill_z = dir.path().join("z-dupe");
         tokio::fs::create_dir(&skill_z).await.unwrap();
         tokio::fs::write(

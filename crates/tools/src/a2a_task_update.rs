@@ -1,7 +1,3 @@
-//! `a2a_task_update`: lets a session started from the `a2a` endpoint report
-//! its delegated task's outcome to the A2A caller waiting on it. Registered
-//! only for those sessions — see `docs/systems-usage/a2a.md`.
-
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
@@ -15,23 +11,16 @@ use super::path_policy::SharedPathPolicy;
 use residuum_agent::Tool;
 use residuum_inference::{ToolError, ToolResult};
 
-/// Hard cap on one artifact file's size (matches the plan's ~20 MB budget).
 const MAX_ARTIFACT_BYTES: u64 = 20 * 1024 * 1024;
 
-/// Reports an A2A task's outcome (completed, needs input, or failed) to the
-/// caller that delegated it, publishing an [`A2aTaskSignalEvent`] the
-/// session's [`residuum_a2a::executor::SessionExecutor`] is waiting on.
 pub struct A2aTaskUpdateTool {
     address: SessionAddress,
     publisher: Publisher,
     workspace_dir: PathBuf,
-    /// Supplies the `team/` namespace, when the agent belongs to a team.
     policy: Option<SharedPathPolicy>,
 }
 
 impl A2aTaskUpdateTool {
-    /// `address` is the session's own address — the same one the executor
-    /// filters incoming signals by.
     #[must_use]
     pub fn new(address: SessionAddress, publisher: Publisher, workspace_dir: PathBuf) -> Self {
         Self {
@@ -42,8 +31,6 @@ impl A2aTaskUpdateTool {
         }
     }
 
-    /// Let artifact paths starting with `team/` name files in the shared
-    /// team directory.
     #[must_use]
     pub fn with_policy(mut self, policy: SharedPathPolicy) -> Self {
         self.policy = Some(policy);
@@ -51,8 +38,6 @@ impl A2aTaskUpdateTool {
     }
 }
 
-/// Resolve `relative` against `workspace_dir` (or the team directory, for a
-/// `team/...` path), refusing a path that escapes it or doesn't exist.
 async fn resolve_artifact_path(
     workspace_dir: &Path,
     team: Option<&TeamFiles>,
@@ -81,9 +66,6 @@ async fn resolve_artifact_path(
     Ok(canonical_target)
 }
 
-/// Read `relative` (validated against `workspace_dir`) into an [`a2a::Part`],
-/// as UTF-8 text when possible and raw bytes with a detected media type
-/// otherwise, capped at [`MAX_ARTIFACT_BYTES`].
 async fn build_artifact(
     workspace_dir: &Path,
     team: Option<&TeamFiles>,

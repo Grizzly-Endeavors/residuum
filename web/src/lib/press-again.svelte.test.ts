@@ -25,7 +25,6 @@ describe("PressAgain", () => {
     expect(key.armed).toBe(true);
     vi.advanceTimersByTime(1);
     expect(key.armed).toBe(false);
-    // A press after the window starts a new pair.
     expect(key.press()).toBe(false);
     expect(key.armed).toBe(true);
   });
@@ -35,7 +34,6 @@ describe("PressAgain", () => {
     key.press();
     vi.advanceTimersByTime(1500);
     expect(key.press()).toBe(true);
-    // The finished pair left nothing to time out.
     expect(vi.getTimerCount()).toBe(0);
   });
 

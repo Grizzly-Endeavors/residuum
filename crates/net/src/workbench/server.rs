@@ -37,26 +37,14 @@ use super::{
 use crate::browser_landing::{self, AppNotice, Landing};
 use crate::pairing::HANDOFF_PAGE_PATH;
 
-/// How many ports after the gateway's are tried before giving up.
 const PORT_SEARCH_ATTEMPTS: u16 = 10;
 
-/// Whether the artifacts listener is running.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkbenchServing {
-    /// Serving on this port, beside the gateway.
     Running { port: u16 },
-    /// Not serving; the reason is shown to the user.
     Unavailable { reason: String },
 }
 
-/// Start the artifacts listener for `dir` beside the gateway on `bind`. Returns
-/// whether it is serving, the switch that stops it and its router (so another
-/// transport can serve the same pages in-process) when it is. `api` is
-/// where `/api` requests go once the hub router is bound to it.
-///
-/// Failing to bind is not fatal: Residuum runs without the workbench and the
-/// web UI shows why (the reason is also logged at `error`). The listener runs
-/// as a monitored task, so a panic or serve failure is logged too.
 pub async fn start(
     bind: &str,
     gateway_port: u16,
@@ -107,14 +95,6 @@ pub async fn start(
     )
 }
 
-/// Bind the artifacts listener on the first free port after `gateway_port`,
-/// skipping every port in `reserved` (another listener's configured port,
-/// such as Teams', even when that listener isn't running yet). The choice is
-/// stable across restarts while the machine's ports don't change, which keeps
-/// the artifacts' origin, and so their browser storage, stable too.
-///
-/// # Errors
-/// Returns a plain-language reason when no port could be bound.
 pub(crate) async fn bind_listener(
     bind: &str,
     gateway_port: u16,
@@ -142,10 +122,6 @@ pub(crate) async fn bind_listener(
     ))
 }
 
-/// Router for the artifacts listener, serving artifacts from `dir` and
-/// forwarding `/api` to the hub router bound to `api`. `gateway_port` is the
-/// web app's port on this machine, so a browser that lands here by mistake
-/// can be sent to the app on the same host.
 pub fn router(
     dir: PathBuf,
     api: HubApi,
@@ -180,8 +156,6 @@ pub fn router(
         ))
 }
 
-/// Stands in for the artifacts listener's router when the listener couldn't
-/// start, so the workbench host still answers through Residuum Cloud.
 pub fn unavailable_router(pairing: crate::pairing::DevicePairing) -> Router {
     Router::new().fallback(move |request: Parts| {
         let ui_origin = pairing.origin_of(crate::pairing::Surface::Ui);
@@ -189,8 +163,6 @@ pub fn unavailable_router(pairing: crate::pairing::DevicePairing) -> Router {
     })
 }
 
-/// A tab goes to the Workbench in the app, which shows why artifacts aren't
-/// available; anything else is told here.
 fn unavailable(request: &Parts, ui_origin: Option<String>) -> Response {
     if let Some(origin) = &ui_origin
         && browser_landing::is_top_level_navigation(&request.method, &request.headers)
@@ -217,7 +189,6 @@ struct ArtifactsState {
     sdk: SdkContext,
 }
 
-/// Where the web app is, as seen from a browser on the artifacts host.
 #[derive(Clone)]
 pub(crate) struct UiAddress {
     pairing: crate::pairing::DevicePairing,
@@ -225,8 +196,6 @@ pub(crate) struct UiAddress {
 }
 
 impl UiAddress {
-    /// The app as `pairing` knows it through Residuum Cloud, and on
-    /// `gateway_port` locally.
     pub(crate) fn new(pairing: crate::pairing::DevicePairing, gateway_port: u16) -> Self {
         Self {
             pairing,
@@ -234,9 +203,6 @@ impl UiAddress {
         }
     }
 
-    /// The web app's origin for the browser that sent `request`: through
-    /// Residuum Cloud the UI host Cloud announced, and locally the host the
-    /// browser used, on the gateway's port. `None` when neither is known.
     pub(crate) fn origin_for(&self, request: &Parts) -> Option<String> {
         if crate::pairing::remote::remote_context(&request.extensions).is_some() {
             return self.pairing.origin_of(crate::pairing::Surface::Ui);
@@ -247,13 +213,8 @@ impl UiAddress {
     }
 }
 
-/// The Workbench place in the app.
 const WORKBENCH_APP_PATH: &str = "/team/workbench";
 
-/// Answer a request that found nothing to serve. A tab goes to `app_target`
-/// in the app when the app's address is known; a frame, or a browser with no
-/// app to go to, gets the fallback page (linking there when it can); anything
-/// else gets the words as text.
 fn land(
     request: &Parts,
     ui: &UiAddress,
@@ -272,9 +233,6 @@ fn land(
     browser_landing::page_or_text(&request.method, &request.headers, status, &landing)
 }
 
-/// The Workbench's address in the app, with a notice that there's no
-/// artifact at the address the browser opened (named when the name could be
-/// an artifact's).
 fn missing_artifact_target(name: Option<&str>) -> String {
     let notice = ("notice", AppNotice::ArtifactMissing.code());
     match name.filter(|name| is_valid_artifact_name(name)) {
@@ -298,14 +256,6 @@ fn missing_artifact(request: &Parts, ui: &UiAddress, name: &str) -> Response {
     )
 }
 
-/// The page a paired browser lands on to bring its credential to this host.
-///
-/// The UI host mints a single-use token and sends the browser here with the
-/// token and the page to open next in the URL fragment, which the browser
-/// never sends anywhere. The script posts the token to this host, which
-/// answers with this host's own device cookie, then opens the page. It is
-/// served before the gate asks for a credential, since getting one is its
-/// whole purpose.
 async fn handoff_page(State(state): State<ArtifactsState>, request: Parts) -> Response {
     let actions = state
         .ui
@@ -395,7 +345,6 @@ async fn nothing_here(State(state): State<ArtifactsState>, request: Parts) -> Re
     )
 }
 
-/// `/{artifact}` → `/{artifact}/`, so relative URLs in the artifact resolve inside it.
 async fn artifact_root(
     State(state): State<ArtifactsState>,
     Path(name): Path<String>,
@@ -440,8 +389,6 @@ async fn serve(state: &ArtifactsState, request: &Parts, name: &str, rest: &str) 
         Ok(served) => {
             let body = match served.body {
                 ArtifactBody::Bytes(bytes) => Body::from(bytes),
-                // Streamed straight from disk so a large local artifact file
-                // never has to be buffered whole in memory.
                 ArtifactBody::File(file) => Body::from_stream(ReaderStream::new(file)),
             };
             let mut response = body.into_response();
@@ -449,7 +396,6 @@ async fn serve(state: &ArtifactsState, request: &Parts, name: &str, rest: &str) 
             if let Ok(value) = HeaderValue::from_str(&served.content_type) {
                 headers.insert(header::CONTENT_TYPE, value);
             }
-            // Artifacts reload live while the agent edits them.
             headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
             headers.insert(
                 header::X_CONTENT_TYPE_OPTIONS,
@@ -506,7 +452,6 @@ mod tests {
         features: &[],
     };
 
-    /// Pairing state in a throwaway directory, so nothing remote is paired.
     fn test_pairing(dir: &std::path::Path) -> crate::pairing::DevicePairing {
         crate::pairing::DevicePairing::open(dir)
     }
@@ -531,9 +476,6 @@ mod tests {
         .unwrap()
     }
 
-    /// A hub stand-in: `/api/probe` says whether the request arrived marked,
-    /// and any other path gets the page the real router's embedded web app
-    /// would serve.
     fn stand_in_hub() -> Router {
         Router::new()
             .route(
@@ -549,7 +491,6 @@ mod tests {
             .fallback(|| async { "spa" })
     }
 
-    /// The listener's router with the stand-in hub bound.
     fn listener(dir: &std::path::Path) -> Router {
         let api = HubApi::new();
         api.bind(stand_in_hub());
@@ -680,8 +621,6 @@ mod tests {
     #[tokio::test]
     async fn the_cross_site_guard_covers_the_api_and_lets_the_origin_call_itself() {
         let dir = tempfile::tempdir().unwrap();
-        // The UI's own origin is the same site as the artifacts origin, so it
-        // counts as another site here, like any other.
         for (site, allowed) in [
             ("cross-site", false),
             ("same-site", false),
@@ -765,8 +704,6 @@ mod tests {
         }
     }
 
-    /// A request as a browser on this machine sends it to `localhost:7702`:
-    /// opening a tab, loading a frame, or fetching from a script.
     fn browser_request(path: &str, dest: &str) -> Request<Body> {
         let mut builder = Request::get(path)
             .header(header::HOST, "localhost:7702")

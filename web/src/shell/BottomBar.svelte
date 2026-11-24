@@ -6,10 +6,6 @@
   import { Badge } from "../lib/ui";
   import type { ShellActions } from "./shell-actions";
 
-  // The phone's bottom bar, on every place: the menu that opens the rail as a
-  // drawer, Inbox, Home in the middle, Search, and Settings. The drawer and
-  // modal layers cover it, except the Settings modal, which stops above it.
-
   interface Props {
     drawerOpen: boolean;
     onmenu: () => void;
@@ -118,7 +114,6 @@
     display: grid;
   }
 
-  /* The count sits on the icon's top corner. */
   .bar-count {
     position: absolute;
     top: var(--space-4);

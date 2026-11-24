@@ -1,24 +1,11 @@
-// Notices for an address the backend sent a browser to. When someone opens a
-// link the backend can't serve (a file link that expired, an artifact that was
-// renamed, a webhook address), it redirects them into the app with a code in
-// the `notice` query parameter (`crates/net/src/browser_landing.rs`), and the
-// app tells them what happened where they can act on it. The words live here
-// and the backend sends only codes, so a crafted link can't put its own text
-// in front of the user. The router drops the parameter once it's read.
-
 import { isArtifactName, viewedAgentOf, type AppLocation } from "./routes";
 
-/** The query parameter carrying the code. */
 export const NOTICE_PARAM = "notice";
 
-/** The query parameter naming the missing artifact, beside `artifact-missing`. */
 const ARTIFACT_PARAM = "artifact";
 
-/** What a notice may name. */
 interface NoticeContext {
-  /** The agent whose place the notice shows on, if any. */
   agent: string | null;
-  /** The artifact the address named, if it could be one. */
   artifact: string | null;
 }
 
@@ -39,11 +26,6 @@ const MESSAGES: Readonly<Record<string, (context: NoticeContext) => string>> = {
     "That address is a webhook: other services send POST requests to it to give an agent work, so there's nothing to open in a browser. Its settings are under Connections.",
 };
 
-/**
- * The notices `search` (a URL's query) carries for `location` (where it
- * leads). An unknown code is ignored, since it can only come from a link
- * someone wrote by hand.
- */
 export function landingNotices(search: string, location: AppLocation): string[] {
   const query = new URLSearchParams(search);
   const artifact = query.get(ARTIFACT_PARAM);

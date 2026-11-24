@@ -3,13 +3,6 @@ import { expectNoAxeViolations } from "../support/axe";
 import { expect, test } from "../support/fixtures";
 import { expectPaletteOpen } from "../support/lazy";
 
-/**
- * The action registry's surfaces: the command palette (⌘K or Ctrl+K, the
- * rail's search row, the phone's Search tab), the composer's `/` menu, the
- * help actions and their dialogs, and the drawer getting out of the way of
- * whatever an action opens.
- */
-
 const OVERLAYS = "[data-overlay-host]";
 
 function address(page: Page): string {
@@ -21,7 +14,6 @@ function palette(page: Page): Locator {
   return page.getByRole("dialog", { name: "Search and commands" });
 }
 
-/** Open the palette the way this size offers it: the keyboard on a desktop, the Search tab on a phone. */
 async function openPalette(page: Page, isMobile: boolean): Promise<Locator> {
   if (isMobile) {
     await page
@@ -89,7 +81,6 @@ test("the palette runs Summarize older messages now", async ({ page, isMobile })
   ).toHaveAttribute("aria-selected", "true");
   await page.keyboard.press("Enter");
   await expect(dialog).toBeHidden();
-  // That it started, then the agent's own word that it's done.
   await expect(page.getByText("atlas is summarizing older messages…")).toBeVisible();
   await expect(page.getByText("Command 'observe' executed. (mock)")).toBeVisible();
 });

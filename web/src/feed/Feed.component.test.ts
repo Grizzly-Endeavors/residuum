@@ -13,7 +13,6 @@ class NoObserver {
   disconnect(): void {}
 }
 
-/** An observer that reports its target in view as soon as it watches it, like a top that's on screen. */
 class InViewObserver {
   constructor(private readonly callback: (entries: { isIntersecting: boolean }[]) => void) {}
   observe(): void {
@@ -23,14 +22,12 @@ class InViewObserver {
   disconnect(): void {}
 }
 
-/** What an element says, less the quiet details of its messages (when they were sent, Copy). */
 function said(element: Element): string {
   const copy = element.cloneNode(true) as Element;
   for (const meta of copy.querySelectorAll("[data-message-meta]")) meta.remove();
   return copy.textContent.trim();
 }
 
-/** History with `parts` older parts, each load taking a moment. */
 function olderHistory(parts: number): {
   history: FeedHistory;
   loadOlder: ReturnType<typeof vi.fn>;
@@ -208,7 +205,6 @@ describe("Feed", () => {
       expect(loadOlder).toHaveBeenCalled();
     });
     await settle();
-    // The observer and the history's change each try once; a failure doesn't chain into more.
     expect(loadOlder.mock.calls.length).toBeGreaterThan(0);
     expect(loadOlder.mock.calls.length).toBeLessThanOrEqual(2);
   });
@@ -267,7 +263,6 @@ describe("Jump to latest", () => {
     scrollReader(region, geometry, 100);
     await settle();
     const pill = screen.getByRole("button", { name: "Jump to latest" });
-    // An arrow pointing down, and no reading of where the reader is.
     expect(pill.querySelector("svg")).not.toBeNull();
     expect(pill).not.toHaveAttribute("aria-describedby");
     expect(pill.closest("[role=status]")).not.toBeNull();
@@ -299,7 +294,6 @@ describe("Jump to latest", () => {
     screen.getByRole("button", { name: "Jump to latest" }).click();
     await settle();
     expect(screen.queryByRole("button", { name: /Jump to latest/ })).toBeNull();
-    // It glides there a frame at a time, to the bottom of the scroll range.
     await waitFor(() => {
       expect(geometry.scrollTop).toBe(1500);
     });
@@ -335,7 +329,6 @@ describe("following", () => {
     });
     const region = screen.getByRole("region", { name: "Conversation with atlas" });
     const geometry = { clientHeight: 500, scrollTop: 1500 };
-    // Each item adds 430px once it is in the page: 2000px with the recent two.
     Object.defineProperty(region, "scrollHeight", {
       get: () => 1140 + 430 * region.querySelectorAll("[data-feed-item]").length,
     });
@@ -348,9 +341,6 @@ describe("following", () => {
     scrollReader(region, geometry, 1500);
     await settle();
 
-    // Seen on a 320px phone as the chat opened: the page settled around the
-    // feed, so the browser moved the position back 4px to keep it in range,
-    // and an older episode was prepended before that move's scroll event.
     geometry.clientHeight = 504;
     geometry.scrollTop = 1496;
     await rerender({ items: [...older, ...recent] });
@@ -408,7 +398,6 @@ describe("following", () => {
     });
     await settle();
 
-    // Rebuilding the text would drop a selection in it.
     expect(screen.getByText("And next week?")).toBeInTheDocument();
     expect(paragraph.isConnected).toBe(true);
     expect(screen.getByText("Here is the plan.")).toBe(paragraph);
@@ -442,7 +431,6 @@ describe("a dock over the foot of the feed", () => {
   });
 });
 
-/** A ResizeObserver that reports a resize only when the test says so, so a dock can be resized on cue. */
 class CuedObserver {
   readonly targets: Element[] = [];
   constructor(readonly callback: ResizeObserverCallback) {}
@@ -516,16 +504,13 @@ describe("the scroller under a dock that changes size", () => {
       await settle();
     };
 
-    // The composer comes up under a reader at the end, which keeps them there.
     await resizeDock(60);
     expect(geometry.scrollTop).toBe(1500);
 
-    // The reader scrolls 50px above the end: they stop following, near enough the end that no pill shows.
     scrollReader(region, geometry, 1450);
     await settle();
     expect(screen.queryByRole("button", { name: /Jump to latest/ })).toBeNull();
 
-    // The composer grows by 100px. The scroller stays attached: it isn't measured afresh.
     await resizeDock(160);
     expect(screen.queryByRole("button", { name: /Jump to latest/ })).toBeNull();
     expect(attach).toHaveBeenCalledOnce();

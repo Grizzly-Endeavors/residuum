@@ -1,12 +1,3 @@
-//! The A2A keys exchanged with joined siblings.
-//!
-//! Each join leaves two keys: one this instance accepts from the sibling
-//! (only its hash is kept) and one it presents to the sibling (kept in the
-//! clear, since it must be sent). Both are hub-level, tagged with the
-//! sibling's slug, and live in `hub/remote-access/siblings.json`, readable
-//! only by their owner and blocked from agents like the rest of that
-//! directory.
-
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
@@ -15,11 +6,9 @@ use rand::distributions::Alphanumeric;
 use ring::digest::{SHA256, digest};
 use serde::{Deserialize, Serialize};
 
-/// Prefix of every key issued between siblings, so a leaked one is recognizable.
 const KEY_PREFIX: &str = "rsdm_sib_";
 const KEY_RANDOM_LEN: usize = 32;
 
-/// A fresh key to hand to a sibling.
 #[must_use]
 pub fn issue_key() -> String {
     let random: String = rand::thread_rng()
@@ -30,7 +19,6 @@ pub fn issue_key() -> String {
     format!("{KEY_PREFIX}{random}")
 }
 
-/// Whether `key` has the shape of a sibling key.
 #[must_use]
 pub(crate) fn is_key_shaped(key: &str) -> bool {
     key.strip_prefix(KEY_PREFIX).is_some_and(|rest| {
@@ -38,7 +26,6 @@ pub(crate) fn is_key_shaped(key: &str) -> bool {
     })
 }
 
-/// `sha256:<hex>` digest of `key`.
 #[must_use]
 pub(crate) fn hash_key(key: &str) -> String {
     format!(
@@ -47,14 +34,10 @@ pub(crate) fn hash_key(key: &str) -> String {
     )
 }
 
-/// Checks a presented bearer token against the keys of joined siblings.
-/// The A2A listener holds one so a sibling's key is accepted for every agent.
 pub trait SiblingKeyVerifier: Send + Sync {
-    /// The slug of the sibling `token` belongs to, if it is one of their keys.
     fn verify(&self, token: &str) -> Option<String>;
 }
 
-/// No siblings: every token is refused.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NoSiblings;
 
@@ -64,17 +47,13 @@ impl SiblingKeyVerifier for NoSiblings {
     }
 }
 
-/// One joined sibling as stored.
 #[derive(Clone, Serialize, Deserialize)]
 struct Record {
     slug: String,
     #[serde(default)]
     display_name: String,
-    /// The sibling's ACME account, which is pinned for this user.
     account_uri: String,
-    /// The key this instance presents to the sibling.
     outbound_key: String,
-    /// `sha256:<hex>` of the key the sibling presents to this instance.
     inbound_hash: String,
 }
 
@@ -93,7 +72,6 @@ struct Persisted {
     siblings: Vec<Record>,
 }
 
-/// A joined sibling, without any key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct JoinedSibling {
     pub(crate) slug: String,
@@ -101,29 +79,21 @@ pub(crate) struct JoinedSibling {
     pub(crate) account_uri: String,
 }
 
-/// What a completed join stores.
 pub struct NewSibling {
     pub slug: String,
     pub display_name: String,
     pub account_uri: String,
-    /// The key the sibling issued for this instance to present.
     pub outbound_key: String,
-    /// The key this instance issued for the sibling to present.
     pub inbound_key: String,
 }
 
-/// The joined siblings, in memory and on disk.
 pub struct SiblingKeys {
     path: PathBuf,
     state: Mutex<Persisted>,
-    /// Serializes saves so an older snapshot never overwrites a newer one.
     write_lock: tokio::sync::Mutex<()>,
 }
 
 impl SiblingKeys {
-    /// Open the store in `dir` (created on first save). A file that can't be
-    /// read or parsed is moved aside and logged at `error`: no sibling is
-    /// then trusted until it joins again.
     #[must_use]
     pub fn open(dir: &Path) -> Self {
         let path = dir.join("siblings.json");
@@ -138,7 +108,6 @@ impl SiblingKeys {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// The joined siblings, sorted by slug.
     pub(crate) fn joined(&self) -> Vec<JoinedSibling> {
         let mut joined: Vec<JoinedSibling> = self
             .lock()
@@ -154,7 +123,6 @@ impl SiblingKeys {
         joined
     }
 
-    /// The key to present when calling the sibling `slug`.
     pub(crate) fn outbound_key(&self, slug: &str) -> Option<String> {
         self.lock()
             .siblings
@@ -163,7 +131,6 @@ impl SiblingKeys {
             .map(|r| r.outbound_key.clone())
     }
 
-    /// The slug of the joined sibling whose account is `account_uri`.
     pub(crate) fn slug_for_account(&self, account_uri: &str) -> Option<String> {
         self.lock()
             .siblings
@@ -172,10 +139,6 @@ impl SiblingKeys {
             .map(|r| r.slug.clone())
     }
 
-    /// Record a completed join, replacing an earlier join with the same slug.
-    ///
-    /// # Errors
-    /// Returns an error if the joined siblings couldn't be saved.
     pub async fn upsert(&self, sibling: NewSibling) -> anyhow::Result<()> {
         let record = Record {
             slug: sibling.slug,
@@ -192,10 +155,6 @@ impl SiblingKeys {
         self.save().await
     }
 
-    /// Forget the sibling `slug`: both keys stop working. Returns whether it was joined.
-    ///
-    /// # Errors
-    /// Returns an error if the joined siblings couldn't be saved.
     pub async fn remove(&self, slug: &str) -> anyhow::Result<bool> {
         let removed = {
             let mut state = self.lock();
@@ -231,8 +190,6 @@ impl SiblingKeyVerifier for SiblingKeys {
             return None;
         }
         let candidate = hash_key(token);
-        // Every stored hash is compared so the time taken doesn't reveal which
-        // sibling's key was close.
         self.lock().siblings.iter().fold(None, |found, record| {
             let matches = residuum_core::util::secrets_match(&candidate, &record.inbound_hash);
             found.or(matches.then(|| record.slug.clone()))

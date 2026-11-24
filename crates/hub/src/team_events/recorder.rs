@@ -1,10 +1,3 @@
-//! Turns what the hub learns into entries of the team event log.
-//!
-//! The recorder reads the hub bus (lifecycle, notices) and the feed of agent
-//! changes (sessions, inbox additions, main turns) and records one entry per
-//! thing worth telling the user. Every summary is one plain sentence that
-//! names the agent, in the product's voice.
-
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
@@ -21,17 +14,11 @@ use residuum_bus::session::{SessionCategory, SessionInfo};
 use residuum_bus::{AgentResultStatus, EventTrigger, PulseFireOutcome, PulseFireStatus};
 use residuum_memory::types::Visibility;
 
-/// A running recorder. It stops when dropped.
 pub struct TeamEventRecorder {
     task: JoinHandle<()>,
 }
 
 impl TeamEventRecorder {
-    /// Record into `log` what arrives on `hub_events` and `changes`.
-    ///
-    /// Both receivers must be subscribed before anything they should hear
-    /// about happens: neither replays. Subscribe before the hub publishes its
-    /// startup notices and before the agents start.
     pub fn spawn(
         log: Arc<TeamEventLog>,
         hub_events: broadcast::Receiver<HubEvent>,
@@ -53,7 +40,6 @@ impl Drop for TeamEventRecorder {
     }
 }
 
-/// Record that the hub process started.
 pub(crate) fn record_hub_started(log: &TeamEventLog) {
     log.record(NewTeamEvent {
         at: Utc::now(),
@@ -65,16 +51,12 @@ pub(crate) fn record_hub_started(log: &TeamEventLog) {
     });
 }
 
-/// Identifies one run of one session of one agent: the agent, the session's
-/// address and the run's id.
 type RunKey = (String, String, String);
 
 fn run_key(agent: &str, address: &str, run_id: &str) -> RunKey {
     (agent.to_string(), address.to_string(), run_id.to_string())
 }
 
-/// What the recorder keeps of a session run from its start, to word its end:
-/// the end event carries neither the category nor what the run was for.
 struct LiveRun {
     category: SessionCategory,
     trigger: EventTrigger,
@@ -95,10 +77,7 @@ impl LiveRun {
 
 struct Recorder {
     log: Arc<TeamEventLog>,
-    /// The state each agent was last reported in, to tell a change of state
-    /// from a change of settings. An agent never reported is stopped.
     states: BTreeMap<String, AgentState>,
-    /// The session runs that have started and not ended.
     runs: HashMap<RunKey, LiveRun>,
 }
 
@@ -153,7 +132,6 @@ impl Recorder {
         });
     }
 
-    /// An entry of `kind` about `agent` that points at the agent's chat.
     fn record_in_chat(
         &self,
         agent: &str,
@@ -170,8 +148,6 @@ impl Recorder {
             Some(chat_place(agent)),
         );
     }
-
-    // ─── The hub bus ──────────────────────────────────────────────────
 
     fn on_hub_event(&mut self, event: HubEvent) {
         match event {
@@ -203,8 +179,6 @@ impl Recorder {
                 None,
             ),
             HubEvent::HubConfigReloaded { ok, message, .. } => {
-                // A reload that found nothing new carries no message and adds
-                // no entry.
                 if let Some(message) = message {
                     let level = if ok {
                         TeamEventLevel::Info
@@ -225,8 +199,6 @@ impl Recorder {
         }
     }
 
-    /// An agent's state, autostart or visibility was published. Only a move
-    /// into `running`, `stopped` or `failed` is worth an entry.
     fn on_agent_state(&mut self, agent: &AgentSummary) {
         let before = self
             .states
@@ -277,14 +249,10 @@ impl Recorder {
         );
     }
 
-    // ─── The feed of agent changes ────────────────────────────────────
-
     fn on_agent_change(&mut self, change: AgentChange) {
         let AgentChange { agent, kind } = change;
         match kind {
             AgentChangeKind::TurnEnded(turn) => {
-                // A reply is told once per turn, and only when the user was
-                // part of the turn: a background turn's reply is not for them.
                 if turn.reply.is_some() && turn.visibility == Visibility::User {
                     self.record(
                         turn.at,
@@ -340,7 +308,6 @@ impl Recorder {
         let summary = with_detail(format!("{agent} started a session"), &run.purpose);
         self.runs
             .insert(run_key(agent, info.address.as_ref(), &info.run_id), run);
-        // A scheduled run is told once, when it finishes.
         if !scheduled {
             self.record(
                 info.started_at,
@@ -361,8 +328,6 @@ impl Recorder {
         status: &AgentResultStatus,
     ) {
         let Some(run) = self.runs.remove(&run_key(agent, address, run_id)) else {
-            // Every run the hub hears of starts on the feed first, so this
-            // can only be a run that started before the agent was watched.
             tracing::debug!(%agent, %address, %run_id, "a session ended that the team event log never saw start; not recorded");
             return;
         };
@@ -383,8 +348,6 @@ impl Recorder {
         );
     }
 }
-
-// ─── Wording ──────────────────────────────────────────────────────────
 
 fn chat_place(agent: &str) -> TeamEventTarget {
     TeamEventTarget::AgentPlace {
@@ -408,12 +371,10 @@ fn level_of(level: NoticeLevel) -> TeamEventLevel {
     }
 }
 
-/// `text` on one line, with its runs of whitespace collapsed.
 fn plain(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// `base`, then a colon and `detail` when there is one.
 fn with_detail(base: String, detail: &str) -> String {
     if detail.is_empty() {
         base
@@ -422,8 +383,6 @@ fn with_detail(base: String, detail: &str) -> String {
     }
 }
 
-/// "atlas was created", or "atlas was created by scout" when an agent did it.
-/// What the user does themselves needs no mention.
 fn with_actor(name: &str, done: &str, by: &Actor) -> String {
     match by {
         Actor::User => format!("{name} {done}"),
@@ -431,8 +390,6 @@ fn with_actor(name: &str, done: &str, by: &Actor) -> String {
     }
 }
 
-/// What went wrong with an agent, for its `agent_failed` entry. `before` is
-/// the state it failed out of.
 fn failure_summary(agent: &AgentSummary, before: AgentState) -> String {
     let name = agent.label();
     let Some(error) = &agent.last_error else {
@@ -450,7 +407,6 @@ fn failure_summary(agent: &AgentSummary, before: AgentState) -> String {
     }
 }
 
-/// The level and summary of a finished session that was not scheduled.
 fn session_finished(
     agent: &str,
     run: &LiveRun,
@@ -472,7 +428,6 @@ fn session_finished(
     }
 }
 
-/// The level and summary of a finished pulse or scheduled action.
 fn scheduled_run_finished(
     agent: &str,
     run: &LiveRun,
@@ -494,8 +449,6 @@ fn scheduled_run_finished(
     }
 }
 
-/// The level and summary of a pulse fire that finished without a session
-/// run, worded as [`scheduled_run_finished`] words a scheduled session.
 fn pulse_fire_finished(
     agent: &str,
     pulse: &str,
@@ -518,8 +471,6 @@ fn pulse_fire_finished(
     }
 }
 
-/// `pulse "email_check"`, `scheduled action "nightly digest"`: what a
-/// scheduled run was, by the name after the colon of its source label.
 fn scheduled_run_name(run: &LiveRun) -> String {
     let kind = match run.trigger {
         EventTrigger::Pulse => "pulse",
@@ -533,8 +484,6 @@ fn scheduled_run_name(run: &LiveRun) -> String {
         .source_label
         .split_once(':')
         .map_or(run.source_label.as_str(), |(_, name)| name);
-    // An action's label carries its id after the last '#' so fork outcomes
-    // resolve exactly; the owner reads the name.
     let name = match run.trigger {
         EventTrigger::Action => name.rsplit_once('#').map_or(name, |(name, _)| name),
         EventTrigger::Pulse

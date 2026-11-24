@@ -1,10 +1,3 @@
-//! Session registry: the single source of truth for every live agent session.
-//!
-//! Tracks address, run id, category, source label, lifecycle state, spawner,
-//! depth, and purpose for every session that is currently running or idle.
-//! Discovery tools (`list_agents`, `stop_agent`) and the bug-report client
-//! context read this registry rather than any lower-level task map.
-
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -21,38 +14,18 @@ use residuum_bus::session::{MAIN_ADDRESS, SessionInfo, SessionState, slugify};
 use residuum_bus::{ConversationTarget, EventTrigger, SessionAddress, SkillName};
 use residuum_config::ModelSelector;
 
-/// Capacity of a session's interrupt channel: agent messages delivered to it
-/// (mid-turn, or to wake it while idle). Sized like the main agent's own
-/// interrupt channel — deliveries are infrequent relative to this, so the
-/// buffer exists to smooth bursts, not as a throughput bound.
 pub const INTERRUPT_CHANNEL_CAPACITY: usize = 32;
 
-/// What happened when [`SessionRegistry::deliver`] tried to hand a message
-/// to a session's interrupt channel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeliverOutcome {
-    /// Handed to the session's live interrupt channel.
     Delivered,
-    /// The session exists but its current run is `completing`: it no longer
-    /// accepts messages. The caller should resume it as a new run once this
-    /// run has left the registry (see [`SessionRegistry::wait_until_clear`]).
     Completing,
-    /// The session is live and accepting messages, but its interrupt
-    /// channel is full. Vanishingly unlikely (32-deep, drained continuously
-    /// by a live run), but distinct from [`Self::NotLive`] on purpose: a
-    /// full channel must never be treated as "no such session" and fall
-    /// through to a resume, which would register a second run at the same
-    /// address.
     Full,
-    /// No live session at this address.
     NotLive,
 }
 
-/// [`SessionRegistry::register`] refused because `address` already names a
-/// live run.
 #[derive(Debug, Clone)]
 pub struct RegisterError {
-    /// The address that was already live.
     pub address: SessionAddress,
 }
 
@@ -68,111 +41,47 @@ impl std::fmt::Display for RegisterError {
 
 impl std::error::Error for RegisterError {}
 
-/// A registered session's bookkeeping: its metadata, the token that cancels
-/// its in-flight turn or idle wait, and the sender half of its interrupt
-/// channel — how a message addressed to this session actually reaches it
-/// (an interrupt at its next tool-call boundary while running, or the input
-/// for a new turn while idle; see `crate::messaging`).
 struct SessionEntry {
     info: SessionInfo,
     stop_token: CancellationToken,
     interrupt_tx: mpsc::Sender<Interrupt>,
 }
 
-/// What's needed to resume a completed session as a new run at the same
-/// address: enough of its last run's identity to fork it again, plus the id
-/// of that run, which the resumed run uses to retrieve its transcript.
-///
-/// The run's memory merge may still be in flight when this is recorded, so
-/// it names no episode; the run is retrieved by id.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResumePoint {
-    /// Run id of the run that completed.
     pub previous_run_id: String,
-    /// What triggered the original run — determines the resumed run's
-    /// category the same way it did the first time.
     pub trigger: EventTrigger,
-    /// Human-readable source label carried over to the resumed run.
     pub source_label: String,
-    /// Skill the original run executed with, if any, carried over so the
-    /// resumed run keeps the same role.
     pub agent_skill: Option<SkillName>,
-    /// The model tier or explicit model the original run executed on,
-    /// carried over so the resumed run doesn't default back to `medium`.
     #[serde(alias = "model_tier")]
     pub model: ModelSelector,
-    /// The agent that spawned the original run, if any, carried over so the
-    /// resumed run keeps the same spawner rather than losing it.
     pub spawner: Option<SessionAddress>,
-    /// Depth from the main agent the original run had, carried over so the
-    /// resumed run doesn't reset to depth 1 and evade the nesting cap.
     pub depth: u32,
-    /// The conversation the original run replied to, carried over so a
-    /// resumed conversation session still knows where to send its output.
     pub conversation_target: Option<ConversationTarget>,
-    /// When this resume point was recorded, set by
-    /// [`SessionRegistry::record_resume_point`] regardless of what a caller
-    /// passes in.
     pub recorded_at: DateTime<Utc>,
 }
 
-/// Registry of every live (running, idle, or completing) session, plus a
-/// standing record of what's needed to resume a completed one.
-///
-/// Live sessions are removed once completed; their resume points are not —
-/// an address must keep working for messaging across idle gaps and after
-/// completion, for as long as the process runs, and — for a registry built
-/// with [`Self::load`] — across a restart too, since resume points are
-/// persisted write-through to disk as they're recorded.
 #[derive(Default)]
 pub struct SessionRegistry {
     sessions: Mutex<HashMap<SessionAddress, SessionEntry>>,
     resume_points: Mutex<HashMap<SessionAddress, ResumePoint>>,
-    /// Where resume points are persisted write-through as they're recorded.
-    /// `None` for a registry built with [`Self::new`] — resume points then
-    /// live only in memory, as every unit test wants.
     persist_path: Option<PathBuf>,
-    /// Held across snapshot-and-write so concurrent recordings reach disk in
-    /// the order they were recorded; without it an older snapshot could land
-    /// after a newer one and drop the newer resume point on restart.
     persist_lock: tokio::sync::Mutex<()>,
-    /// Notified whenever any session is removed, so [`Self::wait_until_clear`]
-    /// and [`Self::wait_until_empty`] can wake without polling. A single registry-wide `Notify` rather than
-    /// one per address: removals are infrequent, and a waiter re-checks its
-    /// own address after waking, so a notification meant for a different
-    /// address just costs a cheap recheck.
     cleared: Notify,
-    /// Stop tokens pulse fires offer the sessions they ask for, before those
-    /// sessions register here.
     fire_stops: crate::fire_stops::FireStops,
 }
 
 impl SessionRegistry {
-    /// The stop tokens pulse fires offer the sessions they ask for.
     #[must_use]
     pub fn fire_stops(&self) -> &crate::fire_stops::FireStops {
         &self.fire_stops
     }
 
-    /// Create an empty registry with no persistence: resume points live only
-    /// in memory and are lost on restart. Used by every unit test, and by
-    /// any caller that doesn't need resume points to survive a process exit.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Create a registry whose resume points are persisted write-through to
-    /// `persist_path`, loading whatever is already there.
-    ///
-    /// A missing file starts with no resume points, the same as
-    /// [`Self::new`]. A file that exists but fails to read or parse is
-    /// logged at `warn` with the path and error and likewise starts empty —
-    /// a corrupt or unreadable resume-points file must never block startup,
-    /// since the worst case is only that in-flight resumes fall back to
-    /// fresh sessions. Entries are kept regardless of age: a resume point is
-    /// small, and an address staying resumable no matter how long it's been
-    /// idle is the point of persisting it at all.
     #[must_use]
     pub async fn load(persist_path: PathBuf) -> Self {
         let resume_points = load_resume_points(&persist_path).await;
@@ -183,25 +92,6 @@ impl SessionRegistry {
         }
     }
 
-    /// Register a new session run, refusing if the address already names a
-    /// live run.
-    ///
-    /// This is a compare-and-swap: the liveness check and the insert happen
-    /// under the same lock, so two concurrent registration attempts for the
-    /// same address can never both succeed and one silently clobber the
-    /// other's live entry (its interrupt channel, its stop token) out from
-    /// under it. A legitimate resume only ever calls this after
-    /// [`Self::wait_until_clear`] confirms the address is empty, so refusal
-    /// here means a second attempt genuinely raced in in the meantime — the
-    /// loser must fall back to delivering its own input into whichever run
-    /// won (see `SessionRuntime::spawn` and the spawn listener's liveness
-    /// guard, both of which do exactly that).
-    ///
-    /// Returns the receiver half of the session's interrupt channel, for the
-    /// runtime to drive the run's turns with.
-    ///
-    /// # Errors
-    /// Returns [`RegisterError`] if the address is already registered.
     pub fn register(
         &self,
         info: SessionInfo,
@@ -224,17 +114,6 @@ impl SessionRegistry {
         Ok(interrupt_rx)
     }
 
-    /// Deliver a message to a live session by address: an interrupt at its
-    /// next tool-call boundary while running, or the input for a new turn
-    /// while idle — the runtime on the other end of the channel decides
-    /// which, depending on whether it currently owns the receiver inside an
-    /// active turn or in its idle wait.
-    ///
-    /// See [`DeliverOutcome`] for what each outcome means to the caller.
-    /// A `completing` run is deliberately never handed a message: its
-    /// channel is about to be drained and dropped by its own teardown (see
-    /// `crate::runtime::finish_run`), so anything accepted here
-    /// after that point could be silently lost.
     pub fn deliver(&self, address: &SessionAddress, message: Interrupt) -> DeliverOutcome {
         let guard = self.lock();
         let Some(entry) = guard.get(address) else {
@@ -255,22 +134,6 @@ impl SessionRegistry {
         }
     }
 
-    /// Wait until `address` is no longer registered, in any state.
-    ///
-    /// Used before starting a new run at an address whose previous run is
-    /// still tearing down (`completing`), so the two can never coexist.
-    /// Unbounded: a `completing` run is always guaranteed to eventually
-    /// leave the registry (`finish_run` and panic recovery both end on
-    /// `remove`), so there is no address this could wait on forever absent a
-    /// bug elsewhere.
-    ///
-    /// Driven by `Self::cleared` rather than polling: the `Notify` future
-    /// is obtained *before* the address is checked, per `tokio::sync::Notify`'s
-    /// documented check-then-wait pattern, so a removal that races between
-    /// the check and the `.await` is never missed. A notification meant for a
-    /// different address just costs a cheap recheck and another wait. Logs
-    /// once if the wait runs unusually long, since that would mean the
-    /// previous run's teardown is stuck.
     pub async fn wait_until_clear(&self, address: &SessionAddress) {
         const WARN_AFTER: Duration = Duration::from_secs(30);
 
@@ -292,12 +155,6 @@ impl SessionRegistry {
         }
     }
 
-    /// Wait until no session is registered at all, in any state.
-    ///
-    /// Unbounded, like [`Self::wait_until_clear`]: the caller bounds it
-    /// (graceful shutdown wraps it in its own deadline). Driven by
-    /// the `cleared` notifier with the same check-then-wait ordering, so the
-    /// removal of the last session wakes it at once.
     pub(crate) async fn wait_until_empty(&self) {
         loop {
             let notified = self.cleared.notified();
@@ -308,20 +165,6 @@ impl SessionRegistry {
         }
     }
 
-    /// Record what's needed to resume a session as a new run once its
-    /// current run completes. Overwrites any previous resume point at the
-    /// same address, since only the most recent run's pointer matters.
-    ///
-    /// Stamps `point.recorded_at` with the current time regardless of what
-    /// the caller passed, since that field exists only to let a later load
-    /// prune stale entries, not to record when the underlying run actually
-    /// completed. When this registry was built with [`Self::load`], the
-    /// updated map is written through to disk before returning — a resume
-    /// point that only exists in memory would be lost on the next restart,
-    /// defeating the point of persisting it at all. A write failure is
-    /// logged at `warn` with the path and error; the in-memory record still
-    /// stands either way, so a message to this address still resumes it for
-    /// as long as this process keeps running.
     pub async fn record_resume_point(&self, address: &SessionAddress, mut point: ResumePoint) {
         point.recorded_at = Utc::now();
         let _persist_guard = self.persist_lock.lock().await;
@@ -341,7 +184,6 @@ impl SessionRegistry {
         }
     }
 
-    /// Look up a completed session's resume point, if it has ever run.
     #[must_use]
     pub fn resume_point(&self, address: &SessionAddress) -> Option<ResumePoint> {
         self.resume_points
@@ -351,8 +193,6 @@ impl SessionRegistry {
             .cloned()
     }
 
-    /// Update a session's lifecycle state. No-op if the address is unknown
-    /// (the session may already have been removed).
     pub fn set_state(&self, address: &SessionAddress, state: SessionState) {
         let mut guard = self.lock();
         if let Some(entry) = guard.get_mut(address) {
@@ -360,12 +200,6 @@ impl SessionRegistry {
         }
     }
 
-    /// Fold one model call's usage into a session's running totals.
-    ///
-    /// Returns the updated totals, or `None` if the address is unknown —
-    /// the session may already have completed and left the registry,
-    /// which the caller (the turn's [`residuum_agent::usage::UsageSink`])
-    /// treats the same as a provider reporting no usage.
     pub fn accumulate_usage(
         &self,
         address: &SessionAddress,
@@ -377,12 +211,6 @@ impl SessionRegistry {
         Some(entry.info.usage)
     }
 
-    /// Fold `n` more executed tool calls into a session's running totals.
-    ///
-    /// Returns the updated totals, or `None` if the address is unknown —
-    /// the session may already have completed and left the registry, which
-    /// the caller (the turn's [`residuum_agent::usage::UsageSink`]) treats the
-    /// same as a turn with no sink to record into.
     pub fn accumulate_tool_calls(
         &self,
         address: &SessionAddress,
@@ -394,11 +222,6 @@ impl SessionRegistry {
         Some(entry.info.usage)
     }
 
-    /// Stop a session: cancels its stop token so an in-flight turn or idle
-    /// wait ends and the session moves to `completing`.
-    ///
-    /// Returns `true` if a live session was found and signalled, `false` if
-    /// the address is unknown or the session is already completing/completed.
     pub fn stop(&self, address: &SessionAddress) -> bool {
         let guard = self.lock();
         let Some(entry) = guard.get(address) else {
@@ -414,22 +237,6 @@ impl SessionRegistry {
         true
     }
 
-    /// Stop `address`'s turn, but only if one is actually running right now.
-    ///
-    /// Unlike [`Self::stop`] (which also ends an idle or forking session
-    /// outright, moving it straight to `completing`), this leaves an idle
-    /// session alone: it's used where "stop" means "interrupt whatever this
-    /// conversation is doing right now", such as a chat interface's `/stop`
-    /// command, and an idle session isn't doing anything to interrupt. The
-    /// check and the cancel happen under the same lock, so the decision is
-    /// always made against the address's actual state at the instant this is
-    /// called — there is no window where a request can be queued and later
-    /// misapplied to a turn that starts afterward.
-    ///
-    /// Returns `true` if a running turn was found and signalled to stop,
-    /// `false` if the address has no live session or its session isn't
-    /// currently running a turn (idle, forking, completing, or completed) —
-    /// in which case nothing is touched.
     pub fn stop_if_running(&self, address: &SessionAddress) -> bool {
         let guard = self.lock();
         let Some(entry) = guard.get(address) else {
@@ -442,12 +249,6 @@ impl SessionRegistry {
         true
     }
 
-    /// Stop every live session (running, idle, or forking) — used at gateway
-    /// shutdown so runs complete and are recorded rather than being left for
-    /// startup recovery on the next boot.
-    ///
-    /// Returns the number of sessions signalled. Sessions already
-    /// `completing`/`completed` are left alone, matching [`stop`](Self::stop).
     pub fn stop_all(&self) -> usize {
         let guard = self.lock();
         let mut signalled = 0;
@@ -464,14 +265,6 @@ impl SessionRegistry {
         signalled
     }
 
-    /// Remove a session from the registry once it has fully completed, but
-    /// only if the entry still registered there belongs to `run_id`.
-    ///
-    /// A stale run's teardown (a panic-recovery path, or a run that raced a
-    /// newer one at the same address) must never delete a newer run's live
-    /// entry — checking the run id before removing is what makes that
-    /// impossible. Returns `None` (no-op) if the address is unknown or now
-    /// holds a different run.
     pub fn remove(&self, address: &SessionAddress, run_id: &str) -> Option<SessionInfo> {
         let removed = {
             let mut guard = self.lock();
@@ -480,14 +273,10 @@ impl SessionRegistry {
             }
             guard.remove(address).map(|entry| entry.info)
         };
-        // Notified after the lock is dropped, and unconditionally on every
-        // removal (not just ones a waiter is known to care about) — cheap,
-        // and it keeps this method from needing to track who's waiting.
         self.cleared.notify_waiters();
         removed
     }
 
-    /// Look up a live session's current info by run id rather than address.
     #[must_use]
     pub fn get_by_run_id(&self, run_id: &str) -> Option<SessionInfo> {
         self.lock()
@@ -496,13 +285,11 @@ impl SessionRegistry {
             .map(|entry| entry.info.clone())
     }
 
-    /// Look up a single session's current info.
     #[must_use]
     pub fn get(&self, address: &SessionAddress) -> Option<SessionInfo> {
         self.lock().get(address).map(|entry| entry.info.clone())
     }
 
-    /// Snapshot of every live session, for `list_agents` and the web listing.
     #[must_use]
     pub fn list_live(&self) -> Vec<SessionInfo> {
         let guard = self.lock();
@@ -511,7 +298,6 @@ impl SessionRegistry {
         sessions
     }
 
-    /// Snapshot formatted for the bug-report `active_subagents` field.
     #[must_use]
     pub fn subagent_snapshot(&self) -> Vec<residuum_tracing_service::Subagent> {
         self.list_live()
@@ -530,11 +316,6 @@ impl SessionRegistry {
     }
 }
 
-/// A session's own [`residuum_agent::usage::UsageSink`]: accumulates onto its
-/// registry entry, which mirrors into the run's store record at
-/// completion (see [`crate::store::RunRecord::starting`]) so
-/// a finished run's totals aren't lost, and records each model call in the
-/// agent's workspace under the run's trigger and id.
 pub struct SessionUsageSink<'a> {
     registry: &'a SessionRegistry,
     address: SessionAddress,
@@ -544,8 +325,6 @@ pub struct SessionUsageSink<'a> {
 }
 
 impl<'a> SessionUsageSink<'a> {
-    /// The sink for the run `info` describes, whose entry lives in
-    /// `registry` and whose records go to the workspace at `layout`.
     #[must_use]
     pub fn new(
         registry: &'a SessionRegistry,
@@ -592,12 +371,6 @@ impl residuum_agent::usage::UsageSink for SessionUsageSink<'_> {
     }
 }
 
-/// Load persisted resume points from `path`.
-///
-/// A missing file, or one that fails to read or parse, produces an empty map
-/// rather than an error — see [`SessionRegistry::load`] for why a load
-/// failure here must never block startup. Entries are kept regardless of
-/// age.
 async fn load_resume_points(path: &Path) -> HashMap<SessionAddress, ResumePoint> {
     let contents = match tokio::fs::read_to_string(path).await {
         Ok(contents) => contents,
@@ -627,11 +400,6 @@ async fn load_resume_points(path: &Path) -> HashMap<SessionAddress, ResumePoint>
     }
 }
 
-/// Write `points` to `path` atomically (temp file plus rename), replacing
-/// whatever was there.
-///
-/// # Errors
-/// Returns an error if serialization or the underlying write fails.
 async fn persist_resume_points(
     path: &Path,
     points: &HashMap<SessionAddress, ResumePoint>,
@@ -640,30 +408,14 @@ async fn persist_resume_points(
     residuum_core::util::fs::atomic_write(path, &json).await
 }
 
-/// Why [`stop_named_session`] refused to stop a session. The `Display` text
-/// is the message shown to the user.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum StopSessionError {
-    /// The name was `main`, which is the main agent, not a session.
     #[error("The main agent can't be stopped as a session.")]
     Main,
-    /// No live session at this address can still be stopped (it may already
-    /// be finishing).
     #[error("{address} isn't running, so there's nothing to stop.")]
-    NotLive {
-        /// The address that was asked for.
-        address: SessionAddress,
-    },
+    NotLive { address: SessionAddress },
 }
 
-/// Stop the live session at `address`: the stop that the web UI's Stop
-/// button, its session endpoint and a chat interface's `/stop <name>` share.
-/// A running turn is interrupted and an idle session is ended.
-///
-/// # Errors
-/// Returns [`StopSessionError::Main`] when `address` is `main`, and
-/// [`StopSessionError::NotLive`] when it doesn't name a live session that can
-/// still be stopped.
 pub fn stop_named_session(
     registry: &SessionRegistry,
     address: &str,
@@ -680,17 +432,6 @@ pub fn stop_named_session(
     }
 }
 
-/// Deterministic, URL/filename-safe address for an external conversation
-/// session, derived from its interface endpoint and its stable conversation
-/// id.
-///
-/// Every message in the same conversation resolves to this same address,
-/// whether or not a run is currently live there — and the address is stable
-/// across restarts, since it depends only on its inputs, not on random state
-/// or process-lifetime counters. Conversation ids vary wildly in shape
-/// across interfaces (Teams ids like `19:abc@thread.tacv2` carry characters
-/// that are unsafe in a URL path segment or a filename, especially on
-/// Windows), so the id is hashed rather than embedded directly.
 #[must_use]
 pub fn conversation_session_address(endpoint: &str, conversation_id: &str) -> SessionAddress {
     let mut input = endpoint.as_bytes().to_vec();
@@ -700,11 +441,6 @@ pub fn conversation_session_address(endpoint: &str, conversation_id: &str) -> Se
     SessionAddress::from(format!("external-{}-{hash:016x}", slugify(endpoint)))
 }
 
-/// FNV-1a 64-bit hash. Not cryptographic — just a small, dependency-free,
-/// deterministic hash for turning an arbitrary conversation id into a
-/// fixed-width, filename-safe tag. Deterministic across processes, restarts,
-/// and platforms, unlike `std`'s `DefaultHasher` (whose algorithm and output
-/// are documented as unspecified and may change between Rust releases).
 fn fnv1a64(bytes: &[u8]) -> u64 {
     const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x0000_0100_0000_01b3;
@@ -771,9 +507,6 @@ mod tests {
 
     #[test]
     fn conversation_session_address_is_url_and_filename_safe() {
-        // Teams conversation ids carry characters unsafe in a URL path
-        // segment or a filename (colons, `@`), which is exactly why the id
-        // is hashed rather than embedded.
         let addr = conversation_session_address("teams", "19:abc@thread.tacv2");
         let s = addr.as_ref();
         assert!(
@@ -816,7 +549,6 @@ mod tests {
             .expect_err("a second registration at a live address must be refused");
         assert_eq!(err.address, info.address);
 
-        // The compare-and-swap must leave the original entry untouched.
         assert_eq!(
             registry.get(&info.address).unwrap().run_id,
             info.run_id,
@@ -1192,8 +924,6 @@ mod tests {
 
     #[test]
     fn remove_is_a_noop_for_a_stale_run_id() {
-        // A newer run at the same address must never be deleted by an older
-        // run's teardown racing behind it.
         let registry = SessionRegistry::new();
         let info = sample_info("spawned-researcher-0005b");
         let _rx = registry
@@ -1406,9 +1136,6 @@ mod tests {
             spawner: Some(SessionAddress::from(MAIN_ADDRESS)),
             depth: 1,
             conversation_target: None,
-            // Overwritten by `record_resume_point` on every real path;
-            // tests that write a resume point straight to disk (bypassing
-            // the registry) set this explicitly instead.
             recorded_at: Utc::now(),
         }
     }
@@ -1440,8 +1167,6 @@ mod tests {
 
     #[tokio::test]
     async fn record_resume_point_on_a_registry_built_with_new_never_touches_disk() {
-        // `new()` is what every other test in the codebase uses; it must
-        // stay a pure in-memory registry with no persistence path.
         let registry = SessionRegistry::new();
         let address = SessionAddress::from("spawned-researcher-mem-only");
         registry
@@ -1475,9 +1200,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_resume_point_survives_a_simulated_restart() {
-        // A registry rebuilt from the same persisted file stands in for a
-        // process restart; it must still resolve the address to its previous
-        // run.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("resume_points.json");
         let address = SessionAddress::from("external-discord-restart-test");
@@ -1488,8 +1210,6 @@ mod tests {
                 .record_resume_point(&address, sample_resume_point("run-before-restart"))
                 .await;
         }
-        // The first registry (and everything it held in memory) is dropped
-        // here, standing in for the process exiting.
 
         let restarted = SessionRegistry::load(path).await;
         let found = restarted

@@ -1,9 +1,3 @@
-// The app's actions in the registry: every place and agent, the bound
-// agent's live sessions, every settings section, the chat actions, starting
-// and stopping agents, creating one, and help. Places, settings and lifecycle
-// for agents other than the bound one are listed only once something is
-// typed, so the unsearched palette stays about the agent at hand.
-
 import { agentLabel } from "../lib/agent-name";
 import { actionRegistry, HELP_GROUP, type AppAction } from "../lib/action-registry.svelte";
 import { displayState } from "../lib/agent-display-state";
@@ -28,20 +22,16 @@ import { ws } from "../lib/ws.svelte";
 import { AGENT_PLACES, stateWord } from "./rail-model";
 import type { ShellActions } from "./shell-actions";
 
-/** Set while the app can be installed from here; Install app is listed only then. */
 export const installOffer = $state<InstallOffer>({ install: null });
 
-/** Whether the Add to Home Screen explanation is open, for browsers that install from the share sheet. */
 export const installHelp = $state({ open: false });
 
-/** Whether Show connection status is open. */
 export const connectionStatusDialog = $state({ open: false });
 
 function open(place: Place): () => void {
   return () => void router.openPlace(place);
 }
 
-/** Agent names with the bound agent first, then by name. */
 function agentNames(): string[] {
   const names = hub.agents.map((agent) => agent.name);
   const bound = ws.agent;
@@ -102,7 +92,6 @@ function agentPlaces(): AppAction[] {
   );
 }
 
-/** The bound agent's live sessions, which open in the context panel. */
 function sessions(): AppAction[] {
   const agent = ws.agent;
   if (agent === null) return [];
@@ -165,7 +154,6 @@ function runLifecycle(verb: LifecycleAction, name: string): Promise<boolean> {
   return hub.restartAgent(name);
 }
 
-/** Start, Stop and Restart for each agent, where they apply. A failure surfaces from the hub store. */
 function lifecycle(): AppAction[] {
   return agentNames().flatMap((name) => {
     const state = hub.displayStateOf(name);
@@ -267,7 +255,6 @@ function help(shell: ShellActions): AppAction[] {
   return items;
 }
 
-/** Register the app's actions. Returns a function that removes them. */
 export function registerAppActions(shell: ShellActions): () => void {
   const removers = [
     actionRegistry.register("places", places),

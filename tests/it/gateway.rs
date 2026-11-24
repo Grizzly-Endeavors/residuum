@@ -41,7 +41,6 @@ use residuum::memory::types::Visibility;
 use residuum::protocol::{ClientMessage, ServerMessage};
 use residuum::workspace::identity::IdentityFiles;
 
-/// Mock provider that returns configurable responses in sequence.
 struct MockProvider {
     responses: Vec<String>,
     call_idx: Arc<AtomicUsize>,
@@ -108,15 +107,12 @@ fn make_agent_with(provider: Box<dyn InferenceProvider>, tools: ToolRegistry) ->
     )
 }
 
-/// One model call of a [`ScriptedProvider`]: what it streams, then what
-/// it returns.
 struct Step {
     deltas: Vec<StreamDelta>,
     response: InferenceResponse,
 }
 
 impl Step {
-    /// A call that returns `response` and streams nothing.
     fn reply(response: InferenceResponse) -> Self {
         Self {
             deltas: Vec::new(),
@@ -125,8 +121,6 @@ impl Step {
     }
 }
 
-/// Provider that plays back a script, one step per model call, streaming
-/// each step's deltas into the sink before it returns.
 struct ScriptedProvider {
     script: Mutex<VecDeque<Step>>,
 }
@@ -177,7 +171,6 @@ impl InferenceProvider for ScriptedProvider {
     }
 }
 
-/// A tool that always answers "noon".
 struct ClockTool;
 
 #[async_trait]
@@ -199,13 +192,11 @@ impl Tool for ClockTool {
     }
 }
 
-/// Message that flows from a WebSocket client into the main loop.
 struct InboundMessage {
     id: String,
     content: String,
 }
 
-/// Start a minimal gateway test harness and return the channels and bound address.
 async fn start_test_gateway(
     agent: Agent,
 ) -> (
@@ -216,8 +207,6 @@ async fn start_test_gateway(
     let (inbound_tx, inbound_rx) = mpsc::channel::<InboundMessage>(32);
     let (broadcast_tx, _) = broadcast::channel::<ServerMessage>(256);
 
-    // Set up bus broker and wire the ws subscriber loop to forward
-    // typed bus events to the broadcast channel.
     let bus = spawn_broker();
     let publisher = bus.publisher();
     let ep = EndpointName::from("ws");
@@ -274,9 +263,6 @@ async fn start_test_gateway(
     (inbound_tx, broadcast_tx, addr)
 }
 
-/// Drive the test harness's turn loop: process each inbound message
-/// through the agent and forward the outcome onto the bus/broadcast
-/// channel, mirroring what the real event loop does per-turn.
 async fn run_test_turn_loop(
     mut agent: Agent,
     mut inbound_rx: mpsc::Receiver<InboundMessage>,
@@ -287,9 +273,6 @@ async fn run_test_turn_loop(
     while let Some(inbound) = inbound_rx.recv().await {
         let reply_id = inbound.id.clone();
 
-        // The message and the turn's start (normally published by the
-        // event loop), to the main conversation. The web UI takes a turn
-        // from there alone.
         for event in [
             MainConversationEvent::UserMessage {
                 id: reply_id.clone(),
@@ -370,7 +353,6 @@ async fn test_handle_connection(socket: axum::extract::ws::WebSocket, state: Tes
 
     let mut broadcast_rx = state.broadcast_tx.subscribe();
 
-    // Forward all messages to the client (verbose filtering is client-side)
     let fwd_handle = tokio::spawn(async move {
         while let Ok(msg) = broadcast_rx.recv().await {
             let Ok(json) = serde_json::to_string(&msg) else {
@@ -423,10 +405,6 @@ async fn test_handle_connection(socket: axum::extract::ws::WebSocket, state: Tes
                     break;
                 }
             }
-            // SetVerbose (client-side), Reload, ServerCommand, InboxAdd,
-            // Cancel, the session commands, workspace watching, turn
-            // resyncs, waiting-message commands and turn retries are not
-            // handled in the test stub
             ClientMessage::SetVerbose { .. }
             | ClientMessage::Reload
             | ClientMessage::ServerCommand { .. }
@@ -445,7 +423,6 @@ async fn test_handle_connection(socket: axum::extract::ws::WebSocket, state: Tes
     fwd_handle.abort();
 }
 
-/// Connect a WebSocket client to the test gateway.
 async fn connect_client(
     addr: &str,
 ) -> (
@@ -466,7 +443,6 @@ async fn connect_client(
     ws_stream.split()
 }
 
-/// Send a `ClientMessage` over the WS connection.
 async fn send_msg(
     tx: &mut futures_util::stream::SplitSink<
         tokio_tungstenite::WebSocketStream<
@@ -480,7 +456,6 @@ async fn send_msg(
     tx.send(TungsteniteMessage::text(json)).await.unwrap();
 }
 
-/// Receive the next `ServerMessage` from the WS connection (with timeout).
 async fn recv_msg(
     rx: &mut futures_util::stream::SplitStream<
         tokio_tungstenite::WebSocketStream<
@@ -505,8 +480,6 @@ async fn recv_msg(
     }
 }
 
-/// Receive the frames of one turn: everything up to and including its
-/// `turn_ended`.
 async fn recv_turn(
     rx: &mut futures_util::stream::SplitStream<
         tokio_tungstenite::WebSocketStream<
@@ -525,14 +498,12 @@ async fn recv_turn(
     }
 }
 
-/// The frame at `index` of a turn's frames.
 fn at(frames: &[ServerMessage], index: usize) -> &ServerMessage {
     frames
         .get(index)
         .expect("the turn has a frame at this position")
 }
 
-/// The `type` tag of each frame, as a client sees it.
 fn frame_types(frames: &[ServerMessage]) -> Vec<String> {
     frames
         .iter()
@@ -546,8 +517,6 @@ fn frame_types(frames: &[ServerMessage]) -> Vec<String> {
         })
         .collect()
 }
-
-// ── Tests ────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn ping_pong() {
@@ -700,8 +669,6 @@ async fn all_clients_receive_tool_events() {
 
     let (_tx, mut rx) = connect_client(&addr).await;
 
-    // All clients receive tool events regardless of verbose setting
-    // (verbose filtering is handled client-side)
     assert!(
         broadcast_tx
             .send(ServerMessage::ToolCall {
@@ -769,10 +736,6 @@ async fn multiple_clients_receive_broadcast() {
     )
     .await;
 
-    // Every client gets the whole turn, the message that started it
-    // included, and the TurnUsage frame for its one model call — never
-    // surfaced to the agent, only to web clients (see
-    // `docs/systems-usage/turn-control.md`).
     for (label, rx) in [("A", &mut rx_a), ("B", &mut rx_b)] {
         let frames = recv_turn(rx).await;
         assert_eq!(
@@ -827,7 +790,6 @@ async fn client_disconnect_does_not_crash_gateway() {
     ]);
     let (_inbound_tx, _broadcast_tx, addr) = start_test_gateway(agent).await;
 
-    // Connect and disconnect client A
     {
         let (mut tx_a, mut rx_a) = connect_client(&addr).await;
         send_msg(
@@ -843,7 +805,6 @@ async fn client_disconnect_does_not_crash_gateway() {
         let _ = recv_turn(&mut rx_a).await;
     }
 
-    // Client B should still work
     let (mut tx_b, mut rx_b) = connect_client(&addr).await;
     send_msg(
         &mut tx_b,

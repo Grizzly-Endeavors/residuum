@@ -14,13 +14,6 @@
   import { joinNames } from "../../lib/words";
   import { seenLine, threadMeta } from "./thread-model";
 
-  // One conversation, open: its subject, Archive or Move to Inbox, every
-  // message oldest first with its attachments and, on yours, who has seen
-  // it, and the reply to everyone at the foot. The place opens the thread
-  // through the store, keeps the address, shows a thread that is gone, frames
-  // this view (its padding, reading width and scrolling) and focuses it: the
-  // subject once loaded, this named region until then.
-
   interface Props {
     threadId: string;
     onback: () => void;
@@ -28,7 +21,6 @@
 
   let { threadId, onback }: Props = $props();
 
-  // Only the thread this view was given: while the place opens another, the last one doesn't linger.
   const thread = $derived.by(() => {
     const held = mail.thread;
     if (held === null) return null;
@@ -44,7 +36,6 @@
     return message.from.kind === "agent" ? message.from.agent : null;
   }
 
-  /** Archive or Move to Inbox, back to the list as a mail app does, with the other one as Undo. */
   async function move(open: MailThread, action: "archive" | "restore"): Promise<void> {
     const id = open.thread_id;
     const subject = displaySubject(open.subject);
@@ -58,7 +49,6 @@
     );
   }
 
-  /** The thread is off screen by now, so a failed Undo is a notification. */
   async function undo(id: string, action: "archive" | "restore"): Promise<void> {
     const undone = action === "archive" ? await mail.archive(id) : await mail.restore(id);
     if (undone) return;
@@ -66,7 +56,6 @@
     if (reason !== undefined) notifications.surface("error", reason);
   }
 
-  /** Try a failed action again the way its own control does. */
   async function retry(open: MailThread): Promise<void> {
     const action = problem?.action;
     if (action === "archive" || action === "restore") await move(open, action);
@@ -216,7 +205,6 @@
 </section>
 
 <style>
-  /* The conversation sits on the page stone; its messages and reply are cards on it. */
   .mail-thread {
     display: flex;
     flex-direction: column;
@@ -259,11 +247,6 @@
     list-style: none;
   }
 
-  /*
-   * An agent's message is a stone-1 card and yours a stone-2 one, named in
-   * moss as the chat marks you. Not the chat's moss tint: an attachment
-   * chip's control-border ring falls under 3:1 on it.
-   */
   .message {
     display: flex;
     flex-direction: column;

@@ -59,29 +59,14 @@ use residuum::skills::{SkillIndex, SkillState};
 use residuum::tools::SessionTools;
 use residuum::workspace::identity::IdentityFiles;
 
-/// The name of the one agent the harness serves.
 const AGENT_NAME: &str = "solo";
 
-/// Shared queue of scripted model responses, consumed in order by
-/// [`ScriptedProvider`] across every session run a harness spawns.
 type SharedResponseQueue = Arc<AsyncMutex<VecDeque<InferenceResponse>>>;
-/// Every prompt [`ScriptedProvider`] was called with, one entry per
-/// `complete()` call, for assertions on what a session actually saw.
 type SharedSeenMessages = Arc<AsyncMutex<Vec<Vec<Message>>>>;
 
-/// A provider driven entirely by a shared, pre-loaded response queue —
-/// shared across every session run a test harness spawns (initial run and
-/// any resume), so a test can script a whole conversation's worth of model
-/// turns up front. Also records every prompt it was called with, so a test
-/// can assert on what the session actually saw (skill notes, attachment
-/// lines, resume pointers, inline images).
 struct ScriptedProvider {
     queue: SharedResponseQueue,
     seen: SharedSeenMessages,
-    /// Every call waits here before it takes a response, so a test can hold a
-    /// task in `WORKING` (to cancel it, or to register a fake spawned child)
-    /// for as long as it needs. The harness's gate is open unless a test
-    /// closes it.
     gate: GateEntry,
 }
 
@@ -107,9 +92,6 @@ impl InferenceProvider for ScriptedProvider {
     }
 }
 
-/// A minimal but fully populated `Config`, only used where an API demands a
-/// whole `Config` (`gather_for_bug_report`) — nothing here is exercised by
-/// the a2a path itself.
 fn test_config(dir: &std::path::Path) -> Config {
     use residuum::config::RetryConfig;
     use residuum::config::{
@@ -163,11 +145,6 @@ fn test_config(dir: &std::path::Path) -> Config {
     }
 }
 
-/// A live A2A server stack: a real `SessionRuntime` driven by a scripted
-/// provider, the real session executor/task store/handler, and the real
-/// `A2aListener` bound to a loopback port — everything Stream E built,
-/// wired together the same way `build_a2a_listener` wires it in production,
-/// with the one agent served at `/agents/solo`.
 struct Harness {
     base_url: String,
     keys: SharedA2aKeys,
@@ -179,20 +156,13 @@ struct Harness {
     card_state: SharedCardState,
     queue: SharedResponseQueue,
     seen: SharedSeenMessages,
-    /// Holds every scripted model call. Open unless a test closes it.
     model_gate: Gate,
     workspace_dir: PathBuf,
     shutdown_tx: tokio::sync::watch::Sender<bool>,
-    // Kept alive for the harness's lifetime.
     _tempdir: tempfile::TempDir,
 }
 
 impl Drop for Harness {
-    /// Removes the workspace before the temp-dir guard runs. Session and
-    /// checkpoint tasks may still be writing into the workspace when a test
-    /// ends, and a write that lands mid-removal makes `TempDir`'s single
-    /// best-effort `remove_dir_all` give up and leave the directory in
-    /// `/tmp`. Retrying until the tree is gone lets those writers finish.
     fn drop(&mut self) {
         self.shutdown_tx.send(true).ok();
         for _ in 0..50 {
@@ -205,7 +175,6 @@ impl Drop for Harness {
     }
 }
 
-/// Options for building a [`Harness`], so each test only sets what it needs.
 struct HarnessOptions {
     card_skills: Vec<residuum::a2a::card::AgentCardSkillFile>,
     workspace_skill: Option<(&'static str, &'static str)>,
@@ -222,9 +191,6 @@ impl Default for HarnessOptions {
     }
 }
 
-/// Set up the tempdir-backed workspace a harness runs against: required
-/// directories, an optional workspace skill (for the skill-mapping test),
-/// and the workspace agent-card file.
 async fn setup_workspace(
     opts: &HarnessOptions,
 ) -> (
@@ -274,8 +240,6 @@ async fn setup_workspace(
     (tempdir, workspace_dir, layout, skill_state)
 }
 
-/// The shared, mostly-inert dependencies `SessionTools` requires but
-/// none of these tests actually exercise (search, feedback tools).
 fn build_support_deps(
     workspace_dir: &std::path::Path,
 ) -> (
@@ -307,8 +271,6 @@ fn build_support_deps(
     (hybrid_searcher, tracing_service, tracing_client_context)
 }
 
-/// Everything needed to spawn the mini background listener, bundled to keep
-/// [`spawn_harness`] under the line-count lint.
 struct RuntimeDeps {
     session_registry: Arc<SessionRegistry>,
     messenger: Arc<AgentMessenger>,
@@ -321,8 +283,6 @@ struct RuntimeDeps {
     checkpoints: Arc<residuum::checkpoints::CheckpointEngine>,
 }
 
-/// Build the scripted-provider queue/call-log and spawn the mini background
-/// listener that drives every session run in `runtime` from them.
 fn start_scripted_sessions(
     runtime: Arc<SessionRuntime>,
     deps: RuntimeDeps,
@@ -362,8 +322,6 @@ fn start_scripted_sessions(
     (queue, seen, model_gate)
 }
 
-/// Build the real executor/handler and start the real `A2aListener` on
-/// `port`, returning its caller-key store and shutdown sender.
 fn start_a2a_listener(
     workspace_dir: &std::path::Path,
     card_state: &SharedCardState,
@@ -399,16 +357,11 @@ fn start_a2a_listener(
         Arc::clone(&keys),
         shutdown_rx,
     )
-    // The listener serves on the reserved socket itself, so no other process
-    // can take the port, and connections queue on it until it accepts them.
     .with_bound_listener(held.into_tokio_listener());
     residuum::util::spawn_in_span(listener.start());
     (keys, shutdown_tx, port)
 }
 
-/// Build the `SessionRuntime` a harness drives its scripted sessions
-/// through — split out of `spawn_harness` purely to keep that function's
-/// line count down.
 fn build_harness_runtime(
     session_registry: &Arc<SessionRegistry>,
     session_store: &Arc<SessionStore>,
@@ -551,12 +504,6 @@ async fn spawn_harness(opts: HarnessOptions) -> Harness {
     }
 }
 
-/// Everything [`spawn_mini_background_listener`] needs to turn a
-/// [`SpawnRequestEvent`] into a real session run, standing in for the
-/// production `background::spawn_listener` +
-/// `spawn_context::build_spawn_resources` pipeline: this test drives
-/// `SessionRuntime::spawn` directly with a scripted provider instead of a
-/// real LLM, exactly as `crates/background/src/runtime.rs`'s own tests do.
 struct MiniListenerDeps {
     runtime: Arc<SessionRuntime>,
     session_registry: Arc<SessionRegistry>,
@@ -619,10 +566,6 @@ fn spawn_mini_background_listener(bus_handle: BusHandle, deps: MiniListenerDeps)
     });
 }
 
-/// Build `SubAgentResources` for one session run: a real `ToolRegistry`
-/// (gated exactly as production gates it, so `a2a_task_update` only appears
-/// for an `a2a` conversation target) and a [`ScriptedProvider`] sharing this
-/// harness's response queue and call log.
 fn build_test_resources(deps: &MiniListenerDeps, event: &SpawnRequestEvent) -> SubAgentResources {
     let (layout, observer, merge_writer) = test_memory_extras();
     let hop_counter = HopCounter::new(event.hop_count);
@@ -692,7 +635,6 @@ fn build_test_resources(deps: &MiniListenerDeps, event: &SpawnRequestEvent) -> S
     }
 }
 
-/// Resolve the harness's card and build an authenticated client for `token`.
 async fn client_for(
     harness: &Harness,
     token: &str,
@@ -727,7 +669,6 @@ fn send_request(
     }
 }
 
-/// An `a2a_task_update` tool call, as the model would produce it.
 fn task_update_call(id: &str, state: &str, message: &str) -> ToolCall {
     ToolCall {
         id: id.to_string(),
@@ -751,7 +692,6 @@ fn task_update_call_with_artifacts(
     }
 }
 
-/// Drain a streaming response until it ends, returning every event seen.
 async fn drain_until_terminal(
     mut stream: futures_util::stream::BoxStream<'static, Result<a2a::StreamResponse, A2AError>>,
 ) -> Vec<a2a::StreamResponse> {
@@ -789,7 +729,6 @@ fn context_id_of(events: &[a2a::StreamResponse]) -> String {
         .expect("a stream must carry a context id somewhere")
 }
 
-/// Poll `task_store` for `task_id` until it reaches `state`, or time out.
 async fn wait_for_task_state(
     task_store: &SharedTaskStore,
     task_id: &str,
@@ -920,8 +859,6 @@ async fn input_required_then_followup_resumes_across_an_idle_session_and_complet
     });
     assert!(saw_input_required, "must reach INPUT_REQUIRED: {events:?}");
 
-    // Let the session's own run idle out and complete, recording a resume
-    // point — the same mechanism a follow-up after a long silence relies on.
     let address = SessionExecutor::address_for("key:bob", &context_id_of(&events));
     wait::until_true("the session to idle out and record a resume point", || {
         harness.session_registry.resume_point(&address).is_some()
@@ -1145,8 +1082,6 @@ async fn restart_continuation_resumes_a_task_left_in_progress() {
         queue.push_back(InferenceResponse::new("turn wrap-up".to_string(), vec![]));
     }
 
-    // Rebuild the executor and handler from the same on-disk task store,
-    // simulating a fresh process picking up where the last one left off.
     let executor = SessionExecutor::new(
         Arc::clone(&harness.messenger),
         Arc::clone(&harness.session_registry),
@@ -1223,8 +1158,6 @@ async fn run_completes_with_last_final_text_when_no_signal_is_sent() {
     harness.shutdown_tx.send(true).ok();
 }
 
-/// Register a running spawned child of `spawner` that never finishes on its
-/// own, returning its address.
 fn register_fake_live_child(harness: &Harness, spawner: &SessionAddress) -> SessionAddress {
     let child_address = SessionAddress::from("spawned-fake-child-0001");
     let child_info = residuum::bus::session::SessionInfo {
@@ -1252,10 +1185,6 @@ fn register_fake_live_child(harness: &Harness, spawner: &SessionAddress) -> Sess
     child_address
 }
 
-/// Wait for the parent run at `address` to complete, then push a marker
-/// through the session-event stream the executor reads. The marker surfaces on
-/// the A2A stream only after the executor has handled that completion, so
-/// what the test changes afterwards cannot race the executor's decision.
 async fn wait_for_first_run_completion_handled(
     session_events: &mut residuum::bus::Subscriber<residuum::bus::SessionEvent>,
     bus_handle: &BusHandle,
@@ -1304,15 +1233,10 @@ async fn run_stays_working_while_a_live_spawned_child_exists() {
     let token = harness.keys.create("ivy", None).await.unwrap();
     {
         let mut queue = harness.queue.lock().await;
-        // First run: completes with no explicit signal, but a live spawned
-        // child is registered before it does.
         queue.push_back(InferenceResponse::new("done for now".to_string(), vec![]));
-        // Second run (resumed once the child's relay wakes the parent):
-        // completes for real.
         queue.push_back(InferenceResponse::new("actually done".to_string(), vec![]));
     }
 
-    // Opened before the request so the parent run's own events are all seen.
     let mut session_events: residuum::bus::Subscriber<residuum::bus::SessionEvent> = harness
         .bus_handle
         .subscribe(topics::Sessions)
@@ -1335,27 +1259,13 @@ async fn run_stays_working_while_a_live_spawned_child_exists() {
     let context_id = context_id_of(std::slice::from_ref(&first));
     let address = SessionExecutor::address_for("key:ivy", &context_id);
 
-    // Register a fake live child while the parent's turn is held at the model
-    // gate, so the child is in place before that turn can resolve.
     harness.model_gate.until_held(1).await;
     let child_address = register_fake_live_child(&harness, &address);
     harness.model_gate.open_all();
 
-    // The executor only keeps the task working if the child is still
-    // registered when it handles the parent's first-run completion, so the
-    // child must stay registered until that has happened.
     wait_for_first_run_completion_handled(&mut session_events, &harness.bus_handle, &address).await;
 
-    // The session's own turn still reports its final text as a `WORKING`
-    // status update (per docs/systems-usage/a2a.md) even though the run
-    // beneath it is about to complete — `stream_until_terminal`'s
-    // "keep streaming" branch only refuses to turn *that* completion into a
-    // terminal A2A status while a live spawned child exists. Collect
-    // whatever arrives for a bounded window and confirm none of it is
-    // terminal.
     let mut events = vec![first];
-    // Reads until the marker arrives, which means the executor has already
-    // handled the first run's completion.
     loop {
         let item = wait::guarded("the next streamed event", stream.next())
             .await
@@ -1385,8 +1295,6 @@ async fn run_stays_working_while_a_live_spawned_child_exists() {
     let still_working = harness.task_store.get(&task_id).await.unwrap().unwrap();
     assert_eq!(still_working.status.state, TaskState::Working);
 
-    // Now let the child finish and relay to its spawner (the parent), which
-    // resumes the parent session at the same address.
     harness
         .session_registry
         .remove(&child_address, "run-fake-child");
@@ -1502,8 +1410,6 @@ async fn closing_text_of_the_signaling_turn_never_reaches_the_next_execution() {
                 "which season?",
             )],
         ));
-        // The signaling turn's own wrap-up, still being produced when the
-        // caller's follow-up arrives.
         queue.push_back(InferenceResponse::new(
             "stale narration about asking them".to_string(),
             vec![],
@@ -1522,15 +1428,12 @@ async fn closing_text_of_the_signaling_turn_never_reaches_the_next_execution() {
     )
     .await
     .unwrap();
-    // The signaling turn's tool call goes through; its closing call is then
-    // held, so the turn is still producing its text when the follow-up arrives.
     harness.model_gate.until_held(1).await;
     harness.model_gate.release(1);
     let first_events = drain_until_terminal(first).await;
     let task_id = task_id_of(&first_events);
     harness.model_gate.until_held(1).await;
 
-    // Follow up at once, while the first turn's closing text is still pending.
     let second = wait::guarded(
         "the streaming reply to the follow-up",
         client.send_streaming_message(&send_request("autumn", Some(&task_id), None)),

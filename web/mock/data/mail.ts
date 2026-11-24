@@ -1,27 +1,7 @@
 import { PNG_PIXEL, storeAttachment } from "../inbox";
 import type { MockAgent, MockHub, UserInboxAttachment } from "../state";
 
-/**
- * The mail the scenario starts with, on top of each agent's sample inbox
- * (`data/inbox.ts`): `atlas` and `scout` each hold an unread "Deploy tomorrow",
- * a read "Daily Digest" and an archived "Last week's digest", and each is a
- * thread of its own. These threads are added:
- *
- * - "Wiki audit: stale pages": you wrote to atlas and scout, both replied, and
- *   you answered them both; scout hasn't seen that last message.
- * - "Research: local-first sync libraries": a long Markdown message from scout
- *   with a Markdown file, a text file and an image attached.
- * - "Pick up the weekly changelog": you wrote to drifter, which is stopped, and
- *   nobody answered.
- * - "Backup rotation": you asked atlas, it answered, and the thread is archived.
- *
- * Every message an agent sent here is read, so the unread counts stay those of
- * the sample inboxes.
- */
-
-/** The threads the scenario starts with, by the name a test uses for them: their ids, which are the refs of their first messages. */
 export const MAIL_SEED = {
-  /** An agent's own unread message, one per agent. */
   deployTomorrow: {
     subject: "Deploy tomorrow",
     threadIds: { atlas: "atlas/user/mock_1", scout: "scout/user/mock_1" },
@@ -34,7 +14,6 @@ export const MAIL_SEED = {
     subject: "Last week's digest",
     threadIds: { atlas: "atlas/user/mock_archived_1", scout: "scout/user/mock_archived_1" },
   },
-  /** Sent to atlas and scout; the presented message is atlas's copy. Its replies and your answer follow. */
   wikiAudit: {
     subject: "Wiki audit: stale pages",
     threadId: "atlas/agent/20260311_wiki_audit_stale_pages",
@@ -42,19 +21,16 @@ export const MAIL_SEED = {
     replyId: "20260311_re_wiki_audit_stale_pages",
     answerId: "20260312_re_wiki_audit_stale_pages",
   },
-  /** From scout, with Markdown headings, lists, a code block, links and three attachments. */
   syncResearch: {
     subject: "Research: local-first sync libraries",
     threadId: "scout/user/20260313_research_local_first_sync_libraries",
     id: "20260313_research_local_first_sync_libraries",
     attachments: ["findings.md", "benchmark-log.txt", "merge-times.png"],
   },
-  /** Sent to drifter, which is stopped, and unanswered. */
   changelog: {
     subject: "Pick up the weekly changelog",
     threadId: "drifter/agent/20260312_pick_up_the_weekly_changelog",
   },
-  /** Asked and answered, then archived. */
   backupRotation: {
     subject: "Backup rotation",
     threadId: "atlas/agent/20260308_backup_rotation",
@@ -163,10 +139,6 @@ const BACKUP_REPLY = `We keep **30** nightly backups. Cutting to 14 frees about 
 
 I'll make the change after tonight's run unless you say otherwise.`;
 
-/**
- * A small valid PDF with one page holding `lines`. Its offsets are real, so a
- * viewer opens it without repairing it.
- */
 export function tinyPdf(lines: readonly string[]): Buffer {
   const escape = (line: string): string => line.replace(/[\\()]/g, (char) => `\\${char}`);
   const content = `BT /F1 16 Tf 72 720 Td 22 TL ${lines
@@ -201,7 +173,6 @@ const SOURCE_NOTES_PDF = tinyPdf([
   "team/wiki/index.md  no change upstream",
 ]);
 
-/** A file to attach: its name and bytes. */
 interface FileSpec {
   filename: string;
   bytes: Buffer;
@@ -217,7 +188,6 @@ function agentNamed(hub: MockHub, name: string): MockAgent {
   return agent;
 }
 
-/** A message you sent: one copy in each recipient's own inbox, all with one id. */
 function sentCopies(
   hub: MockHub,
   message: {
@@ -248,7 +218,6 @@ function sentCopies(
   }
 }
 
-/** A message an agent sent you, read, in its inbox for you or in the archive. */
 function agentReply(
   hub: MockHub,
   message: {
@@ -286,7 +255,6 @@ function agentReply(
   });
 }
 
-/** Add the scenario's mail threads to the agents `hub` holds. `atlas`, `scout` and `drifter` must exist. */
 export function seedMail(hub: MockHub): void {
   const { clock } = hub.env;
   const audit = MAIL_SEED.wikiAudit;

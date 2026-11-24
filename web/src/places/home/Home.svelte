@@ -10,16 +10,11 @@
   import NeedsYou from "./NeedsYou.svelte";
   import RecentlyDeleted from "./RecentlyDeleted.svelte";
 
-  // Home: what needs the user, every agent at a glance with its menu, the
-  // agents that can be restored, and on the right what happened across the
-  // team and what runs next. Below 1180px the right column follows the board.
-
   let { actions }: { actions: ShellActions } = $props();
 
   const uid = $props.id();
   const tally = $derived(teamTally(hub.agents));
 
-  /** The clock Home's times read: each second while an agent is working, so its timer moves. */
   let now = $state(Date.now());
   const anyBusy = $derived(hub.agents.some((agent) => hub.activityOf(agent.name).busy));
   $effect(() => {
@@ -116,7 +111,6 @@
     gap: var(--space-24);
   }
 
-  /* Every section on Home heads itself the same way. */
   .home :global(.home-heading) {
     display: flex;
     align-items: center;

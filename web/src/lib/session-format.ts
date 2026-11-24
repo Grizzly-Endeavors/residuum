@@ -1,5 +1,3 @@
-// ── Plain-language words for agent sessions and outbound tasks ───────
-
 import type { IconName } from "./icons";
 import type {
   OutboundA2aTaskSummary,
@@ -10,7 +8,6 @@ import type {
   SessionSummary,
 } from "./types";
 
-/** Every session category, in the order Activity's kind filter lists them. */
 export const SESSION_CATEGORIES: readonly SessionCategory[] = [
   "external",
   "scheduled",
@@ -18,7 +15,6 @@ export const SESSION_CATEGORIES: readonly SessionCategory[] = [
   "artifact",
 ];
 
-/** Each kind of run, as the Finished filter and a run's details name it. */
 export const KIND_NAMES: Readonly<Record<SessionCategory, string>> = {
   external: "From another app",
   scheduled: "Scheduled",
@@ -37,36 +33,25 @@ export function runIcon(category: SessionCategory): IconName {
   return KIND_ICONS[category];
 }
 
-/**
- * Whether the owner started a run by hand (a new session, or `/multitask`):
- * every spawned run an agent starts names its spawner.
- */
 export function startedByOwner(run: Pick<SessionSummary, "category" | "spawner">): boolean {
   return run.category === "spawned" && run.spawner === null;
 }
 
-/** How a run started, in plain words. A spawner of `main` is the agent's own conversation. */
 export function runKind(agent: string, run: Pick<SessionSummary, "category" | "spawner">): string {
   if (run.category !== "spawned") return KIND_NAMES[run.category];
   if (run.spawner === null) return "Started by you";
   return run.spawner === "main" ? `Started by ${agent}` : `Started by ${run.spawner}`;
 }
 
-/** States in which a stop request can still take effect. */
 export function isStoppableState(state: SessionState): boolean {
   return state === "forking" || state === "queued" || state === "running" || state === "idle";
 }
 
-/** How a run or task is doing, for its status mark: a tone and a few words. */
 export interface RunStatus {
   tone: "working" | "quiet" | "done" | "failed";
   text: string;
 }
 
-/**
- * What a status reads from a run: a full summary, or a live run as the
- * overview lists it, which has no outcome because it hasn't ended.
- */
 export type RunStatusSource = Pick<SessionSummary, "state" | "started_at"> &
   Partial<Pick<SessionSummary, "completed_at" | "outcome" | "interrupted">>;
 
@@ -91,7 +76,6 @@ export function runStatus(run: RunStatusSource, now: number): RunStatus {
   return { tone: "done", text: "Finished" };
 }
 
-/** How a finished run ended, as its row says it. */
 export function finishedOutcome(run: SessionSummary): string {
   const took =
     run.completed_at === null ? "" : ` after ${runDuration(run, Date.parse(run.started_at))}`;
@@ -101,20 +85,14 @@ export function finishedOutcome(run: SessionSummary): string {
   return `Finished${took}`;
 }
 
-/** Prefix of an artifact session's source label (`artifact:<name>`). */
 const ARTIFACT_SOURCE_PREFIX = "artifact:";
 
-/**
- * The workbench artifact that started a session, from its source label, or
- * `null` for a session no artifact started.
- */
 export function sessionArtifact(session: SessionSummary): string | null {
   if (session.category !== "artifact") return null;
   if (!session.source_label.startsWith(ARTIFACT_SOURCE_PREFIX)) return null;
   return session.source_label.slice(ARTIFACT_SOURCE_PREFIX.length) || null;
 }
 
-/** How a run ended, for a status line. */
 export function runOutcomeText(status: SessionRunStatus, error: string | null): string {
   switch (status) {
     case "completed":
@@ -126,7 +104,6 @@ export function runOutcomeText(status: SessionRunStatus, error: string | null): 
   }
 }
 
-/** Where a message sent to a session landed, in plain language. */
 export function deliveryOutcomeText(outcome: SessionDeliveryOutcome): string {
   switch (outcome) {
     case "live":
@@ -138,7 +115,6 @@ export function deliveryOutcomeText(outcome: SessionDeliveryOutcome): string {
   }
 }
 
-/** Compact duration: `45s`, `12m`, `3h 5m`, `2d 4h`. */
 export function formatDuration(ms: number): string {
   const seconds = Math.max(0, Math.floor(ms / 1000));
   if (seconds < 60) return `${seconds}s`;
@@ -150,7 +126,6 @@ export function formatDuration(ms: number): string {
   return hours % 24 ? `${days}d ${hours % 24}h` : `${days}d`;
 }
 
-/** How long a run has been going (live) or took (finished). */
 export function runDuration(
   session: Pick<RunStatusSource, "started_at" | "completed_at">,
   now: number,
@@ -168,13 +143,11 @@ const STARTED_FORMATTER = new Intl.DateTimeFormat(undefined, {
   minute: "2-digit",
 });
 
-/** An RFC 3339 timestamp as a short local date and time. */
 export function formatLocalDateTime(iso: string): string {
   const date = new Date(iso);
   return Number.isNaN(date.getTime()) ? iso : STARTED_FORMATTER.format(date);
 }
 
-/** Where a task sent to another agent stands, for its status mark. */
 export function outboundStatus(task: OutboundA2aTaskSummary, now: number): RunStatus {
   if (task.unreachable_since) {
     const since = Date.parse(task.unreachable_since);
@@ -197,22 +170,15 @@ export function outboundStatus(task: OutboundA2aTaskSummary, now: number): RunSt
   }
 }
 
-/** How long ago a task was sent to another agent. */
 export function outboundDuration(task: OutboundA2aTaskSummary, now: number): string {
   const start = Date.parse(task.started_at);
   return Number.isNaN(start) ? "" : formatDuration(now - start);
 }
 
-/** Whether a model selector names one of the background tiers rather than one model. */
 export function isTier(model: string): model is "small" | "medium" | "large" {
   return model === "small" || model === "medium" || model === "large";
 }
 
-/**
- * The model a run ran on, for its Details: "anthropic/claude-haiku-4-5, from
- * the small tier", or the model alone when it was named explicitly. `null`
- * for a run recorded before runs kept their model.
- */
 export function runModel(run: Pick<SessionSummary, "model" | "resolved_model">): string | null {
   const tier = run.model !== null && isTier(run.model) ? run.model : null;
   if (run.resolved_model === null) return tier === null ? run.model : `The ${tier} tier`;

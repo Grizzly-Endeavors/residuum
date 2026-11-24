@@ -11,11 +11,6 @@
   import RunStatus from "./RunStatus.svelte";
   import SessionMessageBox from "./SessionMessageBox.svelte";
 
-  // A session the owner starts by hand, in the context panel: which model it
-  // runs on, and the message box whose first message starts it clean. Once
-  // the run shows up in the agent's sessions, the session panel takes over;
-  // if the agent says it couldn't start, the task comes back with why.
-
   let { session }: { session: NewSession } = $props();
 
   const label = $derived(hub.shownName(session.agent));
@@ -107,7 +102,6 @@
     min-height: 0;
     padding: var(--space-16) var(--space-18);
     overflow-y: auto;
-    /* The message box sits under the scrolling body rather than over it, so a hairline parts the two. */
     border-bottom: 1px solid var(--color-line-soft);
   }
 

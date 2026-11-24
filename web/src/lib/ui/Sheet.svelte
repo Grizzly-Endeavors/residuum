@@ -2,14 +2,9 @@
   import type { Snippet } from "svelte";
   import ModalLayer from "./ModalLayer.svelte";
 
-  // A bottom sheet, for choices and short forms on phones. Swiping it down,
-  // Esc, the scrim and Back close it.
-
   interface Props {
     open: boolean;
-    /** A visible heading, which names the sheet. */
     title?: string;
-    /** The sheet's name when it has no title. */
     label?: string;
     description?: string;
     initialFocus?: string | false;

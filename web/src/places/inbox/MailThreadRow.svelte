@@ -6,22 +6,12 @@
   import { VisuallyHidden } from "../../lib/ui";
   import { participantsLabel } from "./mail-model";
 
-  // One conversation in the Inbox's list: who it is with (in Sent, who it went
-  // to), when it last moved, its subject and the latest message's first line,
-  // with an unread mark and a paperclip when it carries files. The row is a
-  // link to the thread, so it also opens in a new tab.
-
   interface Props {
     summary: MailThreadSummary;
-    /** The folder the list shows, which words who the row is with. */
     folder: MailFolder;
-    /** The thread's address in the app. */
     href: string;
-    /** The thread is the one open beside the list. */
     selected: boolean;
-    /** The clock the relative time reads. */
     now: number;
-    /** A plain click: open the thread in place. */
     onopen: (event: MouseEvent) => void;
   }
 
@@ -91,7 +81,6 @@
     }
   }
 
-  /* The unread dot keeps its column on read rows, so subjects line up. */
   .mail-row-mark {
     flex: none;
     width: var(--space-8);
@@ -153,7 +142,6 @@
     font-size: var(--font-size-xs);
     font-variant-numeric: tabular-nums;
 
-    /* text-3 isn't declared on a tint. */
     .mail-row[aria-current="true"] & {
       color: var(--color-text-2);
     }

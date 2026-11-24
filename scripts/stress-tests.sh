@@ -1,29 +1,4 @@
 #!/usr/bin/env bash
-# Runs the Rust test suite under load, the way it runs when several agents
-# build and test on one machine: several copies of every test binary at once,
-# with CPU burners alongside. A test that passes here waits on events, not on
-# how fast the machine is. `just stress` runs this locally.
-#
-# Leading `-p <package>` (or `--package`) options choose the packages whose test
-# binaries are built and run, so a member crate's tests can be stressed:
-# `just stress -p residuum-core wait::`. Without them every package in
-# default-members is built. Every argument after them is passed to each test
-# binary, so a libtest filter narrows the run: `just stress logging::` or
-# `scripts/stress-tests.sh hub_host::`.
-#
-# Environment:
-#   STRESS_COPIES  copies of the suite run at once (default 2)
-#   STRESS_ROUNDS  times the whole run repeats (default 1)
-#   STRESS_BURN    CPU burners alongside (default: the number of CPUs)
-#   STRESS_TESTS_LOG  output of the unloaded `cargo test --no-fail-fast` run.
-#                  When set, the failures are split by whether that run also
-#                  failed them (see below).
-#
-# Each copy's output is kept under target/stress/<round>/<copy>.log, and the
-# failures under target/stress/summary.txt. A failure that failed only under
-# load is a test waiting on time: fix it by making the test wait on the event
-# it checks (CONTRIBUTING.md, "Waiting in tests"), never by widening a timeout.
-# A failure that also failed in the unloaded run is an ordinary failure.
 set -euo pipefail
 
 copies="${STRESS_COPIES:-2}"
@@ -37,12 +12,8 @@ if [ -n "${STRESS_TESTS_LOG:-}" ] && [ ! -f "$STRESS_TESTS_LOG" ]; then
     exit 1
 fi
 
-# Clears the previous run's logs before the build, so a run that fails to build
-# cannot leave them for the caller's summary to count.
 rm -rf "$out"
 
-# Leading package options, then the libtest arguments. A `--` after a package
-# option ends the options; without one, `--` is a libtest argument like any other.
 cargo_args=()
 while [ "$#" -gt 0 ]; do
     case $1 in
@@ -68,9 +39,6 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
-# ts_export writes web/src/lib/generated, so concurrent copies would race on
-# the working tree. It has no timing to stress. Each line is a binary's path and
-# its package's directory, tab-separated.
 mapfile -t binary_entries < <(
     cargo test --no-run --message-format=json "${cargo_args[@]}" \
         | jq -r 'select(.reason == "compiler-artifact" and .profile.test == true and .executable != null and .target.name != "ts_export") | [.executable, (.manifest_path | rtrimstr("/Cargo.toml"))] | @tsv' \
@@ -88,7 +56,6 @@ if [ "${#binaries[@]}" -eq 0 ]; then
 fi
 
 inotify_in_use() {
-    # Other users' processes can't be read; find reports that and exits 1.
     { find /proc/[0-9]*/fd -lname 'anon_inode:inotify' 2>/dev/null || true; } | wc -l
 }
 
@@ -116,8 +83,6 @@ for round in $(seq 1 "$rounds"); do
     for copy in $(seq 1 "$copies"); do
         (
             status=0
-            # Each binary runs from its package's directory with CARGO_MANIFEST_DIR
-            # set to it, as `cargo test` does: some tests read paths relative to it.
             for index in "${!binaries[@]}"; do
                 binary="${binaries[$index]}"
                 dir="${manifest_dirs[$index]}"
@@ -140,10 +105,6 @@ for round in $(seq 1 "$rounds"); do
     echo "Round $round done. Load: $(cut -d' ' -f1-3 /proc/loadavg). inotify instances in use mid-run: $inotify_peak of $(cat /proc/sys/fs/inotify/max_user_instances 2>/dev/null || echo '?')."
 done
 
-# A failing test is named in a "---- <name> stdout ----" header. A test in a
-# member crate's binary (residuum_<x>-<hash>) is listed with its crate first,
-# residuum_<x>::<name>. A binary that exited non-zero without naming one crashed
-# or was killed, and counts too.
 {
     awk '
         FNR == 1 { bin = ""; named = 0 }
@@ -165,7 +126,6 @@ done
     ' "$out"/*/*.log
 } | sort | uniq -c | sort -rn >"$out/counts.txt"
 
-# Writes one heading and its lines, or nothing when there are none.
 section() {
     [ -n "$2" ] || return 0
     echo "$1"
@@ -181,8 +141,6 @@ if [ -s "$out/counts.txt" ]; then
         load_only="" both="" crashed=""
         while read -r count name; do
             line="$count $name"$'\n'
-            # The Tests step's log names a test by its path inside its crate, so the
-            # crate is dropped before the comparison.
             bare="$name"
             if [[ "$name" =~ ^residuum_[a-z0-9_]+:: ]]; then
                 bare="${name#*::}"

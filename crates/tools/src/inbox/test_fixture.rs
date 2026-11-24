@@ -1,6 +1,3 @@
-//! Agents' workspaces with inbox items written straight to disk, for the
-//! inbox tool tests.
-
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -14,7 +11,6 @@ use residuum_workspace::testing::{StaticMailboxDirectory, TeamHub};
 
 use super::MailAccess;
 
-/// One inbox item to write.
 pub(super) struct Item {
     agent: String,
     kind: InboxKind,
@@ -53,36 +49,29 @@ impl Item {
         }
     }
 
-    /// A message `agent` sent the user: an item in its user inbox.
     pub fn agent_message(agent: &str, id: &str, title: &str, body: &str, hour: u32) -> Self {
         Self::new(agent, InboxKind::User, id, title, body, "agent", hour)
     }
 
-    /// A message the user sent `agent` from the web: an item in its agent inbox.
     pub fn user_mail(agent: &str, id: &str, title: &str, body: &str, hour: u32) -> Self {
         Self::new(agent, InboxKind::Agent, id, title, body, "web", hour)
     }
 
-    /// The item answers the message `parent` names.
     pub fn replying_to(mut self, parent: &str) -> Self {
         self.contents.in_reply_to = Some(parent.to_string());
         self
     }
 
-    /// The item carries a file named `filename`, written beside it when the
-    /// item is saved.
     pub fn with_attachment(mut self, filename: &str) -> Self {
         self.contents.attachments.push(PathBuf::from(filename));
         self
     }
 
-    /// The item has been read.
     pub fn read(mut self) -> Self {
         self.contents.read = true;
         self
     }
 
-    /// The item is in the archive.
     pub fn archived(mut self) -> Self {
         self.archived = true;
         self.contents.read = true;
@@ -90,7 +79,6 @@ impl Item {
     }
 }
 
-/// A hub directory of agents, each with its own workspace.
 pub(super) struct MailHub {
     hub: TeamHub,
     directory: Arc<StaticMailboxDirectory>,
@@ -107,14 +95,12 @@ impl MailHub {
         WorkspaceLayout::new(self.hub.agent_dir(agent))
     }
 
-    /// The mail access of `agent`, reaching every agent.
     pub fn access(&self, agent: &str) -> MailAccess {
         let directory: Arc<dyn MailboxDirectory> =
             Arc::<StaticMailboxDirectory>::clone(&self.directory);
         MailAccess::new(Some(directory), &self.layout(agent), chrono_tz::UTC)
     }
 
-    /// The mail access of `agent` with no hub directory.
     pub fn access_without_directory(&self, agent: &str) -> MailAccess {
         MailAccess::new(None, &self.layout(agent), chrono_tz::UTC)
     }
@@ -140,13 +126,11 @@ impl MailHub {
         }
     }
 
-    /// The active item `id` of `agent`'s inbox of `kind`.
     pub async fn load(&self, agent: &str, kind: InboxKind, id: &str) -> InboxItem {
         let dir = kind.items_dir(&self.layout(agent), false);
         load_item(&dir.join(format!("{id}.json"))).await.unwrap()
     }
 
-    /// Every active item of `agent`'s inbox of `kind`, newest first.
     pub async fn items(&self, agent: &str, kind: InboxKind) -> Vec<(String, InboxItem)> {
         list_items_or_empty(&kind.items_dir(&self.layout(agent), false))
             .await
@@ -154,8 +138,6 @@ impl MailHub {
     }
 }
 
-/// The ids on the item lines of a listing's output, in order: the last word
-/// before the title on each line.
 pub(super) fn listed_ids(output: &str) -> Vec<String> {
     output
         .lines()
@@ -165,16 +147,12 @@ pub(super) fn listed_ids(output: &str) -> Vec<String> {
         .collect()
 }
 
-/// The cursor a listing's output tells the caller to pass as `before`, when
-/// a next page follows.
 pub(super) fn next_cursor(output: &str) -> Option<String> {
     let (_, rest) = output.split_once("before=\"")?;
     let (cursor, _) = rest.split_once('"')?;
     Some(cursor.to_string())
 }
 
-/// The output of every page `tool` lists for `arguments`, first to last: each
-/// call after the first passes the cursor the page before it ended with.
 pub(super) async fn pages(tool: &dyn Tool, mut arguments: serde_json::Value) -> Vec<String> {
     let mut outputs = Vec::new();
     loop {

@@ -5,19 +5,12 @@
   import type { ShellActions } from "../../shell/shell-actions";
   import { agentActions } from "./agent-actions.svelte";
 
-  // The fixes for an agent that couldn't start, shared by Home's
-  // needs-you item and the agent's state card: Restart, and by the kind of
-  // failure, Fix settings, Open Connections or Report a bug. The fix that
-  // matches the failure leads.
-
   interface Props {
     agent: string;
     kind: AgentErrorKind;
     size?: "sm" | "md";
     actions: ShellActions;
-    /** A restart from here is starting. */
     onrestart?: () => void;
-    /** A restart from here has finished, whether or not the agent runs now. */
     onrestarted?: () => void;
   }
 

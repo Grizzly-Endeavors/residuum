@@ -16,18 +16,15 @@ use serde_json::Value;
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Question {
-    /// A yes/no question; the answer is the probability of yes.
     Noul {
         instructions: Value,
         #[serde(skip_serializing_if = "Option::is_none")]
         criteria: Option<NoulCriteria>,
     },
-    /// Pick one option from a defined set.
     Choice {
         instructions: Value,
         criteria: BTreeMap<String, Option<Value>>,
     },
-    /// Rate along ordered levels, lowest first.
     Score {
         instructions: Value,
         criteria: Vec<Value>,
@@ -35,7 +32,6 @@ pub enum Question {
 }
 
 impl Question {
-    /// A yes/no question with no criteria.
     #[must_use]
     pub fn noul(instructions: impl Into<Value>) -> Self {
         Self::Noul {
@@ -45,7 +41,6 @@ impl Question {
     }
 }
 
-/// What a yes and a no mean for a [`Question::Noul`].
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NoulCriteria {
     #[serde(rename = "true")]
@@ -54,7 +49,6 @@ pub struct NoulCriteria {
     pub no: Value,
 }
 
-/// The request body of `POST /v1/systemone`.
 #[derive(Debug, Serialize)]
 pub(crate) struct SystemOneRequest<'a> {
     pub model: &'a str,
@@ -65,12 +59,10 @@ pub(crate) struct SystemOneRequest<'a> {
     pub keep_alive: Option<&'a str>,
 }
 
-/// One answer, typed to match its question.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Answer {
     Noul {
-        /// Probability of yes, 0 to 1.
         noul: f64,
     },
     Choice {
@@ -92,7 +84,6 @@ pub enum Answer {
 }
 
 impl Answer {
-    /// The yes probability of a noul answer; `None` for other answer types.
     #[must_use]
     pub fn noul(&self) -> Option<f64> {
         match self {
@@ -102,8 +93,6 @@ impl Answer {
     }
 }
 
-/// Token usage reported for one evaluation. `None` means the service did
-/// not report the count, never zero.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 pub struct SystemOneUsage {
     #[serde(default)]
@@ -113,9 +102,6 @@ pub struct SystemOneUsage {
 }
 
 impl SystemOneUsage {
-    /// These counts as chat-model [`Usage`](crate::Usage): the decision
-    /// model has no prompt cache, so all of its input is uncached. A count
-    /// past `u32::MAX` saturates.
     #[must_use]
     pub fn to_usage(&self) -> crate::Usage {
         let narrow = |count: u64| u32::try_from(count).unwrap_or(u32::MAX);
@@ -134,20 +120,15 @@ where
     Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
 }
 
-/// The response body of `POST /v1/systemone`.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct SystemOneResponse {
-    /// The model that answered; a versioned ID even when an alias was sent.
-    /// Proxy gateways translating decision endpoints may emit `"model": null`.
     #[serde(default, deserialize_with = "deserialize_null_or_string")]
     pub model: String,
-    /// One answer per question, under the question's own key.
     pub answers: BTreeMap<String, Answer>,
     #[serde(default)]
     pub usage: SystemOneUsage,
 }
 
-/// A model name the provider accepts in the `model` field.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SystemOneModel {
     pub name: String,

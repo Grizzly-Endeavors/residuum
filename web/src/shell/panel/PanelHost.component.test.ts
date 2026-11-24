@@ -13,11 +13,8 @@ import { waitFor } from "../../test/wait";
 import { WIDE_QUERY } from "../../styles/breakpoints";
 import PanelHost from "./PanelHost.svelte";
 
-/** What each agent's workspace holds, by path. A file an agent lacks answers 404. */
 let workspaces: Record<string, Record<string, string>> = {};
-/** The paths the page asked the server for. */
 let requested: string[] = [];
-/** The files the page saved. */
 let saved: { agent: string; path: string; content: string }[] = [];
 
 function serve(): void {
@@ -57,12 +54,10 @@ function summary(name: string, state: AgentState): AgentSummary {
   };
 }
 
-/** The connection the page opened to `agent` for following its files, if any. */
 function socketOf(agent: string): FakeWebSocket | undefined {
   return FakeWebSocket.sockets.find((s) => new URL(s.url).pathname === `/api/agents/${agent}/ws`);
 }
 
-/** Move the app to `place` with `panel` open, as the router would. */
 async function go(place: AppLocation["place"], panel: Panel | null): Promise<void> {
   router.location = { ...locationAt(place), panel };
   await settle();
@@ -70,13 +65,11 @@ async function go(place: AppLocation["place"], panel: Panel | null): Promise<voi
 
 const file = (agent: string | null, path = "report.md"): Panel => ({ kind: "file", path, agent });
 
-/** A Markdown file opens rendered; Edit opens the editor on its text. */
 async function openEditor(name = "report.md"): Promise<HTMLTextAreaElement> {
   await userEvent.click(await screen.findByRole("button", { name: "Edit" }));
   return screen.findByRole("textbox", { name: `Contents of ${name}` });
 }
 
-/** A wide screen, where the panel is a column beside the main region. */
 function stubWideScreen(): void {
   vi.stubGlobal(
     "matchMedia",
@@ -158,7 +151,6 @@ describe("the file in the context panel", () => {
 
 describe("an agent's file beside the Inbox", () => {
   beforeEach(() => {
-    // The app was last on another agent, so the file's agent is not the bound one.
     setViewedAgent("scout");
   });
 
@@ -299,7 +291,6 @@ describe("an agent's file beside the Inbox", () => {
     socket.simulateMessage({ type: "workspace_watch_unavailable", message: "off" });
     const note = await screen.findByText(/Live updates are off for atlas/);
     expect(note.textContent).toContain("report.md again");
-    // The file still reads and edits.
     expect(await openEditor()).toBeTruthy();
   });
 });
@@ -361,11 +352,9 @@ describe("agent places in the context panel", () => {
     const resizedWidth = grip.getAttribute("aria-valuenow");
     expect(resizedWidth).toBe("456");
 
-    // Maximize moves Activity to the main region and closes the panel.
     await go({ kind: "activity", agent: "atlas" }, null);
     expect(screen.queryByRole("separator", { name: "Resize panel" })).toBeNull();
 
-    // Restore reopens Activity in the side panel at the width set before Maximize.
     await go({ kind: "chat", agent: "atlas" }, { kind: "activity", agent: "atlas" });
     expect(
       screen.getByRole("separator", { name: "Resize panel" }).getAttribute("aria-valuenow"),

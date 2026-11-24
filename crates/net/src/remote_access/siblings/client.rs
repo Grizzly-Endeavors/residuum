@@ -23,23 +23,18 @@ use crate::remote_access::jws::{AccountSigner, sign_jws, thumbprint};
 
 const CALL_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// An answer from a sibling.
 pub(crate) struct ChannelReply {
     pub(crate) status: u16,
     pub(crate) body: Value,
 }
 
-/// A sibling couldn't be reached or answered nonsense.
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
 pub(crate) struct ChannelError(pub(crate) String);
 
-/// How requests reach a sibling's host.
 #[async_trait]
 pub(crate) trait SiblingChannel: Send + Sync {
-    /// `GET {path}` at `host`.
     async fn get(&self, host: &str, path: &str) -> Result<ChannelReply, ChannelError>;
-    /// `POST {path}` at `host` with a JSON body.
     async fn post(
         &self,
         host: &str,
@@ -48,18 +43,12 @@ pub(crate) trait SiblingChannel: Send + Sync {
     ) -> Result<ChannelReply, ChannelError>;
 }
 
-/// The real channel: HTTPS to the sibling's instance host.
 pub(crate) struct HttpChannel {
     client: reqwest::Client,
     scheme: &'static str,
 }
 
 impl HttpChannel {
-    /// HTTPS only to hosts with a publicly trusted certificate, plus the
-    /// roots in `extra_root` (a PEM file) when the configuration names one.
-    ///
-    /// # Errors
-    /// Returns an error if the root file can't be read or the client can't be built.
     pub(crate) fn https(extra_root: Option<&Path>) -> anyhow::Result<Self> {
         let mut builder = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -90,7 +79,6 @@ impl HttpChannel {
         })
     }
 
-    /// Plain HTTP to a loopback test server.
     #[cfg(test)]
     pub(crate) fn plain_http_for_tests() -> Self {
         Self {
@@ -139,48 +127,35 @@ impl SiblingChannel for HttpChannel {
     }
 }
 
-/// Why a join couldn't start or continue, in words for the person.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum JoinFailure {
-    /// The other instance couldn't be reached.
     #[error(
         "Couldn't reach \"{slug}\". It has to be online and set up for remote access. ({detail})"
     )]
     Unreachable { slug: String, detail: String },
-    /// The other instance said no, with its reason.
     #[error("\"{slug}\" refused the join: {reason}")]
     Refused { slug: String, reason: String },
-    /// The other instance's answer wasn't what a Residuum instance sends.
     #[error(
         "\"{slug}\" answered in a way Residuum doesn't understand. Make sure it runs a current Residuum."
     )]
     Malformed { slug: String },
-    /// The person on the other instance said no.
     #[error("\"{slug}\" denied the join.")]
     Denied { slug: String },
-    /// The request expired before anyone answered.
     #[error(
         "Nobody approved the join on \"{slug}\" in time. Start it again when someone is there."
     )]
     Expired { slug: String },
 }
 
-/// What a started join knows.
 pub(crate) struct JoinSubmitted {
-    /// The address only this instance polls with.
     pub(crate) join_id: String,
-    /// The six digits both people compare.
     pub(crate) code: String,
-    /// The key this instance issued for the other to present.
     pub(crate) issued_key: String,
-    /// The other instance's host name.
     pub(crate) host: String,
-    /// The other instance's account, as it said at the start.
     pub(crate) host_account_uri: String,
     pub(crate) host_account_jwk: Value,
 }
 
-/// Who is joining whom.
 pub(crate) struct JoinRequest<'a> {
     pub(crate) account: &'a dyn AccountSigner,
     pub(crate) user: &'a str,
@@ -207,10 +182,6 @@ fn parse<T: DeserializeOwned>(reply: ChannelReply, slug: &str) -> Result<T, Join
     })
 }
 
-/// Fetch a nonce from the target and send the signed request.
-///
-/// # Errors
-/// Returns why the other instance couldn't be joined.
 pub(crate) async fn submit_join(
     channel: &dyn SiblingChannel,
     request: &JoinRequest<'_>,
@@ -275,20 +246,11 @@ pub(crate) async fn submit_join(
     })
 }
 
-/// What a poll found.
 pub(crate) enum PollOutcome {
     Waiting,
-    Approved {
-        /// The other instance's key for this one to present.
-        key: String,
-    },
+    Approved { key: String },
 }
 
-/// Ask the other instance where the request stands.
-///
-/// # Errors
-/// Returns why the join can't continue: it was denied, it expired, or the
-/// other instance answered wrongly.
 pub(crate) async fn poll_join(
     channel: &dyn SiblingChannel,
     target_slug: &str,
@@ -318,7 +280,6 @@ pub(crate) async fn poll_join(
             account_uri,
             account_jwk,
         } => {
-            // The same instance that was asked, not another one answering the poll.
             let same_account = account_uri == submitted.host_account_uri
                 && thumbprint(&account_jwk).ok() == thumbprint(&submitted.host_account_jwk).ok();
             if same_account && crate::remote_access::siblings::keys::is_key_shaped(&key) {
@@ -332,8 +293,6 @@ pub(crate) async fn poll_join(
     }
 }
 
-/// A channel that reaches a sibling's router in-process, as the engine would
-/// after TLS, for tests.
 #[cfg(test)]
 pub(crate) mod in_process {
     use async_trait::async_trait;
@@ -342,7 +301,6 @@ pub(crate) mod in_process {
 
     use super::{ChannelError, ChannelReply, SiblingChannel};
 
-    /// Reaches a router in-process, as the engine would after TLS.
     pub(crate) struct InProcess {
         router: Router,
         peer_ip: String,
@@ -461,7 +419,6 @@ mod tests {
             PollOutcome::Waiting
         ));
 
-        // The code the host's person sees is the one the joiner shows.
         let [shown] = host
             .pending(chrono::Utc::now())
             .try_into()
@@ -539,7 +496,6 @@ mod tests {
         let (host, _) = host_with_account();
         let channel = InProcess::new(routes::router(host), "203.0.113.9");
         let joiner = TestAccount::new("https://acme.test/acct/joiner");
-        // The host calls itself "laptop"; the joiner asked for "server".
         let outcome = submit_join(&channel, &request(&joiner, "server"), issue_key()).await;
         assert!(matches!(outcome, Err(JoinFailure::Malformed { .. })));
     }

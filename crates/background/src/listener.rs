@@ -1,10 +1,3 @@
-//! Bus listener that turns spawn requests into running sessions.
-//!
-//! Subscribes to the `Background` topic and, for each `SpawnRequestEvent`,
-//! builds isolated resources and hands the run to `SessionRuntime`.
-//! Everything the session runs with — model tier, skill, identity — comes
-//! from the request itself; there is no resolution step in between.
-
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -25,13 +18,6 @@ use residuum_bus::{
     SessionAddress, SessionStartFailedEvent, SpawnRequestEvent, Subscriber, topics,
 };
 
-/// Live handle from which [`spawn_listener`] reads the current [`SpawnContext`]
-/// on each spawn request.
-///
-/// Production passes a [`tokio::sync::watch::Receiver`] updated on every
-/// config reload so forked sessions pick up reloaded providers, credentials,
-/// and observer settings without restarting the listener; unit tests can pass a
-/// fixed `Arc<SpawnContext>` directly.
 pub struct SpawnContextWatch(tokio::sync::watch::Receiver<Arc<SpawnContext>>);
 
 impl SpawnContextWatch {
@@ -53,10 +39,6 @@ impl From<Arc<SpawnContext>> for SpawnContextWatch {
     }
 }
 
-/// Subscribe to the `Background` topic and fork sessions on demand.
-///
-/// Returns a `JoinHandle` for shutdown coordination. The task runs until the
-/// bus shuts down or the subscriber closes.
 #[tracing::instrument(skip_all)]
 pub async fn spawn_listener(
     ctx: impl Into<SpawnContextWatch>,
@@ -81,14 +63,6 @@ pub async fn spawn_listener(
     )))
 }
 
-/// Main loop: reads spawn requests and executes them.
-///
-/// `spawn_failures` dedupes fork failures for pulse/action triggers (see
-/// [`handle_spawn_failure`]) across the whole life of this loop — those are
-/// the triggers that retry automatically (a pulse re-fires on its schedule,
-/// a due action is kept and retried per `spawn_due_actions`), so a
-/// persistently broken one (e.g. naming a skill that doesn't exist) would
-/// otherwise warn-log and notice on every single retry forever.
 async fn listener_loop(ctx: SpawnContextWatch, mut subscriber: Subscriber<SpawnRequestEvent>) {
     let mut spawn_failures: HashMap<String, String> = HashMap::new();
     loop {
@@ -111,12 +85,6 @@ async fn listener_loop(ctx: SpawnContextWatch, mut subscriber: Subscriber<SpawnR
                 if let (Err(e), Some(address)) = (&outcome, pulse_address) {
                     publish_pulse_start_failed(&ctx.publisher, address, &source_label, e).await;
                 }
-                // A scheduled action's store kept the action alive across
-                // this fork attempt (see `spawn_due_actions`): report how the
-                // fork turned out, so a started action is dropped and a
-                // failed one is restored to retry on the next tick. Reported
-                // before the failure notice, so the store holds the action
-                // even if the notice publish itself fails.
                 if matches!(trigger, EventTrigger::Action)
                     && let Some(report) = &ctx.action_outcome
                 {
@@ -136,9 +104,6 @@ async fn listener_loop(ctx: SpawnContextWatch, mut subscriber: Subscriber<SpawnR
                             );
                         }
                     }
-                    // Neither a stop nor a deferral is a recovery: a fork
-                    // failure on record for this source stays deduplicated
-                    // until a fork actually goes through.
                     Ok(SpawnOutcome::FireStopped | SpawnOutcome::Deferred) => {}
                     Err(e) => {
                         if let Some((address, resume)) = owner_start {
@@ -176,10 +141,6 @@ async fn listener_loop(ctx: SpawnContextWatch, mut subscriber: Subscriber<SpawnR
     tracing::info!("spawn listener shutting down");
 }
 
-/// Tell the pulse fire waiting for its session at `address` to register that
-/// it never will, so the fire ends as failed instead of showing as running.
-/// The event carries a plain-language sentence for the Schedule place and
-/// the full cause chain for the logs.
 async fn publish_pulse_start_failed(
     publisher: &Publisher,
     address: SessionAddress,
@@ -200,13 +161,6 @@ async fn publish_pulse_start_failed(
     }
 }
 
-/// Record a spawn failure, deduplicated for scheduled triggers (pulses and
-/// actions): logs `warn` and publishes an owner-facing notice only the
-/// first time a given source label fails, or when the error text changes
-/// from what was last reported for it; an unchanged, still-failing retry
-/// logs at `debug` instead and publishes nothing. Every other trigger
-/// (spawned/webhook/conversation/artifact) isn't retried automatically the
-/// same way, so it keeps warning on every occurrence, same as before.
 async fn handle_spawn_failure(
     publisher: &Publisher,
     spawn_failures: &mut HashMap<String, String>,
@@ -236,9 +190,6 @@ async fn handle_spawn_failure(
     let kind = match trigger {
         EventTrigger::Pulse => "pulse",
         EventTrigger::Action => "scheduled action",
-        // The caller only reaches here for Pulse/Action; every other
-        // trigger keeps a generic label rather than a wildcard match, so a
-        // future trigger variant doesn't silently fall through unnoticed.
         EventTrigger::Agent
         | EventTrigger::Webhook(_)
         | EventTrigger::Conversation
@@ -259,13 +210,6 @@ async fn handle_spawn_failure(
     }
 }
 
-/// Relay an asynchronous pre-fork failure to the agent session that requested
-/// the spawn (`spawner`), using the same `[Session Result] <address> — status:
-/// failed: <error>` envelope that a session failing during its turn sends via
-/// `relay_result_to_spawner`. Without this, a spawn request that passed tool
-/// preflight (`subagent_spawn` returned `status: "spawned"`) and then failed
-/// before entering `SessionRuntime` would leave its spawner waiting forever
-/// for a result that never arrives.
 async fn relay_fork_failure_to_spawner(
     messenger: &crate::messaging::AgentMessenger,
     spawner: &SessionAddress,
@@ -315,13 +259,6 @@ async fn relay_fork_failure_to_spawner(
     }
 }
 
-/// Tell the owner a session they started by hand couldn't start, or, when
-/// `resume` is set, couldn't resume for the message sent to it. The start or
-/// the message was already accepted (the web UI is waiting for the run to
-/// appear, or a chat command already named its address), so the failure has
-/// to reach them on its own: as a `SessionStartFailedEvent` the web UI
-/// matches to the start by address, and as a notice. Both carry the same
-/// plain-language sentence; the event also carries the full cause chain.
 async fn notify_owner_start_failed(
     publisher: &Publisher,
     address: &SessionAddress,
@@ -361,35 +298,13 @@ async fn notify_owner_start_failed(
     }
 }
 
-/// What became of a spawn request that didn't fail.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SpawnOutcome {
-    /// Forked, or delivered into the run already live at its address.
     Accepted,
-    /// Put back on the bus once the run completing at its address clears;
-    /// the listener reports how it went when it picks the request up again.
     Deferred,
-    /// A pulse fire's request whose fire was stopped, or had ended, before
-    /// its session was forked: nothing forked.
     FireStopped,
 }
 
-/// Handle a single spawn request: guard against a live or tearing-down
-/// address, then build resources and fork the session.
-///
-/// Two runs must never be live at the same address at once (see
-/// `SessionRegistry::deliver` and `AgentMessenger::send`, which already wait
-/// for a `completing` target to clear before publishing a resume). This is
-/// the last line of defense against that: a request for an address that is
-/// already `forking`/`running`/`idle` delivers its content into that live
-/// run as a message instead of forking a second one — this is the normal
-/// (not exceptional) outcome when two messages were queued to the same
-/// completing session and both ended up resuming it (see
-/// `AgentMessenger::deferred_resume`), since only one of the two resulting
-/// spawn requests can actually win the fork. A request for an address that
-/// is `completing` waits, off the listener's own task so it doesn't block
-/// other addresses' spawns, until the address clears, and then goes back on
-/// the bus (see [`requeue_when_clear`]).
 async fn handle_spawn_request(
     ctx: &Arc<SpawnContext>,
     event: SpawnRequestEvent,
@@ -412,15 +327,6 @@ async fn handle_spawn_request(
             | SessionState::Queued
             | SessionState::Running
             | SessionState::Idle => {
-                // Two concurrent resume attempts for the same address
-                // (e.g. two messages queued while a session was
-                // completing, each deferred separately — see
-                // `AgentMessenger::deferred_resume`) can both observe the
-                // address as free and both end up publishing a spawn
-                // request. By the time this second one is processed, the
-                // first has already won and registered a live run —
-                // deliver this request's content into that run as a
-                // message instead of refusing it outright and losing it.
                 tracing::warn!(
                     address = %event.address,
                     state = %existing.state,
@@ -441,16 +347,6 @@ async fn handle_spawn_request(
     fork_and_spawn(ctx, event).await
 }
 
-/// Wait for the run completing at `event`'s address to leave the registry,
-/// then publish `event` again for the listener to handle afresh.
-///
-/// Going back through the listener rather than forking here means the
-/// request gets the same guard and the same failure reporting as any other:
-/// by the time the wait ends, another request for this address may have won
-/// it (this task has no ordering relative to the listener or to other such
-/// tasks), so it may be live or completing again; and a fork that fails
-/// reaches the pulse fire, the owner, the spawner waiting for a result, or
-/// the action's outcome exactly as it would have without the wait.
 async fn requeue_when_clear(
     registry: Arc<SessionRegistry>,
     publisher: Publisher,
@@ -469,36 +365,6 @@ async fn requeue_when_clear(
     }
 }
 
-/// Deliver a spawn/resume request's content into the run that already won
-/// the race for its address.
-///
-/// A resume by messages delivers each of them unchanged (see
-/// [`deliver_losing_resume`]): an agent message as its own
-/// [`Interrupt::AgentMessage`], so it keeps its id and sender and the
-/// winning run reports it read under that id, and a conversation's chat
-/// message as its own [`Interrupt::UserMessage`], with its own sender. When
-/// the winning run is tearing down or has left the registry, the messages
-/// go to a detached task that delivers them in order, resuming the session
-/// if it must; `store` is where that task records a note for a sender whose
-/// message still could not be delivered. Any other request's content
-/// becomes one interrupt, of the kind [`race_guard_interrupt`] picks.
-///
-/// A chat user's message (a `Conversation`-triggered request carrying its
-/// original inbound message, which [`race_guard_interrupt`] renders as
-/// [`Interrupt::UserMessage`]) is never dropped here: a saturated or
-/// torn-down channel hands off to a detached retry task (see
-/// [`super::messaging::retry_race_guard_user_message`]) instead of
-/// erroring. An agent-to-agent message in the same situation still errors
-/// as before — an unusual double-spawn race, with a live agent on the
-/// other end able to notice and retry itself.
-///
-/// # Errors
-///
-/// Returns an error if delivering an *agent* message fails: for a resume by
-/// messages, an agent message the winning run's saturated channel refused,
-/// and for any other request, input the winning run could not take — that
-/// content is dropped in that case, and a resume's error names the id of
-/// each message dropped.
 pub(crate) fn deliver_race_guard_content(
     registry: &Arc<SessionRegistry>,
     publisher: &Publisher,
@@ -546,10 +412,6 @@ pub(crate) fn deliver_race_guard_content(
         content,
         event.hop_count,
     );
-    // `race_guard_interrupt` only ever renders `Interrupt::UserMessage` when
-    // `event.inbound` is `Some` — recovered here rather than moved above so
-    // it's still available both for the retry task's own redelivery
-    // attempts and as part of `event` if a fresh spawn/resume is needed.
     let retryable_inbound = if matches!(interrupt, Interrupt::UserMessage(_)) {
         event.inbound.clone()
     } else {
@@ -585,26 +447,6 @@ pub(crate) fn deliver_race_guard_content(
     }
 }
 
-/// Build the interrupt a spawn/resume request's content becomes when its
-/// target address has already been won by another attempt and the request
-/// is not a resume by messages (one that is goes through
-/// [`deliver_losing_resume`] instead; see
-/// [`handle_spawn_request`]'s `Forking | Running | Idle` branch, and
-/// `crate::runtime::deliver_losing_spawn_input`, which hits the
-/// same situation from the narrower race window between a spawn request
-/// clearing that guard and actually registering).
-///
-/// A `Conversation`-triggered request carrying its original inbound message
-/// renders as [`Interrupt::UserMessage`] — the same sender-attributed
-/// rendering ordinary mid-turn/idle conversation delivery gets (hop `0`,
-/// `msg.into_history_messages()`), rather than an [`Interrupt::AgentMessage`]
-/// that would show the receiving session "[Agent Message from main]" for
-/// what is really a participant's own message. Everything else — including
-/// a `Conversation` request with no inbound message, which the invariant in
-/// `AgentMessenger::deliver_conversation`/`publish_conversation_spawn`/
-/// `publish_conversation_resume` says should never happen — falls back to
-/// `Interrupt::AgentMessage`, attributed to `spawner` (or `main` if it has
-/// none).
 pub(crate) fn race_guard_interrupt(
     trigger: &EventTrigger,
     inbound: Option<MessageEvent>,
@@ -626,9 +468,6 @@ pub(crate) fn race_guard_interrupt(
     ))
 }
 
-/// Where [`deliver_losing_resume`] delivers: the registry holding the run
-/// that won the address, the publisher a resume goes out on when that run
-/// is gone, and the store a deferred delivery records a sender's note in.
 #[derive(Clone, Copy)]
 pub(crate) struct RaceGuardSinks<'a> {
     pub(crate) registry: &'a Arc<SessionRegistry>,
@@ -636,22 +475,6 @@ pub(crate) struct RaceGuardSinks<'a> {
     pub(crate) store: &'a Arc<SessionStore>,
 }
 
-/// Deliver a losing resume's messages into the run that won its address,
-/// in the order a run that wins the address reads them: each agent message
-/// unchanged (its own id, sender, category and hop count), one by one, as
-/// an [`Interrupt::AgentMessage`], then each chat message in order as an
-/// [`Interrupt::UserMessage`] (see
-/// [`super::messaging::deliver_chat_messages_in_order`], which never drops
-/// one and starts the session with `spawn` if it must). The resume's
-/// context, a pointer to the previous run, is left out: the run that won
-/// the address resumed from the same point and already has it.
-///
-/// From the first agent message the winning run can't take because it is
-/// tearing down or has left the registry, that message and every message
-/// after it, agent and chat, are delivered in order on a detached task (see
-/// [`super::messaging::defer_losing_resume`]), the way a message to a
-/// completing session is, so none is dropped. Returns the id and outcome
-/// of each agent message the winning run's saturated channel refused.
 pub(crate) fn deliver_losing_resume(
     sinks: RaceGuardSinks<'_>,
     address: &SessionAddress,
@@ -703,14 +526,6 @@ pub(crate) fn deliver_losing_resume(
     refused
 }
 
-/// Build resources and hand the run to `SessionRuntime`, once
-/// `handle_spawn_request` has confirmed the address is free to take it.
-///
-/// A pulse fire's request forks only while the fire is still going: its
-/// session's stop token is claimed from the fire (see
-/// [`crate::fire_stops`]), and a fire that was stopped or has ended forks
-/// nothing and returns [`SpawnOutcome::FireStopped`]. The fire already
-/// knows from withdrawing its offer, so that is logged at `debug` only.
 async fn fork_and_spawn(
     ctx: &Arc<SpawnContext>,
     event: SpawnRequestEvent,
@@ -763,9 +578,6 @@ async fn fork_and_spawn(
     Ok(SpawnOutcome::Accepted)
 }
 
-/// The run `event` asks the runtime for, on `resolved_model` (the
-/// `provider/model` id its resources were built for), stopped by `stop`
-/// when it belongs to a pulse fire.
 pub(crate) fn session_spawn_request(
     event: SpawnRequestEvent,
     resolved_model: Option<String>,
@@ -914,11 +726,6 @@ mod tests {
 
     #[test]
     fn race_guard_interrupt_without_an_inbound_message_falls_back_to_agent_message() {
-        // A `Conversation`-triggered request should always carry an inbound
-        // message (the invariant `publish_conversation_spawn`/
-        // `publish_conversation_resume` uphold) — but if it somehow doesn't,
-        // this must still degrade to a delivered agent message rather than
-        // panicking or dropping the content.
         let interrupt = race_guard_interrupt(
             &EventTrigger::Conversation,
             None,
@@ -960,12 +767,6 @@ mod tests {
     #[tokio::test]
     async fn two_conversation_messages_to_a_brand_new_address_back_to_back_deliver_the_second_with_attribution()
      {
-        // Regression test for the race-guard misattribution bug: when a
-        // second spawn/resume request for the same address loses the race
-        // (the first already registered the one live run), its content must
-        // reach that run as `Interrupt::UserMessage` carrying the
-        // participant's own sender attribution — never "[Agent Message from
-        // main]".
         let registry = Arc::new(SessionRegistry::new());
         let publisher = Publisher::noop();
         let address = "external-discord-chan-1";
@@ -1007,12 +808,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_saturated_race_guard_still_delivers_the_user_message_via_retry() {
-        // Regression: a race-guard user message used to be dropped outright
-        // ("input dropped") when the winning run's channel was saturated —
-        // the same silent-drop bug fixed for the primary conversation path.
-        // There's nobody on the other end of a chat message to hand a
-        // refusal to, so this must retry until the channel drains, exactly
-        // the way a live session's own tool loop drains it continuously.
         let registry = Arc::new(SessionRegistry::new());
         let publisher = Publisher::noop();
         let address = "external-discord-chan-2";
@@ -1052,10 +847,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_race_guard_user_message_republishes_a_spawn_request_once_its_target_finishes() {
-        // The `NotLive` case: the winning run finishes (and is removed from
-        // the registry) before this content can be delivered into it. The
-        // message must still not be dropped — it gets a fresh spawn/resume
-        // attempt through the ordinary listener pipeline instead.
         let bus_handle = residuum_bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let registry = Arc::new(SessionRegistry::new());
@@ -1121,14 +912,10 @@ mod tests {
         );
     }
 
-    /// A resume of `address` by `delivered`, as `publish_resume` builds it.
     fn resume_event(address: &str, delivered: Vec<AgentMessageEvent>) -> SpawnRequestEvent {
         mixed_resume_event(address, delivered, Vec::new())
     }
 
-    /// A resume of `address` by the agent messages `delivered` and the chat
-    /// messages `chat` its teardown drained, as `resume_with_pending` builds
-    /// it: `prompt` combines the chat messages.
     fn mixed_resume_event(
         address: &str,
         delivered: Vec<AgentMessageEvent>,
@@ -1319,8 +1106,6 @@ mod tests {
         deliver_race_guard_content(&registry, &Publisher::noop(), &test_store(), event)
             .expect("a saturated channel hands the chat messages to a retry, not an error");
 
-        // `next_matching` discards what it skips, so the second wait only
-        // passes if the second message arrives after the first.
         for id in ["m-chat-1", "m-chat-2"] {
             wait::next_matching(
                 format!("chat message {id} to be delivered, never dropped"),
@@ -1429,9 +1214,6 @@ mod tests {
         deliver_race_guard_content(&registry, &publisher, &test_store(), event)
             .expect("a winner that already finished hands the messages to a deferred delivery");
 
-        // Nothing forks the published resumes here, so each message finds
-        // no live run and resumes the session itself, in the order a
-        // resumed run reads them.
         for id in ["m-owner-1", "m-owner-2"] {
             let resume =
                 next_event(format!("a resume carrying agent message {id}"), &mut spawns).await;
@@ -1460,8 +1242,6 @@ mod tests {
         );
         assert!(resume.delivered_messages.is_empty());
     }
-
-    // ── handle_spawn_failure dedup ───────────────────────────────────────
 
     #[tokio::test]
     async fn first_pulse_spawn_failure_publishes_a_notice() {
@@ -1561,8 +1341,6 @@ mod tests {
         );
     }
 
-    // ── owner start failures through the listener ───────────────────────
-
     struct NoSessionTools;
 
     impl crate::session_tools::SessionToolFactory for NoSessionTools {
@@ -1574,13 +1352,10 @@ mod tests {
         }
     }
 
-    /// A spawn context on `bus` whose every tier falls back to one Anthropic
-    /// model with no API key, so every fork fails building its provider chain.
     async fn spawn_context_without_a_working_provider(bus: &BusHandle) -> Arc<SpawnContext> {
         spawn_context_without_a_working_provider_and(bus, None).await
     }
 
-    /// The same context, with a scheduled-action fork-outcome sink wired in.
     async fn spawn_context_without_a_working_provider_and(
         bus: &BusHandle,
         action_outcome: Option<crate::spawn_context::ActionOutcomeSink>,
@@ -1669,9 +1444,6 @@ mod tests {
             .unwrap();
         let _listener = spawn_listener(Arc::clone(&ctx), &bus).await.unwrap();
 
-        // A due action asking for its session. The fork fails — the context
-        // has no working provider — which must reach the sink as `Failed` so
-        // the store restores the action, and the owner as a notice.
         bus.publisher()
             .publish(
                 topics::Background,
@@ -1715,7 +1487,6 @@ mod tests {
         .into_spawn_event()
     }
 
-    /// A fire of the pulse `watch` asking for its session, as fire `fire-1`.
     fn pulse_fire_request() -> SpawnRequestEvent {
         SpawnRequestEvent {
             address: SessionAddress::from("scheduled-watch-0a1b"),
@@ -1739,7 +1510,6 @@ mod tests {
 
         let request = pulse_fire_request();
         let address = request.address.clone();
-        // With no working provider, a fork that went ahead would fail here.
         let outcome = handle_spawn_request(&ctx, request)
             .await
             .expect("a stopped fire's request is dropped, not failed");
@@ -1764,8 +1534,6 @@ mod tests {
             .unwrap();
         let ctx = spawn_context_without_a_working_provider(&bus).await;
         let _listener = spawn_listener(Arc::clone(&ctx), &bus).await.unwrap();
-        // A fire of `watch` with no fire to claim from, whose fork fails on
-        // its provider.
         let failing = || SpawnRequestEvent {
             fire_id: None,
             ..pulse_fire_request()
@@ -1798,8 +1566,6 @@ mod tests {
             .publish(topics::Background, failing())
             .await
             .unwrap();
-        // A different pulse failing after them: its notice is the next one
-        // only when the repeat of `watch`'s failure published none.
         publisher
             .publish(
                 topics::Background,
@@ -1851,8 +1617,6 @@ mod tests {
         );
     }
 
-    /// A resume point at `address`, as a finished run of an owner session
-    /// leaves.
     async fn record_finished_owner_run(registry: &SessionRegistry, address: &SessionAddress) {
         registry
             .record_resume_point(
@@ -1977,8 +1741,6 @@ mod tests {
             .await
             .expect("a resume at a completing address is deferred, not refused");
         assert_eq!(outcome, SpawnOutcome::Deferred);
-        // The run finishing records its resume point before it leaves the
-        // registry.
         record_finished_owner_run(&ctx.session_registry, &address).await;
         ctx.session_registry.remove(&address, "run-previous");
 
@@ -1986,9 +1748,6 @@ mod tests {
         assert_is_the_provider_failure(&failure, &address, RESUME);
     }
 
-    /// Register a run `run-previous` at `address` and put it in
-    /// `Completing`, so a spawn request for the address waits for it. The
-    /// run's interrupt receiver comes back for the test to hold.
     fn register_completing_run(
         registry: &SessionRegistry,
         address: &SessionAddress,
@@ -2050,8 +1809,6 @@ mod tests {
             .publish(topics::Background, by_main)
             .await
             .unwrap();
-        // The listener handles requests in order, so once the owner's start
-        // has failed, main's has been handled too.
         let owners = owner_start();
         let owners_address = owners.address.clone();
         bus.publisher()
@@ -2198,10 +1955,6 @@ mod tests {
 
     #[tokio::test]
     async fn non_scheduled_trigger_never_publishes_a_notice() {
-        // Spawned/webhook/conversation/artifact triggers aren't retried
-        // automatically the way a pulse or action is, so this dedup+notice
-        // mechanism is scoped to scheduled triggers only — every other
-        // failure just keeps warning (unchanged from before).
         let bus = residuum_bus::spawn_broker();
         let mut sub: Subscriber<NoticeEvent> = bus
             .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
@@ -2233,7 +1986,6 @@ mod tests {
         let (ctx_tx, ctx_rx) = tokio::sync::watch::channel(Arc::clone(&initial_ctx));
         let _listener = spawn_listener(ctx_rx, &bus).await.unwrap();
 
-        // First spawn fails because the startup provider spec has no API key.
         let first = owner_start();
         let first_address = first.address.clone();
         bus.publisher()
@@ -2243,8 +1995,6 @@ mod tests {
         let failure = next_event("the initial keyless start's failure", &mut failures).await;
         assert_is_the_provider_failure(&failure, &first_address, FIRST_START);
 
-        // Simulate a config reload installing a new SpawnContext with a resolved
-        // API key and a different default-tier model.
         let kind = residuum_config::ProviderKind::Anthropic;
         let reloaded_spec = residuum_config::ProviderSpec {
             name: kind.to_string(),
@@ -2293,9 +2043,6 @@ mod tests {
             .publish(topics::Background, second)
             .await
             .unwrap();
-        // The listener handles requests in order: once a sentinel request
-        // published after `second` has produced its failure event, `second`
-        // has finished `fork_and_spawn` and registered in `session_runtime`.
         let mut sentinel = owner_start();
         sentinel.model = ModelSelector::Explicit("unconfigured/sentinel".to_string());
         let sentinel_address = sentinel.address.clone();

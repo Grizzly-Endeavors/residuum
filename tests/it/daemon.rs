@@ -25,7 +25,6 @@ fn pid_file_write_read_round_trip() {
 
 #[test]
 fn stale_pid_detection() {
-    // PID 999_999_999 is almost certainly not running
     assert!(
         !is_process_running(999_999_999),
         "non-existent process should not be detected as running"
@@ -46,7 +45,6 @@ fn remove_pid_file_nonexistent_is_idempotent() {
     let dir = tempdir().unwrap();
     let pid_path = dir.path().join("nonexistent.pid");
 
-    // Should succeed without error even though file doesn't exist
     remove_pid_file(&pid_path).unwrap();
 }
 
@@ -84,8 +82,6 @@ fn pid_file_readable_through_nested_dirs() {
     assert_eq!(read_back, 99, "pid should be readable through nested dirs");
 }
 
-// --- File lock integration tests ---
-
 #[test]
 fn pid_lock_acquire_writes_current_pid() {
     let dir = tempdir().unwrap();
@@ -117,7 +113,6 @@ fn pid_lock_stale_file_not_locked() {
     let dir = tempdir().unwrap();
     let pid_path = dir.path().join("test.pid");
 
-    // Write a PID file without acquiring a lock
     std::fs::write(&pid_path, "99999").unwrap();
 
     assert!(

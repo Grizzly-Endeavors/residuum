@@ -35,7 +35,6 @@ function handling(
 describe("what the worker answers", () => {
   it("serves the app's files from the cache first", () => {
     expect(handling("/assets/index-abc123.js")).toBe("cache-first");
-    // A chunk only a page built earlier asks for is not in this build's list.
     expect(handling("/assets/Settings-old999.js")).toBe("cache-first");
     expect(handling("/icons/icon-192.png")).toBe("cache-first");
     expect(handling("/favicon.svg")).toBe("cache-first");

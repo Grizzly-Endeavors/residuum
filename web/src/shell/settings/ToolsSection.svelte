@@ -8,9 +8,6 @@
   import SettingsGroup from "./SettingsGroup.svelte";
   import SettingsSection from "./SettingsSection.svelte";
 
-  // The agent's Tools & skills section: the folders it finds skills and
-  // programs in, and the service behind its web searches.
-
   let { scope, section }: AgentSectionProps = $props();
 
   const agent = $derived(scope.agent);

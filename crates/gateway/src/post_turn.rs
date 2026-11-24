@@ -1,34 +1,3 @@
-//! Background memory and post-turn work: the observer/reflector cycle (the
-//! automatic one and the `/observe` and `/reflect` commands) and the
-//! end-of-turn subconscious evaluation, run off the event loop so their LLM
-//! calls never block the next inbound message, a shutdown signal, or a stop
-//! request from being handled.
-//!
-//! Each kind (memory, subconscious) runs through its own worker: at most
-//! one cycle in flight at a time, and any trigger that arrives while one is
-//! running collapses into exactly one follow-up run rather than stacking —
-//! see [`Coalescer`]. The slow part (the LLM call, plus any file persistence
-//! that doesn't need `Agent`) runs entirely in the background task. Whatever
-//! *does* need `&mut Agent` — reloading observations/recent-context after an
-//! observe, or injecting a subconscious note — can't be touched off the
-//! event loop, so it's reported back over a result channel and applied on
-//! the main loop the next time it drains one (see
-//! `crate::event_loop::run_loop`'s `post_turn_result_rx` branch).
-//! That's also why memory can be "one step stale": a turn that starts before
-//! a still-in-flight cycle's result is applied sees the pre-cycle context.
-//!
-//! Each trigger call carries a fresh snapshot of whatever `Arc`/`Clone`
-//! runtime state the cycle needs (observer, merge writer, subconscious,
-//! learning state, ...), taken from `AgentRuntime` at the moment of the
-//! call. A coalesced run always uses the *latest* trigger's snapshot, so a
-//! reload that swaps a component in place between two coalesced triggers is
-//! still picked up — nothing here holds a stale clone from before the swap.
-//!
-//! Shutdown cancels both workers: an observation still waiting on its
-//! extraction call, or a subconscious evaluation still waiting on its model,
-//! is dropped with nothing written. An observation already merging its
-//! episode gets a bounded grace period to finish its (atomic) writes.
-
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -44,56 +13,28 @@ use residuum_bus::origin::MessageOrigin;
 use residuum_bus::{MessageEvent, PostTurnActivityEvent, PostTurnActivityKind, Publisher, topics};
 use residuum_inference::Message;
 
-/// What idle transition step to run once a background observe cycle
-/// triggered by [`MemoryWorker::trigger_for_idle`] finishes, carried back
-/// on [`PostTurnResult::IdleObservationReady`].
 pub(crate) struct IdleContinuation {
     pub timeout_mins: u64,
     pub total_skills: usize,
-    /// Where agent-started turns go from the transition on, named in the
-    /// continuity message.
     pub idle_endpoint: residuum_bus::EndpointName,
 }
 
-/// What the main loop needs to apply from a finished background cycle.
 pub(crate) enum PostTurnResult {
-    /// A (non-idle) memory cycle produced a merge — rotate the agent's
-    /// history and reload its observations/recent-context views.
     ObservationReady,
-    /// A `/reflect` rewrote the observation log and nothing was merged —
-    /// reload the agent's observations only.
     ReflectionReady,
-    /// The idle-triggered observe cycle finished; `reload_needed` says
-    /// whether it changed memory (an idle transition still runs
-    /// its continuation either way — clearing messages, switching the
-    /// interface, injecting the continuity note — since those don't depend
-    /// on whether there was anything to observe).
     IdleObservationReady {
         reload_needed: bool,
         continuation: IdleContinuation,
     },
-    /// A subconscious evaluation finished (successfully or not); each
-    /// string is a note to inject into the agent's context for its next
-    /// turn. Corrections were already published directly from the
-    /// background task — see [`publish_correction_turn`] — since that only
-    /// needs the publisher, not `&mut Agent`.
     SubconsciousNotes(Vec<String>),
 }
 
-/// Coalescing bookkeeping: whether a cycle is currently running, and
-/// whether a trigger arrived during that run and so owes exactly one
-/// follow-up. The running-or-not decision and the pending-or-not decision
-/// are always read and written together under this one lock — including at
-/// the tail of a cycle, where "is anyone else about to trigger me" and
-/// "should I loop again" must agree, or a trigger that lands in the gap
-/// between them would be silently lost.
 struct RunState {
     running: bool,
     pending: bool,
     handle: Option<JoinHandle<()>>,
 }
 
-/// The run/coalesce state machine and shutdown handling both workers share.
 struct Coalescer {
     state: Mutex<RunState>,
     shutdown: CancellationToken,
@@ -111,9 +52,6 @@ impl Coalescer {
         }
     }
 
-    /// Record a trigger. Spawns a run loop through `spawn` when nothing is
-    /// running; otherwise marks one follow-up as owed. After shutdown has
-    /// begun, triggers are ignored.
     fn trigger(&self, spawn: impl FnOnce() -> JoinHandle<()>) {
         let mut state = lock(&self.state);
         if self.shutdown.is_cancelled() {
@@ -128,11 +66,6 @@ impl Coalescer {
         state.handle = Some(spawn());
     }
 
-    /// Called by the run loop after each cycle: whether a trigger arrived
-    /// during it and so owes one more cycle. Returning `false` marks the
-    /// worker idle under the same lock, so a trigger racing this call
-    /// either sees `running` and sets `pending` (answered `true` here) or
-    /// sees idle and spawns a fresh loop — never neither.
     fn owes_another_cycle(&self) -> bool {
         let mut state = lock(&self.state);
         if state.pending && !self.shutdown.is_cancelled() {
@@ -144,10 +77,6 @@ impl Coalescer {
         false
     }
 
-    /// Cancel the in-flight cycle's cancellable phase, then wait up to
-    /// `grace` for the rest of it; past that, abort it. Every write a cycle
-    /// makes is atomic (temp file + rename), so an aborted cycle leaves what
-    /// it already wrote intact and discards the rest.
     async fn shutdown(&self, grace: Duration, kind: &'static str) {
         self.shutdown.cancel();
         let handle = lock(&self.state).handle.take();
@@ -167,8 +96,6 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Tell the web UI a background post-turn cycle started or finished, for
-/// the quiet "updating memory…" / "reviewing turn…" indicator.
 async fn publish_activity(publisher: Option<&Publisher>, kind: PostTurnActivityKind, active: bool) {
     let Some(publisher) = publisher else { return };
     if let Err(e) = publisher
@@ -182,39 +109,22 @@ async fn publish_activity(publisher: Option<&Publisher>, kind: PostTurnActivityK
     }
 }
 
-/// How a queued observation runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ObserveMode {
-    /// A threshold crossing or idle transition: backs off after a failure
-    /// and stays quiet unless a failure streak starts or clears.
     Automatic,
-    /// `/observe`: always attempts and tells the user how it went.
     Forced,
 }
 
-/// What the next memory cycle runs, accumulated across every trigger that
-/// coalesces into it.
 #[derive(Default)]
 struct QueuedMemoryWork {
-    /// The snapshot the next cycle should run with — always the most recent
-    /// trigger's, overwritten on every call regardless of coalescing.
     mem: Option<MemorySubsystems>,
-    /// A forced observation outranks an automatic one queued with it.
     observe: Option<ObserveMode>,
-    /// Whether `/reflect` asked for a reflection.
     reflect: bool,
 }
 
-/// Background worker for the main agent's memory cycle: automatic
-/// observation, and the `/observe` and `/reflect` commands. Sharing one
-/// worker means no two of them ever load, observe, and remove the same
-/// recent messages twice, or show the busy indicator over each other.
 pub(crate) struct MemoryWorker {
     coalescer: Coalescer,
     queued: Mutex<QueuedMemoryWork>,
-    /// Set only by [`Self::trigger_for_idle`] and never cleared by a plain
-    /// [`Self::trigger`] — an idle transition queued behind a plain trigger
-    /// must still run its continuation once a cycle finally completes.
     idle_continuation: Mutex<Option<IdleContinuation>>,
     result_tx: mpsc::UnboundedSender<PostTurnResult>,
 }
@@ -230,15 +140,12 @@ impl MemoryWorker {
         })
     }
 
-    /// Trigger a plain (non-idle) automatic observation cycle.
     pub(crate) fn trigger(self: &Arc<Self>, mem: MemorySubsystems) {
         self.queue(mem, |work| {
             work.observe.get_or_insert(ObserveMode::Automatic);
         });
     }
 
-    /// Trigger an observation cycle that, once it finishes, should also run
-    /// the idle transition's remaining steps (see `crate::idle`).
     pub(crate) fn trigger_for_idle(
         self: &Arc<Self>,
         mem: MemorySubsystems,
@@ -248,14 +155,10 @@ impl MemoryWorker {
         self.trigger(mem);
     }
 
-    /// Queue `/observe`: an observation that ignores the automatic backoff
-    /// and reports its outcome. Waits behind a cycle already running.
     pub(crate) fn force_observe(self: &Arc<Self>, mem: MemorySubsystems) {
         self.queue(mem, |work| work.observe = Some(ObserveMode::Forced));
     }
 
-    /// Queue `/reflect`: compress the observation log regardless of its
-    /// size, and report the outcome. Waits behind a cycle already running.
     pub(crate) fn force_reflect(self: &Arc<Self>, mem: MemorySubsystems) {
         self.queue(mem, |work| work.reflect = true);
     }
@@ -286,9 +189,6 @@ impl MemoryWorker {
     async fn run_one_cycle(&self) {
         let (mem, observe, reflect) = {
             let mut queued = lock(&self.queued);
-            // Every trigger sets this before spawning or marking a
-            // follow-up, and only a cycle takes it, so a run loop always
-            // finds one.
             let Some(mem) = queued.mem.take() else {
                 return;
             };
@@ -325,15 +225,11 @@ impl MemoryWorker {
         }
     }
 
-    /// Cancel a cycle still waiting on its model call, give one already
-    /// merging up to `grace` to finish, and ignore later triggers.
     pub(crate) async fn shutdown(&self, grace: Duration) {
         self.coalescer.shutdown(grace, "memory").await;
     }
 }
 
-/// Everything one subconscious evaluation cycle needs, snapshotted fresh
-/// from `AgentRuntime` by the caller at trigger time.
 pub(crate) struct SubconsciousTrigger {
     pub subconscious: Arc<Subconscious>,
     pub learning_state: Arc<Mutex<LearningState>>,
@@ -346,10 +242,6 @@ pub(crate) struct SubconsciousTrigger {
 }
 
 impl SubconsciousTrigger {
-    /// Fold a newer turn's trigger into this still-unevaluated one, so the
-    /// follow-up evaluation covers both turns: their messages in order, and
-    /// both turns' mid-turn corrections and queued notes. The newer
-    /// trigger's runtime snapshot and correlation id win.
     fn absorb(&mut self, newer: Self) {
         let mut messages = std::mem::take(&mut self.new_messages);
         messages.extend(newer.new_messages);
@@ -366,13 +258,8 @@ impl SubconsciousTrigger {
     }
 }
 
-/// Background worker for the end-of-turn subconscious evaluation.
 pub(crate) struct SubconsciousWorker {
     coalescer: Coalescer,
-    /// The turn(s) the next cycle evaluates. A trigger arriving while an
-    /// earlier one is still waiting here is folded into it (see
-    /// [`SubconsciousTrigger::absorb`]) rather than replacing it, so no
-    /// turn goes unevaluated and no queued mid-turn note is dropped.
     latest: Mutex<Option<SubconsciousTrigger>>,
     result_tx: mpsc::UnboundedSender<PostTurnResult>,
 }
@@ -421,8 +308,6 @@ impl SubconsciousWorker {
         let Some(trigger) = lock(&self.latest).take() else {
             return;
         };
-        // A turn with no assistant output (e.g. a hard error) has nothing
-        // to judge.
         if trigger.new_messages.len() < 2 {
             return;
         }
@@ -472,9 +357,6 @@ impl SubconsciousWorker {
             }
             Err(e) => {
                 tracing::warn!(error = %e, "subconscious end-of-turn evaluation failed");
-                // Triage is the only delivery path for queued mid-turn
-                // notes, so a failed evaluation would silently drop them —
-                // surface them raw instead of losing them.
                 fallback_notes(&trigger.scratch)
             }
         };
@@ -491,27 +373,17 @@ impl SubconsciousWorker {
         }
     }
 
-    /// Drop an evaluation still waiting on its model, give anything past
-    /// that point up to `grace`, and ignore later triggers.
     pub(crate) async fn shutdown(&self, grace: Duration) {
         self.coalescer.shutdown(grace, "subconscious").await;
     }
 }
 
-/// A planned delivery for one finding, decided before touching the runtime.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Delivery {
-    /// Inject as a passive system note for the next turn.
     Note(String),
-    /// Trigger an immediate correction turn.
     Correction(String),
 }
 
-/// Decide how each finding is delivered.
-///
-/// The first `act` finding becomes a correction turn; every other finding
-/// (including later `act` findings) degrades to a note, so a single turn never
-/// spawns more than one correction.
 fn plan_delivery(findings: Vec<Finding>) -> Vec<Delivery> {
     let mut plan = Vec::with_capacity(findings.len());
     let mut correction_used = false;
@@ -526,10 +398,6 @@ fn plan_delivery(findings: Vec<Finding>) -> Vec<Delivery> {
     plan
 }
 
-/// Queued mid-turn notes to deliver directly when the triage evaluation
-/// failed — the lower-urgency findings the mid-turn watch observed but did
-/// not steer on; without the triage pass to fold them in, they're injected
-/// as-is so the agent still sees them next turn.
 fn fallback_notes(prior: &TurnScratch) -> Vec<String> {
     if prior.queued_notes.is_empty() {
         return Vec::new();
@@ -545,11 +413,6 @@ fn fallback_notes(prior: &TurnScratch) -> Vec<String> {
         .collect()
 }
 
-/// Build the background-origin `MessageEvent` that starts a correction turn.
-///
-/// The `background` origin endpoint is what keeps the correction turn from
-/// being re-evaluated by the subconscious (the end-of-turn hook skips
-/// background turns), bounding the feedback loop.
 fn build_correction_event(
     instruction: &str,
     correlation_id: &str,
@@ -578,9 +441,6 @@ fn build_correction_event(
     }
 }
 
-/// Publish a correction turn onto the user-message topic. Needs only the
-/// publisher and timezone, never `&mut Agent`, so it runs directly from the
-/// background task rather than being deferred to the main loop.
 async fn publish_correction_turn(
     publisher: &Publisher,
     tz: chrono_tz::Tz,
@@ -597,10 +457,6 @@ async fn publish_correction_turn(
     }
 }
 
-/// Spawn the `learner` sub-agent when the triage surfaced learnable signals.
-///
-/// Cooldown-gated via the shared `LearningState`; an empty signal list or a
-/// live cooldown is a no-op. Decisions are logged inside `LearningState`.
 async fn maybe_spawn_learner(
     publisher: &Publisher,
     learning_state: &Mutex<LearningState>,
@@ -680,8 +536,6 @@ mod tests {
             .unwrap();
         let event = build_correction_event("save the preference", "corr-123", ts);
 
-        // The background origin is the loop-prevention guarantee: the end-of-turn
-        // hook skips background turns, so this correction is never re-evaluated.
         assert_eq!(
             event.origin.endpoint, "background",
             "correction must use the background origin to avoid re-evaluation"
@@ -715,7 +569,6 @@ mod tests {
         _dir: tempfile::TempDir,
         layout: WorkspaceLayout,
         mem: MemorySubsystems,
-        /// Holds each extraction call until the test releases it.
         gate: Gate,
         worker: Arc<MemoryWorker>,
         results: mpsc::UnboundedReceiver<PostTurnResult>,
@@ -745,7 +598,6 @@ mod tests {
             None,
         ));
         let bus = residuum_bus::spawn_broker();
-        // Subscribed before any trigger, so no activity signal can be missed.
         let activity: Subscriber<PostTurnActivityEvent> = bus
             .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
             .await
@@ -781,8 +633,6 @@ mod tests {
         .unwrap();
     }
 
-    /// Waits until the memory cycle's busy signal reaches `active`. Activity
-    /// from the other post-turn cycle is skipped.
     async fn memory_activity_reaches(
         activity: &mut Subscriber<PostTurnActivityEvent>,
         active: bool,
@@ -841,13 +691,10 @@ mod tests {
         let mut h = observe_harness().await;
         append_message(&h.layout, "first turn").await;
 
-        // The trigger returns immediately while the cycle waits on its
-        // extraction call: the work is off the caller's path.
         h.worker.trigger(h.mem.clone());
         h.gate.until_held(1).await;
         memory_activity_reaches(&mut h.activity, true).await;
 
-        // Two more turns end while the first cycle is still extracting.
         append_message(&h.layout, "second turn").await;
         h.worker.trigger(h.mem.clone());
         h.worker.trigger(h.mem.clone());
@@ -857,8 +704,6 @@ mod tests {
             let result = wait::next("an observation result", &mut h.results).await;
             assert!(matches!(result, PostTurnResult::ObservationReady));
         }
-        // The busy signal goes idle only after the run loop has exited, so
-        // the arrival count read below is final.
         memory_activity_reaches(&mut h.activity, false).await;
         assert_eq!(
             h.gate.arrived(),
@@ -881,8 +726,6 @@ mod tests {
         h.worker.trigger(h.mem.clone());
         h.gate.until_held(1).await;
 
-        // A turn ends mid-cycle but its trigger hasn't fired yet (the
-        // observe threshold wasn't crossed).
         append_message(&h.layout, "arrived mid-cycle").await;
         h.gate.release(1);
         wait::next("the observation result", &mut h.results).await;
@@ -904,9 +747,6 @@ mod tests {
         h.worker.trigger(h.mem.clone());
         h.gate.until_held(1).await;
 
-        // The gate is never opened: only cancellation can end this cycle. The
-        // grace period is longer than the hang guard, so a shutdown that waited
-        // it out would fail the guard rather than return.
         wait::guarded(
             "shutdown to cancel the in-flight extraction",
             h.worker.shutdown(wait::HANG_GUARD * 2),
@@ -936,8 +776,6 @@ mod tests {
             "no episode was written"
         );
 
-        // A trigger after shutdown decides synchronously and spawns nothing, so
-        // the run state read right after it is final.
         h.worker.trigger(h.mem.clone());
         assert!(
             !lock(&h.worker.coalescer.state).running,
@@ -952,8 +790,6 @@ mod tests {
         append_message(&h.layout, "hello").await;
         h.mem.observer.automatic_failure_tracker().record_failure();
 
-        // Returns at once: the extraction waits at the gate in the worker,
-        // off the caller's path, even though automatic cycles are backing off.
         h.worker.force_observe(h.mem.clone());
         h.gate.until_held(1).await;
         memory_activity_reaches(&mut h.activity, true).await;

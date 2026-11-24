@@ -81,7 +81,6 @@ function serve(current: () => Thread): void {
   });
 }
 
-/** Open the thread as the place does, through the store, and show it. */
 function show(onback = vi.fn()): ReturnType<typeof vi.fn> {
   void mail.open(ID);
   render(MailThread, { threadId: ID, onback });
@@ -100,8 +99,6 @@ beforeEach(() => {
   serve(() => audit());
 });
 
-// The store is reset before each test, not after: the views are still
-// mounted until the shared cleanup, and would open their thread again.
 afterEach(() => {
   vi.unstubAllGlobals();
 });
@@ -404,7 +401,6 @@ describe("attaching files to the reply", () => {
     };
     show();
     const form = await screen.findByRole("form", { name: "Reply to the thread" });
-    // The notice has a live region to land in before it is needed, so it is spoken when it shows.
     const live = form.querySelector("[aria-live=polite]");
     expect(live?.textContent).toBe("");
     await attach(file("log.txt"));

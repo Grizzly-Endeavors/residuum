@@ -1,5 +1,3 @@
-//! Native macOS notification channel via `UNUserNotificationCenter`.
-
 pub mod bridge;
 pub mod categories;
 pub mod permissions;
@@ -19,13 +17,10 @@ pub struct MacosChannelConfig {
     pub throttle_window_secs: u64,
     pub sound: bool,
     pub app_name: String,
-    /// Parsed from `channels.toml`; nothing reads it, since no handler receives the Open action.
     pub web_url: Option<String>,
 }
 
 impl MacosChannelConfig {
-    /// # Errors
-    /// Returns an error if `throttle_window_secs` is zero.
     pub fn validate(&self) -> anyhow::Result<()> {
         if self.throttle_window_secs == 0 {
             anyhow::bail!("throttle_window_secs must be positive, got 0");
@@ -54,8 +49,6 @@ pub struct MacosNativeChannel {
 }
 
 impl MacosNativeChannel {
-    /// # Errors
-    /// Returns an error if the macOS bridge cannot be initialized.
     pub async fn new(
         name: impl Into<String>,
         config: &MacosChannelConfig,
@@ -134,8 +127,6 @@ mod tests {
 
     #[test]
     fn config_validate_accepts_any_positive_value() {
-        // There is no upper cap: 301 and other large values above the old
-        // 300 ceiling are valid.
         for secs in [1, 300, 301, 10_000] {
             let cfg = MacosChannelConfig {
                 throttle_window_secs: secs,

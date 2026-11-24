@@ -68,7 +68,6 @@ afterEach(() => {
   for (const id of [...toast.toasts.keys()]) toast.dismiss(id);
 });
 
-/** The disclosure's button, once the list has loaded. */
 function disclosure(): Promise<HTMLElement> {
   return screen.findByRole("button", { name: "Recently deleted" });
 }

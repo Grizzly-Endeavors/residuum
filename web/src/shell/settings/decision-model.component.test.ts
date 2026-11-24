@@ -11,13 +11,8 @@ import { fakeAgentConfig, type FakeAgentConfig } from "../../test/fake-config";
 import AutoModeSection from "./AutoModeSection.svelte";
 import SystemOneSection from "./SystemOneSection.svelte";
 
-// The Decision model section (All agents) and the Auto Mode section (an
-// agent), drawn on their own over a fake agent's files: what each field
-// shows, what an edit stages, and what the connection test sends.
-
 let server: FakeAgentConfig;
 let count = 0;
-/** The JSON bodies sent to the decision model endpoints, by path. */
 let sent: [string, unknown][] = [];
 let scopes: (AllScopeModel | AgentScopeModel)[] = [];
 

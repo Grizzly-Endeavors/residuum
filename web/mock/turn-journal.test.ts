@@ -45,7 +45,6 @@ describe("MockTurnJournal", () => {
       delta("Next", 1),
       usage(2),
     ]);
-    // The joined piece keeps the time of its first.
     expect(turn?.frames[1]?.at).toBe("2026-03-14T12:00:02.000Z");
   });
 

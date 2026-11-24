@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { notifications } from "./notifications.svelte";
 import { router } from "./router.svelte";
@@ -34,7 +33,6 @@ describe("opening a session from where it is mentioned", () => {
     expect(openPanel).toHaveBeenCalledWith({ kind: "session", agent: "atlas", runId: "run-3" });
   });
 
-  // No agent is bound here, so scout's sessions aren't loaded: the run is asked of scout.
   it("looks up another agent's newest run on that agent, and opens it beside its chat", async () => {
     await router.replacePlace({ kind: "chat", agent: "atlas" });
     const fetchMock = respond(NEWEST);

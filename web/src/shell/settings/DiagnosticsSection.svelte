@@ -4,11 +4,6 @@
   import SettingsGroup from "./SettingsGroup.svelte";
   import SettingsSection from "./SettingsSection.svelte";
 
-  // Diagnostics: how much the log records, and what leaves this machine in
-  // traces and bug reports. All three are staged and saved with the rest of
-  // the install-wide settings; saving rewrites `[tracing]` in the hub's
-  // config, which the hub applies at once and keeps across restarts.
-
   let { scope, section }: AllSectionProps = $props();
 
   const LOG_DETAIL = [

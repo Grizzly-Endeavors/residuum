@@ -1,9 +1,3 @@
-//! Find-and-replace file editing tool for the agent.
-//!
-//! Each edit names the exact text to change (`old_string`) and what replaces it
-//! (`new_string`). Edits in one call apply in order to an in-memory copy and the
-//! file is written once, so a batch lands completely or not at all.
-
 use std::ops::Range;
 
 use async_trait::async_trait;
@@ -21,29 +15,20 @@ use residuum_agent::Tool;
 use residuum_inference::ToolDefinition;
 use residuum_inference::{ToolError, ToolResult};
 
-/// Lines of unchanged context shown around each changed region in the result preview.
 const PREVIEW_CONTEXT_LINES: usize = 2;
 
-/// Maximum preview lines returned after an edit; the model can `read_file` for more.
 const MAX_PREVIEW_LINES: usize = 60;
 
-/// Maximum match locations listed when `old_string` is ambiguous.
 const MAX_LISTED_MATCHES: usize = 10;
 
-/// Tool that applies find-and-replace edits to a file.
 pub struct EditTool {
     tracker: SharedFileTracker,
     policy: SharedPathPolicy,
     diagnostics_paths: DiagnosticsPaths,
-    /// Set only for main's own tool registry — see `ConfigWriteWatch`'s doc
-    /// comment for why a session's registry never gets one.
     config_watch: Option<ConfigWriteWatch>,
 }
 
 impl EditTool {
-    /// Create a new `EditTool` with shared file tracker, path policy, and
-    /// the directories needed to recognize a strictly-parsed file for
-    /// post-edit diagnostics.
     #[must_use]
     pub fn new(
         tracker: SharedFileTracker,
@@ -58,8 +43,6 @@ impl EditTool {
         }
     }
 
-    /// Attach a config-write watch so an edit to a recognized config path
-    /// marks the reload it triggers for later delivery back to the agent.
     #[must_use]
     pub fn with_config_watch(mut self, config_watch: ConfigWriteWatch) -> Self {
         self.config_watch = Some(config_watch);
@@ -67,32 +50,25 @@ impl EditTool {
     }
 }
 
-/// One requested replacement within an `edit_file` call.
 struct EditRequest {
     old_string: String,
     new_string: String,
     replace_all: bool,
 }
 
-/// How an edit's `old_string` was located in the file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MatchKind {
     Exact,
-    /// Matched whole lines after trimming leading and trailing whitespace on each.
     IgnoringWhitespace,
 }
 
-/// Result of applying every edit in a call to the file text.
 struct BatchOutcome {
     text: String,
-    /// Byte ranges in `text` holding content written by the edits.
     changed_spans: Vec<Range<usize>>,
     replacements: usize,
-    /// 1-based indexes of edits that only matched after ignoring whitespace.
     whitespace_matched: Vec<usize>,
 }
 
-/// Parse the `path` and `edits` arguments.
 fn parse_edit_args(arguments: &Value) -> Result<(&str, Vec<EditRequest>), ToolError> {
     let path = arguments
         .get("path")
@@ -126,7 +102,6 @@ fn parse_edit_args(arguments: &Value) -> Result<(&str, Vec<EditRequest>), ToolEr
     Ok((path, edits))
 }
 
-/// Parse and validate one entry of the `edits` list; `number` is its 1-based position.
 fn parse_edit_request(raw: &Value, number: usize) -> Result<EditRequest, ToolError> {
     let field = |name: &str| {
         raw.get(name).and_then(Value::as_str).ok_or_else(|| {
@@ -158,14 +133,12 @@ fn parse_edit_request(raw: &Value, number: usize) -> Result<EditRequest, ToolErr
     })
 }
 
-/// The line break most of `text`'s lines use, so a stray CRLF doesn't convert an LF file.
 fn dominant_line_ending(text: &str) -> &'static str {
     let crlf = text.matches("\r\n").count();
     let lf_only = text.matches('\n').count() - crlf;
     if crlf > lf_only { "\r\n" } else { "\n" }
 }
 
-/// Rewrite every line break in `text` to `eol`, whatever style the model sent.
 fn normalize_line_endings(text: &str, eol: &str) -> String {
     let lf = text.replace("\r\n", "\n");
     if eol == "\n" {
@@ -175,12 +148,10 @@ fn normalize_line_endings(text: &str, eol: &str) -> String {
     }
 }
 
-/// 1-based line number containing byte `offset` of `text`.
 fn line_number_at(text: &str, offset: usize) -> usize {
     text.bytes().take(offset).filter(|&b| b == b'\n').count() + 1
 }
 
-/// Comma-separated start lines of `ranges`, capped at `MAX_LISTED_MATCHES`.
 fn describe_match_lines(text: &str, ranges: &[Range<usize>]) -> String {
     let mut listed: Vec<String> = ranges
         .iter()
@@ -193,7 +164,6 @@ fn describe_match_lines(text: &str, ranges: &[Range<usize>]) -> String {
     listed.join(", ")
 }
 
-/// Whether any line of `text` starts with a `read_file` line-number prefix like `  12\t`.
 fn has_read_prefix(text: &str) -> bool {
     text.lines().any(|line| {
         let trimmed = line.trim_start();
@@ -205,16 +175,12 @@ fn has_read_prefix(text: &str) -> bool {
     })
 }
 
-/// One line of a file with its byte offsets.
 struct FileLine<'a> {
     start: usize,
-    /// Line text without its line break.
     content: &'a str,
-    /// End of the line including its line break.
     end: usize,
 }
 
-/// Split `text` into lines, keeping each line's byte offsets.
 fn file_lines(text: &str) -> Vec<FileLine<'_>> {
     let mut offset = 0;
     text.split_inclusive('\n')
@@ -233,10 +199,6 @@ fn file_lines(text: &str) -> Vec<FileLine<'_>> {
         .collect()
 }
 
-/// Find runs of whole lines in `text` that equal `old` line-for-line once each line is trimmed.
-///
-/// The returned ranges cover the matched lines' text, plus the final line break when `old`
-/// ends with one, so replacing a range behaves like replacing an exact match of `old`.
 fn whitespace_insensitive_matches(text: &str, old: &str) -> Vec<Range<usize>> {
     let includes_final_break = old.ends_with('\n');
     let wanted: Vec<&str> = old
@@ -270,10 +232,6 @@ fn whitespace_insensitive_matches(text: &str, old: &str) -> Vec<Range<usize>> {
         .collect()
 }
 
-/// Locate where `old` should be replaced in `text`.
-///
-/// Tries an exact match first. Only when there is no exact match does it retry ignoring
-/// whitespace, and that retry is used only if it finds exactly one place.
 fn find_matches(
     text: &str,
     old: &str,
@@ -317,7 +275,6 @@ fn find_matches(
     }
 }
 
-/// Record that `replaced` was overwritten with `new_len` bytes, keeping earlier spans accurate.
 fn record_replacement(spans: &mut Vec<Range<usize>>, replaced: &Range<usize>, new_len: usize) {
     let removed_len = replaced.end - replaced.start;
     let new_end = replaced.start + new_len;
@@ -336,7 +293,6 @@ fn record_replacement(spans: &mut Vec<Range<usize>>, replaced: &Range<usize>, ne
     spans.push(replaced.start..new_end);
 }
 
-/// Apply every edit in order to `original`. On failure returns which edit failed and why.
 fn apply_edits(original: &str, edits: &[EditRequest]) -> Result<BatchOutcome, String> {
     let eol = dominant_line_ending(original);
     let mut text = original.to_string();
@@ -354,7 +310,6 @@ fn apply_edits(original: &str, edits: &[EditRequest]) -> Result<BatchOutcome, St
         if kind == MatchKind::IgnoringWhitespace {
             whitespace_matched.push(number);
         }
-        // Back to front, so earlier ranges stay valid while later ones are rewritten.
         for range in ranges.iter().rev() {
             text.replace_range(range.clone(), &new);
             record_replacement(&mut changed_spans, range, new.len());
@@ -370,7 +325,6 @@ fn apply_edits(original: &str, edits: &[EditRequest]) -> Result<BatchOutcome, St
     })
 }
 
-/// Numbered lines around each changed span, merged where they overlap.
 fn render_preview(text: &str, spans: &[Range<usize>]) -> String {
     let lines: Vec<&str> = text.lines().collect();
     if lines.is_empty() {
@@ -419,7 +373,6 @@ fn render_preview(text: &str, spans: &[Range<usize>]) -> String {
     rendered.join("\n")
 }
 
-/// Success message: summary line, any whitespace-match notes, then the preview.
 fn format_success(path: &str, outcome: &BatchOutcome) -> String {
     let plural = if outcome.replacements == 1 { "" } else { "s" };
     let mut header = vec![format!(
@@ -496,10 +449,6 @@ impl Tool for EditTool {
     async fn execute(&self, arguments: Value) -> Result<ToolResult, ToolError> {
         let (path, edits) = parse_edit_args(&arguments)?;
 
-        // `path` (the model's argument) resolves against the workspace
-        // root, not the process's current directory — see `resolve`'s doc
-        // comment in `write.rs`. A `team/` prefix resolves into the shared
-        // team directory.
         let team = self.policy.read().await.team().cloned();
         let file_path = resolve(&self.diagnostics_paths, team.as_ref(), path);
 
@@ -524,8 +473,6 @@ impl Tool for EditTool {
             )));
         }
 
-        // A team file is edited under its per-path lock, only if nobody
-        // changed it since this tool set read it.
         let team_lock = match lock_team_target(team.as_ref(), &self.tracker, &file_path).await {
             Ok(lock) => lock,
             Err(message) => return Ok(ToolResult::error(message)),
@@ -592,8 +539,6 @@ mod tests {
     use crate::file_tracker::FileTracker;
     use crate::path_policy::PathPolicy;
 
-    /// Directories that don't correspond to any real strictly-parsed file,
-    /// so ordinary edit tests get no diagnostics.
     fn no_diagnostics_paths() -> DiagnosticsPaths {
         DiagnosticsPaths {
             config_dir: std::path::PathBuf::from("/tmp/residuum-test-config-unused"),
@@ -602,14 +547,12 @@ mod tests {
         }
     }
 
-    /// Create an `EditTool` with a pre-registered path in the tracker.
     async fn make_tool_with_file(path: &str) -> EditTool {
         let tracker = FileTracker::new_shared();
         tracker.lock().await.record_read(path);
         EditTool::new(tracker, PathPolicy::new_shared(), no_diagnostics_paths())
     }
 
-    /// Create an `EditTool` with an empty tracker (nothing read).
     fn make_tool_no_reads() -> EditTool {
         EditTool::new(
             FileTracker::new_shared(),
@@ -618,7 +561,6 @@ mod tests {
         )
     }
 
-    /// Write a test file and return the tool with the path already read.
     async fn setup_file(dir: &tempfile::TempDir, name: &str, content: &str) -> (EditTool, String) {
         let file_path = dir.path().join(name);
         tokio::fs::write(&file_path, content).await.unwrap();
@@ -908,7 +850,6 @@ mod tests {
             .concat();
         let (tool, path) = setup_file(&dir, "preview.txt", &body).await;
 
-        // The second edit inserts two lines above the first edit's change.
         let result = run(
             &tool,
             &path,
@@ -1049,9 +990,6 @@ mod tests {
 
     #[tokio::test]
     async fn relative_path_resolves_against_workspace_root_not_process_cwd() {
-        // The process's current directory here is the crate root (however
-        // `cargo test` was invoked), not the workspace dir below — so this
-        // only passes if the relative path is joined against it.
         let workspace = tempfile::tempdir().unwrap();
         tokio::fs::write(workspace.path().join("relative.txt"), "before\n")
             .await

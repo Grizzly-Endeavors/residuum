@@ -37,8 +37,6 @@ use residuum::workspace::version::version_token;
 use residuum_net::tunnel::TunnelStatus;
 use residuum_net::workbench::WorkbenchServing;
 
-/// The agent `scout`'s repair routes over a hub with a team directory, as the
-/// web reaches them, and the checkpoint engine behind them.
 struct Fixture {
     hub: TeamHub,
     routes: axum::Router,
@@ -50,8 +48,6 @@ fn fixture() -> Fixture {
     let agent_dir = hub.agent_dir("scout");
     let hub_dir = hub.dir.path().join("hub");
     std::fs::create_dir_all(&hub_dir).unwrap();
-    // A real engine: its team repository watches the hub's team directory, so
-    // the checkpoints the routes return can be restored from.
     let checkpoints = Arc::new(
         CheckpointEngine::new(
             "test-agent",
@@ -83,7 +79,6 @@ fn fixture() -> Fixture {
     }
 }
 
-/// `value[key]`, panicking with the missing key named.
 fn field<'a>(value: &'a Value, key: &str) -> &'a Value {
     value
         .get(key)
@@ -97,8 +92,6 @@ async fn body_json(response: Response) -> Value {
     serde_json::from_slice(&bytes).unwrap()
 }
 
-/// `PUT /api/workspace/file` with `content` at `path`, conditional on
-/// `if_match` when given.
 async fn put(f: &Fixture, path: &str, content: &str, if_match: Option<&str>) -> Response {
     let mut request =
         Request::put("/api/workspace/file").header(header::CONTENT_TYPE, "application/json");
@@ -113,7 +106,6 @@ async fn put(f: &Fixture, path: &str, content: &str, if_match: Option<&str>) -> 
         .unwrap()
 }
 
-/// `DELETE /api/workspace/file` of `path`, recursively when `recursive`.
 async fn delete_file(f: &Fixture, path: &str, recursive: bool) -> Response {
     f.routes
         .clone()
@@ -128,7 +120,6 @@ async fn delete_file(f: &Fixture, path: &str, recursive: bool) -> Response {
         .unwrap()
 }
 
-/// Delete `path` recursively, which must succeed, and return the response.
 async fn delete(f: &Fixture, path: &str) -> Value {
     let response = delete_file(f, path, true).await;
     assert_eq!(response.status(), StatusCode::OK, "action should succeed");
@@ -139,8 +130,6 @@ fn version_of(path: &std::path::Path) -> String {
     version_token(&std::fs::metadata(path).unwrap())
 }
 
-/// The `(id, repo)` of the single checkpoint a response names, checking the
-/// response uses the one-checkpoint shape.
 fn single_checkpoint(body: &Value) -> (String, String) {
     assert!(
         body.get("checkpoints").is_none(),
@@ -152,7 +141,6 @@ fn single_checkpoint(body: &Value) -> (String, String) {
     )
 }
 
-/// Restore `path` (relative to the repository's root) from checkpoint `id`.
 async fn restore(f: &Fixture, repo: RepoKind, id: &str, path: &str) {
     f.checkpoints
         .restore_path(
@@ -300,7 +288,6 @@ async fn a_restore_into_team_is_recorded_as_the_user_and_conflicts_a_stale_reade
     let body = delete(&f, "team/wiki/a.md").await;
     let (id, _) = single_checkpoint(&body);
 
-    // Sam sees the file gone, then the user restores it.
     let sam = tools_for(&f.hub, "sam");
     let missing = tool_call(&sam, "read_file", json!({ "path": "team/wiki/a.md" })).await;
     assert!(missing.is_error);

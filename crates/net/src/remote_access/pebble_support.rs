@@ -1,16 +1,3 @@
-//! Test harness that runs the Pebble ACME test CA and its challenge test
-//! server in Docker, for tests that need a real CA.
-//!
-//! Tests that use it are `#[ignore]`d and run with
-//! `cargo test --quiet -p residuum-net --lib pebble -- --ignored`; they need Docker and pull the images on first use.
-//!
-//! To move to a newer Pebble: pick the release at
-//! <https://github.com/letsencrypt/pebble/releases>, change [`PEBBLE_VERSION`]
-//! (the image tag has no leading `v`), and replace `pebble.minica.pem` with
-//! `test/certs/pebble.minica.pem` from that tag. The CA's own TLS certificate
-//! (`test/certs/localhost` in the image) must still be signed by that root and
-//! name `127.0.0.1`.
-
 use std::net::{SocketAddr, TcpListener, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -33,23 +20,14 @@ use super::tls::CertResolver;
 use residuum_core::testing::ports::{ReservedPort, reserve_port};
 use residuum_core::testing::wait;
 
-/// Pinned Pebble release; both images share the tag.
 const PEBBLE_VERSION: &str = "2.10.1";
 const PEBBLE_IMAGE: &str = "ghcr.io/letsencrypt/pebble:2.10.1";
 const CHALLTESTSRV_IMAGE: &str = "ghcr.io/letsencrypt/pebble-challtestsrv:2.10.1";
 
-/// The root that signs Pebble's own HTTPS certificate (`test/certs/pebble.minica.pem` at [`PEBBLE_VERSION`]).
 const PEBBLE_MINICA_PEM: &str = include_str!("pebble.minica.pem");
 
 static CONTAINER_SEQUENCE: AtomicU32 = AtomicU32::new(0);
 
-/// A running Pebble CA plus a challenge test server acting as its DNS resolver.
-///
-/// Both run with host networking on ports reserved through
-/// [`residuum_core::testing::ports`], below the OS's ephemeral range, so tests can run
-/// in parallel: each reservation is held until just before the container that
-/// binds the port starts. Validation connections for TLS-ALPN-01 go to `127.0.0.1:tls_port()`; every
-/// name resolves to 127.0.0.1 unless the test says otherwise. The containers are removed on drop.
 pub(crate) struct PebbleHarness {
     dir: tempfile::TempDir,
     containers: Vec<String>,
@@ -57,17 +35,12 @@ pub(crate) struct PebbleHarness {
     management_port: u16,
     dns_port: u16,
     tls_port: u16,
-    /// Holds `tls_port` until the test binds it, see [`Self::release_tls_port`].
     tls_reservation: Mutex<Option<ReservedPort>>,
-    /// Pebble's HTTP-01 port. No test answers HTTP-01, so nothing ever binds
-    /// it; the reservation keeps it for the harness's lifetime so the number
-    /// Pebble is configured with stays this harness's.
     _http_reservation: ReservedPort,
     root_ca: PathBuf,
 }
 
 impl PebbleHarness {
-    /// Start both containers and wait until they accept connections.
     pub(crate) async fn start() -> anyhow::Result<Self> {
         let dir = tempfile::tempdir().context("failed to create the harness directory")?;
         let acme = reserve_port();
@@ -113,7 +86,6 @@ impl PebbleHarness {
 
         let dns_bind = format!("127.0.0.1:{dns_port}");
         let management_bind = format!("127.0.0.1:{management_port}");
-        // The test listens on the TLS-ALPN-01 port itself; the other challenge servers are off.
         let dns_container = format!("{unique}-dns");
         harness.create_container(
             &dns_container,
@@ -175,27 +147,22 @@ impl PebbleHarness {
         Ok(harness)
     }
 
-    /// The CA's ACME directory URL.
     pub(crate) fn directory_url(&self) -> String {
         format!("https://127.0.0.1:{}/dir", self.acme_port)
     }
 
-    /// Root certificate that signs the CA's HTTPS certificate.
     pub(crate) fn root_ca_pem_path(&self) -> &Path {
         &self.root_ca
     }
 
-    /// Address of the test DNS server (UDP and TCP).
     pub(crate) fn dns_addr(&self) -> SocketAddr {
         SocketAddr::from(([127, 0, 0, 1], self.dns_port))
     }
 
-    /// Port Pebble connects to for TLS-ALPN-01 validation.
     pub(crate) fn tls_port(&self) -> u16 {
         self.tls_port
     }
 
-    /// ACME settings pointing at this CA, storing state under `state_dir`.
     pub(crate) fn acme_settings(&self, state_dir: &Path) -> AcmeSettings {
         AcmeSettings {
             directory_url: self.directory_url(),
@@ -204,12 +171,10 @@ impl PebbleHarness {
         }
     }
 
-    /// A scratch directory that lives as long as the harness.
     pub(crate) fn scratch_dir(&self) -> &Path {
         self.dir.path()
     }
 
-    /// Make `host` resolve to 127.0.0.1.
     pub(crate) async fn add_a(&self, host: &str) -> anyhow::Result<()> {
         self.manage(
             "add-a",
@@ -218,7 +183,6 @@ impl PebbleHarness {
         .await
     }
 
-    /// Publish a CAA `issue` record with each value in `issue_values` for `host`.
     pub(crate) async fn set_caa(&self, host: &str, issue_values: &[&str]) -> anyhow::Result<()> {
         let policies: Vec<_> = issue_values
             .iter()
@@ -231,7 +195,6 @@ impl PebbleHarness {
         .await
     }
 
-    /// Answer TLS-ALPN-01 validation connections on `tls_port()` with `resolver`'s server configuration.
     pub(crate) fn serve_tls_alpn(
         &self,
         resolver: &Arc<CertResolver>,
@@ -307,8 +270,6 @@ impl PebbleHarness {
         Ok(())
     }
 
-    /// Wait for a container to accept connections. A container that never
-    /// listens fails the wait with the last lines of every container's log.
     async fn wait_for_port(&self, what: &str, port: u16) {
         wait::until_reporting(
             format!("the {what} on port {port} to start listening"),
@@ -351,7 +312,6 @@ impl PebbleHarness {
         Ok(())
     }
 
-    /// The last lines of every container's log, for a failed wait.
     fn container_logs(&self) -> String {
         self.containers
             .iter()
@@ -367,8 +327,6 @@ impl PebbleHarness {
             .join("\n")
     }
 
-    /// Let go of the TLS-ALPN-01 port so the caller can bind it: the fake relay
-    /// that stands in for the front door, or [`Self::serve_tls_alpn`].
     pub(crate) fn release_tls_port(&self) {
         let reservation = self
             .tls_reservation
@@ -378,8 +336,6 @@ impl PebbleHarness {
         drop(reservation);
     }
 
-    /// How many DNS queries for `host` the challenge test server has answered
-    /// since its history for `host` was last cleared.
     pub(crate) async fn dns_queries(&self, host: &str) -> anyhow::Result<usize> {
         let body = self
             .manage_reading("dns-request-history", &serde_json::json!({ "host": host }))
@@ -389,7 +345,6 @@ impl PebbleHarness {
         Ok(history.len())
     }
 
-    /// Forget the DNS queries for `host` the challenge test server recorded.
     pub(crate) async fn clear_dns_queries(&self, host: &str) -> anyhow::Result<()> {
         self.manage(
             "clear-request-history",
@@ -398,13 +353,10 @@ impl PebbleHarness {
         .await
     }
 
-    /// POST `body` to the challenge test server's management API.
     async fn manage(&self, endpoint: &str, body: &serde_json::Value) -> anyhow::Result<()> {
         self.manage_reading(endpoint, body).await.map(|_| ())
     }
 
-    /// POST `body` to the challenge test server's management API and return
-    /// the response body.
     async fn manage_reading(
         &self,
         endpoint: &str,
@@ -447,7 +399,6 @@ impl Drop for PebbleHarness {
     }
 }
 
-/// Stops the TLS-ALPN-01 listener when dropped.
 pub(crate) struct TlsAlpnListener {
     task: JoinHandle<()>,
 }
@@ -466,7 +417,6 @@ fn docker<'a>(args: impl IntoIterator<Item = &'a str>) -> anyhow::Result<Output>
         .context("failed to run docker (these tests need Docker)")
 }
 
-/// Start a container made by [`PebbleHarness::create_container`].
 fn start_container(name: &str) -> anyhow::Result<()> {
     let started = docker(["start", name])?;
     anyhow::ensure!(
@@ -477,8 +427,6 @@ fn start_container(name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Write Pebble's configuration into `dir`, readable by the container's user,
-/// and return its path.
 fn write_pebble_config(
     dir: &Path,
     acme_port: u16,
@@ -486,7 +434,6 @@ fn write_pebble_config(
     http_port: u16,
     tls_port: u16,
 ) -> anyhow::Result<PathBuf> {
-    // Paths are inside the image: it carries Pebble's own test certificates.
     let config = serde_json::json!({
         "pebble": {
             "listenAddress": format!("127.0.0.1:{acme_port}"),
@@ -512,7 +459,6 @@ fn write_pebble_config(
     Ok(config_path)
 }
 
-/// A reserved port whose UDP side is held too, since the DNS server binds both.
 struct DnsReservation {
     tcp: ReservedPort,
     _udp: UdpSocket,
@@ -524,9 +470,6 @@ impl DnsReservation {
     }
 }
 
-/// Reserve a port that is free for both TCP and UDP. [`reserve_port`] hands
-/// out each port once per process, so a port whose UDP side is taken is not
-/// offered again.
 fn reserve_dns_port() -> anyhow::Result<DnsReservation> {
     for _ in 0..20 {
         let tcp = reserve_port();
@@ -537,7 +480,6 @@ fn reserve_dns_port() -> anyhow::Result<DnsReservation> {
     anyhow::bail!("no reserved port was free for UDP as well as TCP")
 }
 
-/// A resolver that asks only `server` over `connection`, without caching.
 fn dns_resolver(
     server: SocketAddr,
     mut connection: ConnectionConfig,

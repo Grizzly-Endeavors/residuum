@@ -6,7 +6,6 @@ import { afterEach, describe, expect, it } from "vitest";
 import { APP_SHELL_CSP, appShellPolicy } from "./app-shell-policy";
 import { WEB_ROOT } from "./assets";
 
-/** A server that runs the middleware, then answers as `respond` does. */
 async function serve(respond: (res: ServerResponse) => void): Promise<Server> {
   const server = createServer((req, res) => {
     appShellPolicy(req, res, () => {

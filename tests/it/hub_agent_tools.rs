@@ -317,8 +317,6 @@ async fn a_create_chain_stops_at_the_hop_limit() {
         result.output
     );
     assert!(hub.host.summary("nova").is_ok());
-    // The notice is sent only after the delivery has been refused, so once it
-    // arrives, nothing is on its way to the creator's model.
     wait::next_matching(
         "the refusal to be shown to the user",
         &mut events,

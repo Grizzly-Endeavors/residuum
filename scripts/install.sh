@@ -1,18 +1,10 @@
 #!/bin/sh
-# Residuum installer
-# Usage: curl -fsSL https://agent-residuum.com/install | sh
 set -eu
 
 REPO="grizzly-endeavors/residuum"
 BINARY_NAME="residuum"
-# Residuum updates itself in place, so it installs where this account can
-# write without sudo: RESIDUUM_INSTALL_DIR if set, else the directory of an
-# existing writable install, else /usr/local/bin when writable, else
-# ~/.local/bin.
 USER_BIN_DIR="${HOME}/.local/bin"
 PATH_MARKER="# added by the Residuum installer"
-
-# --- helpers ----------------------------------------------------------------
 
 say() {
   printf '  %s\n' "$*"
@@ -26,8 +18,6 @@ err() {
 need() {
   command -v "$1" > /dev/null 2>&1 || err "required command not found: $1"
 }
-
-# --- detect platform --------------------------------------------------------
 
 detect_platform() {
   OS="$(uname -s)"
@@ -45,15 +35,12 @@ detect_platform() {
     *)                err "unsupported architecture: $ARCH" ;;
   esac
 
-  # macOS Intel builds are not provided — Apple Silicon only
   if [ "$OS" = "macos" ] && [ "$ARCH" = "x86_64" ]; then
     err "macOS x86_64 (Intel) is not supported — Apple Silicon only"
   fi
 
   PLATFORM="${OS}-${ARCH}"
 }
-
-# --- resolve latest version -------------------------------------------------
 
 get_latest_version() {
   need curl
@@ -67,8 +54,6 @@ get_latest_version() {
 
   [ -n "$VERSION" ] || err "could not determine latest version"
 }
-
-# --- checksum ---------------------------------------------------------------
 
 sha256() {
   if command -v sha256sum > /dev/null 2>&1; then
@@ -95,8 +80,6 @@ verify_checksum() {
   say "checksum verified"
 }
 
-# --- choose install directory -----------------------------------------------
-
 choose_install_dir() {
   EXISTING="$(command -v "$BINARY_NAME" 2> /dev/null || true)"
 
@@ -119,8 +102,6 @@ choose_install_dir() {
   fi
 }
 
-# --- PATH -------------------------------------------------------------------
-
 on_path() {
   case ":${PATH}:" in
     *":$1:"*) return 0 ;;
@@ -128,7 +109,6 @@ on_path() {
   esac
 }
 
-# Prepend INSTALL_DIR to PATH in the login shell's startup file, once.
 add_to_path() {
   on_path "$INSTALL_DIR" && return 0
 
@@ -162,8 +142,6 @@ add_to_path() {
   PATH_NOTE="added ${INSTALL_DIR} to your PATH in ${RC_FILE} — open a new terminal to use it."
 }
 
-# --- download and install ---------------------------------------------------
-
 install() {
   ASSET="${BINARY_NAME}-${PLATFORM}"
   URL="https://github.com/${REPO}/releases/download/${VERSION}/${ASSET}"
@@ -181,8 +159,6 @@ install() {
   mv "${TMP}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
 }
 
-# --- verify -----------------------------------------------------------------
-
 verify() {
   INSTALLED="${INSTALL_DIR}/${BINARY_NAME}"
   say ""
@@ -192,8 +168,6 @@ verify() {
     say "$PATH_NOTE"
   fi
 
-  # An older copy somewhere this account can't write can shadow the new
-  # one, and can never update itself.
   if [ -n "$EXISTING" ] && [ "$EXISTING" != "$INSTALLED" ]; then
     say ""
     say "an older residuum is also installed at ${EXISTING}."
@@ -207,8 +181,6 @@ verify() {
     say "run 'residuum serve' to start, or 'residuum init' to configure."
   fi
 }
-
-# --- main -------------------------------------------------------------------
 
 main() {
   printf '\n\033[1m  Residuum Installer\033[0m\n'

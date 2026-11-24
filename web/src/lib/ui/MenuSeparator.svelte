@@ -1,5 +1,4 @@
 <script lang="ts">
-  // A hairline between groups of items in a Menu.
 </script>
 
 <div role="separator" class="ui-menu-separator"></div>

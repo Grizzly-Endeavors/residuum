@@ -1,5 +1,3 @@
-//! Maps one OS file notification to workspace-relative raw changes.
-
 use std::path::{Component, Path, PathBuf};
 
 use notify::EventKind;
@@ -8,15 +6,10 @@ use notify::event::{ModifyKind, RenameMode};
 use super::batcher::{RawChange, RawOp};
 use crate::access::is_blocked_path;
 
-/// What one notification means for the workspace.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(super) struct Classified {
-    /// Paths the notification touched, minus hidden and outside paths.
     pub changes: Vec<RawChange>,
-    /// The OS dropped notifications and the whole tree must be rescanned.
     pub events_lost: bool,
-    /// The workspace root itself was removed or renamed away, so the watch
-    /// on it is gone.
     pub root_gone: bool,
 }
 
@@ -47,8 +40,6 @@ impl WorkspaceRoots {
         }
     }
 
-    /// `relative` (as returned by [`Self::relative`]) under the namespace
-    /// prefix, the way subscribers address it.
     pub fn namespaced(&self, relative: &str) -> String {
         match &self.prefix {
             Some(prefix) if relative.is_empty() => prefix.clone(),
@@ -57,14 +48,10 @@ impl WorkspaceRoots {
         }
     }
 
-    /// Whether the access policy hides `relative` from subscribers.
     pub fn is_hidden(&self, relative: &str) -> bool {
         is_blocked_path(&self.namespaced(relative))
     }
 
-    /// `path` relative to the workspace, `/`-separated. `Some("")` for the
-    /// root itself; `None` outside the workspace or when the path is not
-    /// valid UTF-8.
     pub fn relative(&self, path: &Path) -> Option<String> {
         let rest = self
             .spellings
@@ -82,16 +69,12 @@ impl WorkspaceRoots {
     }
 }
 
-/// Classify one notification.
 pub(super) fn classify(event: &notify::Event, roots: &WorkspaceRoots) -> Classified {
     let mut classified = Classified {
         events_lost: event.need_rescan(),
         ..Classified::default()
     };
     let ops: Vec<(&PathBuf, RawOp)> = match event.kind {
-        // Reads (and the open/close around writes, which also report a
-        // data change) change nothing. Ignoring them keeps an artifact that
-        // reads a file on each change from feeding its own loop.
         EventKind::Access(_) | EventKind::Other => Vec::new(),
         EventKind::Create(_) => with_op(&event.paths, RawOp::Appeared),
         EventKind::Remove(_) => with_op(&event.paths, RawOp::Vanished),

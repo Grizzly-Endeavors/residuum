@@ -3,32 +3,4 @@ import type { ImageAttachment } from "./ImageAttachment";
 import type { MessageAttachment } from "./MessageAttachment";
 import type { MessageSender } from "./MessageSender";
 
-/**
- * A person's message waiting for the main agent to read it, carried by
- * `MessageQueued` and a `TurnSnapshot`'s `queued`.
- */
-export type QueuedMessage = { 
-/**
- * The message's id: the id its sender gave it.
- */
-id: string, 
-/**
- * The message text.
- */
-content: string, 
-/**
- * Images attached to the message.
- */
-images?: Array<ImageAttachment>, 
-/**
- * Files attached to the message, each saved as a companion agent-inbox item.
- */
-attachments?: Array<MessageAttachment>, 
-/**
- * The person who sent it, for interfaces that identify one.
- */
-sender?: MessageSender, 
-/**
- * Endpoint the message arrived on.
- */
-endpoint: string, };
+export type QueuedMessage = { id: string, content: string, images?: Array<ImageAttachment>, attachments?: Array<MessageAttachment>, sender?: MessageSender, endpoint: string, };

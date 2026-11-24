@@ -14,12 +14,6 @@
   import SettingsGroup from "./SettingsGroup.svelte";
   import SettingsSection from "./SettingsSection.svelte";
 
-  // Advanced → Agent-to-agent for one agent. Who can find it is set here and
-  // nowhere else, and applies at once through the hub, not with Save
-  // changes. Whether the install's listener is on is the install's setting,
-  // shown here read-only. The status and the card need the agent running;
-  // the remote agents are a file, so they stay editable while it is stopped.
-
   let { scope, section }: AgentSectionProps = $props();
 
   const agent = $derived(scope.agent);
@@ -34,7 +28,6 @@
       "Anyone with its address can see what it does. Handing it work still needs a caller key.",
   };
 
-  /** The visibility being applied, shown until the hub answers. */
   let pending = $state<A2aVisibility | null>(null);
   const visibility = $derived(pending ?? hub.agent(agent)?.a2a_visibility ?? "private");
   let choices = $state<HTMLElement>();
@@ -44,7 +37,6 @@
     pending = next;
     const applied = await hub.setVisibility(name, next);
     pending = null;
-    // The choices were disabled while the hub answered, which took focus from the one pressed.
     if (document.activeElement === document.body) {
       await tick();
       choices?.querySelector<HTMLElement>('[aria-checked="true"]')?.focus();
@@ -55,7 +47,6 @@
         ? `${name} is public: anyone with its address can see what it does.`
         : `${name} is private: agents need a caller key even to see it.`,
     );
-    // The hub wrote the agent's config.toml; read it again so the raw editor shows it.
     void scope.load();
   }
 

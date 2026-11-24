@@ -3,13 +3,6 @@ import { expectNoAxeViolations } from "../support/axe";
 import { expect, test } from "../support/fixtures";
 import { expectPaletteOpen } from "../support/lazy";
 
-/**
- * Installing the app: the manifest and its icons, the document's
- * metas, and the Install app entry in the palette and the help menu. The
- * `@preview` specs run on the production build, where the manifest is as it
- * ships; the rest run on the dev server.
- */
-
 const IPHONE_USER_AGENT =
   "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1";
 
@@ -24,16 +17,10 @@ interface Manifest {
   shortcuts: { name: string; url: string }[];
 }
 
-/** The width and height a PNG file declares in its header. */
 function pngSize(bytes: Buffer): { width: number; height: number } {
   return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) };
 }
 
-/**
- * How far from the centre, as a share of the icon's width, the farthest pixel
- * that differs from the background lies. A maskable icon's content must stay
- * inside the circle of radius 0.4, or a platform's mask cuts it.
- */
 async function farthestContent(page: Page, src: string): Promise<number> {
   return page.evaluate(async (url) => {
     const image = new Image();
@@ -141,7 +128,6 @@ test.describe("the production build", { tag: "@preview" }, () => {
   });
 });
 
-/** Fire the event a Chromium browser fires when the app can be installed, counting the times its prompt runs. */
 async function offerInstall(page: Page): Promise<void> {
   await page.evaluate(() => {
     const prompt = (): Promise<void> => {
@@ -187,7 +173,6 @@ async function openHelpMenu(page: Page, isMobile: boolean): Promise<Locator> {
   return menu;
 }
 
-/** Close the help menu, and on a phone the drawer it opened in. */
 async function closeHelpMenu(page: Page, isMobile: boolean): Promise<void> {
   await page.keyboard.press("Escape");
   await expect(page.getByRole("menu", { name: "Help" })).toBeHidden();
@@ -230,7 +215,6 @@ test.describe("Install app", () => {
     await expect(palette).toBeHidden();
     await expect.poll(() => installPrompts(page)).toBe(1);
 
-    // The browser's prompt shows once, so the entry goes with it.
     await openPalette(page, isMobile);
     await page.keyboard.type("install");
     await expect(
@@ -251,7 +235,6 @@ test.describe("Install app", () => {
 
 test.describe("Install app without a secure context", () => {
   test("is hidden even when the browser offers its prompt", async ({ page, isMobile }) => {
-    // Plain-HTTP LAN access: localhost counts as secure, so the page is told otherwise before it starts.
     await page.addInitScript(() => {
       Object.defineProperty(window, "isSecureContext", { value: false });
     });

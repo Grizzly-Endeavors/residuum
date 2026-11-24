@@ -1,5 +1,3 @@
-//! Session limits and per-tier model assignments.
-
 use std::collections::HashMap;
 
 use residuum_core::util::FatalError;
@@ -11,15 +9,6 @@ use super::super::hub_types::HubConfig;
 use super::super::secrets::SecretStore;
 use super::super::types::BackgroundConfig;
 
-/// Resolve this agent's own background task configuration (idle timeouts,
-/// episode floor, subagent depth cap) and model tiers, with the hub-owned
-/// knobs (the shared session budget and cross-agent hop limits) copied in
-/// from the already-resolved `hub`.
-///
-/// Model tiers come from `providers.toml`'s `[background.models]` section.
-///
-/// # Errors
-/// Returns `FatalError::Config` if a model tier string cannot be resolved.
 pub(super) fn resolve_background_config(
     section: Option<&AgentBackgroundConfigFile>,
     models_section: Option<&BackgroundModelsFile>,
@@ -83,7 +72,6 @@ pub(super) fn resolve_background_config(
     Ok(cfg)
 }
 
-/// Resolve a single background tier assignment, extracting overrides.
 fn resolve_bg_tier(
     assignment: Option<super::super::deserialize::ModelAssignment>,
     role_key: &str,

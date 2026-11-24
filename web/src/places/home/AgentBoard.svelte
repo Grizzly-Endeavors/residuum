@@ -9,12 +9,6 @@
   import AgentMenu from "./AgentMenu.svelte";
   import { followLink } from "./follow-link";
 
-  // Every agent in one aligned table: what it is, its state, what it is doing
-  // and said last, how many sessions it runs, what it runs next, and its "…"
-  // menu. A row opens the agent's chat. The board's own width picks its
-  // layout: Next up goes under 720px, and under 560px, on phones, each row is
-  // a card.
-
   let { now }: { now: number } = $props();
 </script>
 
@@ -168,7 +162,6 @@
     min-width: 0;
   }
 
-  /* The name's link covers the row, so the whole row opens the chat. */
   .agent-link {
     overflow: hidden;
     color: var(--color-text);
@@ -270,7 +263,6 @@
     --leading: var(--line-height-tight);
   }
 
-  /* Positioned after the name's link, so the menu sits over the row's link and takes its own presses. */
   .col-menu {
     position: relative;
     align-items: center;
@@ -286,7 +278,6 @@
     }
   }
 
-  /* Too narrow for aligned columns, a phone or a narrow window: one card per agent. */
   @container home-board (max-width: 559px) {
     .board-head {
       display: none;

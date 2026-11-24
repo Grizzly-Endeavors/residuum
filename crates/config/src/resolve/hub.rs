@@ -1,8 +1,3 @@
-//! Hub-level config resolution: timezone, gateway, cloud, the A2A listener,
-//! tracing, Web Push, the shared background limits and the model price
-//! overrides — everything that lives in `hub/config.toml` rather than an
-//! agent's own config.
-
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::str::FromStr;
@@ -18,12 +13,6 @@ use super::gateway;
 use super::load_secrets_degraded;
 use super::tracing_config;
 
-/// Build a `HubConfig` from an optional hub config file and environment
-/// variables.
-///
-/// # Errors
-/// Returns `FatalError::Config` if the timezone is missing/invalid or the
-/// tracing log level string is invalid.
 pub fn from_file_and_env(
     file: Option<&HubConfigFile>,
     hub_dir: &Path,
@@ -31,17 +20,6 @@ pub fn from_file_and_env(
     from_file_and_env_inner(file, hub_dir, false)
 }
 
-/// Like [`from_file_and_env`], but a missing timezone does not fail the load.
-///
-/// The first-run `hub/config.toml` leaves `timezone` commented out, and the
-/// setup wizard is what writes it. Requiring one before the hub is listening
-/// means the wizard never starts. An invalid name is still an error: that
-/// file was edited, and guessing would hide the typo. The stand-in is the
-/// machine's timezone and lives only in this loaded config.
-///
-/// # Errors
-/// Returns `FatalError::Config` if the timezone name is invalid or the
-/// tracing log level string is invalid.
 pub(crate) fn from_file_and_env_for_onboarding(
     file: Option<&HubConfigFile>,
     hub_dir: &Path,
@@ -103,11 +81,6 @@ fn from_file_and_env_inner(
     })
 }
 
-/// Resolve the hub's `[push]` section.
-///
-/// A `contact` that isn't a `mailto:` address or an `https:` URL is dropped
-/// with a notice, so push keeps working under the default contact until the
-/// user fixes the value (the same degradation an invalid A2A visibility gets).
 fn resolve_hub_push_config(
     section: Option<&HubPushConfigFile>,
     notices: &mut Vec<String>,
@@ -133,9 +106,6 @@ fn resolve_hub_push_config(
     }
 }
 
-/// Check that `contact` is what a push service accepts in the VAPID `sub`
-/// claim: a `mailto:` address or an `https:` URL. The error completes the
-/// sentence "\[push\] contact ...".
 fn validate_push_contact(contact: &str) -> Result<(), String> {
     if let Some(address) = contact.strip_prefix("mailto:") {
         let well_formed = address
@@ -158,7 +128,6 @@ fn validate_push_contact(contact: &str) -> Result<(), String> {
     }
 }
 
-/// Resolve the hub's shared background limits (session budget, hop limits).
 fn resolve_hub_background_config(section: Option<&HubBackgroundConfigFile>) -> HubBackgroundConfig {
     let mut cfg = HubBackgroundConfig::default();
     let Some(section) = section else {
@@ -176,10 +145,6 @@ fn resolve_hub_background_config(section: Option<&HubBackgroundConfigFile>) -> H
     cfg
 }
 
-/// Resolve the hub's `[pricing]` overrides. A key must name a provider kind
-/// and a model, and each rate must be a finite, non-negative number of USD per
-/// million tokens. An entry that breaks either rule is dropped with a notice,
-/// so the model keeps its built-in price (or none) and the other entries load.
 fn resolve_hub_pricing(
     section: Option<&BTreeMap<String, ModelPrice>>,
     notices: &mut Vec<String>,
@@ -202,8 +167,6 @@ fn resolve_hub_pricing(
         .collect()
 }
 
-/// Check one `[pricing]` entry. The error completes the sentence
-/// `[pricing] "key" ...`.
 fn validate_price(key: &str, price: &ModelPrice) -> Result<(), String> {
     ModelSpec::from_str(key)?;
     let rates = [

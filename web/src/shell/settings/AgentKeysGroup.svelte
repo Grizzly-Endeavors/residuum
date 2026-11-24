@@ -20,12 +20,6 @@
   import KeyList from "./KeyList.svelte";
   import SettingsGroup from "./SettingsGroup.svelte";
 
-  // The keys an agent hands to the commands it runs, as environment
-  // variables. Adding and removing act at once through the hub's own
-  // endpoints and have no part in the save bar; a removal offers Undo from the
-  // checkpoint the hub took just before it.
-
-  /** Below this many characters, hiding a value from output by matching it is unreliable. It is a hint: the key still saves. */
   const SHORT_VALUE_LENGTH = 8;
 
   let keys = $state.raw<AgentKeyInfo[] | null>(null);
@@ -102,7 +96,6 @@
       const checkpointId = await deleteAgentKey(key);
       notifyWithUndo(null, `Removed ${key}.`, "hub", "agent-keys.toml.enc", checkpointId, load);
       await load();
-      // The row that held focus is gone.
       await tick();
       addButton?.focus();
     } catch (err) {

@@ -1,20 +1,10 @@
-/**
- * Swipe to dismiss: a sheet down, a drawer left. The layer follows the finger
- * and closes when let go far enough or flicked; otherwise it springs back.
- * Under reduced motion it doesn't follow the finger, and the same gesture
- * still closes it.
- */
-
 import type { Attachment } from "svelte/attachments";
 
 export type SwipeDirection = "down" | "left";
 
-/** How far the layer must travel to close: a share of its size, capped. */
 const CLOSE_SHARE = 0.3;
 const CLOSE_MAX_PX = 120;
-/** A flick at this average speed closes it however short. */
 const FLICK_PX_PER_MS = 0.5;
-/** Movement before the gesture's direction is decided. */
 const SLOP_PX = 8;
 
 interface Gesture {
@@ -24,7 +14,6 @@ interface Gesture {
   axis: "x" | "y" | null;
   travel: number;
   follow: boolean;
-  /** The gesture belongs to something else: scrolling, or the other axis. */
   ignored: boolean;
 }
 
@@ -35,7 +24,6 @@ function reducedMotion(): boolean {
   );
 }
 
-/** Whether a drag down from `target` should scroll content back up instead of moving the layer. */
 function scrolledDown(target: EventTarget | null, layer: HTMLElement): boolean {
   for (
     let node = target instanceof Element ? target : null;
@@ -88,7 +76,6 @@ export function swipeToDismiss(
         if (gesture.ignored) return;
       }
       gesture.travel = Math.max(0, direction === "down" ? dy : -dx);
-      // The drag moves the layer, not the page under it.
       event.preventDefault();
       if (!gesture.follow) return;
       element.setAttribute("data-swiping", "");

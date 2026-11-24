@@ -1,10 +1,3 @@
-//! The pairing file: the identity Residuum Cloud announced and the paired
-//! devices, as hashes.
-//!
-//! Lives at `hub/remote-access.json`, readable only by its owner. It holds no
-//! credential that can be replayed: a device's cookie value is stored as its
-//! SHA-256, and so is every unused recovery code.
-
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
@@ -12,42 +5,30 @@ use serde::{Deserialize, Serialize};
 
 use super::error::PairingError;
 
-/// What Residuum Cloud announced about this install, kept so the pairing link,
-/// the credential cookie's name and the cross-site check still work while the
-/// tunnel is reconnecting.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Identity {
-    /// This instance's slug, which names the device cookie.
     #[serde(default)]
     pub slug: Option<String>,
-    /// The origin the web UI is reached at through the relay.
     #[serde(default)]
     pub ui_origin: Option<String>,
-    /// The origin the workbench artifacts are reached at through the relay.
     #[serde(default)]
     pub workbench_origin: Option<String>,
 }
 
-/// A paired browser. The secrets are hashes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct StoredDevice {
     pub(super) id: String,
     pub(super) name: String,
     pub(super) created_at: DateTime<Utc>,
     pub(super) last_seen: DateTime<Utc>,
-    /// When the cookie was last re-issued, so its lifetime keeps extending.
     #[serde(default)]
     pub(super) refreshed_at: Option<DateTime<Utc>>,
-    /// Hash of the credential on the UI host.
     #[serde(default)]
     pub(super) ui_hash: Option<String>,
-    /// Hashes of the credentials on the workbench host. A few can coexist,
-    /// because several frames can complete a handoff at once.
     #[serde(default)]
     pub(super) workbench_hashes: Vec<String>,
 }
 
-/// The unused recovery codes, as hashes.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct RecoveryCodes {
     #[serde(default)]
@@ -56,7 +37,6 @@ pub(super) struct RecoveryCodes {
     pub(super) hashes: Vec<String>,
 }
 
-/// Everything that survives a restart.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct Persisted {
     #[serde(default)]
@@ -67,12 +47,6 @@ pub(super) struct Persisted {
     pub(super) recovery: RecoveryCodes,
 }
 
-/// Read the pairing file. A missing file is an empty store.
-///
-/// A file that can't be parsed is moved aside to `<name>.unreadable` and the
-/// store starts empty: nobody can be let in on a file Residuum can't read, and
-/// the person at the machine can pair again. The move and the reason are
-/// logged at `error`.
 pub(super) fn load(path: &Path) -> Persisted {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
@@ -95,7 +69,6 @@ pub(super) fn load(path: &Path) -> Persisted {
     }
 }
 
-/// Write the pairing file, readable only by its owner.
 pub(super) async fn save(path: &Path, persisted: &Persisted) -> Result<(), PairingError> {
     let text = serde_json::to_string_pretty(persisted).map_err(|e| {
         tracing::error!(error = %e, "failed to serialize the paired devices");

@@ -24,8 +24,6 @@ export const keyboardScrollable: Attachment<HTMLElement> = (element) => {
     if (frame === 0) frame = requestAnimationFrame(update);
   }
 
-  // The region's size, and its children's: content can grow without a DOM
-  // change, as an image does when it loads.
   const resizes = new ResizeObserver(schedule);
   resizes.observe(element);
   for (const child of element.children) resizes.observe(child);

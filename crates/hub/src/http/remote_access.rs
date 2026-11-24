@@ -63,19 +63,15 @@ fn no_store(response: impl IntoResponse) -> Response {
     response
 }
 
-/// `GET /api/hub/remote-access/status`.
 async fn status(State(slot): State<RemoteAccessSlot>, parts: Parts) -> Response {
     no_store(Json(slot.status(!is_remote(&parts))))
 }
 
-/// `POST /api/hub/remote-access/retry`: look again now.
 async fn retry(State(slot): State<RemoteAccessSlot>) -> Response {
     slot.retry_now();
     StatusCode::NO_CONTENT.into_response()
 }
 
-/// `POST /api/hub/remote-access/recovery-code/saved`: the person has saved
-/// the recovery code; Residuum forgets it.
 async fn recovery_code_saved(State(slot): State<RemoteAccessSlot>, parts: Parts) -> Response {
     if is_remote(&parts) {
         return json_error(StatusCode::FORBIDDEN, LOCAL_ONLY);
@@ -97,8 +93,6 @@ struct ResetBody {
     recovery_code: String,
 }
 
-/// `POST /api/hub/remote-access/reset-pins`: take the address back with the
-/// recovery code. The new recovery code is in the status afterwards.
 async fn reset_pins(
     State(slot): State<RemoteAccessSlot>,
     parts: Parts,
@@ -116,8 +110,6 @@ async fn reset_pins(
     }
 }
 
-/// `POST /api/hub/remote-access/email-reset`: have the pin service email a
-/// reset link. Answers with the masked address the mail went to.
 async fn email_reset(State(slot): State<RemoteAccessSlot>, parts: Parts) -> Response {
     if is_remote(&parts) {
         return json_error(StatusCode::FORBIDDEN, LOCAL_ONLY);
@@ -131,9 +123,6 @@ async fn email_reset(State(slot): State<RemoteAccessSlot>, parts: Parts) -> Resp
     }
 }
 
-/// `POST /api/hub/remote-access/cancel-reset`: cancel the reset by email that
-/// is waiting to take effect. Allowed from paired devices too: cancelling only
-/// keeps the address where it is.
 async fn cancel_reset(State(slot): State<RemoteAccessSlot>) -> Response {
     action_result(slot.cancel_reset().await)
 }
@@ -159,12 +148,10 @@ async fn start_join(State(slot): State<RemoteAccessSlot>, Json(body): Json<JoinB
     action_result(slot.start_join(&body.instance).await)
 }
 
-/// `POST /api/hub/remote-access/joins/{id}/approve`.
 async fn approve_join(State(slot): State<RemoteAccessSlot>, Path(id): Path<String>) -> Response {
     action_result(slot.approve_join(&id).await)
 }
 
-/// `POST /api/hub/remote-access/joins/{id}/deny`.
 async fn deny_join(State(slot): State<RemoteAccessSlot>, Path(id): Path<String>) -> Response {
     action_result(slot.deny_join(&id))
 }
@@ -174,8 +161,6 @@ struct RemovePinBody {
     account_uri: String,
 }
 
-/// `POST /api/hub/remote-access/pins/remove`: stop allowing the certificate
-/// account of an instance that no longer exists.
 async fn remove_pin(
     State(slot): State<RemoteAccessSlot>,
     Json(body): Json<RemovePinBody>,
@@ -183,8 +168,6 @@ async fn remove_pin(
     action_result(slot.remove_pin(&body.account_uri).await)
 }
 
-/// `POST /api/hub/remote-access/instances/{slug}/activate`: send the user's
-/// address to that instance.
 async fn activate_instance(
     State(slot): State<RemoteAccessSlot>,
     Path(slug): Path<String>,

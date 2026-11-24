@@ -73,7 +73,6 @@ describe("watchedFrame", () => {
     expect(watchedFrame(["team/wiki"], frame)).toEqual(
       changed("team/wiki", "team/wiki/a.md", "team/wiki/b.md"),
     );
-    // Removing a folder carries the prefixes inside it along.
     expect(watchedFrame(["team/wiki/projects/index.md"], changed("team/wiki"))).toEqual(
       changed("team/wiki"),
     );

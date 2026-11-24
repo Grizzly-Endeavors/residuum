@@ -36,7 +36,6 @@ function newLog(): { log: MockTeamEvents; frames: HubServerMessage[] } {
 
 const ids = (events: readonly TeamEvent[]): number[] => events.map((event) => event.id);
 
-/** Every entry in the log, oldest first, read the way a client pages. */
 function everyEntry(log: MockTeamEvents): TeamEvent[] {
   const all: TeamEvent[] = [];
   let before: number | undefined;
@@ -83,7 +82,6 @@ describe("the team event log", () => {
 
     expect(ids(log.page({ after: 117 }).events)).toEqual([120, 119, 118]);
     expect(log.page({ after: 120 }).events).toEqual([]);
-    // More newer entries than fit: the newest come first, and before walks back to the client's position.
     const capped = log.page({ after: 100, limit: 3 });
     expect(ids(capped.events)).toEqual([120, 119, 118]);
     expect(capped.next_before).toBe(118);
@@ -183,7 +181,6 @@ describe("the team event routes", () => {
     return res.body as TeamEventPage;
   };
 
-  /** What the log says, oldest first, as `kind: summary`. */
   const told = async (): Promise<string[]> =>
     (await fetchPage("?limit=200")).events.reverse().map((e) => `${e.kind}: ${e.summary}`);
 
@@ -228,7 +225,6 @@ describe("the team event routes", () => {
       "agent_stopped: scout stopped",
       "agent_started: nova started",
       "agent_created: nova was created",
-      // A running agent stops before it is deleted, as it does in the backend.
       "agent_stopped: atlas stopped",
       "agent_deleted: atlas was deleted",
       "agent_started: atlas started",

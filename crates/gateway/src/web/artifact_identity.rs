@@ -10,16 +10,8 @@ use axum::http::HeaderMap;
 
 use residuum_net::workbench::is_valid_artifact_name;
 
-/// The header carrying the requesting artifact's name.
 pub(crate) const ARTIFACT_HEADER: &str = "x-residuum-artifact";
 
-/// The artifact named by the request's identity header: `Ok(None)` when the
-/// header is absent (the web UI itself, or another API client).
-///
-/// # Errors
-/// A plain-language explanation when the header is present but isn't a
-/// valid artifact name, which only a request not made through the SDK
-/// could send.
 pub(crate) fn artifact_identity(headers: &HeaderMap) -> Result<Option<String>, String> {
     let Some(value) = headers.get(ARTIFACT_HEADER) else {
         return Ok(None);

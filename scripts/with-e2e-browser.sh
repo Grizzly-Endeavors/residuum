@@ -70,10 +70,6 @@ else
     echo "note: neither timeout nor gtimeout is installed, so the Chromium install runs without a time limit (macOS: brew install coreutils)." >&2
 fi
 
-# The install runs in the background so Ctrl-C reaches this script (the limiter
-# starts its own process group); the trap stops the install and the script exits
-# instead of falling back to the container. --kill-after: a download that ignores
-# the first TERM must not hold the recipe.
 interrupted=0
 install_pid=""
 stop_install() {

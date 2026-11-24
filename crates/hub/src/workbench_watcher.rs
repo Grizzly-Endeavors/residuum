@@ -1,13 +1,3 @@
-//! Derives artifact reloads from the workspace change feed: whenever a batch
-//! touches `team/workbench/` (or the feed asks watchers to resync), the
-//! workbench is rescanned and a [`WorkbenchEvent`] is published for each
-//! artifact that was added, changed, or removed, so open artifact pages reload
-//! live.
-//!
-//! An artifact is its page, or every file inside its folder. An artifact's
-//! saved data sits beside it (`<name>.state.json`) and is not part of it, so
-//! an artifact saving its state never reloads itself.
-
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -16,22 +6,10 @@ use tokio::task::JoinHandle;
 
 use residuum_bus::{BusError, BusHandle, Publisher, WorkbenchEvent, WorkspaceEvent, topics};
 
-/// Where the workbench sits in the change feed's namespace: the team layer's
-/// `workbench/` folder, whose events carry `team/`-prefixed paths. An agent's
-/// own files never count, whatever they are named.
 const WORKBENCH_FEED_PREFIX: &str = "team/workbench";
 
-/// What identifies one version of an artifact: newest file time, total size, and
-/// file count (so adding or removing a file registers even when times don't
-/// move).
 type PageStamp = (Option<SystemTime>, u64, usize);
 
-/// Subscribe to the workspace change feed, take the workbench's current
-/// state, and spawn the task that publishes artifact reloads. The task runs
-/// until aborted or the bus shuts down.
-///
-/// # Errors
-/// Returns an error if the change feed subscription fails.
 pub async fn spawn_workbench_watcher(
     dir: PathBuf,
     bus: &BusHandle,
@@ -68,7 +46,6 @@ pub async fn spawn_workbench_watcher(
     }))
 }
 
-/// Whether a change-feed event may have changed an artifact.
 fn affects_workbench(event: &WorkspaceEvent) -> bool {
     match event {
         WorkspaceEvent::Changed(changes) => changes.iter().any(|c| {
@@ -76,13 +53,11 @@ fn affects_workbench(event: &WorkspaceEvent) -> bool {
                 .strip_prefix(WORKBENCH_FEED_PREFIX)
                 .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
         }),
-        // Changes were missed, so any artifact may have changed.
         WorkspaceEvent::Resync(_) => true,
         WorkspaceEvent::Unavailable => false,
     }
 }
 
-/// Scans the workbench, logging a failure once until a scan succeeds again.
 struct WorkbenchScanner {
     dir: PathBuf,
     failing: bool,
@@ -96,7 +71,6 @@ impl WorkbenchScanner {
         }
     }
 
-    /// The current artifacts, or `None` when the workbench can't be read.
     async fn scan(&mut self) -> Option<HashMap<String, PageStamp>> {
         match scan(&self.dir).await {
             Ok(pages) => {
@@ -269,7 +243,6 @@ mod tests {
     }
 
     impl Harness {
-        /// Write a file under the team workbench, given its path there.
         fn write(&self, relative: &str, content: &str) {
             let path = self
                 .workspace
@@ -304,8 +277,6 @@ mod tests {
         h.feed(changed(&["team/workbench/chart.state.json"])).await;
         h.write("chart.html", "<p>v1</p>");
         h.feed(changed(&["team/workbench/chart.html"])).await;
-        // The data file's batch came first; had it reloaded anything, that
-        // reload would arrive before this one.
         assert_eq!(
             h.next_reload().await,
             WorkbenchEvent::Updated {

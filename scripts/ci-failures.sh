@@ -1,72 +1,14 @@
 #!/usr/bin/env bash
-# Lists the failures of the latest CI runs for a pull request, a branch, a release
-# tag or a commit (failing tests, lint, type and format errors, timeouts), grouped
-# by job and step, so one pass fixes everything that broke. Each failure carries two
-# flags. touched: this change edits a file the failure names. seen elsewhere: the
-# same failure was in a failed run on another branch or tag within the last 14 days.
-# A failure that is not touched but is seen elsewhere is marked likely flake. Every
-# other failure is presumed to come from this change.
-#
-# For a PR number, the latest merge queue batch of the PR is listed as well when it
-# did not succeed: the full suite runs only in the queue, on a commit that is not
-# the PR's head, so a PR ejected from the queue failed there. The batch is
-# labelled with its commit.
-#
-# Usage: scripts/ci-failures.sh [PR-number | branch | vYYYY.MM.DD[-N] | commit]
-#        `just ci-failures` runs it for the current branch.
-#
-# touched          a file the failure names is in the change: the test's file, and
-#                  for a Rust failure also the file its panic was raised in. A test
-#                  of an integration module (tests/it) is also touched when the
-#                  change reaches a package the module's covers line names. The
-#                  diff is against the merge base with origin/main, or for a
-#                  release tag the diff since the previous release tag
-# seen elsewhere   the same failure was in a failed run on another branch or tag
-#                  in the last 14 days. The search covers the 150 most recent
-#                  completed runs, and a run that failed and was then rerun to
-#                  green counts as failed.
-#
-# Each workflow's latest run on the commit is listed. An earlier run of the same
-# workflow is listed too when it has a failed job that no later run ran again: a
-# later run can skip that job, as Cross-Platform Checks does when it runs for an
-# unrelated label added to a PR, and the earlier failure still stands.
-#
-# A job that ran past its timeout-minutes ends cancelled, and its log reads like any
-# cancelled job's. So the check-run annotations of every cancelled job are read, and
-# one that says the job exceeded its maximum execution time is listed as timed out,
-# with the step it was in and that step's last lines. A step's own timeout-minutes
-# fails the job and says so in the log. A timeout names no file, so it is never
-# touched; it is seen elsewhere when the same step timed out on another branch.
-#
-# Job logs come from the jobs logs endpoint, which serves any completed job, so the
-# failures of a run still in progress are listed as they finish: the run is marked
-# in progress, with a "still running: N of M jobs finished" line, and the summary
-# says the list is partial. Logs, annotations and job lists of completed attempts
-# are cached under target/ci-failures-cache/<run>-<attempt>/, so a repeat call only
-# asks GitHub about runs it has not seen. The log parser is
-# scripts/ci-failures-parse.awk, which lists the kinds of failure it recognizes;
-# scripts/ci-failures-test.sh checks it against the fixtures in
-# scripts/ci-failures-fixtures/.
-#
-# Exit status: 0 once the report is printed, failures listed or not; 1 when GitHub
-# or git could not be queried, or a run failed with no failed job to list. The
-# report still prints in both cases.
 set -euo pipefail
 
 readonly LOOKBACK_DAYS=14
 readonly LOOKBACK_RUNS=150
 readonly RUNS_PER_PAGE=100
-# An agent session started by an @claude mention, not a CI check: its runs are
-# never part of the report.
 readonly EXCLUDED_WORKFLOW="Claude Code"
-# Failures printed with their messages per job. Any beyond it are still listed,
-# one line each.
 readonly DETAIL_PER_JOB=20
 readonly MESSAGE_WIDTH=220
 readonly US=$'\037'
 readonly RS=$'\036'
-# The paths that run the Rust checks: the RUST_PATHS_RE of .github/workflows/ci.yml,
-# read from there as the pre-push hook reads it.
 RUST_PATHS_RE="$(sed -n "s/^ *RUST_PATHS_RE: '\(.*\)'\$/\1/p" "$(dirname "${BASH_SOURCE[0]}")/../.github/workflows/ci.yml")"
 if [[ -z "$RUST_PATHS_RE" ]]; then
     echo "ci-failures: could not read RUST_PATHS_RE from .github/workflows/ci.yml" >&2
@@ -79,8 +21,6 @@ die() {
     exit 1
 }
 
-# The lines of the given files, each distinct line once, in first-seen order. Two
-# fetch workers must never be started on the same job.
 unique_lines() {
     awk '!seen[$0]++' "$@"
 }
@@ -103,13 +43,10 @@ export repo cache work
 
 query_errors=0
 
-# --- what to look at ----------------------------------------------------------
-
 arg="${1:-$(git rev-parse --abbrev-ref HEAD)}"
 change_word="change"
 base_sha=""
 base_desc=""
-# The queue branch of a PR's merge batches, set for a PR number only.
 queue_prefix=""
 
 if [[ "$arg" =~ ^[0-9]+$ ]]; then
@@ -159,8 +96,6 @@ if [[ -z "$base_sha" ]]; then
     if [[ -n "$base_sha" ]]; then
         base_desc="merge base with origin/main ${base_sha:0:7}"
     fi
-    # A commit already on main has nothing to diff against its merge base, so its
-    # change is taken as everything since the previous release tag.
     if [[ "$base_sha" == "$sha" ]]; then
         previous="$(git describe --tags --abbrev=0 --match 'v*' "$sha^" 2>/dev/null || true)"
         base_sha=""
@@ -190,15 +125,8 @@ while IFS= read -r file; do
     repo_files["$file"]=1
 done <<<"$repo_list"
 
-# --- runs ---------------------------------------------------------------------
-
 gh api --paginate "repos/$repo/actions/runs?head_sha=$sha&per_page=100" > "$work/target-raw.json" \
     || die "could not list CI runs for ${sha:0:7}"
-# Every run on the commit, grouped by workflow name, the latest run of each name
-# first and the earlier ones after it marked `earlier`. A later run can skip a job
-# an earlier one ran: Cross-Platform Checks runs again for every label added to a
-# PR and skips its checks for an unrelated label. So an earlier run's failed job is
-# reported unless a later run of the workflow ran that job again (see reported_jobs).
 jq -c -s --arg excluded "$EXCLUDED_WORKFLOW" '
     [ .[].workflow_runs[] | select(.name != $excluded) ]
     | group_by(.name) | .[] | sort_by(-.id) | to_entries[]
@@ -206,17 +134,12 @@ jq -c -s --arg excluded "$EXCLUDED_WORKFLOW" '
     | {id, name, run_attempt, status, conclusion, head_branch, head_sha, html_url, earlier}
 ' "$work/target-raw.json" > "$work/target.jsonl" || die "could not read the CI runs for ${sha:0:7}"
 
-# The branch whose runs are this change's own, so the seen-elsewhere search skips them.
 if [[ -n "$queue_prefix" ]]; then
     target_branch="$(jq -r .headRefName <<<"$pr_json")"
 else
     target_branch="$(jq -r '.head_branch' "$work/target.jsonl" | sed -n 1p)"
 fi
 
-# A PR's head runs only the early warnings; the full suite runs on its merge queue
-# batches, on the queue branch. So for a PR the latest queue run of each workflow
-# that was created after the head commit is added, unless it succeeded, whether or
-# not a head run failed, and even when the head has no runs at all.
 if [[ -n "$queue_prefix" ]]; then
     head_epoch="$(git show -s --format=%ct "$sha")" || die "could not read the commit time of ${sha:0:7}"
     if gh api "repos/$repo/actions/runs?event=merge_group&per_page=100" > "$work/queue-raw.json"; then
@@ -234,8 +157,6 @@ if [[ ! -s "$work/target.jsonl" ]]; then
     exit 0
 fi
 
-# Recent completed runs on other branches, for the seen-elsewhere flag: the
-# LOOKBACK_RUNS most recent, fetched in pages of at most RUNS_PER_PAGE.
 lookback_ok=yes
 : > "$work/recent.jsonl"
 left=$LOOKBACK_RUNS
@@ -253,12 +174,8 @@ for (( page = 1; left > 0; page++ )); do
     fi
 done
 
-# A run that was rerun to green still shows its failed first attempt, so the
-# lookback keeps every run that failed or has more than one attempt.
 : > "$work/look.jsonl"
 if [[ "$lookback_ok" == yes && -s "$work/recent.jsonl" ]]; then
-    # A run listed on two pages (new runs land between page fetches) is kept once.
-    # The PR's own merge batches are its runs too, so they never count as elsewhere.
     jq -s -c --arg excluded "$EXCLUDED_WORKFLOW" --arg br "$target_branch" --arg sha "$sha" \
         --arg own "$queue_prefix" --argjson days "$LOOKBACK_DAYS" '
         (now - $days * 86400 | todate) as $cut
@@ -272,17 +189,10 @@ if [[ "$lookback_ok" == yes && -s "$work/recent.jsonl" ]]; then
     ' "$work/recent.jsonl" > "$work/look.jsonl" || die "could not read the recent CI runs"
 fi
 
-# "run attempt status" for each attempt of the target runs, and of each lookback
-# run: every attempt of a rerun is listed, because each one can hold a failure.
 jq -r '"\(.id) \(.run_attempt) \(.status)"' "$work/target.jsonl" > "$work/target-attempts.txt"
 jq -r '. as $r | range(1; $r.run_attempt + 1) as $a | "\($r.id) \($a) completed"' \
     "$work/look.jsonl" > "$work/look-attempts.txt"
 
-# --- jobs and logs --------------------------------------------------------------
-
-# Copies src to dest through a temp file beside dest, so a reader never sees a
-# partial copy and a failed copy leaves nothing at dest. Used for the cached job
-# lists; fetch_log gives the cached logs the same treatment with a move.
 publish_copy() { # src dest
     local tmp
     tmp="$(mktemp "$2.XXXXXX")" || return 1
@@ -293,7 +203,6 @@ publish_copy() { # src dest
     return 1
 }
 
-# Each worker writes a temp file of its own, so two workers never race on one name.
 fetch_jobs() { # run attempt status
     set -o pipefail
     local dest="$work/jobs/$1-$2.jsonl" cached="$cache/$1-$2/jobs.jsonl" tmp
@@ -330,9 +239,6 @@ fetch_log() { # run attempt job
         return 1
     fi
 }
-# The check-run annotations of a cancelled job (a job's check run has the job's id).
-# A job that ran past its timeout-minutes ends cancelled, with a log like any other
-# cancelled job's; only its annotation says it ran out of time.
 fetch_annotations() { # run attempt job
     set -o pipefail
     local out="$cache/$1-$2/$3.annotations.json" tmp
@@ -354,14 +260,12 @@ export -f publish_copy fetch_jobs fetch_log fetch_annotations
 unique_lines "$work/target-attempts.txt" "$work/look-attempts.txt" \
     | xargs -r -P 8 -L 1 bash -c 'fetch_jobs "$@"' _ || true
 
-# A failed fetch writes no file, so a missing job list is a failed query.
 while read -r run attempt _; do
     if [[ ! -f "$work/jobs/$run-$attempt.jsonl" ]]; then
         query_errors=$((query_errors + 1))
     fi
 done < <(unique_lines "$work/target-attempts.txt" "$work/look-attempts.txt")
 
-# "run attempt job" lines for the failed jobs of one list of attempts.
 failed_jobs() { # attempts file
     local run attempt file
     while read -r run attempt _; do
@@ -373,8 +277,6 @@ failed_jobs() { # attempts file
     done < "$1"
 }
 
-# "run attempt job" lines for the jobs of one list of attempts that were cancelled
-# while a step ran. A job that ran past its timeout-minutes is one of them.
 cancelled_jobs() { # attempts file
     local run attempt file
     while read -r run attempt _; do
@@ -394,8 +296,6 @@ cancelled_jobs "$work/look-attempts.txt" > "$work/cancelled-look.txt"
 unique_lines "$work/cancelled-target.txt" "$work/cancelled-look.txt" \
     | xargs -r -P 8 -L 1 bash -c 'fetch_annotations "$@"' _ || true
 
-# The cancelled jobs that ran out of time, with the annotation that says so. Their
-# logs are fetched and reported as a failed job's are.
 declare -A job_timeout=()
 for side in target look; do
     while read -r run attempt job; do
@@ -426,8 +326,6 @@ parse_job() { # run attempt job -> records in $work/rec; fails when the log is m
         || die "could not parse the log of job $3 in run $1"
 }
 
-# --- seen-elsewhere index ---------------------------------------------------------
-
 declare -A look_branch=()
 while read -r id head; do
     look_branch["$id"]="$head"
@@ -448,19 +346,15 @@ seen_on() { # key -> comma list of other branches with the same failure
     K="$1" awk -F '\t' '$1 == ENVIRON["K"] { print $3 }' "$work/index.tsv" | sort -u | paste -sd, -
 }
 
-# --- report ---------------------------------------------------------------------
-
 module_files() { # a::b::c::test -> the repo files that hold module a::b::c
     local name="$1" member=no root base cand module_match k count
     local -a roots=() segs
     local out=""
     if [[ "$name" =~ ^residuum_([a-z0-9_]+)::(.+)$ ]]; then
-        # A member crate's test path starts below the crate, so only its src/ holds it.
         member=yes
         roots=("crates/${BASH_REMATCH[1]//_/-}/src")
         name="${BASH_REMATCH[2]}"
     else
-        # A bare name can be in the root package or in any member crate.
         roots=("src")
         while IFS= read -r root; do
             roots+=("$root")
@@ -494,11 +388,6 @@ module_files() { # a::b::c::test -> the repo files that hold module a::b::c
         fi
     done
     if [[ "$member" == no ]]; then
-        # An integration test is named by its module in tests/it/, and a standalone
-        # test target is tests/<name>.rs. Both can exist for one name, so every
-        # candidate that exists counts.
-        # A top-level tests/it module is a file or a directory with a mod.rs; a
-        # nested path can also name a file of that directory.
         if [[ -n "${repo_files[tests/it/${segs[0]}.rs]:-}" ]]; then
             out="$out tests/it/${segs[0]}.rs"
         fi
@@ -515,9 +404,6 @@ module_files() { # a::b::c::test -> the repo files that hold module a::b::c
     echo "${out# }"
 }
 
-# The file of the module that holds a test named by its path: the top-level module
-# a::b::test is in, as tests/it/a.rs or tests/it/a/mod.rs.
-# Prints nothing for a bare name or a member crate's test.
 it_module_file() { # a::b::test -> tests/it/a.rs or tests/it/a/mod.rs
     local name="$1" seg0 cand
     if [[ "$name" != *::* || "$name" =~ ^residuum_ ]]; then
@@ -543,10 +429,6 @@ module_covers() { # tests/it file -> package names
     awk -v list="$list" 'BEGIN { n = split(list, names, ", "); for (i = 1; i <= n; i++) print names[i] }'
 }
 
-# The package a changed path belongs to, or nothing when no Rust check reads the
-# path, so docs, the web app and the workflows count for no package. crates/<dir>/
-# is residuum-<dir>. The two paths residuum-hub reads by path belong to it, as the
-# hub's tests do. Any other Rust path is in the root package, residuum.
 package_of() { # path -> package
     local path="$1"
     if ! grep -qE "$RUST_PATHS_RE" <<<"$path"; then
@@ -575,12 +457,6 @@ print_messages() { # messages indent
     done
 }
 
-# The jobs of one run to report, as "id<TAB>name<TAB>conclusion<TAB>steps" rows: the
-# jobs that failed, timed out or were cancelled, with the steps that failed, or for
-# a cancelled job the step that was cancelled. For an earlier run of a workflow
-# (earlier is true), a job a later run of the workflow ran again is left out,
-# because the later result stands; a job the later runs skipped, or do not have,
-# keeps its earlier result. The later runs' jobs are in ran_later.
 reported_jobs() { # jobs-file workflow earlier
     local id job_name rest
     while IFS=$'\t' read -r id job_name rest; do
@@ -589,7 +465,6 @@ reported_jobs() { # jobs-file workflow earlier
             if [[ -n "${ran_later[$2$US$job_name]:-}" ]]; then
                 continue
             fi
-            # A cancelled job of an earlier run has no results to show.
             if [[ "$rest" == cancelled* && -z "${job_timeout[$id]:-}" ]]; then
                 continue
             fi
@@ -603,16 +478,10 @@ reported_jobs() { # jobs-file workflow earlier
     )
 }
 
-# Whether an earlier run is left out of the report: it is when a later run reran all
-# of its failed jobs (no rows) and it has finished. A run still in progress is kept,
-# so its failures so far show and the summary counts it as partial.
 skip_earlier_run() { # earlier status job-rows
     [[ "$1" == true && "$2" == completed && -z "$3" ]]
 }
 
-# Adds the jobs a run ran, every job it did not skip, to ran_later, so an earlier run
-# of the same workflow does not report them again. A job still running counts: its
-# result replaces the earlier one.
 remember_ran_jobs() { # jobs-file workflow
     local job_name
     while IFS= read -r job_name; do
@@ -620,7 +489,6 @@ remember_ran_jobs() { # jobs-file workflow
     done < <(jq -r 'select(.conclusion != "skipped") | .name' "$1")
 }
 
-# The packages the change touches, for the covers check.
 declare -A changed_pkgs=()
 for file in "${!changed[@]}"; do
     changed_pkg="$(package_of "$file")"
@@ -642,8 +510,6 @@ seen_n=0
 flake_n=0
 unparsed_n=0
 running_n=0
-# The jobs of each workflow that a later run on the commit ran, keyed by workflow
-# and job name, filled in as the runs are reported, latest run first.
 declare -A ran_later=()
 while IFS= read -r run_line; do
     IFS=$'\t' read -r run_id attempt status conclusion name url branch head earlier < <(
@@ -743,8 +609,6 @@ while IFS= read -r run_line; do
                         break
                     fi
                 done
-                # An it test whose module is not edited is still touched when the
-                # change reaches a package the module's covers line names.
                 if [[ "$touched" == no && "$kind" == rust ]]; then
                     it_file="$(it_module_file "$title")"
                     if [[ -n "$it_file" ]]; then

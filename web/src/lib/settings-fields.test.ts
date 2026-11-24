@@ -20,7 +20,6 @@ import {
 } from "./settings-toml";
 import type { McpServerEntry, ModelRoleKey, SettingsProviderEntry } from "./types";
 
-/** Where a patch sets its one key: the path of nested single-key objects, down to a value, list or `$inline` table. */
 function leafPath(patch: Record<string, unknown>): string[] {
   const path: string[] = [];
   let node: unknown = patch;
@@ -39,7 +38,6 @@ function leafPath(patch: Record<string, unknown>): string[] {
   return path;
 }
 
-/** A value that differs from the form's default, of the same kind. */
 function changedFrom(value: unknown): unknown {
   if (typeof value === "boolean") return !value;
   if (Array.isArray(value)) return ["x"];
@@ -51,7 +49,6 @@ describe("every field of every form is in the key-path map", () => {
   const configFields = Object.keys(defaults) as (keyof typeof defaults)[];
 
   it("covers every field of ConfigFields, at the key its diff writes", () => {
-    // Collections are keyed by name, so their entries are covered below.
     for (const field of configFields.filter((f) => f !== "webhooks" && f !== "pricing")) {
       const path = keyPathOf({ kind: "config", field });
       expect(path.length, `${field} has a key path`).toBeGreaterThan(0);
@@ -200,7 +197,6 @@ describe("every field of every form is in the key-path map", () => {
     for (const field of fields) {
       const patch = diffMcpServers([server], [{ ...server, [field]: changes[field] }]);
       const ref: FieldRef = { kind: "mcp", name: "fs", field: field as "command" };
-      // `env` and `headers` are written key by key, inside the field's table.
       expect(leafPath(patch).slice(0, keyPathOf(ref).length)).toEqual([...keyPathOf(ref)]);
     }
   });
@@ -269,7 +265,6 @@ describe("placing a key path on a field", () => {
       name: "alerts",
       field: "content_fields",
     });
-    // A key the form doesn't model sits on its entry.
     expect(locateField("agent", "mcp", "mcpServers.fs.timeout")).toEqual({
       kind: "mcp",
       name: "fs",

@@ -7,11 +7,6 @@
   import SettingsGroup from "./SettingsGroup.svelte";
   import SettingsSection from "./SettingsSection.svelte";
 
-  // The Memory section: when the agent writes conversation down
-  // as memories and tidies them, what it learns and how it reviews its own
-  // replies, and how it searches what it kept. All of it lives in the agent's
-  // `config.toml`, so it stays editable while the agent is stopped.
-
   let { scope, section }: AgentSectionProps = $props();
 
   const agent = $derived(scope.agent);
@@ -27,7 +22,6 @@
     "search_temporal_decay_half_life_days",
   ] as const;
 
-  // A problem on a field inside the closed disclosure opens it, so it isn't hidden.
   let searchOpen = $state(false);
   const searchProblem = $derived(
     SEARCH_FIELDS.some((field) => fieldError(scope, { kind: "config", field }) !== undefined),

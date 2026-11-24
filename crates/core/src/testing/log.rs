@@ -1,18 +1,13 @@
-//! Capturing the log events a test causes, so the test can check what was
-//! logged.
-
 use std::sync::Arc;
 
 use tracing_subscriber::layer::SubscriberExt as _;
 
-/// One log event: its level and every field rendered as `name=value`.
 #[derive(Debug, Clone)]
 pub struct LoggedEvent {
     pub level: tracing::Level,
     pub text: String,
 }
 
-/// A tracing layer that records every event, so a test can check what was logged.
 #[derive(Clone, Default)]
 pub struct EventLog {
     events: Arc<std::sync::Mutex<Vec<LoggedEvent>>>,
@@ -46,18 +41,10 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for EventLog {
     }
 }
 
-/// Two empty dispatchers kept registered for the whole test process.
-///
-/// tracing-core resolves a call site's interest against the calling thread's
-/// own default alone while exactly one dispatcher is registered. A call site
-/// first hit on a thread with no capture would then cache "never" and drop
-/// its events for every later capture. Keeping two registered means the
-/// interest is always resolved against every live dispatcher.
 static RESIDENT_DISPATCHERS: std::sync::OnceLock<[tracing::Dispatch; 2]> =
     std::sync::OnceLock::new();
 
 impl EventLog {
-    /// Route this thread's log events here until the guard drops.
     #[must_use]
     pub fn capture(&self) -> tracing::subscriber::DefaultGuard {
         RESIDENT_DISPATCHERS.get_or_init(|| {
@@ -68,17 +55,10 @@ impl EventLog {
         });
         let guard =
             tracing::subscriber::set_default(tracing_subscriber::registry().with(self.clone()));
-        // Call sites this thread registered before the capture were cached
-        // without it; recompute them now that it is live.
         tracing::callsite::rebuild_interest_cache();
         guard
     }
 
-    /// Every event logged so far.
-    ///
-    /// # Panics
-    /// Panics when the log's lock is poisoned, which takes a test thread that
-    /// already panicked while logging.
     #[must_use]
     #[expect(
         clippy::unwrap_used,
@@ -88,11 +68,6 @@ impl EventLog {
         self.events.lock().unwrap().clone()
     }
 
-    /// The events logged so far whose text contains `needle`.
-    ///
-    /// # Panics
-    /// Panics when the log's lock is poisoned, which takes a test thread that
-    /// already panicked while logging.
     #[must_use]
     pub fn matching(&self, needle: &str) -> Vec<LoggedEvent> {
         self.events()
@@ -106,8 +81,6 @@ impl EventLog {
 mod tests {
     use super::EventLog;
 
-    /// One call site shared by the test's threads: its first call registers
-    /// it with the dispatchers live on that thread.
     fn emit_probe() {
         tracing::info!("callsite probe");
     }
@@ -117,8 +90,6 @@ mod tests {
         let log = EventLog::default();
         let _capture = log.capture();
 
-        // A thread with no capture of its own registers the call site, as a
-        // parallel test that never captures logs would.
         std::thread::spawn(emit_probe)
             .join()
             .expect("probe thread should finish");

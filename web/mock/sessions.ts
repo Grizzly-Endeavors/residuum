@@ -22,34 +22,21 @@ import {
 import { decodedParam, type Route, type RouteContext } from "./routes";
 import type { MockState } from "./state";
 
-/**
- * Transcript fetches are slowed down so the "Loading transcript…" state (and
- * anything racing it, like messaging a session straight after opening it)
- * can be exercised by hand.
- */
 const TRANSCRIPT_DELAY_MS = 700;
 
 const OWNER_MESSAGE_LABEL =
   "[Message from the owner via the web UI — your response in this turn is shown to them directly]";
 
-/** The owner's sender address and category, as the backend gives them. */
 const OWNER_ADDRESS = "owner";
 const OWNER_CATEGORY = "owner";
 
-/** A message id a sender may choose, as the backend accepts one. */
 const MESSAGE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const INVALID_MESSAGE_ID =
   "The message id must be 1 to 128 characters of letters, digits, dashes and underscores.";
 
-/** Where a session command's reply goes: the socket that sent the command. */
 export type SessionReply = (frame: ServerMessage) => void;
 
 type SessionMessage = Pick<RecentMessage, "role" | "content"> & Partial<RecentMessage>;
-
-// Session lifecycle helpers shared by the WebSocket command handlers and the
-// REST endpoints that start, stop, and message sessions for the owner or an
-// artifact (`POST /api/sessions` and friends) — both need to mutate the same
-// in-memory sessions and announce it over the same broadcast channel.
 
 function recordMessage(state: MockState, session: SessionSummary, message: SessionMessage): void {
   const { transcripts } = state.sessions;
@@ -76,9 +63,6 @@ function completeSession(
   errorDetails: string | null = null,
 ): void {
   const { sessions } = state;
-  // A run's end ends the turn in flight. What it hadn't read resumes the
-  // session as a new run once this one has gone, as the backend's
-  // `finish_run` does.
   const unread = sessions.turns.get(session.run_id)?.unread.splice(0) ?? [];
   sessions.turns.delete(session.run_id);
   setSessionState(state, session, "completing");
@@ -97,7 +81,6 @@ function completeSession(
       ...(errorDetails === null ? {} : { error_details: errorDetails }),
       memory_pending: true,
     });
-    // The memory merge runs after the run has left the live list.
     state.env.after(1500, () => {
       session.episode_id = status === "completed" ? "ep-301" : null;
       session.memory_pending = false;
@@ -113,7 +96,6 @@ function completeSession(
   });
 }
 
-/** The owner's message, under the id the client chose or one given here. */
 function ownerMessage(
   state: MockState,
   id: string | undefined,
@@ -130,7 +112,6 @@ function ownerMessage(
   };
 }
 
-/** The session reads `message` in the turn `turnId`: into its transcript, and announced. */
 function readMessage(
   state: MockState,
   session: SessionSummary,
@@ -154,7 +135,6 @@ function readMessage(
   });
 }
 
-/** Hand `message` to a live session: the turn in flight reads it after its tool batch, or it starts a turn. */
 function deliverMessage(
   state: MockState,
   session: SessionSummary,
@@ -165,9 +145,6 @@ function deliverMessage(
   else runSessionTurn(state, session, message.reply, [message]);
 }
 
-// One turn: running → the messages that start it → tool → the messages sent
-// meanwhile → reply → idle, relaying to main when spawned by it. A message
-// sent after the tool batch starts the next turn.
 function runSessionTurn(
   state: MockState,
   session: SessionSummary,
@@ -215,7 +192,6 @@ function runSessionTurn(
       output: "1 result: notification-routing.md",
       is_error: false,
     });
-    // The checkpoint after the tool batch: the turn takes in what was sent meanwhile.
     if (sessions.turns.get(session.run_id) !== turn) return;
     for (const message of turn.unread.splice(0)) {
       readMessage(state, session, turnId, message);
@@ -246,10 +222,6 @@ function runSessionTurn(
   });
 }
 
-/**
- * `session` sends main `body`, as the backend relays a session's result: with
- * the header that names the sender, and the sender, run included, alongside.
- */
 export function messageMainFrom(state: MockState, session: SessionSummary, body: string): void {
   state.messageMain(`[Agent Message from ${session.address} (${session.category})]\n${body}`, {
     address: session.address,
@@ -258,7 +230,6 @@ export function messageMainFrom(state: MockState, session: SessionSummary, body:
   });
 }
 
-/** Start a subagent session on the main agent's behalf, and let it run one turn. */
 export function spawnSession(state: MockState, purpose: string): SessionSummary {
   const { sessions } = state;
   sessions.runCounter++;
@@ -290,12 +261,10 @@ export function spawnSession(state: MockState, purpose: string): SessionSummary 
   return session;
 }
 
-/** The note telling a resumed session where its previous run went, as the backend writes it. */
 function resumePointer(prev: SessionSummary): string {
   return `[Resumed session] Your previous run (${prev.run_id}) has ended. Retrieve its transcript with memory_get using that run id if useful.`;
 }
 
-/** Bring a finished session back as a new run, whose first turn reads `messages`. */
 function resumeRun(
   state: MockState,
   prev: SessionSummary,
@@ -316,8 +285,6 @@ function resumeRun(
   sessions.live.unshift(session);
   state.broadcast({ type: "session_started", session });
   state.env.after(400, () => {
-    // The pointer to the previous run opens the transcript as context the
-    // session reads, which the panel never draws.
     recordMessage(state, session, {
       role: "user",
       content: resumePointer(prev),
@@ -328,7 +295,6 @@ function resumeRun(
   return session;
 }
 
-/** The `session_send_message` socket command: message a live session, or resume a finished one. */
 export function sendSessionMessage(
   state: MockState,
   reply: SessionReply,
@@ -405,7 +371,6 @@ export function sendSessionMessage(
   });
 }
 
-/** The `session_stop` socket command. */
 export function stopSession(
   state: MockState,
   reply: SessionReply,
@@ -427,9 +392,6 @@ export function stopSession(
   completeSession(state, live, "cancelled", null);
 }
 
-// ─── REST ──────────────────────────────────────────────────────────────────────
-
-/** An error body of the session endpoints: a message and the code clients branch on. */
 function sessionError(
   ctx: RouteContext,
   status: number,
@@ -481,7 +443,6 @@ async function sessionTranscript(ctx: RouteContext): Promise<void> {
 const START_FIELDS = new Set(["prompt", "context", "skill", "model", "fork"]);
 const MODEL_SIZES = new Set(["small", "medium", "large"]);
 
-/** Whether `model` is a tier or a `provider/model` id, the shapes the backend accepts. */
 function isModelSelector(model: string): boolean {
   if (MODEL_SIZES.has(model)) return true;
   const slash = model.indexOf("/");
@@ -489,7 +450,6 @@ function isModelSelector(model: string): boolean {
 }
 const MALFORMED_START = 'the body must be JSON like {"prompt": "..."}';
 
-/** A session start's prompt and fork flag, or the backend's reason it can't be read. */
 function readStartRequest(raw: string): { prompt: string; fork: boolean } | { error: string } {
   let body: JsonObject;
   try {
@@ -513,12 +473,10 @@ function readStartRequest(raw: string): { prompt: string; fork: boolean } | { er
   return { prompt, fork };
 }
 
-/** Who a session started over HTTP is: its identity, and the framing its first message carries. */
 type StartedSession = Pick<SessionSummary, "address" | "run_id" | "category" | "source_label"> & {
   framing: string;
 };
 
-/** The owner's own session: a clean one, or with `fork` a fork of the main conversation. */
 function ownerSession(state: MockState, fork: boolean): StartedSession {
   const n = state.sessions.runCounter;
   return {
@@ -543,11 +501,6 @@ function artifactSession(state: MockState, artifactName: string): StartedSession
   };
 }
 
-// POST /api/sessions — start a session at depth 1 with no spawner, so
-// nothing it says reaches the main chat. With the artifact identity header
-// it is the artifact session `residuum.sessions.start` asks for through the
-// bridge; without it, the owner's own `spawned` session, clean or (with
-// `fork`, `/multitask`) a fork of the main conversation.
 async function startSession(ctx: RouteContext): Promise<void> {
   const { req, res, state } = ctx;
   const artifactName = artifactIdentity(req);
@@ -600,11 +553,6 @@ async function startSession(ctx: RouteContext): Promise<void> {
   json(res, 202, { address: session.address });
 }
 
-/**
- * An owner's start the agent took but couldn't fork: no run is listed, and a
- * moment later every page is sent `session_start_failed` for its address, as
- * the backend sends it when the session's model has no working provider.
- */
 function failOwnerStart(state: MockState, address: string): void {
   state.env.after(400, () => {
     state.broadcast({
@@ -617,7 +565,6 @@ function failOwnerStart(state: MockState, address: string): void {
   });
 }
 
-// POST /api/sessions/:address/stop — stop any live session.
 function stopSessionRoute(ctx: RouteContext): void {
   const { res, state } = ctx;
   const address = decodedParam(ctx, 0);
@@ -634,9 +581,6 @@ function stopSessionRoute(ctx: RouteContext): void {
   json(res, 202, { address });
 }
 
-// POST /api/sessions/:address/messages — message any session, attributed
-// to the artifact naming itself with the identity header, or the owner,
-// under the `id` the client chose or one given here.
 async function messageSessionRoute(ctx: RouteContext): Promise<void> {
   const { req, res, state } = ctx;
   const address = decodedParam(ctx, 0);
@@ -685,7 +629,6 @@ async function messageSessionRoute(ctx: RouteContext): Promise<void> {
   json(res, 200, { outcome: "resumed" satisfies SessionDeliveryOutcome, id: message.id });
 }
 
-/** The sessions endpoints, in the unscoped `/api/...` spelling. */
 export const sessionRoutes: readonly Route[] = [
   { method: "GET", pattern: "/api/sessions", handler: listSessions },
   {

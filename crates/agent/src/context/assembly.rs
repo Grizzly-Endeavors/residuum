@@ -1,5 +1,3 @@
-//! System prompt assembly: combines identity, memory, and context into messages.
-
 use residuum_inference::Message;
 use residuum_workspace::identity::IdentityFiles;
 
@@ -7,13 +5,6 @@ use super::super::recent_messages::RecentMessages;
 use super::prompt::build_system_prompt;
 use super::types::{MemoryContext, PromptContext, RequestLayout};
 
-/// Assemble the full message list for a model call, and what each part of
-/// it is (its tool count left for the caller that adds the tools).
-///
-/// Creates a system message from identity files and observation log content,
-/// then appends the recent messages. A message that carries a status line
-/// ([`Message::status_line`]) is preceded by it as a system message, the
-/// bytes stored when the message arrived, so earlier turns replay unchanged.
 #[must_use]
 pub(crate) fn assemble_system_prompt(
     identity: &IdentityFiles,

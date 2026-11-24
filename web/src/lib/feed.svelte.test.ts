@@ -24,14 +24,12 @@ function segment(
   return { kind: "recent", messages, next_cursor: nextCursor };
 }
 
-/** Load a store with two settled messages unrelated to the turn under test. */
 function storeWithSettledHistory(): FeedStore {
   const store = new FeedStore();
   store.loadHistory(segment([historyMsg("user", "unrelated"), historyMsg("assistant", "ack")]));
   return store;
 }
 
-/** Start a live turn (user message pushed, `turn_started` received). */
 function startLiveTurn(store: FeedStore, content: string, turnId: string): void {
   store.pushUserMessage(content);
   store.handleMessage({
@@ -46,8 +44,6 @@ describe("FeedStore reconcileRecent end-of-turn decision", () => {
     const store = storeWithSettledHistory();
     startLiveTurn(store, "hello", "t2");
 
-    // Reconnect: history now has an unrelated message with identical text,
-    // recorded under a different turn — the live turn hasn't finished.
     const fresh = segment([
       historyMsg("user", "unrelated"),
       historyMsg("assistant", "ack"),
@@ -175,7 +171,6 @@ describe("FeedStore dividers", () => {
 });
 
 describe("FeedStore day dividers for live messages around local midnight", () => {
-  /** A store whose history ends at `last`, a local timestamp, read with the clock set to `now`. */
   function storeEndingAt(last: string, now: string): FeedStore {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(now));
@@ -194,7 +189,6 @@ describe("FeedStore day dividers for live messages around local midnight", () =>
 
   it("starts no new day while it is still the same day here, though it is the next day in UTC", () => {
     vi.stubEnv("TZ", "America/Los_Angeles");
-    // 23:30 on the 9th in Los Angeles is 06:30 on the 10th in UTC.
     const store = storeEndingAt("2026-10-09T23:10:00", "2026-10-10T06:30:00Z");
     store.pushUserMessage("Still the same evening");
     expect(dividers(store)).toEqual([]);
@@ -202,7 +196,6 @@ describe("FeedStore day dividers for live messages around local midnight", () =>
 
   it("starts the new day when midnight passes here", () => {
     vi.stubEnv("TZ", "America/Los_Angeles");
-    // 00:10 on the 10th in Los Angeles is 07:10 on the 10th in UTC.
     const store = storeEndingAt("2026-10-09T23:40:00", "2026-10-10T07:10:00Z");
     store.pushUserMessage("Just after midnight");
     expect(dividers(store)).toMatchObject([{ variant: "day", date: "2026-10-10" }]);
@@ -210,7 +203,6 @@ describe("FeedStore day dividers for live messages around local midnight", () =>
 
   it("starts the new day just after midnight east of UTC, where UTC is still on the old day", () => {
     vi.stubEnv("TZ", "Pacific/Auckland");
-    // 00:30 on the 10th in Auckland is 11:30 on the 9th in UTC.
     const store = storeEndingAt("2026-10-09T23:50:00", "2026-10-09T11:30:00Z");
     store.pushUserMessage("Just after midnight");
     expect(dividers(store)).toMatchObject([{ variant: "day", date: "2026-10-10" }]);
@@ -293,7 +285,6 @@ describe("FeedStore when a turn fails", () => {
     live.handleMessage({ type: "turn_ended", reply_to: "web-a" });
     expect(live.feed.map((item) => item.kind)).toEqual(["user", "turn-failure"]);
 
-    // The server recorded the message of the turn that failed, and nothing else.
     const reloaded = new FeedStore();
     reloaded.loadHistory(segment([historyMsg("user", "Hello", { turnId: "web-a" })]));
     expect(reloaded.feed.map((item) => item.kind)).toEqual(["user"]);
@@ -397,7 +388,6 @@ describe("FeedStore when a turn fails", () => {
       failedTurn(store);
       const asked = store.feed.find((item) => item.kind === "user");
       if (asked?.kind !== "user" || asked.turn === undefined) throw new Error("expected a tag");
-      // The failed attempt's check found nothing changed.
       asked.turn.changed = false;
 
       store.handleMessage(started("web-a"));
@@ -734,9 +724,6 @@ describe("FeedStore announcements", () => {
 });
 
 describe("FeedStore with a turn id history already holds", () => {
-  // Every page load once counted its message ids from web-1 again, and the
-  // agent kept them as turn ids, so older history holds turns under ids a
-  // new turn can still reuse.
   const earlier = [
     historyMsg("user", "Earlier question", { turnId: "web-1" }),
     historyMsg("assistant", "Earlier answer", { turnId: "web-1" }),
@@ -808,7 +795,6 @@ describe("FeedStore flagging messages that reach a running turn", () => {
 
   it("flags a session's message the running turn read, and not one that starts a turn", () => {
     const store = storeWithSettledHistory();
-    // As the backend announces a session's message: header first, with the session and its run.
     const fromSession = (id: string, turnId: string, body: string): ServerMessage => ({
       type: "user_message",
       id,
@@ -848,9 +834,6 @@ describe("FeedStore flagging messages that reach a running turn", () => {
 });
 
 describe("FeedStore catching up on a turn whose frames are still arriving", () => {
-  // History and the socket are separate connections: after a reconnect the
-  // catch-up fetch can bring back a turn that has finished on the agent while
-  // this page is still receiving its frames.
   const frames: ServerMessage[] = [
     { type: "turn_started", reply_to: "web-1", origin: { endpoint: "ws", visibility: "user" } },
     { type: "broadcast_response", reply_to: "web-1", call: 0, content: "Looking first." },

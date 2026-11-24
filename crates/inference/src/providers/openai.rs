@@ -1,10 +1,3 @@
-//! Client for OpenAI-compatible chat completion APIs.
-//!
-//! Supports various providers including Azure, vLLM, LM Studio, and other
-//! compatible endpoints. Host-specific behavior on top of the shared wire
-//! format is selected with [`OpenAiDialect`]; vendors that need one, such as
-//! Fireworks, build theirs in their own module.
-
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -52,17 +45,11 @@ const MISSING_REASONING_PLACEHOLDER: &str = "(reasoning for this step is not ava
 /// client then leaves it out.
 const CAPPED_REASONING_EFFORT: &str = "low";
 
-/// Reads a cached prompt token count out of response headers.
 pub(super) type CachedTokensFromHeaders = fn(&reqwest::header::HeaderMap) -> Option<u32>;
 
-/// Host-specific behavior layered on the OpenAI-compatible wire format. The
-/// default is `OpenAI` and generic compatible servers; a vendor module builds
-/// its own value.
 #[derive(Debug, Clone)]
 pub(crate) struct OpenAiDialect {
-    /// The provider kind each request's attempt is recorded under.
     pub(super) provider: ProviderKind,
-    /// Headers sent with every chat completion request.
     pub(super) request_headers: Vec<(&'static str, String)>,
     /// For hosts that report cache hits in response headers rather than the
     /// `usage` body.
@@ -91,31 +78,20 @@ impl Default for OpenAiDialect {
     }
 }
 
-/// OpenAI-compatible API client.
 #[derive(Clone)]
 pub(crate) struct OpenAiClient {
     http: SharedHttpClient,
     base_url: String,
     api_key: Option<String>,
     model: String,
-    /// Output limit for requests whose options don't set one.
     max_tokens: u32,
     retry: RetryConfig,
     dialect: OpenAiDialect,
-    /// Set once the host has refused a request for missing
-    /// `reasoning_content`, after which tool calls without reasoning of the
-    /// host's own carry [`MISSING_REASONING_PLACEHOLDER`] from the start.
     fills_missing_reasoning: Arc<AtomicBool>,
-    /// Set once the API has refused [`CAPPED_REASONING_EFFORT`] (a model
-    /// that takes no `reasoning_effort`), after which capped requests go
-    /// without it.
     refuses_capped_effort: Arc<AtomicBool>,
 }
 
 impl OpenAiClient {
-    /// Create a new client with a shared HTTP client (no authentication).
-    ///
-    /// Use this constructor to share connection pools across multiple model providers.
     #[must_use]
     pub fn with_http_client(
         http: SharedHttpClient,
@@ -140,9 +116,6 @@ impl OpenAiClient {
         }
     }
 
-    /// Create a new client with a shared HTTP client and API key authentication.
-    ///
-    /// Use this constructor to share connection pools across multiple model providers.
     #[must_use]
     pub fn with_http_client_and_api_key(
         http: SharedHttpClient,
@@ -168,14 +141,12 @@ impl OpenAiClient {
         }
     }
 
-    /// Select the host dialect this client speaks.
     #[must_use]
     pub fn with_dialect(mut self, dialect: OpenAiDialect) -> Self {
         self.dialect = dialect;
         self
     }
 
-    /// Map thinking config to the `reasoning_effort` parameter.
     fn build_reasoning_effort(thinking: &ThinkingConfig) -> Option<String> {
         match thinking {
             ThinkingConfig::Level(ThinkingLevel::Low) => Some("low".to_string()),
@@ -199,22 +170,17 @@ impl OpenAiClient {
                 .is_some_and(|host| !is_official_openai_host(&host))
     }
 
-    /// The lowercased host of `base_url`, when it parses and has one.
     fn host(&self) -> Option<String> {
         url::Url::parse(&self.base_url)
             .ok()
             .and_then(|url| url.host_str().map(str::to_lowercase))
     }
 
-    /// Whether this client talks to `OpenAI`'s own service, the one host that
-    /// accepts only the fields its API documents.
     fn is_official_host(&self) -> bool {
         self.host()
             .is_some_and(|host| is_official_openai_host(&host))
     }
 
-    /// Who the reasoning this client returns is recorded as coming from, and
-    /// the only provider API whose reasoning it sends back.
     fn origin(&self) -> ThinkingOrigin {
         ThinkingOrigin::new(ProviderApi::OpenAiCompatible, &self.model)
     }
@@ -274,7 +240,6 @@ impl OpenAiClient {
         (converted, missing)
     }
 
-    /// Build everything about a request that stays the same across retries.
     fn prepare(
         &self,
         messages: &[Message],
@@ -356,8 +321,6 @@ impl OpenAiClient {
         }
     }
 
-    /// Run a prepared request to completion: retrying transient failures,
-    /// and streaming the response into `sink` when there is one.
     async fn run(
         &self,
         messages: &[Message],
@@ -383,8 +346,6 @@ impl OpenAiClient {
         Ok(response.produced_at(&self.origin()))
     }
 
-    /// The attempt a request's first send makes: the request as prepared, with
-    /// whatever this host has already been found to refuse left out.
     fn first_attempt(&self) -> Attempt {
         Attempt {
             fill_missing_reasoning: self.fills_missing_reasoning.load(Ordering::Relaxed),
@@ -392,10 +353,6 @@ impl OpenAiClient {
         }
     }
 
-    /// Send a request, and once more with placeholder reasoning on the tool
-    /// calls that have none if the host refuses it for missing
-    /// `reasoning_content`, or without [`CAPPED_REASONING_EFFORT`] if the
-    /// model refuses that.
     async fn send_with_reasoning_fallback(
         &self,
         prepared: &PreparedRequest,
@@ -444,8 +401,6 @@ impl OpenAiClient {
         }
     }
 
-    /// Send a pre-built request to the OpenAI-compatible API and parse the
-    /// response, recording the request as one attempt of the call.
     #[tracing::instrument(skip_all, fields(
         model = %request.model,
         message_count = request.messages.len(),
@@ -543,8 +498,6 @@ impl OpenAiClient {
     }
 }
 
-/// Turn a completed response into an `InferenceResponse`. A response that
-/// can't be used keeps the usage it reported on its error.
 fn parse_response(
     chat_response: ChatCompletionResponse,
     header_cached_tokens: Option<u32>,
@@ -590,9 +543,6 @@ fn parse_response(
     Ok(resp)
 }
 
-/// Normalize `OpenAI`-shaped usage. `prompt_tokens` counts the whole prompt,
-/// cache reads and writes included, so the uncached part is what remains
-/// after subtracting them.
 fn usage_from(usage: OpenAiUsage, header_cached_tokens: Option<u32>) -> Usage {
     let prompt_details = usage.prompt_tokens_details.unwrap_or_default();
     let cache_read_tokens = prompt_details.cached_tokens.or(header_cached_tokens);
@@ -613,19 +563,12 @@ fn usage_from(usage: OpenAiUsage, header_cached_tokens: Option<u32>) -> Usage {
     }
 }
 
-/// A tool call as the API returns it, before its arguments are parsed.
 struct RawToolCall {
     id: String,
     name: String,
     arguments: String,
 }
 
-/// Parse tool calls' arguments, naming a call that has no id after its
-/// position.
-///
-/// A response cut off by the output limit ends mid-way through its last
-/// tool call's arguments; that call is dropped, and the stop reason tells the
-/// caller why.
 fn build_tool_calls(
     raw_calls: Vec<RawToolCall>,
     truncated: bool,
@@ -689,8 +632,6 @@ fn is_missing_reasoning_refusal(error: &InferenceError) -> bool {
         .any(|refusal| lower.contains(refusal))
 }
 
-/// Whether the API refused the `reasoning_effort` a request carried, as a
-/// field the model doesn't take or a value it doesn't support.
 fn is_reasoning_effort_refusal(error: &InferenceError) -> bool {
     let InferenceError::Api(message) = error.underlying() else {
         return false;
@@ -733,13 +674,6 @@ impl InferenceProvider for OpenAiClient {
         self.run(messages, tools, options, None).await
     }
 
-    /// Like `complete`, streaming the response's text and reasoning into
-    /// `sink` as they arrive.
-    ///
-    /// # Errors
-    /// Returns the errors `complete` does, plus `InferenceError::Stalled`
-    /// when the stream goes quiet for the configured timeout and
-    /// `InferenceError::StreamInterrupted` when it breaks or ends early.
     #[tracing::instrument(skip_all, fields(model = %self.model, message_count = messages.len(), tool_count = tools.len()))]
     async fn complete_streaming(
         &self,
@@ -751,10 +685,6 @@ impl InferenceProvider for OpenAiClient {
         self.run(messages, tools, options, Some(sink)).await
     }
 
-    /// The `reasoning_content` the first send of this request carries, in
-    /// the order it is sent, placeholders included. It is the same request
-    /// `send_with_reasoning_fallback` sends first, so the count and the wire
-    /// cannot disagree.
     fn replayed_reasoning(
         &self,
         messages: &[Message],
@@ -775,12 +705,6 @@ impl InferenceProvider for OpenAiClient {
     }
 }
 
-// --- Streaming ---
-
-/// Read a streamed chat completion to its end, pushing text and reasoning to
-/// `sink` as they arrive, and return it as the response a non-streaming
-/// request would have returned. A stream that fails after its usage chunk
-/// keeps that usage on its error.
 async fn read_stream(
     response: reqwest::Response,
     idle_secs: u64,
@@ -801,11 +725,9 @@ async fn read_stream(
 struct StreamAssembler<'a> {
     reply: ReplyAssembler<'a>,
     tool_calls: BTreeMap<u32, RawToolCall>,
-    /// The cached prompt count a host reported in the response headers.
     header_cached_tokens: Option<u32>,
     usage: Option<Usage>,
     finish_reason: Option<String>,
-    /// The `[DONE]` marker arrived.
     done: bool,
 }
 
@@ -839,7 +761,6 @@ impl<'a> StreamAssembler<'a> {
         if let Some(usage) = chunk.usage {
             self.usage = Some(usage_from(usage, self.header_cached_tokens));
         }
-        // Only the first choice is used: a request never asks for more.
         if let Some(choice) = chunk.choices.into_iter().next() {
             self.apply_delta(choice.delta);
             if choice.finish_reason.is_some() {
@@ -881,8 +802,6 @@ impl<'a> StreamAssembler<'a> {
         }
     }
 
-    /// Assemble the response a non-streaming request would have returned.
-    /// Fails when the stream stopped short of its end.
     fn finish(self) -> Result<InferenceResponse, InferenceError> {
         if !self.done && self.finish_reason.is_none() {
             return Err(InferenceError::StreamInterrupted(
@@ -901,20 +820,13 @@ impl<'a> StreamAssembler<'a> {
     }
 }
 
-// --- OpenAI API request/response types ---
-
-/// What stays the same across a request's attempts.
 struct PreparedRequest {
     messages: Vec<OpenAiMessage>,
-    /// Indexes in `messages` of the tool calls with no reasoning to replay.
     missing_reasoning: Vec<usize>,
-    /// `messages` with [`MISSING_REASONING_PLACEHOLDER`] at each of
-    /// `missing_reasoning`, built the first time an attempt needs it.
     filled_messages: OnceLock<Vec<OpenAiMessage>>,
     tools: Option<Vec<OpenAiToolEntry>>,
     response_format: Option<OpenAiResponseFormat>,
     temperature: Option<f32>,
-    /// The effort the configured thinking asks for.
     reasoning_effort: Option<String>,
     /// The effort sent when thinking asks for none, on a capped request to
     /// `OpenAI`'s own API (see [`CAPPED_REASONING_EFFORT`]).
@@ -924,18 +836,13 @@ struct PreparedRequest {
     prompt_cache_key: Option<String>,
 }
 
-/// What an attempt at a request changes after the host refused an earlier
-/// one. The default is the request as prepared.
 #[derive(Debug, Clone, Copy, Default)]
 struct Attempt {
-    /// Send placeholder reasoning on the tool calls that have none.
     fill_missing_reasoning: bool,
-    /// Leave out the capped request's `reasoning_effort`.
     drop_capped_effort: bool,
 }
 
 impl PreparedRequest {
-    /// The request body for one attempt.
     fn request<'a>(
         &'a self,
         model: &'a str,
@@ -1006,7 +913,6 @@ struct ChatCompletionRequest<'a> {
     prompt_cache_key: Option<&'a str>,
 }
 
-/// Asks a streamed response to end with its token usage.
 #[derive(Serialize)]
 struct StreamOptions {
     include_usage: bool,
@@ -1055,8 +961,6 @@ struct OpenAiMessage {
     tool_calls: Option<Vec<OpenAiToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_call_id: Option<String>,
-    /// The reasoning behind an assistant message, for hosts that want it
-    /// back within a tool-use exchange.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     reasoning_content: Option<String>,
 }
@@ -1107,13 +1011,10 @@ impl From<&Message> for OpenAiMessage {
     }
 }
 
-/// Heterogeneous tool entry for the `OpenAI` `tools` array.
 #[derive(Serialize, Clone)]
 #[serde(untagged)]
 enum OpenAiToolEntry {
-    /// Standard function tool.
     Function(OpenAiTool),
-    /// Web search tool.
     WebSearch(OpenAiWebSearchTool),
 }
 
@@ -1186,7 +1087,6 @@ struct ChatCompletionChoice {
     finish_reason: Option<String>,
 }
 
-/// Map `OpenAI`'s `finish_reason` to the provider-agnostic [`StopReason`].
 fn map_stop_reason(raw: &str) -> StopReason {
     match raw {
         "stop" => StopReason::EndTurn,
@@ -1228,8 +1128,6 @@ struct ReasoningDetail {
 }
 
 impl ReasoningFields {
-    /// The reasoning text, from whichever field carries it. A server that
-    /// sends the same reasoning both as a string and as details is read once.
     fn text(&self) -> String {
         let plain = [&self.reasoning_content, &self.reasoning]
             .into_iter()
@@ -1246,16 +1144,12 @@ impl ReasoningFields {
     }
 }
 
-// --- Streamed chunks ---
-
 #[derive(Deserialize)]
 struct StreamChunk {
-    /// Empty on the final chunk, which carries only usage.
     #[serde(default)]
     choices: Vec<ChunkChoice>,
     #[serde(default)]
     usage: Option<OpenAiUsage>,
-    /// A failure reported in the stream after the response began.
     #[serde(default)]
     error: Option<ChunkError>,
 }
@@ -1285,8 +1179,6 @@ struct ChunkDelta {
     reasoning: ReasoningFields,
 }
 
-/// A fragment of a tool call. The call's id and name come in its first
-/// fragment and its arguments are spread over all of them.
 #[derive(Deserialize)]
 struct ChunkToolCall {
     index: u32,
@@ -1314,8 +1206,6 @@ struct OpenAiError {
     message: String,
 }
 
-// --- OpenAI Embeddings API types ---
-
 #[derive(Serialize)]
 struct EmbeddingRequest<'a> {
     model: &'a str,
@@ -1333,7 +1223,6 @@ struct EmbeddingData {
     index: u32,
 }
 
-/// OpenAI-compatible embeddings API client.
 pub(crate) struct OpenAiEmbeddingClient {
     http: SharedHttpClient,
     base_url: String,
@@ -1343,7 +1232,6 @@ pub(crate) struct OpenAiEmbeddingClient {
 }
 
 impl OpenAiEmbeddingClient {
-    /// Create a new embedding client with a shared HTTP client (no authentication).
     #[must_use]
     pub fn with_http_client(
         http: SharedHttpClient,
@@ -1363,7 +1251,6 @@ impl OpenAiEmbeddingClient {
         }
     }
 
-    /// Create a new embedding client with a shared HTTP client and API key authentication.
     #[must_use]
     pub fn with_http_client_and_api_key(
         http: SharedHttpClient,
@@ -1483,7 +1370,6 @@ mod tests {
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    /// The output limit the test clients fall back to when a request sets none.
     const TEST_MAX_TOKENS: u32 = 4096;
 
     fn make_client(url: impl Into<String>, model: &str) -> OpenAiClient {
@@ -1514,7 +1400,6 @@ mod tests {
 
         let openai_msg: OpenAiMessage = (&msg).into();
         assert_eq!(openai_msg.role, "user", "role should map to user");
-        // Content should serialize as a plain string (Text variant)
         let content_json = serde_json::to_value(&openai_msg.content).unwrap();
         assert_eq!(
             content_json,
@@ -1557,7 +1442,6 @@ mod tests {
             Some(&"bash".to_string()),
             "tool call name should match"
         );
-        // Arguments should be JSON string
         assert_eq!(
             tool_calls.first().map(|t| &t.function.arguments),
             Some(&r#"{"command":"ls"}"#.to_string()),
@@ -1961,7 +1845,6 @@ mod tests {
     async fn malformed_tool_arguments() {
         let mock_server = MockServer::start().await;
 
-        // Return malformed JSON in arguments -- should return a parse error
         Mock::given(method("POST"))
             .and(path("/chat/completions"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -2002,8 +1885,6 @@ mod tests {
 
     #[tokio::test]
     async fn complete_timeout() {
-        // The reply waits at a gate that never opens, so only the client's own
-        // 1 second timeout can end the call.
         let model = GatedModel::replying("unused").await;
         let client = make_client_with_timeout(model.uri(), "gpt-4", 1);
         let result = client
@@ -2249,8 +2130,6 @@ mod tests {
         );
     }
 
-    // --- Embedding client tests ---
-
     fn make_embedding_client(url: impl Into<String>, model: &str) -> OpenAiEmbeddingClient {
         let http = SharedHttpClient::new(&HttpClientConfig::default()).unwrap();
         OpenAiEmbeddingClient::with_http_client(http, url, model, RetryConfig::no_retry())
@@ -2404,8 +2283,6 @@ mod tests {
         );
     }
 
-    // --- Streaming ---
-
     fn sse_data(data: impl Into<Value>) -> String {
         let data: Value = data.into();
         format!("data: {data}\n\n")
@@ -2455,7 +2332,6 @@ mod tests {
         make_client(url, "test-model")
     }
 
-    /// Reasoning text as `plain_client`'s model returns it.
     fn test_model_text(text: &str) -> ThinkingBlock {
         ThinkingBlock::text(text).with_origin(&ThinkingOrigin::new(
             ProviderApi::OpenAiCompatible,
@@ -2463,7 +2339,6 @@ mod tests {
         ))
     }
 
-    /// The same reply, streamed and whole.
     async fn whole_response(body: Value) -> InferenceResponse {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -2644,8 +2519,6 @@ mod tests {
         );
     }
 
-    /// A client for the host at `base_url`. Its requests are only built,
-    /// never sent.
     fn client_at(base_url: &str) -> OpenAiClient {
         let http = SharedHttpClient::new(&HttpClientConfig::default()).unwrap();
         OpenAiClient::with_http_client_and_api_key(
@@ -2658,17 +2531,14 @@ mod tests {
         )
     }
 
-    /// A client for `OpenAI`'s own host.
     fn official_host_client() -> OpenAiClient {
         client_at("https://api.openai.com/v1")
     }
 
-    /// A client for a generic compatible server, such as vLLM.
     fn compatible_host_client() -> OpenAiClient {
         client_at("https://vllm.example.com/v1")
     }
 
-    /// The body of the request `options` builds for `client`, without sending it.
     fn built_body(client: &OpenAiClient, options: &CompletionOptions) -> Value {
         built_body_with_tools(client, &[], options)
     }
@@ -2682,7 +2552,6 @@ mod tests {
         serde_json::to_value(prepared.request("gpt-4o", false, Attempt::default())).unwrap()
     }
 
-    /// Options with an output cap of `max_tokens` and a conversation key.
     fn capped_at(max_tokens: u32) -> CompletionOptions {
         let mut options = CompletionOptions {
             max_tokens: Some(max_tokens),
@@ -2878,8 +2747,6 @@ mod tests {
         );
     }
 
-    /// `send` returns every failure wrapped with the attempt it records, so
-    /// the capped-effort fallback has to see the refusal through that wrapper.
     #[test]
     fn a_reasoning_effort_refusal_is_recognized_inside_its_recorded_attempt() {
         let refusal = InferenceError::Attempted {
@@ -3203,7 +3070,6 @@ mod tests {
     #[tokio::test]
     async fn stalled_stream_fails_after_the_idle_timeout() {
         let mut script = sse_chunks(&[delta_chunk(json!({"content": "partial"}))]);
-        // Held rather than paused: nothing more arrives, so only the idle timeout ends the stream.
         let stall = Gate::closed("stalled stream");
         script.push(Step::Hold(stall.entry()));
         let (result, sink, _) =
@@ -3299,9 +3165,6 @@ mod tests {
         assert!(sink.deltas().is_empty(), "nothing streamed");
     }
 
-    // --- Reasoning replay ---
-
-    /// Where the reasoning of the clients in these tests comes from.
     fn test_origin() -> ThinkingOrigin {
         ThinkingOrigin::new(ProviderApi::OpenAiCompatible, "m")
     }
@@ -3433,11 +3296,6 @@ mod tests {
         );
     }
 
-    // --- Placeholder reasoning after a host asks for it ---
-
-    /// A tool-use exchange an Anthropic model began (its reasoning signed and
-    /// unreadable here) before a failover, then one step this host answered
-    /// with `own` reasoning, after an earlier exchange whose tool call had none.
     fn failover_exchange(own: Option<&str>) -> Vec<Message> {
         let call = |id: &str| ToolCall {
             id: id.to_string(),
@@ -3474,8 +3332,6 @@ mod tests {
 
     const MISSING_REASONING_REFUSAL: &str = r#"{"error":{"message":"The reasoning_content in the thinking mode must be passed back to the API.","type":"invalid_request_error"}}"#;
 
-    /// The `reasoning_content` of the assistant message at `index` in a
-    /// received request.
     fn reasoning_at(request: &wiremock::Request, index: usize) -> Option<String> {
         let body: Value = serde_json::from_slice(&request.body).unwrap();
         body.pointer(&format!("/messages/{index}/reasoning_content"))

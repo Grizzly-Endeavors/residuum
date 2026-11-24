@@ -1,5 +1,3 @@
-//! `${VAR}` expansion for settings values read from configuration files.
-
 use std::sync::LazyLock;
 
 #[expect(
@@ -10,9 +8,6 @@ static ENV_VAR_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(r"\$\{([^}:]+?)(?::-(.*?))?\}").expect("hardcoded regex is valid")
 });
 
-/// Expand `${VAR}` and `${VAR:-default}` patterns in a string using environment variables.
-///
-/// Unresolved variables with no default are replaced with an empty string.
 #[must_use]
 pub fn expand_env_vars(input: &str) -> String {
     ENV_VAR_RE

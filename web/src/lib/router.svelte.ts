@@ -1,14 +1,3 @@
-// The router: the URL is the source of truth for where the user is. This
-// holds the current location, navigates by push or replace, and keeps
-// the history rules that make Back behave: closing a panel or modal is
-// `history.back()` when this page pushed what opened it, overlays own an entry
-// so Back closes them, and unsaved work is asked about before it is lost.
-//
-// Stores never import this: they expose data and commands, and views navigate.
-//
-// The router also publishes the bound agent, the agent whose connection the
-// app keeps open (see `viewed-agent.ts`).
-
 import { landingNotices } from "./landing-notices";
 import { notifications } from "./notifications.svelte";
 import { readLastAgent, rememberLastAgent } from "./paths";
@@ -51,21 +40,17 @@ import { setViewedAgent } from "./viewed-agent";
 
 type HistoryMode = "push" | "replace";
 
-/** What may ride along with a place: a panel, or the Settings modal. */
 export interface PlaceExtras {
   panel?: Panel;
   settings?: SettingsTarget;
 }
 
-/** An open overlay's hold on a history entry. */
 export interface OverlayHandle {
-  /** Close the overlay from the UI: pops its entry, so Back doesn't land on a stale one. */
   close: () => void;
 }
 
 interface OverlayRecord {
   id: string;
-  /** The history entry the overlay holds; null until it is pushed. */
   idx: number | null;
   closed: boolean;
   onDismiss: () => void;
@@ -82,14 +67,8 @@ function currentUrl(): string {
   return `${window.location.pathname}${window.location.search}`;
 }
 
-/**
- * What closing removes from the URL: the panel, the Settings modal, or the
- * thread or New message open in the Inbox, or the artifact selected on the
- * Workbench.
- */
 type ClosableParam = "panel" | "settings" | "item";
 
-/** `location` with `param` closed, or null when it isn't open. */
 function withoutParam(location: AppLocation, param: ClosableParam): AppLocation | null {
   const { place } = location;
   switch (param) {
@@ -115,59 +94,36 @@ function byName(a: string, b: string): number {
 }
 
 class Router {
-  /** Where the user is: the place, its context panel and the Settings modal. */
   location = $state.raw<AppLocation>(locationAt(HOME));
-  /**
-   * The bound agent: the viewed agent, or on a place with none, the agent most
-   * recently viewed. The agent connection follows it.
-   */
   boundAgent = $state<string | null>(null);
-  /** The unsaved-edit guard: views register what leaving would lose, and the app says how to ask. */
   readonly guard = new NavigationGuard();
 
-  /** The agent the place belongs to, or null on Home, Inbox, the Workbench and Shared files. */
   viewedAgent = $derived(viewedAgentOf(this.location.place));
 
   private started = false;
-  /** Started for overlay entries only, on a page outside the app's routes: the URL is left alone. */
   private overlaysOnly = false;
-  /** The marks of the history entry being shown. */
   private entry = $state.raw<EntryState>({ idx: 0 });
-  /** The agent most recently viewed, for places that view none. */
   private lastViewed: string | null = null;
-  /** Every agent's name once the list is known; null before. */
   private known: ReadonlySet<string> | null = null;
-  /** The last-used agent, once the list is known. */
   private lastUsed: string | null = null;
-  /** The URL that resolves under the last-used agent, waiting for the list. */
   private waiting: { pathname: string; search: string } | null = null;
   private overlays: OverlayRecord[] = [];
   private overlayCount = 0;
-  /** Traversals this router started that haven't landed, and the queue that runs them one at a time. */
   private queued = 0;
   private traversals: Promise<void> = Promise.resolve();
-  /** Settles the traversal in flight; set while the router waits for the browser to report it. */
   private settleTraversal: (() => void) | null = null;
-  /** Bumped by `stop()`; a traversal queued under an earlier value is dropped when its turn comes. */
   private stopGeneration = 0;
 
-  /** Read the current URL and follow the browser's history from then on. */
   start(): void {
     if (this.started) return;
     this.started = true;
     this.lastViewed = readLastAgent();
     window.addEventListener("popstate", this.onPopState);
     window.addEventListener("beforeunload", this.guard.onBeforeUnload);
-    // An overlay doesn't survive a reload, so its entry is an ordinary one now.
     this.entry = withoutOverlay(readEntry(window.history.state) ?? { idx: 0 });
     this.applyUrl(this.readUrl(), this.entry);
   }
 
-  /**
-   * Follow the history for overlay entries only, on a page outside the app's
-   * routes (the primitives gallery): Back closes its overlays, and the address
-   * is left as it is instead of being read as a place.
-   */
   startForOverlays(): void {
     if (this.started) return;
     this.started = true;
@@ -177,13 +133,6 @@ class Router {
     window.history.replaceState(this.entry, "", currentUrl());
   }
 
-  /**
-   * Stop following the browser's history. A traversal still waiting on the
-   * browser is settled here, since its report would no longer be heard: its
-   * timer is cleared, so it cannot fire after the page it belonged to is gone.
-   * Traversals queued but not yet started are settled without moving the
-   * history, so none of them runs after the page it belonged to is gone.
-   */
   stop(): void {
     this.stopGeneration += 1;
     this.settleTraversal?.();
@@ -206,13 +155,6 @@ class Router {
     return this.location.settings;
   }
 
-  // ── Navigation ─────────────────────────────────────────────────────
-  //
-  // Each returns whether the navigation happened: false when the user
-  // declined to leave unsaved work. It happens before the call returns unless
-  // the guard has something to ask, or a traversal of the history is landing.
-
-  /** Open a place (push), with a panel or the Settings modal if given. */
   openPlace(place: Place, extras: PlaceExtras = {}): Promise<boolean> {
     return this.go(
       { place, panel: extras.panel ?? null, settings: extras.settings ?? null },
@@ -220,12 +162,10 @@ class Router {
     );
   }
 
-  /** Open a location (push): its place and panel; the Settings modal is closed. */
   open(location: AppLocation): Promise<boolean> {
     return this.go(location, "push");
   }
 
-  /** Go to a place without adding history, for moves the user didn't make by navigating. */
   replacePlace(place: Place, extras: PlaceExtras = {}): Promise<boolean> {
     return this.go(
       { place, panel: extras.panel ?? null, settings: extras.settings ?? null },
@@ -233,37 +173,30 @@ class Router {
     );
   }
 
-  /** Open a session or file in the context panel from outside the panel (push). */
   openPanel(panel: Panel): Promise<boolean> {
     return this.go({ ...this.location, panel }, "push");
   }
 
-  /** Change what the panel shows from inside it (replace): another file, or a session's next run. */
   replacePanel(panel: Panel): Promise<boolean> {
     return this.go({ ...this.location, panel }, "replace");
   }
 
-  /** Close the panel: `history.back()` when this page pushed the entry that opened it, else a replace without it. */
   closePanel(): Promise<boolean> {
     return this.close("panel");
   }
 
-  /** Open the Settings modal (push). */
   openSettings(target: SettingsTarget): Promise<boolean> {
     return this.go({ ...this.location, settings: target }, "push");
   }
 
-  /** Open a section from the phone's section list (push). */
   openSettingsSection(section: SectionId): Promise<boolean> {
     return this.changeSettings((settings) => ({ ...settings, section }), "push");
   }
 
-  /** Switch sections at medium and wide widths (replace). */
   switchSettingsSection(section: SectionId): Promise<boolean> {
     return this.changeSettings((settings) => ({ ...settings, section }), "replace");
   }
 
-  /** Switch the modal's scope (replace), keeping the section when the new scope has it. */
   switchSettingsScope(scope: string): Promise<boolean> {
     return this.changeSettings(
       (settings) => ({
@@ -274,12 +207,10 @@ class Router {
     );
   }
 
-  /** Close the Settings modal: `history.back()` when this page pushed the entry that opened it, else a replace without it. */
   closeSettings(): Promise<boolean> {
     return this.close("settings");
   }
 
-  /** Back from a section to the phone's section list: `history.back()` when this page pushed the section, else a replace without it. */
   closeSettingsSection(): Promise<boolean> {
     if (this.location.settings?.section == null) return Promise.resolve(true);
     if (this.queued > 0) return Promise.resolve(false);
@@ -289,19 +220,10 @@ class Router {
     return this.traverse(-steps).then(() => true);
   }
 
-  /**
-   * Close the thread or New message open in the Inbox, or collapse the
-   * artifact selected on the Workbench: `history.back()` when this page pushed
-   * the entry that opened it, else a replace without it.
-   */
   closeItem(): Promise<boolean> {
     return this.close("item");
   }
 
-  /**
-   * Whether Back returns to the panel this one replaced: the entry below shows
-   * another panel on the same place.
-   */
   get canReturnToPanel(): boolean {
     const { backUrl } = this.entry;
     return (
@@ -319,13 +241,6 @@ class Router {
     if (this.canReturnToPanel && this.queued === 0) window.history.back();
   }
 
-  /**
-   * Hold a history entry for an overlay that is open, so Back
-   * closes the overlay before it leaves the place. `onDismiss` runs when the
-   * entry is left by anything but the returned handle: Back, or navigating
-   * elsewhere. The overlay closes itself through the handle, which pops the
-   * entry.
-   */
   openOverlay(onDismiss: () => void): OverlayHandle {
     this.overlayCount += 1;
     const record: OverlayRecord = {
@@ -342,7 +257,6 @@ class Router {
       record.idx = entry.idx;
       this.overlays.push(record);
     };
-    // A traversal still landing would carry the new entry off with it.
     if (this.queued > 0) void this.traversals.then(push);
     else push();
     return {
@@ -352,12 +266,6 @@ class Router {
     };
   }
 
-  /**
-   * Settle on agents once their list is known: corrects a location on an agent
-   * that doesn't exist, resolves a URL that was waiting for the last-used agent,
-   * and moves the bound agent off one that is gone. An empty list changes nothing
-   * (the setup wizard shows).
-   */
   setKnownAgents(names: readonly string[]): void {
     const first = [...names].sort(byName)[0];
     if (first === undefined) return;
@@ -379,14 +287,10 @@ class Router {
     this.publish();
   }
 
-  /** Once the artifact list has loaded, move the Workbench off an artifact that isn't in it. */
   resolveArtifacts(names: readonly string[]): void {
     this.correct(correctForArtifacts(this.location, new Set(names)));
   }
 
-  // ── Internals ──────────────────────────────────────────────────────
-
-  /** A location the place and modal can show: a panel that can't show there is left out, and so is an unknown section. */
   private normalize(target: AppLocation): AppLocation {
     let { panel, settings } = target;
     if (panel !== null && !panelAllowed(target.place, panel)) panel = null;
@@ -409,7 +313,6 @@ class Router {
   }
 
   private go(requested: AppLocation, mode: HistoryMode): Promise<boolean> {
-    // A traversal is landing: go from where it leaves the history.
     if (this.queued > 0) return this.traversals.then(() => this.go(requested, mode));
     const target = this.normalize(requested);
     if (locationsEqual(target, this.location)) return Promise.resolve(true);
@@ -426,17 +329,10 @@ class Router {
     });
   }
 
-  /**
-   * Asking opens the confirm dialog, an overlay with its own history entry,
-   * and closing it goes back over that entry. Go on from where that leaves
-   * the history, or the navigation would land on the dialog's entry and be
-   * undone when the browser reports going back.
-   */
   private afterAsking(): Promise<void> {
     return this.traversals;
   }
 
-  /** Write `target` into the history and show it. */
   private commit(target: AppLocation, mode: HistoryMode): void {
     this.waiting = null;
     const url = formatLocation(target);
@@ -444,8 +340,6 @@ class Router {
     const onOverlay = mode === "push" && this.entry.overlay !== undefined;
     let entry: EntryState;
     if (onOverlay) {
-      // Leaving while an overlay is open: the navigation takes the overlay's
-      // entry, so the overlay isn't left behind in the history.
       entry = entryAfterPush(
         withoutOverlay({ ...this.entry, idx: this.entry.idx - 1 }),
         from,
@@ -466,14 +360,11 @@ class Router {
     if (mode === "push") this.dismissOverlaysAbove(null);
   }
 
-  /** Close `param` by going back to before it opened, or by replacing it away when the page didn't open it. */
   private close(param: ClosableParam): Promise<boolean> {
     const target = withoutParam(this.location, param);
     if (target === null) return Promise.resolve(true);
-    // A traversal is already on its way; a second one would go back past it.
     if (this.queued > 0) return Promise.resolve(false);
     const leave = (): Promise<boolean> => {
-      // Worked out when leaving, since asking pushes and pops the confirm dialog's entry.
       const steps = stepsToClose(this.entry, this.entry[param]);
       if (steps === null) {
         this.commit(target, "replace");
@@ -494,13 +385,11 @@ class Router {
     if (record.closed) return;
     record.closed = true;
     const at = this.overlays.indexOf(record);
-    // Not pushed yet: there's no entry to pop.
     if (at < 0) return;
     this.overlays.splice(at, 1);
     if (this.entry.overlay === record.id) void this.traverse(-1);
   }
 
-  /** Dismiss the overlays whose entries are above `idx` (all of them for null), topmost first. */
   private dismissOverlaysAbove(idx: number | null): void {
     const gone = this.overlays.filter(
       (overlay) => idx === null || (overlay.idx !== null && overlay.idx > idx),
@@ -513,7 +402,6 @@ class Router {
     }
   }
 
-  /** Go `delta` entries through the history. Resolves once the browser reports arriving. */
   private traverse(delta: number): Promise<void> {
     this.queued += 1;
     const queuedUnderGeneration = this.stopGeneration;
@@ -553,13 +441,11 @@ class Router {
       overlayId !== undefined &&
       !this.overlays.some((o) => o.id === overlayId)
     ) {
-      // An entry whose overlay is already closed. Going back, step over it.
       if (landed.idx < this.entry.idx) {
         this.entry = landed;
         void this.traverse(-1);
         return;
       }
-      // Going forward, it is an ordinary entry from here on.
       landed = withoutOverlay(landed);
       window.history.replaceState(landed, "", currentUrl());
     }
@@ -582,11 +468,6 @@ class Router {
     this.applyUrl(parsed, arrived);
   };
 
-  /**
-   * Back or Forward can't be cancelled, so put the location the user was on
-   * back on top of the history, ask, and go to where they were headed only if
-   * they confirm (it is the entry just below).
-   */
   private async askBeforeLeaving(losses: string[], arrived: EntryState): Promise<void> {
     const shown = this.location;
     const restored: EntryState = { idx: arrived.idx + 1 };
@@ -605,7 +486,6 @@ class Router {
     if (await this.guard.ask(losses)) await this.traverse(-1);
   }
 
-  /** The address bar, with the notices a link the backend redirected here carries. */
   private readUrl(): ParsedUrl {
     const { search } = window.location;
     const parsed = parseUrl(window.location.pathname, search, { lastUsed: this.lastUsed });
@@ -615,11 +495,6 @@ class Router {
     };
   }
 
-  /**
-   * Show what the address bar says, correcting the address (by replace) to the
-   * canonical form of where it leads. A URL that waits for the last-used agent
-   * keeps the address as it is until the agent list is known.
-   */
   private applyUrl(parsed: ParsedUrl, arrived: EntryState): void {
     if (parsed.needsLastUsed) {
       this.waiting = { pathname: window.location.pathname, search: window.location.search };
@@ -644,7 +519,6 @@ class Router {
     for (const notice of notices) notifications.surface("notice", notice);
   }
 
-  /** Apply a correction to the location shown, by replace, telling the user. */
   private correct(result: { location: AppLocation; notices: string[] }): void {
     if (result.notices.length === 0) return;
     this.commit(result.location, "replace");

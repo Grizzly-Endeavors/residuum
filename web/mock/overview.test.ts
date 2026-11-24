@@ -113,11 +113,6 @@ describe("the overview of a stub hub", () => {
   });
 });
 
-/**
- * A stub hub on a fixed clock at noon UTC on 2026-03-14, which is 08:00 in the
- * hub's New York zone, with the running agent `scout` and its sample schedule
- * (`createScheduled`) and the stopped `atlas`, which has none.
- */
 function stubHub(): { env: MockEnv; hub: MockHub; scout: MockAgent; atlas: MockAgent } {
   const env = createMockEnv({ deterministic: true });
   const hub = createStubHub(env);
@@ -132,7 +127,6 @@ function overviewIn(hub: MockHub, name: string): AgentOverview {
   return found;
 }
 
-/** What `upcoming` of the agent says, as `kind:name@at` for each run. */
 function upcomingIn(hub: MockHub, name: string): string[] {
   return overviewIn(hub, name).upcoming.map((run) => `${run.kind}:${run.name}@${run.at}`);
 }
@@ -188,7 +182,6 @@ describe("the upcoming runs of an overview", () => {
 
   it("pushes a run that falls after the active hours close to when they open again", () => {
     const { hub, scout } = stubHub();
-    // The last run was at 07:00 and the schedule is two hours: 09:00 is when the window closes.
     pulseOf(scout, "inbox_check").activeHours = "08:00-09:00";
 
     expect(upcomingIn(hub, "scout")).toEqual([
@@ -229,7 +222,6 @@ describe("the upcoming runs of an overview", () => {
 
   it("opens an overnight window in the evening of the same day", () => {
     const { hub, scout } = stubHub();
-    // 08:00 in New York, and the window runs from 22:00 to 06:00.
     Object.assign(pulseOf(scout, "inbox_check"), { activeHours: "22:00-06:00", lastRunAt: null });
 
     expect(upcomingIn(hub, "scout")[1]).toBe("pulse:inbox_check@2026-03-14T22:00:00-04:00");
@@ -319,7 +311,6 @@ describe("the outbound problems of an overview", () => {
       unreachable_since: new Date(env.clock.now() - OUTBOUND_NOTICE_MS + aheadMs).toISOString(),
     });
 
-    /** An overview over a hub whose `scout` has just that task, and the frames it sends. */
     function watching(
       env: MockEnv,
       aheadMs: number,
@@ -399,7 +390,6 @@ describe("the overview routes", () => {
     return found;
   };
 
-  /** The next `agent_overview` frame about `name` that satisfies `wanted`. */
   const nextFrame = async (
     name: string,
     wanted: (frame: AgentOverview) => boolean = () => true,
@@ -509,7 +499,6 @@ describe("the overview routes", () => {
       (await nextFrame("atlas", (overview) => overview.inbox_unread === before + 1)).name,
     ).toBe("atlas");
 
-    // A thread action answers with no body.
     const act = (action: string): Promise<Response> =>
       fetch(
         `${mock.baseUrl}/api/hub/mail/threads/${encodeURIComponent(`atlas/user/${saved.id}`)}/${action}`,

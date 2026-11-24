@@ -1,10 +1,3 @@
-//! Reflector: compresses the observation log when it exceeds a token threshold.
-//!
-//! Sends the full observation log to an LLM which reorganizes and merges
-//! observations while preserving chronology. Compression ([`Reflector::compress`])
-//! only reads; `replace_with_compressed` writes the result back, carrying over
-//! anything appended to the log while the model was working.
-
 mod parse;
 mod prompt;
 
@@ -24,14 +17,10 @@ use residuum_inference::{
     CompletionOptions, InferenceProvider, ResponseFormat, UsageComponent, UsageRecorder,
 };
 
-/// Reflector configuration.
 #[derive(Debug, Clone)]
 pub struct ReflectorConfig {
-    /// Minimum estimated tokens in the observation log before reflection triggers.
     pub threshold_tokens: usize,
-    /// Timezone used for timestamps in observations.
     pub tz: Tz,
-    /// Per-role overrides for temperature and thinking.
     pub role_overrides: Option<residuum_config::RoleOverrides>,
 }
 
@@ -45,10 +34,6 @@ impl Default for ReflectorConfig {
     }
 }
 
-/// The reflector compresses observation logs via LLM-driven reorganization.
-///
-/// Cheap to clone (the provider is shared), so a caller can take a copy and
-/// run the model call without holding whatever lock guards the original.
 #[derive(Clone)]
 pub struct Reflector {
     provider: Arc<dyn InferenceProvider>,
@@ -56,7 +41,6 @@ pub struct Reflector {
 }
 
 impl Reflector {
-    /// Create a new reflector with the given provider and config.
     #[must_use]
     pub fn new(provider: Box<dyn InferenceProvider>, config: ReflectorConfig) -> Self {
         Self {
@@ -65,10 +49,6 @@ impl Reflector {
         }
     }
 
-    /// Create a disabled reflector that never triggers.
-    ///
-    /// Uses a `NullProvider` and `usize::MAX` threshold so reflection
-    /// never fires. Used when memory subsystem initialization fails.
     #[must_use]
     pub fn disabled(tz: Tz) -> Self {
         Self {
@@ -81,7 +61,6 @@ impl Reflector {
         }
     }
 
-    /// Replace the reflector's configuration (e.g. after a config reload).
     pub fn update_config(&mut self, config: ReflectorConfig) {
         tracing::debug!(
             old_threshold = self.config.threshold_tokens,
@@ -93,35 +72,22 @@ impl Reflector {
         self.config = config;
     }
 
-    /// Replace the model provider (e.g. after a provider config change).
     pub fn swap_provider(&mut self, provider: Box<dyn InferenceProvider>) {
         tracing::debug!("swapping reflector model provider");
         self.provider = Arc::from(provider);
     }
 
-    /// Check whether the observation log exceeds the reflection threshold.
-    ///
-    /// Measures the log as the main prompt displays it, so the threshold is the
-    /// size the agent carries in every turn.
     #[must_use]
     pub fn should_reflect(&self, log: &ObservationLog) -> bool {
         estimate_tokens(&log.display_formatted()) >= self.config.threshold_tokens
     }
 
-    /// Compress `log` into a reorganized, shorter log. Reads the reflector
-    /// guidance from disk and records the model call's usage in the workspace,
-    /// but writes no memory; `replace_with_compressed` stores the result.
-    ///
-    /// # Errors
-    /// Returns an error if the LLM call fails, its response can't be parsed,
-    /// or it returns no observations.
     #[tracing::instrument(skip_all, fields(operation = "reflect"))]
     pub async fn compress(
         &self,
         layout: &WorkspaceLayout,
         log: &ObservationLog,
     ) -> anyhow::Result<ObservationLog> {
-        // Load content guidance from disk, falling back to embedded constant.
         let content_guidance = match tokio::fs::read_to_string(layout.reflector_md()).await {
             Ok(s) if !s.trim().is_empty() => s,
             Ok(_) => REFLECTION_CONTENT_PROMPT.to_string(),
@@ -134,15 +100,11 @@ impl Reflector {
             }
         };
 
-        // Serialize the flat observations for the LLM prompt — keep full objects
-        // so the model has timestamp info for intelligent merging. Compact, so
-        // indentation isn't re-sent as tokens on every reflection.
         let serialized =
             serde_json::to_string(&log.observations).context("failed to serialize observations")?;
 
         let messages = build_reflection_prompt(&serialized, &content_guidance);
 
-        // Call the model with structured output, applying per-role overrides
         let ov = self.config.role_overrides.as_ref();
         let options = CompletionOptions {
             temperature: ov.and_then(|o| o.temperature),
@@ -159,7 +121,6 @@ impl Reflector {
             .await;
         let response = result.context("reflector LLM call failed")?;
 
-        // Parse the object-array response into a compressed log.
         let compressed = parse_reflection_response(&response.content, self.config.tz)?;
 
         if compressed.observations.is_empty() {
@@ -172,20 +133,6 @@ impl Reflector {
     }
 }
 
-/// Replace the observation log on disk with `compressed`, the reflector's
-/// output for `reflected`, keeping every observation appended to the log
-/// since `reflected` was read.
-///
-/// The log only grows between reflections, so what was appended is whatever
-/// follows `reflected` as a prefix of the current file. If the current file
-/// doesn't start with `reflected`, something rewrote it while the model was
-/// working, and the log is left untouched rather than overwritten. The
-/// caller serializes this against every other write to the log. The
-/// pre-reflection file is copied to `observations.json.bak` first.
-///
-/// # Errors
-/// Returns an error if the log can't be read or written, or if it no longer
-/// starts with `reflected`.
 pub(crate) async fn replace_with_compressed(
     layout: &WorkspaceLayout,
     reflected: &ObservationLog,
@@ -334,14 +281,12 @@ mod tests {
     fn parse_reflection_converts_to_flat_observations() {
         let log = parse_reflection_response(COMPRESSED_RESPONSE, chrono_tz::UTC).unwrap();
 
-        // COMPRESSED_RESPONSE has 2 observation objects → 2 Observations
         assert_eq!(log.observations.len(), 2, "should have two observations");
         assert_eq!(
             log.observations.first().map(|o| o.content.as_str()),
             Some("workspace uses flat layout"),
             "first observation content should match"
         );
-        // Reflector observations have no source_episodes
         assert!(
             log.observations
                 .first()
@@ -398,7 +343,6 @@ mod tests {
             {"content": "an observation", "visibility": "user"}
         ]"#;
         let log = parse_reflection_response(response, chrono_tz::UTC).unwrap();
-        // Should succeed with now_local() fallback — just verify observation was parsed
         assert_eq!(
             log.observations.len(),
             1,
@@ -513,7 +457,6 @@ mod tests {
             .await
             .unwrap();
 
-        // A merge lands while the model is compressing.
         crate::log_store::append_observations(
             &layout.observations_json(),
             vec![sample_observation("ep-002")],
@@ -578,7 +521,6 @@ mod tests {
     #[test]
     fn parse_reflection_empty_array_yields_empty_log() {
         let log = parse_reflection_response("[]", chrono_tz::UTC).unwrap();
-        // Empty array → empty log (error check is in reflect())
         assert!(
             log.observations.is_empty(),
             "empty array should yield empty log"
@@ -587,7 +529,6 @@ mod tests {
 
     #[test]
     fn parse_reflection_malformed_object_errors() {
-        // Object without "observations" key — fails typed path, fails array check
         let result = parse_reflection_response(r#"{"episodes": []}"#, chrono_tz::UTC);
         assert!(
             result.is_err(),
@@ -654,7 +595,6 @@ mod tests {
         assert!(result.is_err(), "empty array response should error");
     }
 
-    /// Records the messages of every completion call and replies with a fixed response.
     struct RecordingProvider {
         response: String,
         requests: Arc<Mutex<Vec<Vec<Message>>>>,
@@ -727,19 +667,16 @@ mod tests {
             },
         );
 
-        // Small log should NOT trigger at threshold=1000
         let mut log = ObservationLog::new();
         log.observations.push(sample_observation("ep-001"));
         assert!(!reflector.should_reflect(&log));
 
-        // Lower the threshold
         reflector.update_config(ReflectorConfig {
             threshold_tokens: 10,
             tz: chrono_tz::US::Eastern,
             role_overrides: None,
         });
 
-        // Same log should now trigger at threshold=10
         assert!(reflector.should_reflect(&log));
     }
 

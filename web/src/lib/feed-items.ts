@@ -1,5 +1,3 @@
-// ── Feed item building shared by the main chat and session transcripts
-
 import { nextFeedId } from "./feed-id";
 import { historyAgentMessage, parseArtifactMessage, parseOwnerMessage } from "./relay";
 import type { AutoModeVerdict } from "./generated/AutoModeVerdict";
@@ -33,20 +31,12 @@ export function normalizeToolArgs(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
 }
 
-/**
- * Written ahead of each tool output so repeated results on one call stay
- * separable. The tool view strips it; it is not part of what the tool returned.
- */
 export const TOOL_RESULT_MARKER = "─── result ───\n";
 
 function appendResult(call: ToolCallState, output: string): void {
   call.result = (call.result ? call.result + "\n" : "") + TOOL_RESULT_MARKER + output;
 }
 
-/**
- * Extract the standalone message text when a `send_message` call targeting
- * `endpoint = "ws"` (with no `file_path` or `conversation`) succeeded.
- */
 function sentWsMessage(call: ToolCallState, resultContent: string): string | null {
   if (call.name !== "send_message") return null;
   if (call.arguments.endpoint !== "ws") return null;
@@ -63,7 +53,6 @@ function sentWsMessage(call: ToolCallState, resultContent: string): string | nul
   return message;
 }
 
-/** How many of `messages` carry each turn id. */
 export function countByTurn(messages: readonly RecentMessage[]): ReadonlyMap<string, number> {
   const counts = new Map<string, number>();
   for (const msg of messages) {
@@ -72,71 +61,26 @@ export function countByTurn(messages: readonly RecentMessage[]): ReadonlyMap<str
   return counts;
 }
 
-/**
- * Whether the background turn in progress at some point in main's history is
- * shown: `shown` when an agent message kicked it off (a session's relayed
- * result and main's reply to it, which was shown live), `hidden` for other
- * background turns (pulses, scheduled work), `unknown` when the turn began in
- * older history that hasn't been converted.
- */
 export type BackgroundTurnState = "shown" | "hidden" | "unknown";
 
 export interface HistoryConversionOptions {
-  /**
-   * `main`: the main agent's history. Background-visibility turns are
-   * hidden, except one an agent message kicked off. `session`: a session's
-   * transcript, where every message is shown.
-   */
   mode: "main" | "session";
-  /** Called with each message's timestamp; returns a day divider to insert before it, if any. */
   dayDivider?: (timestamp: string) => DividerFeedItem | null;
-  /**
-   * Whether the messages' timestamps are when they were sent, and so shown
-   * with them. `main` mode's recent messages are. An archived episode's carry
-   * its date at midnight and a session transcript's the run's start, so
-   * neither is.
-   */
   timestamps?: boolean;
-  /**
-   * `main` mode: the state of the background turn in progress where these
-   * messages begin, when the older history before them is known.
-   */
   carriedTurn?: BackgroundTurnState;
 }
 
 export interface HistoryConversion {
   items: FeedItem[];
-  /**
-   * `main` mode: leading background messages that continue a turn begun in
-   * older history, left out of `items` until that history decides whether
-   * the turn is shown. Empty when `carriedTurn` is known.
-   */
   undecidedHead: RecentMessage[];
-  /** `main` mode: the state of the background turn in progress where these messages end. */
   endTurn: BackgroundTurnState;
 }
 
-/** The message before the one being read, and whether it reached the agent mid-turn. */
 interface Previous {
   msg: RecentMessage;
   midTurn: boolean;
 }
 
-/**
- * Whether `msg`, a user-role message, reached the agent while its turn ran.
- * The agent takes such a message in at its checkpoint after a tool batch, so
- * it follows a tool result of the same turn (or another message taken in at
- * the same checkpoint); a message that starts a turn follows the previous
- * turn's last reply, whatever id it carries.
- *
- * The main conversation's messages carry turn ids, which tie the two
- * together. Episodes and older records carry none, and each of their user
- * messages starts a turn. A session's transcript carries none either, but a
- * session is told of a message mid-turn only through that checkpoint, so
- * there a user message straight after a tool result counts. A turn that
- * ended on a tool result (it failed there) and is followed by a new message
- * reads as one that carried on.
- */
 function reachedAgentMidTurn(
   msg: RecentMessage,
   previous: Previous | undefined,
@@ -148,7 +92,6 @@ function reachedAgentMidTurn(
   return previous.msg.role === "tool" || (previous.msg.role === "user" && previous.midTurn);
 }
 
-/** Convert chat-history-shaped messages into feed items. */
 export function convertHistory(
   messages: RecentMessage[],
   opts: HistoryConversionOptions,
@@ -157,19 +100,10 @@ export function convertHistory(
   const undecidedHead: RecentMessage[] = [];
   const toolCallItems = new Map<string, ToolCallState>();
   let turn: BackgroundTurnState = opts.carriedTurn ?? "unknown";
-  /**
-   * The message before this one. The main conversation leaves out the agent's
-   * own notes to itself, which can come between a tool result and the message
-   * taken in after it. A session's transcript has no ids to fall back on, so
-   * there the messages must follow one another with nothing in between: a
-   * note that a stop leaves after a tool result ends the turn.
-   */
   let before: Previous | undefined;
   const stamped = opts.timestamps ?? opts.mode === "main";
 
   for (const msg of messages) {
-    // Context the agent reads with the message after it, which nobody sent and
-    // the live feed never shows. That message follows what came before it.
     if (msg.context === true) continue;
     const midTurn = reachedAgentMidTurn(msg, before, opts.mode);
     if (msg.role !== "system" || opts.mode === "session") before = { msg, midTurn };
@@ -195,7 +129,6 @@ export function convertHistory(
       ...(msg.turn_id === undefined ? {} : { turnId: msg.turn_id }),
       ...(midTurn ? { midTurn: true } : {}),
     };
-    // Only what was said shows when; the steps between are timed live, or not at all.
     const sent = stamped && msg.timestamp ? { timestamp: msg.timestamp } : {};
     switch (msg.role) {
       case "user": {
@@ -244,7 +177,6 @@ export function convertHistory(
         break;
       }
       case "assistant": {
-        // What the model reasoned comes before the text and the tool calls it led to.
         for (const thought of msg.thinking ?? []) {
           if (thought.trim()) {
             out.push({ id: nextFeedId(), kind: "thinking", content: thought, ...ofTurn });
@@ -309,7 +241,6 @@ export function convertHistory(
   return { items: out, undecidedHead, endTurn: turn };
 }
 
-/** Convert chat-history-shaped messages into feed items, showing every message. */
 export function convertHistoryMessages(
   messages: RecentMessage[],
   opts: HistoryConversionOptions,
@@ -317,12 +248,6 @@ export function convertHistoryMessages(
   return convertHistory(messages, opts).items;
 }
 
-/**
- * The text identity of a feed item that both live frames and history
- * produce the same way, used to line the two up. `null` for items whose
- * shape differs between them (tool groups, dividers) or that history never
- * holds (local notes, status lines).
- */
 export function feedItemSignature(item: FeedItem): string | null {
   if (item.kind === "user" || item.kind === "assistant" || item.kind === "agent-message") {
     return `${item.kind}\u0000${item.content}`;
@@ -333,14 +258,6 @@ export function feedItemSignature(item: FeedItem): string | null {
   return null;
 }
 
-/**
- * Append a live tool call to `feed`, joining the tool group at the tail if
- * there is one of the same turn and the same model call that no rerun has
- * closed, and remember it in
- * `pending` so its result can find it. `turnId` is the turn in flight, and
- * `modelCall` the model call that made the tool call, when known. `at` is
- * when the call was made.
- */
 export function appendToolCall(
   feed: FeedItem[],
   pending: Map<string, ToolCallState>,
@@ -374,18 +291,12 @@ export function appendToolCall(
       ...(modelCall === undefined ? {} : { call: modelCall }),
     });
   }
-  // Re-read through `feed` so a `$state` feed hands back its proxied call
-  // and later mutations stay reactive.
   const group = feed[feed.length - 1];
   if (group?.kind !== "tool-group") return;
   const stored = group.calls[group.calls.length - 1];
   if (stored) pending.set(call.id, stored);
 }
 
-/**
- * The turn ended with calls still waiting on results: `stopped` when it was
- * stopped or cut off, `done` when it finished and the page missed the result.
- */
 export function settlePendingCalls(
   pending: Map<string, ToolCallState>,
   status: "done" | "stopped",
@@ -398,7 +309,6 @@ export function settlePendingCalls(
   pending.clear();
 }
 
-/** How many tool calls `items` hold for the turn `turnId`. */
 export function countTurnCalls(items: readonly FeedItem[], turnId: string): number {
   let count = 0;
   for (const item of items) {
@@ -407,7 +317,6 @@ export function countTurnCalls(items: readonly FeedItem[], turnId: string): numb
   return count;
 }
 
-/** Apply a live tool result, returned at `at`, to the call `pending` remembers for it. */
 export function applyToolResult(
   pending: Map<string, ToolCallState>,
   result: {

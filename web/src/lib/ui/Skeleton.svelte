@@ -1,20 +1,11 @@
 <script lang="ts">
   import VisuallyHidden from "./VisuallyHidden.svelte";
 
-  // A placeholder in the shape of content that is still loading. It pulses
-  // gently so it doesn't read as empty.
   interface Props {
     shape?: "text" | "block" | "circle";
-    /** Text only: how many lines; the last one is shorter. */
     lines?: number;
-    /** A CSS length: the block's or the lines' width. */
     width?: string;
-    /** A CSS length: the block's height, or the circle's size. */
     height?: string;
-    /**
-     * What is loading, announced once: "Loading sessions". Give it to one
-     * skeleton per loading region and leave the rest silent.
-     */
     label?: string;
   }
 

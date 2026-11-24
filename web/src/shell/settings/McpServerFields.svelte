@@ -10,19 +10,11 @@
   import type { McpServerEntry } from "../../lib/types";
   import { TextField } from "../../lib/ui";
 
-  // The fields of one tool server, written straight into `server`, so an edit
-  // to a server in the scope's form is staged like any other. The boxes for
-  // arguments, variables and headers keep the text as typed and write what
-  // it reads as on each change, so a line still being typed isn't rewritten
-  // under the cursor. The parent mounts a new one for a new server object.
-
   type ServerField = "command" | "args" | "env" | "url" | "headers";
 
   interface Props {
     server: McpServerEntry;
-    /** A field's problems from the last save. */
     errorOf?: (field: ServerField) => string | undefined;
-    /** What the form itself says is missing. */
     missing?: Partial<Record<ServerField, string>>;
   }
 

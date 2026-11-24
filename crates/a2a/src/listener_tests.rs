@@ -1,8 +1,3 @@
-//! Tests for the hub A2A listener: two agents behind one port, routed by
-//! `/agents/{name}/`, authenticated per request against each agent's
-//! visibility, over real HTTP with the official client. See
-//! `docs/systems-usage/a2a.md`.
-
 use residuum_core::testing::ports::reserve_port;
 use std::sync::Arc;
 
@@ -28,9 +23,6 @@ use residuum_background::team::{A2aVisibility, AgentState};
 use residuum_config::A2aConfig;
 use residuum_core::testing::wait;
 
-/// A handler that identifies its agent in every reply and gates its second
-/// streamed event on `gate`, so a test can prove the first event arrived
-/// while the response was still open.
 struct AgentHandler {
     name: String,
     gate: Arc<Notify>,
@@ -146,14 +138,11 @@ impl a2a_server::RequestHandler for AgentHandler {
     }
 }
 
-/// A live hub A2A listener over a fake directory of agents.
 struct Fixture {
     port: u16,
     keys: SharedA2aKeys,
-    /// The keys of joined siblings the listener also accepts.
     siblings: Arc<residuum_net::remote_access::siblings::SiblingKeys>,
     directory: Arc<StaticAgentDirectory>,
-    /// Released to let every agent's gated stream finish.
     gate: Arc<Notify>,
     shutdown_tx: tokio::sync::watch::Sender<bool>,
     _dir: tempfile::TempDir,
@@ -175,8 +164,6 @@ impl Fixture {
     }
 }
 
-/// One agent's router: a card titled `display`, URLs under `/agents/<name>`,
-/// and an [`AgentHandler`].
 fn agent_router(
     dir: &std::path::Path,
     name: &str,
@@ -209,7 +196,6 @@ fn agent_router(
     agent_handler_router(handler, card_state)
 }
 
-/// Two agents behind one listener: `scout` (public) and `vault` (private).
 fn fixture() -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let reservation = reserve_port();
@@ -243,8 +229,6 @@ fn fixture() -> Fixture {
     .with_sibling_keys(
         Arc::clone(&siblings) as Arc<dyn residuum_net::remote_access::siblings::SiblingKeyVerifier>
     )
-    // The listener serves on the reserved socket itself, so no other process
-    // can take the port, and connections queue on it until it accepts them.
     .with_bound_listener(reservation.into_tokio_listener());
     residuum_core::util::spawn_in_span(listener.start());
     Fixture {
@@ -458,7 +442,6 @@ async fn a_joined_siblings_key_reaches_a_private_agent_and_a_missing_key_does_no
         StatusCode::OK,
         "the sibling's key"
     );
-    // The same key calls the agent: a real message round trip as `sibling:desktop`.
     let client = client_for(&fx, "vault", &inbound).await;
     let reply = wait::guarded(
         "the reply to send_message",
@@ -472,7 +455,6 @@ async fn a_joined_siblings_key_reaches_a_private_agent_and_a_missing_key_does_no
         text_of(&reply)
     );
 
-    // Revoking the join closes the door again.
     fx.siblings.remove("desktop").await.unwrap();
     assert_eq!(
         http.get(&card_url)
@@ -536,7 +518,6 @@ async fn a_stopped_agent_is_503_with_a_body_saying_it_isnt_running() {
     assert_eq!(failed.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert!(failed.text().await.unwrap().contains("failed"));
 
-    // A private agent that isn't running still doesn't reveal itself.
     let hidden = http
         .get(fx.url("/agents/vault/.well-known/agent-card.json"))
         .send()
@@ -704,8 +685,6 @@ async fn the_query_string_survives_prefix_stripping() {
     let key = fx.key().await;
     let http = reqwest::Client::new();
 
-    // The stub handler answers list_tasks with an error whatever the query;
-    // reaching it (not a 404 from a mangled path) is what proves dispatch.
     let resp = http
         .get(fx.url("/agents/scout/rest/tasks?pageSize=1"))
         .bearer_auth(&key)

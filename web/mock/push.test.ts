@@ -3,7 +3,6 @@ import type { PushDevice } from "../src/lib/generated/PushDevice";
 import { MOCK_VAPID_PUBLIC_KEY } from "./push";
 import { fetchJson, startMockServer, type MockServerHarness } from "./test-support";
 
-/** A well-formed 16-byte authentication secret. */
 const AUTH = "AAAAAAAAAAAAAAAAAAAAAA";
 
 /** What a browser's `PushSubscription.toJSON()` gives for `endpoint`. */
@@ -55,7 +54,6 @@ describe("the Web Push routes", () => {
   it("serves a public key a browser can subscribe with", async () => {
     const res = await call("GET", "/api/hub/push/key");
     expect(res).toEqual({ status: 200, body: { public_key: MOCK_VAPID_PUBLIC_KEY } });
-    // 65 bytes of base64url without padding.
     expect(Buffer.from(MOCK_VAPID_PUBLIC_KEY, "base64url")).toHaveLength(65);
   });
 
