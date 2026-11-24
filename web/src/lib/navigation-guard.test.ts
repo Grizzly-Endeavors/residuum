@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
 import { NavigationGuard } from "./navigation-guard";
 import { HOME, locationAt } from "./routes";

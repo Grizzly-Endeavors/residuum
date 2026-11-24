@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { EntryState } from "./history-entry";
 import { INBOX, type AppLocation, type InboxPlace, type Panel, type Place } from "./routes";
