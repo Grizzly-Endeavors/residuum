@@ -74,15 +74,13 @@ Changing a lint, a lint level, or a clippy or deny setting needs explicit approv
 
 ### Testing
 
-Testing is a first-class operation — never skip test implementation.
-
-- Always `cargo test --quiet` (or `just test`), never plain `cargo test`.
+- Run `cargo test --quiet` (or `just test`) rather than plain `cargo test` to keep output focused on failures and summaries.
 - Unit tests go in `#[cfg(test)] mod tests` at the bottom of the file. Integration tests are modules of the one test binary in `tests/it/`, each with exactly one `//! covers: <package>, …` line naming the packages it tests. They share a process, so a test never changes environment variables, the current directory or the global tracing subscriber.
 - A filter matches a test's path, and a member crate's paths start below the crate: `residuum-memory`'s search tests are `search::tests::…`. Run them with `just test-crate memory search::`.
 - Shared test helpers live in the lowest crate that can hold them, behind its `test-support` feature, which a package turns on only from `[dev-dependencies]`. Look for `testing` modules under `crates/*/src/` before writing a new helper.
 - **A test waits on the event it checks, never on elapsed time.** Fix a flaky test by making it wait on an event the code exposes (adding the signal when there is none), never by widening a timeout, adding a sleep, or rerunning. `CONTRIBUTING.md`, "Waiting in tests", says which helper fits; a source scan enforces it.
-- A test you add or fix must pass `just stress <filter>` before you push. Nightly stress runs file each failure as a `Nightly stress: <test>` issue.
-- After a red CI run, run `just ci-failures` and fix every failure, `touched` or not. A `likely flake` (not touched, seen elsewhere) may be shared breakage: check `main`, and file or add to an `investigate` issue instead of chasing it in this PR.
+- Prove flaky-test fixes with `just stress <filter>`; routine stress runs belong in the nightly schedule (which files failures as `Nightly stress: <test>` issues), not on every push.
+- After a red CI run, run `just ci-failures` and fix failures your change caused. For failures in untouched code or a `likely flake`, file or add to an `investigate` issue with the output and carry on rather than chasing it in this PR.
 
 ## Code Style
 
