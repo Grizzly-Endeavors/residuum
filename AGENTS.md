@@ -12,8 +12,6 @@ Rules for coding agents working in this repository. `CLAUDE.md` imports this fil
 - [Workspace layout](./CONTRIBUTING.md#workspace-layout) — the crates, the dependency rules, the root facade and the public API policy
 - [Runbooks](./docs/runbooks/) — maintainer operations: build dirs, the `main` ruleset, CI metrics, the Windows VM
 
-Superseded documents live in [`docs/archive/`](./docs/archive/); they record history and do not describe current behavior.
-
 **Web interface:** the Residuum web UI lives in `web/` (Svelte 5 SPA); see `web/CLAUDE.md`. Do not confuse it with `relay/web/`, the agent-residuum.com site, which lives in a separate repository.
 
 ## Build & Quality Gates
@@ -63,7 +61,7 @@ Releases target Linux x86_64 and aarch64, macOS aarch64, and Windows x86_64 (`x8
 
 The Rust version is pinned in `rust-toolchain.toml`; bumping it is its own PR, with fixes for new lints.
 
-The lint table is `[workspace.lints]` in the root `Cargo.toml`: clippy pedantic plus a deny list that includes `unsafe_code`, `unwrap_used`, `expect_used`, `panic`, `indexing_slicing`, `todo`, `missing_errors_doc`, `missing_panics_doc`, `must_use_candidate`, `print_stderr` (residuum is a daemon; diagnostics go through `tracing`) and `allow_attributes`. Every member sets `[lints] workspace = true`.
+The lint table is `[workspace.lints]` in the root `Cargo.toml`: clippy pedantic plus a deny list that includes `unsafe_code`, `unwrap_used`, `expect_used`, `panic`, `indexing_slicing`, `todo`, `must_use_candidate`, `print_stderr` (residuum is a daemon; diagnostics go through `tracing`) and `allow_attributes`. Every member sets `[lints] workspace = true`.
 
 - Suppress with a scoped `#[expect(lint, reason = "...")]`, never `#[allow]`. `unsafe_code` is `deny`, not `forbid`, so a real FFI boundary can carry one.
 - `unwrap`, `expect`, `panic` and `dbg!` are already allowed inside `#[cfg(test)]` and `#[test]` code by `clippy.toml`. Adding an `#[expect]` for them there is an error (the expectation is never fulfilled).
@@ -94,8 +92,7 @@ Changing a lint, a lint level, or a clippy or deny setting needs explicit approv
 - Lowercase, no trailing period (chains well with `anyhow` context)
 
 ### Comments
-- Explain **why**, never **what**
-- Doc comments: one-line `///` summary for public items; expand only for complex behavior
+- Follow the strict documentation & comment bar in `~/Projects/AGENTS.md` (outside-system facts and opacity-boundary contracts only; no code narration, bug history, or design rationales).
 
 ### Module Organization
 - `mod.rs` holds declarations and re-exports, plus module-level coordination logic when it belongs there
