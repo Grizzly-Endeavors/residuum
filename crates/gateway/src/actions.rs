@@ -164,7 +164,7 @@ impl HeldModel {
              providers.toml, or cancel the action and schedule it again with a different model."
         } else {
             "It won't run as scheduled — cancel it in the Schedule place and schedule it again \
-             with a tier (small, medium, or large) or a provider/model id."
+             with \"main\", a tier (small, medium, or large), or a provider/model id."
         }
     }
 }

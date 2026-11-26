@@ -83,11 +83,29 @@ pub(crate) enum TurnKickoff {
 impl TurnKickoff {
     /// This turn's driving hop count, before it's consumed into message text
     /// — the session's hop counter is set to this at the top of the turn.
-    fn hop_count(&self) -> u32 {
+    pub(crate) fn hop_count(&self) -> u32 {
         match self {
             Self::Initial { hop_count, .. } => *hop_count,
             Self::AgentMessage(msg) => msg.hop_count,
             Self::External(_) => 0,
+        }
+    }
+
+    /// Whether this kickoff carries inbound, woken, or resumed messages that
+    /// must be recorded in the transcript (never silently discarded) even when
+    /// the whole session is stopped while `Queued` before its turn starts.
+    pub(crate) fn carries_inbound_messages(&self, trigger: &residuum_bus::EventTrigger) -> bool {
+        match self {
+            Self::AgentMessage(_) | Self::External(_) => true,
+            Self::Initial {
+                delivered,
+                resumed_by_chat,
+                ..
+            } => {
+                !delivered.is_empty()
+                    || *resumed_by_chat
+                    || matches!(trigger, residuum_bus::EventTrigger::Conversation)
+            }
         }
     }
 
@@ -103,7 +121,7 @@ impl TurnKickoff {
     }
 
     /// Render this kickoff as the turn's opening message(s).
-    fn into_messages(self) -> Vec<Message> {
+    pub(crate) fn into_messages(self) -> Vec<Message> {
         match self {
             Self::Initial {
                 prompt,

@@ -491,7 +491,7 @@ pub struct TurnResources<'a> {
 /// System note injected into the conversation when a turn is stopped
 /// mid-flight, so the next turn knows the work above was cut short rather
 /// than completed or abandoned.
-const STOP_NOTE: &str = "[Stopped] the user stopped this turn before it finished; review what's already been done above before continuing or repeating any of it.";
+pub const STOP_NOTE: &str = "[Stopped] the user stopped this turn before it finished; review what's already been done above before continuing or repeating any of it.";
 
 /// A model response was cut off by the configured output-token limit: tell
 /// the user (a transient notice, not an error — the turn otherwise

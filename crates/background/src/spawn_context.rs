@@ -46,12 +46,18 @@ use super::types::SubAgentBuildConfig;
 /// recovers, rather than once per spawn made while it's already degraded.
 #[derive(Clone, Default)]
 pub struct BackgroundTierActiveIndex {
+    main: Arc<AtomicUsize>,
     small: Arc<AtomicUsize>,
     medium: Arc<AtomicUsize>,
     large: Arc<AtomicUsize>,
 }
 
 impl BackgroundTierActiveIndex {
+    /// The `main` selector's shared counter, cloned (the `Arc`, not the count).
+    fn for_main(&self) -> Arc<AtomicUsize> {
+        Arc::clone(&self.main)
+    }
+
     /// This tier's shared counter, cloned (the `Arc`, not the count).
     fn for_tier(&self, tier: BackgroundModelTier) -> Arc<AtomicUsize> {
         match tier {
@@ -159,6 +165,38 @@ pub(crate) struct NewSessionContext {
     pub(crate) conversation_target: Option<residuum_bus::ConversationTarget>,
 }
 
+impl SpawnContext {
+    /// Flush any unseen conversation transcript into `req.address` and
+    /// close/merge the session into episodic memory without invoking the main
+    /// model.
+    ///
+    /// Only conversation sessions (`external-...` with
+    /// [`residuum_bus::EventTrigger::Conversation`]) are accepted; any other
+    /// address or session category is logged at `warn` and left untouched.
+    ///
+    /// - Live session (`Forking`, `Queued`, `Running`, or `Idle`): attaches
+    ///   (or merges) `req.flush` and cancels `stop_token` — aborting any
+    ///   in-flight model/tool execution or queued turn — then appends the
+    ///   caller's tail and finalizes the run as `Completed` with
+    ///   `episode_skip_token_floor = 0`.
+    /// - Not live or `Completing` with non-empty `req.flush.user_content`:
+    ///   waits for any in-flight teardown to clear, inherits model, skill,
+    ///   spawner, and depth from any existing [`crate::registry::ResumePoint`]
+    ///   at `req.address` (leaving `resume_point` unset when none existed),
+    ///   and records and merges a transcript-only completion run with
+    ///   `episode_skip_token_floor = 0`.
+    pub fn flush_and_close_conversation(&self, req: crate::runtime::ConversationCloseFlush) {
+        self.session_runtime.flush_and_close_conversation(req, || {
+            crate::session_memory::MergeHandles {
+                observer: Arc::clone(&self.observer),
+                merge_writer: Arc::clone(&self.merge_writer),
+                layout: self.layout.clone(),
+                episode_skip_token_floor: 0,
+            }
+        });
+    }
+}
+
 /// Log a warning for each fallback provider dropped from a background
 /// tier's chain — visible in diagnostics without stopping the spawn, since
 /// the tier's primary (or another fallback) still built successfully.
@@ -212,6 +250,12 @@ fn resolve_model_chain(
     model: &ModelSelector,
 ) -> Result<SessionModelChain, anyhow::Error> {
     match model {
+        ModelSelector::Main => Ok(SessionModelChain {
+            specs: main.to_vec(),
+            label: "background sessions (main)".to_string(),
+            active_index: tier_index.for_main(),
+            overrides_key: Some("main"),
+        }),
         ModelSelector::Tier(tier) => Ok(SessionModelChain {
             specs: tiers.resolve_tier(tier, main),
             label: format!("background sessions ({tier} tier)"),
@@ -461,6 +505,34 @@ mod tests {
         };
         assert_eq!(only.model.model, "gpt-4o");
         assert_eq!(chain.overrides_key, None);
+    }
+
+    #[test]
+    fn main_selector_runs_main_provider_chain_with_main_overrides() {
+        let tiers = residuum_config::BackgroundModelsConfig {
+            small: Some(vec![spec("anthropic", "claude-haiku-4-5")]),
+            medium: Some(vec![spec("openai", "gpt-4o-mini")]),
+            large: Some(vec![spec("openai", "gpt-4o")]),
+        };
+        let main_chain = vec![
+            spec("anthropic", "claude-sonnet-4-6"),
+            spec("openai", "gpt-4o"),
+        ];
+        let index = BackgroundTierActiveIndex::default();
+        let chain = resolve_model_chain(
+            &tiers,
+            &main_chain,
+            &index,
+            &ModelCatalog::default(),
+            &ModelSelector::MAIN,
+        )
+        .unwrap();
+        assert_eq!(chain.specs, main_chain);
+        assert_eq!(chain.overrides_key, Some("main"));
+        assert!(
+            Arc::ptr_eq(&chain.active_index, &index.for_main()),
+            "main selector shares one failover counter across spawns"
+        );
     }
 
     #[test]

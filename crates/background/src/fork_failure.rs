@@ -127,6 +127,37 @@ pub(crate) fn pulse_start_failure_message(pulse: &str, error: &anyhow::Error) ->
     }
 }
 
+/// The plain-language sentence carried on a [`residuum_bus::SessionStartFailedEvent`] when a
+/// conversation session at `address` couldn't start: what went wrong and what
+/// to check, from the [`ForkFailure`] anywhere in `error`'s context chain.
+pub(crate) fn conversation_start_failure_message(
+    address: &SessionAddress,
+    error: &anyhow::Error,
+) -> String {
+    let failed = format!("The conversation session {address} couldn't start because");
+    match error.downcast_ref::<ForkFailure>() {
+        Some(ForkFailure::UnknownModel { model }) => {
+            format!("{failed} the model {model} isn't available. Check the agent's model settings.")
+        }
+        Some(ForkFailure::ProviderChain { model }) => format!(
+            "{failed} its model ({model}) couldn't be set up, usually because a provider's API \
+             key is missing. Check Settings → Model → Providers."
+        ),
+        Some(ForkFailure::IdentityFiles) => format!(
+            "{failed} the agent's identity files couldn't be read. Check that files such as \
+             SOUL.md exist and can be opened."
+        ),
+        Some(ForkFailure::Skill { name }) => format!(
+            "{failed} the skill \"{name}\" couldn't be loaded. Check that the skill is still \
+             installed."
+        ),
+        None => format!(
+            "{failed} of an unexpected problem. Try again; if it keeps failing, the agent's logs \
+             have the details."
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use anyhow::Context as _;
@@ -324,6 +355,27 @@ mod tests {
         assert_eq!(
             format!("{error:#}"),
             "failed to build provider chain for model medium: anthropic requires an API key"
+        );
+    }
+
+    #[test]
+    fn conversation_start_failure_uses_plain_language_for_known_and_unknown_causes() {
+        let addr = SessionAddress::from("external-conv-1");
+        assert_eq!(
+            conversation_start_failure_message(&addr, &unknown_model()),
+            "The conversation session external-conv-1 couldn't start because the model \
+             lcoal/qwen3:8b isn't available. Check the agent's model settings."
+        );
+        assert_eq!(
+            conversation_start_failure_message(&addr, &provider_chain()),
+            "The conversation session external-conv-1 couldn't start because its model (medium) \
+             couldn't be set up, usually because a provider's API key is missing. Check Settings \
+             → Model → Providers."
+        );
+        assert_eq!(
+            conversation_start_failure_message(&addr, &unclassified()),
+            "The conversation session external-conv-1 couldn't start because of an unexpected \
+             problem. Try again; if it keeps failing, the agent's logs have the details."
         );
     }
 }

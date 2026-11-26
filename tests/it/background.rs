@@ -15,10 +15,22 @@
     reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
 )]
 
+use std::sync::Arc;
+use std::time::Duration;
+
 use tempfile::tempdir;
 
 use residuum::background::registry::SessionRegistry;
-use residuum::bus::{EventTrigger, NotificationEvent, SessionAddress, spawn_broker, topics};
+use residuum::background::testing::{
+    make_sequenced_resources, next_idle, sample_conversation_request, test_runtime_held_idle,
+    test_spawn_context,
+};
+use residuum::background::{ConversationCloseFlush, SessionCloseFlush};
+use residuum::bus::testing::next_event;
+use residuum::bus::{
+    AgentResultStatus, EventTrigger, NotificationEvent, SessionAddress, SessionEvent,
+    SessionEventKind, spawn_broker, topics,
+};
 use residuum::notify::channels::InboxChannel;
 use residuum::notify::subscriber::run_notify_subscriber;
 
@@ -72,7 +84,61 @@ async fn result_routes_to_inbox_via_bus() {
 #[tokio::test]
 async fn stopping_an_unknown_address_reports_not_found() {
     let registry = SessionRegistry::new();
-    assert!(!registry.stop(&SessionAddress::from("spawned-ghost-0000")));
+    let unknown = SessionAddress::from("spawned-ghost-0000");
+    assert!(!registry.stop(&unknown));
+    assert!(!registry.cancel_current_turn(&unknown));
+}
+
+#[tokio::test]
+async fn flush_and_close_conversation_closes_idle_session_with_unseen_tail() {
+    let (runtime, _results, bus_handle) = test_runtime_held_idle().await;
+    let runtime = Arc::new(runtime);
+    let mut events: residuum::bus::Subscriber<SessionEvent> =
+        bus_handle.subscribe(topics::Sessions).await.unwrap();
+
+    let address = SessionAddress::from("external-flush-it-0001");
+    let resources = make_sequenced_resources(vec!["initial reply"]);
+    let ctx = test_spawn_context(
+        Arc::clone(&runtime),
+        &bus_handle,
+        resources.layout.clone(),
+        Arc::clone(&resources.observer),
+        Arc::clone(&resources.merge_writer),
+    );
+
+    runtime.spawn(
+        sample_conversation_request(address.as_ref()),
+        Some(resources),
+    );
+    next_idle(&mut events, &address, "session to finish initial turn").await;
+
+    ctx.flush_and_close_conversation(ConversationCloseFlush {
+        address: address.clone(),
+        source_label: "conversation:test".to_string(),
+        conversation_target: None,
+        flush: SessionCloseFlush {
+            user_content: Some("unseen closing transcript".to_string()),
+            assistant_note: "conversation closed".to_string(),
+        },
+    });
+
+    loop {
+        let ev = next_event("completed event after close flush", &mut events).await;
+        if ev.address == address
+            && let SessionEventKind::Completed {
+                status,
+                memory_pending,
+            } = ev.kind
+        {
+            assert!(
+                matches!(status, AgentResultStatus::Completed),
+                "close flush must complete the run, got {status:?}"
+            );
+            assert!(memory_pending, "close flush must trigger a memory merge");
+            break;
+        }
+    }
+    runtime.shutdown(Duration::from_secs(5)).await;
 }
 
 #[tokio::test]

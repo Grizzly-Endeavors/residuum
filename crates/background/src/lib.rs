@@ -32,8 +32,10 @@ pub use conversation_router::ConversationRouter;
 pub use listener::{SpawnContextWatch, spawn_listener};
 pub use messaging::{AgentMessenger, DeliveryOutcome, SendError};
 pub use owner_session::{OwnerSessionStart, load_main_conversation};
-pub use registry::{DeliverOutcome, SessionRegistry};
-pub use runtime::{SessionRuntime, SessionRuntimeHandles, SessionSpawnRequest};
+pub use registry::{DeliverOutcome, SessionCloseFlush, SessionRegistry};
+pub use runtime::{
+    ConversationCloseFlush, SessionRuntime, SessionRuntimeHandles, SessionSpawnRequest,
+};
 pub use session_memory::SessionMemoryEnv;
 pub use spawn_context::{
     ActionOutcomeSink, ActionSpawnOutcome, BackgroundTierActiveIndex, SpawnContext,

@@ -250,7 +250,7 @@ Schedule a one-off action to fire at a specific time. The action runs once and i
       "type": "string"
     },
     "model_tier": {
-      "description": "A tier (\"small\", \"medium\", or \"large\") or an explicit model id in provider/model form (the format providers.toml uses). An explicit model runs that one model with no failover. Defaults to \"medium\".",
+      "description": "\"main\" (the agent's primary model chain), a tier (\"small\", \"medium\", or \"large\"), or an explicit model id in provider/model form (the format providers.toml uses). An explicit model runs that one model with no failover. Defaults to \"medium\".",
       "type": "string"
     },
     "name": {
@@ -516,7 +516,7 @@ Fork a session to handle a task in the background. Optionally name a skill to gi
 {
   "properties": {
     "model": {
-      "description": "A tier (\"small\", \"medium\", or \"large\") or an explicit model id in provider/model form (the format providers.toml uses). An explicit model runs that one model with no failover. Defaults to \"medium\".",
+      "description": "\"main\" (the agent's primary model chain), a tier (\"small\", \"medium\", or \"large\"), or an explicit model id in provider/model form (the format providers.toml uses). An explicit model runs that one model with no failover. Defaults to \"medium\".",
       "type": "string"
     },
     "skill": {

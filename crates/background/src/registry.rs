@@ -68,6 +68,53 @@ impl std::fmt::Display for RegisterError {
 
 impl std::error::Error for RegisterError {}
 
+/// Final transcript messages to append when closing a conversation session
+/// without running another model turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionCloseFlush {
+    /// Optional unseen conversation transcript tail to append before closing.
+    pub user_content: Option<String>,
+    /// Synthetic assistant acknowledgment appended after `user_content` so
+    /// episode chunk extraction indexes the tail and the run closes cleanly.
+    pub assistant_note: String,
+}
+
+impl SessionCloseFlush {
+    /// Fold a newer close-flush into an already-pending one so neither unseen
+    /// transcript tail is dropped when two closes arrive on the same run.
+    pub(crate) fn merge(&mut self, newer: Self) {
+        let newer_content = newer.user_content.filter(|s| !s.trim().is_empty());
+        match (&mut self.user_content, newer_content) {
+            (Some(existing), Some(next)) if !existing.trim().is_empty() => {
+                existing.push_str("\n\n");
+                existing.push_str(&next);
+            }
+            (slot, Some(next)) => {
+                *slot = Some(next);
+            }
+            (_, None) => {}
+        }
+        if !newer.assistant_note.trim().is_empty() {
+            self.assistant_note = newer.assistant_note;
+        }
+    }
+}
+
+/// Outcome of [`SessionRegistry::stop_with_flush`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StopWithFlushOutcome {
+    /// Attached (or merged) the flush payload on the live conversation session
+    /// and cancelled `stop_token`.
+    StoppedLive,
+    /// The session at `address` is already in `Completing` teardown.
+    Completing,
+    /// No live session is registered at `address`.
+    NotLive,
+    /// A live session exists at `address`, but it is not a conversation
+    /// session (`EventTrigger::Conversation`), so it was left untouched.
+    NotConversation,
+}
+
 /// A registered session's bookkeeping: its metadata, the token that cancels
 /// its in-flight turn or idle wait, and the sender half of its interrupt
 /// channel — how a message addressed to this session actually reaches it
@@ -76,7 +123,20 @@ impl std::error::Error for RegisterError {}
 struct SessionEntry {
     info: SessionInfo,
     stop_token: CancellationToken,
+    /// Active per-turn child token of `stop_token` while a turn is queued or
+    /// executing, or while a wake message is queued in `interrupt_tx` waiting
+    /// to start the next turn. `None` while genuinely idle or between turns
+    /// with no queued wake, and once the session is stopping/completing.
+    turn_token: Option<CancellationToken>,
     interrupt_tx: mpsc::Sender<Interrupt>,
+    close_flush: Option<SessionCloseFlush>,
+}
+
+impl SessionEntry {
+    /// Whether `interrupt_tx` currently holds at least one unpopped interrupt.
+    fn has_queued_interrupts(&self) -> bool {
+        self.interrupt_tx.capacity() < self.interrupt_tx.max_capacity()
+    }
 }
 
 /// What's needed to resume a completed session as a new run at the same
@@ -213,15 +273,51 @@ impl SessionRegistry {
         if guard.contains_key(&address) {
             return Err(RegisterError { address });
         }
+        let turn_token = (!matches!(
+            info.state,
+            SessionState::Idle | SessionState::Completing | SessionState::Completed
+        ))
+        .then(|| stop_token.child_token());
         guard.insert(
             address,
             SessionEntry {
                 info,
                 stop_token,
+                turn_token,
                 interrupt_tx,
+                close_flush: None,
             },
         );
         Ok(interrupt_rx)
+    }
+
+    /// Register a transcript-only completion run directly in [`SessionState::Completing`]
+    /// so concurrent deliveries see `DeliverOutcome::Completing` while its
+    /// completion record is written.
+    ///
+    /// # Errors
+    /// Returns [`RegisterError`] if `info.address` already names a live run.
+    pub(crate) fn register_completing(&self, mut info: SessionInfo) -> Result<(), RegisterError> {
+        let (interrupt_tx, _interrupt_rx) = mpsc::channel(1);
+        let address = info.address.clone();
+        info.state = SessionState::Completing;
+        let mut guard = self.lock();
+        if guard.contains_key(&address) {
+            return Err(RegisterError { address });
+        }
+        let stop_token = CancellationToken::new();
+        stop_token.cancel();
+        guard.insert(
+            address,
+            SessionEntry {
+                info,
+                stop_token,
+                turn_token: None,
+                interrupt_tx,
+                close_flush: None,
+            },
+        );
+        Ok(())
     }
 
     /// Deliver a message to a live session by address: an interrupt at its
@@ -236,8 +332,8 @@ impl SessionRegistry {
     /// `crate::runtime::finish_run`), so anything accepted here
     /// after that point could be silently lost.
     pub fn deliver(&self, address: &SessionAddress, message: Interrupt) -> DeliverOutcome {
-        let guard = self.lock();
-        let Some(entry) = guard.get(address) else {
+        let mut guard = self.lock();
+        let Some(entry) = guard.get_mut(address) else {
             return DeliverOutcome::NotLive;
         };
         if matches!(
@@ -246,8 +342,17 @@ impl SessionRegistry {
         ) {
             return DeliverOutcome::Completing;
         }
+        let is_wake = matches!(
+            &message,
+            Interrupt::AgentMessage(_) | Interrupt::UserMessage(_)
+        );
         match entry.interrupt_tx.try_send(message) {
-            Ok(()) => DeliverOutcome::Delivered,
+            Ok(()) => {
+                if is_wake && entry.turn_token.is_none() && !entry.stop_token.is_cancelled() {
+                    entry.turn_token = Some(entry.stop_token.child_token());
+                }
+                DeliverOutcome::Delivered
+            }
             Err(e) => {
                 tracing::warn!(address = %address, error = %e, "session interrupt channel full, refusing to deliver agent message");
                 DeliverOutcome::Full
@@ -357,6 +462,18 @@ impl SessionRegistry {
         let mut guard = self.lock();
         if let Some(entry) = guard.get_mut(address) {
             entry.info.state = state;
+            if matches!(state, SessionState::Completing | SessionState::Completed)
+                || (state == SessionState::Idle && !entry.has_queued_interrupts())
+            {
+                entry.turn_token = None;
+            } else if matches!(
+                state,
+                SessionState::Forking | SessionState::Queued | SessionState::Running
+            ) && entry.turn_token.is_none()
+                && !entry.stop_token.is_cancelled()
+            {
+                entry.turn_token = Some(entry.stop_token.child_token());
+            }
         }
     }
 
@@ -400,8 +517,8 @@ impl SessionRegistry {
     /// Returns `true` if a live session was found and signalled, `false` if
     /// the address is unknown or the session is already completing/completed.
     pub fn stop(&self, address: &SessionAddress) -> bool {
-        let guard = self.lock();
-        let Some(entry) = guard.get(address) else {
+        let mut guard = self.lock();
+        let Some(entry) = guard.get_mut(address) else {
             return false;
         };
         if matches!(
@@ -410,8 +527,69 @@ impl SessionRegistry {
         ) {
             return false;
         }
+        entry.turn_token = None;
         entry.stop_token.cancel();
         true
+    }
+
+    /// Attach (or merge) a [`SessionCloseFlush`] onto a live conversation
+    /// session and cancel its `stop_token` under the same lock — aborting any
+    /// in-flight or queued turn — so `finish_run` appends the unseen
+    /// transcript tail and completes the run as `Completed` without running
+    /// another model turn.
+    pub(crate) fn stop_with_flush(
+        &self,
+        address: &SessionAddress,
+        flush: SessionCloseFlush,
+    ) -> StopWithFlushOutcome {
+        let mut guard = self.lock();
+        let Some(entry) = guard.get_mut(address) else {
+            return StopWithFlushOutcome::NotLive;
+        };
+        if !matches!(entry.info.trigger, EventTrigger::Conversation) {
+            return StopWithFlushOutcome::NotConversation;
+        }
+        if entry.info.state == SessionState::Completing {
+            return StopWithFlushOutcome::Completing;
+        }
+        if entry.info.state == SessionState::Completed {
+            return StopWithFlushOutcome::NotLive;
+        }
+        match &mut entry.close_flush {
+            Some(existing) => existing.merge(flush),
+            slot @ None => *slot = Some(flush),
+        }
+        entry.turn_token = None;
+        entry.stop_token.cancel();
+        StopWithFlushOutcome::StoppedLive
+    }
+
+    /// Whether `(address, run_id)` currently carries a pending
+    /// [`SessionCloseFlush`].
+    pub(crate) fn has_close_flush(&self, address: &SessionAddress, run_id: &str) -> bool {
+        let guard = self.lock();
+        guard
+            .get(address)
+            .is_some_and(|entry| entry.info.run_id == run_id && entry.close_flush.is_some())
+    }
+
+    /// Atomically transition `(address, run_id)` to [`SessionState::Completing`],
+    /// clear its per-turn token, and take any pending [`SessionCloseFlush`]
+    /// under a single lock acquisition so no [`Self::stop_with_flush`] can
+    /// slip between taking the flush and entering `Completing`.
+    pub(crate) fn begin_completing(
+        &self,
+        address: &SessionAddress,
+        run_id: &str,
+    ) -> Option<SessionCloseFlush> {
+        let mut guard = self.lock();
+        let entry = guard.get_mut(address)?;
+        if entry.info.run_id != run_id {
+            return None;
+        }
+        entry.info.state = SessionState::Completing;
+        entry.turn_token = None;
+        entry.close_flush.take()
     }
 
     /// Stop `address`'s turn, but only if one is actually running right now.
@@ -442,6 +620,82 @@ impl SessionRegistry {
         true
     }
 
+    /// Cancel only `address`'s active or queued turn without cancelling the
+    /// session's outer `stop_token`.
+    ///
+    /// Applies whenever a turn is in progress or queued to start (`Forking`,
+    /// `Queued`, actively inside `run_turn` while `Running`, or already woken
+    /// by a delivered message in `interrupt_tx` before `Idle` finishes
+    /// polling). The cancelled turn unwinds immediately — recording its
+    /// kickoff message, publishing any message-read acknowledgement, and
+    /// appending the `[Stopped]` note — and the session transitions to
+    /// [`SessionState::Idle`] (including on the run's first turn) instead of
+    /// tearing down the run.
+    ///
+    /// Returns `true` if a live or queued turn was signalled, `false` if the
+    /// address is unknown, genuinely `Idle` (or in post-turn bookkeeping) with
+    /// no queued wake, already stopping as a whole, or `Completing`/`Completed`.
+    pub fn cancel_current_turn(&self, address: &SessionAddress) -> bool {
+        let guard = self.lock();
+        let Some(entry) = guard.get(address) else {
+            return false;
+        };
+        if matches!(
+            entry.info.state,
+            SessionState::Completing | SessionState::Completed
+        ) || entry.stop_token.is_cancelled()
+        {
+            return false;
+        }
+        let Some(turn_token) = &entry.turn_token else {
+            return false;
+        };
+        turn_token.cancel();
+        true
+    }
+
+    /// Return the active per-turn child token for `(address, run_id)`, minting
+    /// a fresh child of `stop_token` if none is currently stored.
+    pub(crate) fn acquire_turn_token(
+        &self,
+        address: &SessionAddress,
+        run_id: &str,
+    ) -> Option<CancellationToken> {
+        let mut guard = self.lock();
+        let entry = guard.get_mut(address)?;
+        if entry.info.run_id != run_id {
+            return None;
+        }
+        if let Some(existing) = &entry.turn_token {
+            return Some(existing.clone());
+        }
+        let next = entry.stop_token.child_token();
+        if !entry.stop_token.is_cancelled() {
+            entry.turn_token = Some(next.clone());
+        }
+        Some(next)
+    }
+
+    /// Clear `(address, run_id)`'s per-turn token as soon as turn execution
+    /// returns so post-turn bookkeeping (`after_turn`) and `Idle` cannot
+    /// report a false-positive [`Self::cancel_current_turn`] — unless another
+    /// wake message is already queued in `interrupt_tx`, in which case a fresh
+    /// child token is minted immediately for that upcoming turn.
+    pub(crate) fn finish_turn_token(&self, address: &SessionAddress, run_id: &str) {
+        let mut guard = self.lock();
+        let Some(entry) = guard.get_mut(address) else {
+            return;
+        };
+        if entry.info.run_id != run_id {
+            return;
+        }
+        if entry.has_queued_interrupts() && !entry.stop_token.is_cancelled() {
+            entry.turn_token = Some(entry.stop_token.child_token());
+        } else {
+            entry.turn_token = None;
+        }
+    }
+
     /// Stop every live session (running, idle, or forking) — used at gateway
     /// shutdown so runs complete and are recorded rather than being left for
     /// startup recovery on the next boot.
@@ -449,15 +703,16 @@ impl SessionRegistry {
     /// Returns the number of sessions signalled. Sessions already
     /// `completing`/`completed` are left alone, matching [`stop`](Self::stop).
     pub fn stop_all(&self) -> usize {
-        let guard = self.lock();
+        let mut guard = self.lock();
         let mut signalled = 0;
-        for entry in guard.values() {
+        for entry in guard.values_mut() {
             if matches!(
                 entry.info.state,
                 SessionState::Completing | SessionState::Completed
             ) {
                 continue;
             }
+            entry.turn_token = None;
             entry.stop_token.cancel();
             signalled += 1;
         }
@@ -1134,6 +1389,169 @@ mod tests {
 
         assert!(!registry.stop_if_running(&info.address));
         assert!(!token.is_cancelled());
+    }
+
+    #[test]
+    fn cancel_current_turn_tracks_post_turn_and_post_deliver_windows() {
+        let registry = SessionRegistry::new();
+        let mut info = sample_info("external-conv-test");
+        info.state = SessionState::Running;
+        let stop_token = CancellationToken::new();
+        let mut rx = registry.register(info.clone(), stop_token.clone()).unwrap();
+
+        let turn_1 = registry
+            .acquire_turn_token(&info.address, &info.run_id)
+            .expect("turn token present");
+        assert!(!turn_1.is_cancelled());
+
+        assert!(registry.cancel_current_turn(&info.address));
+        assert!(turn_1.is_cancelled(), "turn token must be cancelled");
+        assert!(
+            !stop_token.is_cancelled(),
+            "outer session stop token must stay uncancelled"
+        );
+
+        // Once `run_turn` finishes (even while state is still `Running` during
+        // `after_turn`), `finish_turn_token` clears the active token so
+        // `cancel_current_turn` does not return a false positive.
+        registry.finish_turn_token(&info.address, &info.run_id);
+        assert!(
+            !registry.cancel_current_turn(&info.address),
+            "post-run_turn window with no queued wake must return false"
+        );
+
+        registry.set_state(&info.address, SessionState::Idle);
+        assert!(
+            !registry.cancel_current_turn(&info.address),
+            "idle session with empty channel has no turn to cancel"
+        );
+
+        // Delivering a wake message while `Idle` immediately mints the next
+        // turn's token so `cancel_current_turn` works before `wait_idle` polls.
+        assert_eq!(
+            registry.deliver(&info.address, sample_agent_message()),
+            DeliverOutcome::Delivered
+        );
+        assert!(
+            registry.cancel_current_turn(&info.address),
+            "post-deliver window while still Idle must cancel the queued wake"
+        );
+        let _popped = rx.try_recv().expect("delivered wake present");
+        let turn_2 = registry
+            .acquire_turn_token(&info.address, &info.run_id)
+            .expect("queued wake token preserved");
+        assert!(
+            turn_2.is_cancelled(),
+            "acquired token must carry the pre-wake cancellation"
+        );
+
+        // Unwinding that cancelled wake clears it; acquiring for a fresh turn
+        // gets an uncancelled child token that cascades on session `stop`.
+        registry.finish_turn_token(&info.address, &info.run_id);
+        let turn_3 = registry
+            .acquire_turn_token(&info.address, &info.run_id)
+            .expect("fresh turn token");
+        assert!(!turn_3.is_cancelled());
+
+        assert!(registry.stop(&info.address));
+        assert!(stop_token.is_cancelled());
+        assert!(
+            turn_3.is_cancelled(),
+            "session stop cascades to child turn token"
+        );
+        assert!(
+            !registry.cancel_current_turn(&info.address),
+            "session already stopping as a whole returns false for per-turn cancel"
+        );
+    }
+
+    #[test]
+    fn stop_with_flush_merges_multiple_flushes_guards_trigger_and_transitions_atomically() {
+        let registry = SessionRegistry::new();
+        let flush_1 = SessionCloseFlush {
+            user_content: Some("first tail".to_string()),
+            assistant_note: "first note".to_string(),
+        };
+        let flush_2 = SessionCloseFlush {
+            user_content: Some("second tail".to_string()),
+            assistant_note: "final note".to_string(),
+        };
+        let addr = SessionAddress::from("external-flush-test");
+        assert_eq!(
+            registry.stop_with_flush(&addr, flush_1.clone()),
+            StopWithFlushOutcome::NotLive
+        );
+
+        // Non-conversation session (`EventTrigger::Agent`) must be refused untouched.
+        let spawned = sample_info("spawned-worker-1");
+        let spawned_token = CancellationToken::new();
+        let _spawned_rx = registry
+            .register(spawned.clone(), spawned_token.clone())
+            .unwrap();
+        assert_eq!(
+            registry.stop_with_flush(&spawned.address, flush_1.clone()),
+            StopWithFlushOutcome::NotConversation
+        );
+        assert!(
+            !spawned_token.is_cancelled(),
+            "non-conversation session must not be stopped by stop_with_flush"
+        );
+
+        let mut info = sample_info("external-flush-test");
+        info.category = SessionCategory::External;
+        info.trigger = EventTrigger::Conversation;
+        info.spawner = None;
+        info.state = SessionState::Idle;
+        let stop_token = CancellationToken::new();
+        let _rx = registry.register(info.clone(), stop_token.clone()).unwrap();
+        assert_eq!(
+            registry.stop_with_flush(&addr, flush_1),
+            StopWithFlushOutcome::StoppedLive
+        );
+        assert_eq!(
+            registry.stop_with_flush(&addr, flush_2.clone()),
+            StopWithFlushOutcome::StoppedLive,
+            "second close on same live run merges rather than dropping"
+        );
+        assert!(
+            stop_token.is_cancelled(),
+            "stop_with_flush cancels stop_token"
+        );
+        assert!(registry.has_close_flush(&addr, &info.run_id));
+
+        let taken = registry
+            .begin_completing(&addr, &info.run_id)
+            .expect("begin_completing atomically returns merged close_flush");
+        assert_eq!(
+            taken.user_content.as_deref(),
+            Some("first tail\n\nsecond tail")
+        );
+        assert_eq!(taken.assistant_note, "final note");
+        assert_eq!(
+            registry.get(&addr).unwrap().state,
+            SessionState::Completing,
+            "begin_completing transitions state under the same lock"
+        );
+        assert_eq!(
+            registry.stop_with_flush(&addr, flush_2),
+            StopWithFlushOutcome::Completing,
+            "subsequent stop_with_flush immediately sees Completing"
+        );
+    }
+
+    #[test]
+    fn register_completing_blocks_concurrent_deliveries_and_duplicate_registration() {
+        let registry = SessionRegistry::new();
+        let info = sample_info("external-transcript-only");
+        registry.register_completing(info.clone()).unwrap();
+        assert_eq!(
+            registry.deliver(&info.address, Interrupt::Stopped),
+            DeliverOutcome::Completing
+        );
+        assert!(
+            registry.register_completing(info).is_err(),
+            "duplicate registration at the same address must be refused"
+        );
     }
 
     #[test]

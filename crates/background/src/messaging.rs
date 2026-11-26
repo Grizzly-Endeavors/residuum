@@ -1296,7 +1296,7 @@ async fn publish_resume(
 
 /// Build the note telling a resumed session how to retrieve what its
 /// previous run produced.
-fn pointer_note(point: &ResumePoint) -> String {
+pub(crate) fn pointer_note(point: &ResumePoint) -> String {
     format!(
         "[Resumed session] Your previous run ({}) has ended. Retrieve its transcript \
          with memory_get using that run id if useful.",

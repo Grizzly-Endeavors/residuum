@@ -213,16 +213,16 @@ impl ModelCatalog {
         names
     }
 
-    /// Check that `selector` can run: a tier always can, an explicit model
-    /// only when [`Self::resolve`] resolves it and any required provider API
-    /// key is present.
+    /// Check that `selector` can run: `main` or a tier always can, an explicit
+    /// model only when [`Self::resolve`] resolves it and any required provider
+    /// API key is present.
     ///
     /// # Errors
     /// Returns a plain-language message naming the model and why it doesn't
     /// resolve or cannot be built.
     pub fn check(&self, selector: &ModelSelector) -> Result<(), String> {
         match selector {
-            ModelSelector::Tier(_) => Ok(()),
+            ModelSelector::Main | ModelSelector::Tier(_) => Ok(()),
             ModelSelector::Explicit(id) => {
                 let spec = self
                     .resolve(id)
@@ -425,6 +425,15 @@ mod tests {
         assert!(
             err.contains("configured providers in providers.toml: nabu"),
             "{err}"
+        );
+    }
+
+    #[test]
+    fn check_allows_main_selector() {
+        let cat = catalog(&[]);
+        assert!(
+            cat.check(&ModelSelector::MAIN).is_ok(),
+            "main selector must always pass catalog check"
         );
     }
 }
