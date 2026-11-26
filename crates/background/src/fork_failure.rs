@@ -127,7 +127,7 @@ pub(crate) fn pulse_start_failure_message(pulse: &str, error: &anyhow::Error) ->
     }
 }
 
-/// The plain-language sentence carried on a [`SessionStartFailedEvent`] when a
+/// The plain-language sentence carried on a [`residuum_bus::SessionStartFailedEvent`] when a
 /// conversation session at `address` couldn't start: what went wrong and what
 /// to check, from the [`ForkFailure`] anywhere in `error`'s context chain.
 pub(crate) fn conversation_start_failure_message(
